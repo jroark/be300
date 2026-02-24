@@ -219,10 +219,11 @@ int loader_load_elf(machine_t *m, const char *path, uint32_t *entry_va_out)
         }
     }
 
+    uint32_t entry_va = eh->e_entry;   /* save before free(data) */
     if (entry_va_out)
-        *entry_va_out = eh->e_entry;
+        *entry_va_out = entry_va;
 
     free(data);
-    fprintf(stderr, "[LOADER] ELF loaded, entry VA=0x%08X\n", eh->e_entry);
+    fprintf(stderr, "[LOADER] ELF loaded, entry VA=0x%08X\n", entry_va);
     return 0;
 }
