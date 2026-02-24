@@ -19,9 +19,9 @@
 #define FUNCT(i) (((i)      ) & 0x3F)
 
 /* Unicorn GPR index -> UC_MIPS_REG_n */
-static inline uc_mips_reg gpr_reg(unsigned n)
+static inline int gpr_reg(unsigned n)
 {
-    return (uc_mips_reg)(UC_MIPS_REG_0 + n);
+    return (int)(UC_MIPS_REG_0 + n);
 }
 
 /*
