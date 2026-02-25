@@ -448,6 +448,127 @@ static bool insn_invalid_hook(uc_engine *uc, void *user_data)
 }
 
 /* ------------------------------------------------------------------ */
+/* One-shot checkpoint logging                                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Checkpoint table: VA of well-known kernel functions / branch sites.
+ * These addresses are for linux4be20040908/vmlinux (confirmed via nm).
+ * Each hook fires once and prints to stderr without perturbing execution.
+ *
+ * Flags:
+ *   print_a0_str: read $a0 as a VA→string and print alongside the name.
+ */
+static const struct {
+    uint32_t va;
+    const char *name;
+    bool print_a0_str;
+} checkpoint_table[] = {
+    /* High-level function entries */
+    { 0x80001558u, "rest_init",                       false },
+    { 0x80001580u, "do_pre_smp_initcalls",            false },
+    { 0x800015d0u, "init (kernel thread)",            false },
+    { 0x80272918u, "do_basic_setup",                  false },
+    { 0x802727d0u, "do_initcalls",                    false },
+    /* Fine-grained probes inside init() around the sys_access branch */
+    { 0x80001614u, "init: JAL sys_access(/init?)",    false },
+    { 0x8000161cu, "init: BNE (sys_access result)",   false },
+    { 0x80001624u, "init: B   (skip prepare_ns)",     false },
+    { 0x80001630u, "init: JAL prepare_namespace",     false },
+    { 0x80273470u, "prepare_namespace (entry)",       false },
+    { 0x80001638u, "init: JAL free_initmem",          false },
+    /* exec path */
+    { 0x80001690u, "init: JAL run_init_process [execute_command]", false },
+    { 0x8000169cu, "init: JAL run_init_process [/sbin/init]",      false },
+    { 0x80001598u, "run_init_process (entry)",        true  },
+    { 0x80080cb0u, "do_execve (entry)",               true  },
+    /* Post-inet_init initcalls (last two in table) */
+    { 0x80286440u, "af_unix_init",                    false },
+    { 0x802864d8u, "packet_init",                     false },
+    /* Inside inet_init — call sites (JAL instructions) */
+    { 0x80285f58u, "inet_init: JAL sock_register",    false },
+    { 0x80286038u, "inet_init: JAL arp_init",         false },
+    { 0x80286040u, "inet_init: JAL ip_init",          false },
+    { 0x80286050u, "inet_init: JAL tcp_init",         false },
+    /* Sub-function entries */
+    { 0x80285458u, "ip_init",                         false },
+    { 0x802854c0u, "tcp_init",                        false },
+    { 0x80285a10u, "arp_init",                        false },
+    { 0x80284fb8u, "ip_rt_init",                      false },
+    { 0x80162dd0u, "ipfrag_init",                     false },
+    { 0x80150378u, "neigh_table_init",                false },
+    { 0x8027fd98u, "alloc_large_system_hash",         false },
+    { 0x80286208u, "fib_hash_init",                   false },
+    /* inet_register_protosw loop site */
+    { 0x80286020u, "inet_init: JAL inet_register_protosw (loop)", false },
+};
+#define CHECKPOINT_COUNT ((int)(sizeof(checkpoint_table)/sizeof(checkpoint_table[0])))
+
+static bool checkpoint_fired[CHECKPOINT_COUNT];
+
+/*
+ * Read a NUL-terminated string from guest VA into a host buffer.
+ * Returns the number of bytes read (excluding NUL), or 0 on failure.
+ */
+static int read_guest_string(uc_engine *uc, uint64_t va, char *buf, int bufsz)
+{
+    /* Try direct PA (kseg0/kseg1) */
+    uint64_t pa = 0;
+    if (va_to_pa_kseg(va, &pa)) {
+        int i;
+        for (i = 0; i < bufsz - 1; i++) {
+            uint8_t c = 0;
+            if (uc_mem_read(uc, pa + i, &c, 1) != UC_ERR_OK) break;
+            buf[i] = (char)c;
+            if (c == 0) { buf[i] = 0; return i; }
+        }
+        buf[i] = 0;
+        return i;
+    }
+    buf[0] = 0;
+    return 0;
+}
+
+static void checkpoint_hook(uc_engine *uc, uint64_t address,
+                            uint32_t size, void *user_data)
+{
+    (void)size; (void)address;
+    int idx = (int)(uintptr_t)user_data;
+    if (checkpoint_fired[idx]) return;
+    checkpoint_fired[idx] = true;
+
+    if (checkpoint_table[idx].print_a0_str) {
+        uint64_t a0 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+        char str[128] = "<unreadable>";
+        read_guest_string(uc, a0, str, sizeof(str));
+        fprintf(stderr, "[CHECKPOINT] >>> %s  a0=0x%08" PRIX64 " \"%s\" <<<\n",
+                checkpoint_table[idx].name, a0, str);
+    } else {
+        fprintf(stderr, "[CHECKPOINT] >>> %s <<<\n", checkpoint_table[idx].name);
+    }
+}
+
+/*
+ * do_initcalls tracer: fires at the JALR site (0x80272874) inside
+ * do_initcalls for every initcall invocation.  Reads $v0 ($2) which
+ * holds the function pointer just before the JALR executes.
+ * Limited to 64 fires to avoid log flooding.
+ */
+static int initcall_trace_count = 0;
+static void initcall_trace_hook(uc_engine *uc, uint64_t address,
+                                uint32_t size, void *user_data)
+{
+    (void)size; (void)address; (void)user_data;
+    if (initcall_trace_count >= 64) return;
+    initcall_trace_count++;
+    uint64_t fn = 0;
+    uc_reg_read(uc, UC_MIPS_REG_V0, &fn);
+    fprintf(stderr, "[INITCALL] #%02d  fn=0x%08" PRIX64 "\n",
+            initcall_trace_count, (uint64_t)(uint32_t)fn);
+}
+
+/* ------------------------------------------------------------------ */
 /* Machine lifecycle                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -529,6 +650,22 @@ machine_t *machine_create(const machine_config_t *cfg)
     /* Trace hook (only when requested — high overhead) */
     if (cfg->trace)
         uc_hook_add(m->uc, &hk, UC_HOOK_CODE, trace_hook, m, 1, 0);
+
+    /* One-shot checkpoint hooks: fire once when each named function is entered */
+    memset(checkpoint_fired, 0, sizeof(checkpoint_fired));
+    for (int i = 0; i < CHECKPOINT_COUNT; i++) {
+        uint64_t va = mips_sext(checkpoint_table[i].va);
+        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, checkpoint_hook,
+                    (void *)(uintptr_t)i, va, va);
+    }
+
+    /* do_initcalls tracer: logs which function pointer is called at JALR site */
+    initcall_trace_count = 0;
+    {
+        uint64_t jalr_va = mips_sext(0x80272874u);
+        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, initcall_trace_hook, NULL,
+                    jalr_va, jalr_va);
+    }
 
     /* Kernel direct-boot mode: load ELF and set entry point */
     if (cfg->kernel_path) {
@@ -666,6 +803,13 @@ void machine_run(machine_t *m)
 
         uint64_t pc = 0;
         uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+
+        /* Periodic PC sample: log PC every 100 batches (~10M insns) to
+         * show where execution is spending time when silent. */
+        if ((m->insn_count / BATCH_SIZE) % 100 == 0) {
+            fprintf(stderr, "[PROGRESS] insns=%" PRIu64 "M  PC=0x%08" PRIX64 "\n",
+                    m->insn_count / 1000000, (uint64_t)(uint32_t)pc);
+        }
 
         uc_err err = uc_emu_start(m->uc, pc, 0, 0, BATCH_SIZE);
 
