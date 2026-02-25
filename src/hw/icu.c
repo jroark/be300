@@ -3,17 +3,17 @@
 
 void icu_init(icu_state_t *s)
 {
-    /* All sources masked at reset; no pending interrupts */
+    /* Match vr41xx Linux init: all SYSINT lines disabled at reset. */
     s->sysint1  = 0x0000;
-    s->msysint1 = 0xFFFF;
+    s->msysint1 = 0x0000;
     s->sysint2  = 0x0000;
-    s->msysint2 = 0xFFFF;
-    s->piuint   = 0; s->mpiuint  = 0xFFFF;
-    s->kiuint   = 0; s->mkiuint  = 0xFFFF;
+    s->msysint2 = 0x0000;
+    s->piuint   = 0; s->mpiuint  = 0x0000;
+    s->kiuint   = 0; s->mkiuint  = 0x0000;
     s->giuintl  = 0; s->mgiuintl = 0xFFFF;
     s->giuinth  = 0; s->mgiuinth = 0xFFFF;
-    s->dsiuint  = 0; s->mdsiuint = 0xFFFF;
-    s->firint   = 0; s->mfirint  = 0xFFFF;
+    s->dsiuint  = 0; s->mdsiuint = 0x0000;
+    s->firint   = 0; s->mfirint  = 0x0000;
     s->softint  = 0;
     s->nmi      = 0;
 }
@@ -52,15 +52,15 @@ void icu_write(icu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
 {
     (void)size;
     switch (offset) {
-    /* Status registers: writing 0 clears the bit (W1C semantics) */
-    case ICU_SYSINT1REG:  s->sysint1  &= (uint16_t)val; break;
-    case ICU_PIUINTREG:   s->piuint   &= (uint16_t)val; break;
-    case ICU_KIUINTREG:   s->kiuint   &= (uint16_t)val; break;
-    case ICU_GIUINTLREG:  s->giuintl  &= (uint16_t)val; break;
-    case ICU_DSIUINTREG:  s->dsiuint  &= (uint16_t)val; break;
-    case ICU_SYSINT2REG:  s->sysint2  &= (uint16_t)val; break;
-    case ICU_GIUINTHREG:  s->giuinth  &= (uint16_t)val; break;
-    case ICU_FIRINTREG:   s->firint   &= (uint16_t)val; break;
+    /* Status registers: write-one-to-clear. */
+    case ICU_SYSINT1REG:  s->sysint1  &= (uint16_t)~val; break;
+    case ICU_PIUINTREG:   s->piuint   &= (uint16_t)~val; break;
+    case ICU_KIUINTREG:   s->kiuint   &= (uint16_t)~val; break;
+    case ICU_GIUINTLREG:  s->giuintl  &= (uint16_t)~val; break;
+    case ICU_DSIUINTREG:  s->dsiuint  &= (uint16_t)~val; break;
+    case ICU_SYSINT2REG:  s->sysint2  &= (uint16_t)~val; break;
+    case ICU_GIUINTHREG:  s->giuinth  &= (uint16_t)~val; break;
+    case ICU_FIRINTREG:   s->firint   &= (uint16_t)~val; break;
     /* Mask registers: write directly */
     case ICU_MSYSINT1REG: s->msysint1 = (uint16_t)val; break;
     case ICU_MPIUINTREG:  s->mpiuint  = (uint16_t)val; break;
@@ -94,8 +94,8 @@ void icu_deassert(icu_state_t *s, uint16_t src_bit)
 
 bool icu_pending(const icu_state_t *s)
 {
-    /* Interrupt pending if any unmasked source is active */
-    if (s->sysint1 & ~s->msysint1) return true;
-    if (s->sysint2 & ~s->msysint2) return true;
+    /* Interrupt pending if any enabled source is active */
+    if (s->sysint1 & s->msysint1) return true;
+    if (s->sysint2 & s->msysint2) return true;
     return false;
 }
