@@ -16,6 +16,20 @@ static inline uint64_t mips_sext(uint32_t va32) {
     return (uint64_t)(int32_t)va32;
 }
 
+static void update_irq_lines(machine_t *m)
+{
+    /*
+     * VR41xx timer path:
+     * RTC elapsed-time compare -> RTCINTREG.ELAPSEDTIME -> ICU SYSINT1 bit3.
+     */
+    if (m->rtc.rtcint & RTCINT_ELAPSEDTIME_INT)
+        icu_assert(&m->icu, ICU_SRC1_ETIME);
+    else
+        icu_deassert(&m->icu, ICU_SRC1_ETIME);
+
+    (void)m;
+}
+
 /*
  * Temporary timer shim:
  * linux4.be spins in calibrate_delay waiting for jiffies to change.
@@ -24,7 +38,7 @@ static inline uint64_t mips_sext(uint32_t va32) {
  */
 static void tick_jiffies_hack(machine_t *m)
 {
-    static const uint32_t jiffies_pa = 0x0028D9E0u;
+    static const uint32_t jiffies_pa = 0x001CD9E0u;
     uint32_t j = 0;
     if (uc_mem_read(m->uc, jiffies_pa, &j, sizeof(j)) == UC_ERR_OK) {
         j += 1;
@@ -354,6 +368,8 @@ void machine_run(machine_t *m)
     uc_reg_write(m->uc, UC_MIPS_REG_PC, &m->kernel_entry);
 
     while (m->running) {
+        update_irq_lines(m);
+
         uint64_t pc = 0;
         uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
 
@@ -388,6 +404,7 @@ void machine_run(machine_t *m)
          * The VR4131 RTC runs at ~32.768 kHz; 33 ticks ≈ 1 ms. */
         rtc_tick(&m->rtc, 33);
         tick_jiffies_hack(m);
+        update_irq_lines(m);
     }
 
     fprintf(stderr, "[MACHINE] Stopped after %" PRIu64 " instructions\n",
