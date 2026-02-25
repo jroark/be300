@@ -55,6 +55,10 @@ struct machine_s {
     uint64_t kernel_entry;  /* VA to start execution from, sign-extended for MIPS64 */
     uint64_t insn_count;
     bool     running;
+
+    /* Manual MIPS exception-entry state (set by intr_hook, consumed by prid_hook) */
+    uint64_t pending_epc;      /* EPC to inject via MFC0 $14 intercept    */
+    uint32_t pending_excode;   /* Cause.ExcCode to inject via MFC0 $13 intercept */
 };
 
 machine_t *machine_create(const machine_config_t *cfg);

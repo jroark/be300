@@ -126,21 +126,189 @@ static void trace_hook(uc_engine *uc, uint64_t address,
 static void prid_hook(uc_engine *uc, uint64_t address,
                       uint32_t size, void *user_data)
 {
-    (void)size; (void)user_data;
+    (void)size;
+    machine_t *m = user_data;
 
     uint32_t insn = 0;
     if (!read_insn_best_effort(uc, address, &insn))
         return;
 
-    /* MFC0 $rt, $15 (PRId) */
+    /* MFC0 $rt, $15, 0  — PRId (CP0 register 15, sel 0)
+     * Encoding: 000100 00000 rt 01111 00000 000000
+     *           op=0x10 rs=0  rt    rd=15  sel=0  */
     if ((insn & 0xFFE0FFFFu) == 0x40007800u) {
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t prid = VR4131_PRID;
-        /* UC_MIPS_REG_0 + rt gives the correct register enum for GPR $rt */
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &prid);
         uint64_t next_pc = address + 4;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
     }
+
+    /*
+     * MFC0 $rt, $13, 0  — Cause register (CP0 register 13, sel 0)
+     * Encoding: 000100 00000 rt 01101 00000 000000
+     *           op=0x10 rs=0  rt    rd=13  sel=0
+     * Mask:     0xFFE0FFFF
+     * Match:    0x40006800
+     *
+     * Unicorn 2.1.4 does not set CP0_Cause.ExcCode when routing a SYSCALL
+     * exception.  The except_vec3_r4000 exception vector reads Cause to
+     * dispatch to the right handler.  When a SYSCALL exception is pending
+     * (m->pending_excode != 0), return a synthesised Cause value with the
+     * correct ExcCode in bits[6:2].
+     */
+    if ((insn & 0xFFE0FFFFu) == 0x40006800u && m->pending_excode != 0) {
+        uint32_t rt = (insn >> 16) & 0x1F;
+        /* Cause.ExcCode lives in bits [6:2] */
+        uint64_t cause = (uint64_t)(m->pending_excode << 2);
+        uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &cause);
+        uint64_t next_pc = address + 4;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
+    /*
+     * MFC0 $rt, $14, 0  — EPC register (CP0 register 14, sel 0)
+     * Encoding: 000100 00000 rt 01110 00000 000000
+     *           op=0x10 rs=0  rt    rd=14  sel=0
+     * Mask:     0xFFE0FFFF
+     * Match:    0x40007000
+     *
+     * Return the EPC saved during intr_hook so the exception handler
+     * can correctly restore the return address before ERET.
+     * Only intercept when we are inside our injected exception context
+     * (pending_excode != 0).
+     */
+    if ((insn & 0xFFE0FFFFu) == 0x40007000u && m->pending_excode != 0) {
+        uint32_t rt = (insn >> 16) & 0x1F;
+        uint64_t epc = m->pending_epc;
+        uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &epc);
+        uint64_t next_pc = address + 4;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
+    /*
+     * MTC0 $rt, $14, 0  — write EPC (CP0 register 14, sel 0)
+     * Encoding: 000100 00100 rt 01110 00000 000000
+     *           op=0x10 rs=4  rt    rd=14  sel=0
+     * Match:    0x40807000 (rs=4 = MTC0)
+     *
+     * The syscall exit path writes the adjusted return address back to EPC
+     * via MTC0 before ERET.  We capture that write so ERET returns correctly.
+     * Only intercept when we are inside our injected exception context.
+     * Outside that context, Unicorn's QEMU executes the real MTC0 EPC
+     * instruction, keeping the CPU's internal CP0_EPC register consistent.
+     */
+    if ((insn & 0xFFE0FFFFu) == 0x40807000u && m->pending_excode != 0) {
+        uint32_t rt = (insn >> 16) & 0x1F;
+        uint64_t val = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &val);
+        m->pending_epc = val;   /* update for next MFC0 EPC or ERET */
+        uint64_t next_pc = address + 4;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
+    /*
+     * ERET  — return from exception.
+     * Encoding: 0x42000018
+     *
+     * In normal MIPS SOFTMMU, ERET clears Status.EXL and jumps to EPC.
+     * When we are managing the exception state manually (pending_epc != 0),
+     * we perform the ERET ourselves:
+     *   1. Clear EXL in Status.
+     *   2. Set PC = pending_epc.
+     *   3. Clear pending state.
+     */
+    if (insn == 0x42000018u && m->pending_excode != 0) {
+        uint64_t status = 0;
+        uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+        status &= ~(uint64_t)0x2u;   /* clear EXL */
+        uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+        uint64_t epc = m->pending_epc;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &epc);
+
+        /* (debug) fprintf(stderr, "[ERET] returning to EPC=0x%016" PRIX64 "\n", epc); */
+
+        m->pending_epc    = 0;
+        m->pending_excode = 0;
+        return;
+    }
+}
+
+/*
+ * Interrupt / CPU-exception hook.
+ *
+ * UC_HOOK_INTR fires for all Unicorn-level interrupts and CPU exceptions.
+ * For MIPS SOFTMMU this includes hardware IRQ delivery AND CPU exceptions
+ * such as SYSCALL (exception code 8 / EXCP_SYSCALL in QEMU).
+ *
+ * Strategy: on MIPS SYSCALL (intno == 8) Unicorn raises UC_ERR_EXCEPTION
+ * instead of transparently routing to the guest exception vector.  We handle
+ * it here by performing the MIPS exception-entry sequence ourselves:
+ *   1. Capture the current PC (EPC — the address of the syscall instruction).
+ *   2. Save EPC in a machine-local field so downstream MFC0/EPC intercepts
+ *      can return it to the guest.
+ *   3. Set CP0 Status.EXL = 1.
+ *   4. Redirect PC to the general exception vector (0x80000180, BEV=0).
+ *
+ * Cause.ExcCode cannot be written via the Unicorn 2.1.4 API.  The
+ * except_vec3_r4000 handler at 0x80000180 reads Cause with `mfc0 $k1,Cause`
+ * (the very first instruction) and uses ExcCode to index exception_handlers[].
+ * We intercept that specific read in prid_hook() below and inject ExcCode=8
+ * (SYSCALL) when we are in an active SYSCALL entry.
+ */
+
+/* CP0 Cause ExcCode for SYSCALL (MIPS spec table 5-1) */
+#define MIPS_EXCCODE_SYS  8u
+
+static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
+{
+    machine_t *m = user_data;
+
+    uint64_t pc = 0, status = 0;
+    uc_reg_read(uc, UC_MIPS_REG_PC,         &pc);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+    /*
+     * Unicorn 2.1.4 MIPS fires intno=17 for the SYSCALL instruction.
+     * When the hook fires, Unicorn has already advanced PC to SYSCALL+4;
+     * the real EPC (address of the syscall instruction) is PC-4.
+     *
+     * Log all interrupt events during development; only act on SYSCALL (17).
+     */
+    if (intno != 17u) {
+        fprintf(stderr, "[INTR] intno=%u PC=0x%016" PRIX64
+                        " STATUS=0x%016" PRIX64 "\n", intno, pc, status);
+        return;
+    }
+
+    /*
+     * SYSCALL (intno 17): perform manual MIPS exception entry.
+     *
+     *   EPC  = PC - 4  (address of the syscall instruction itself)
+     *   EXL  = 1       (Status bit 1 — enter exception mode)
+     *   PC   = 0x80000180  (general exception vector, BEV=0)
+     *
+     * Cause.ExcCode and EPC are not writable via Unicorn's 2.1.4 API.
+     * They are emulated by intercepting the matching MFC0 / MTC0 / ERET
+     * instructions inside prid_hook() below.
+     */
+    uint64_t epc = pc - 4u;   /* undo the PC advance Unicorn already applied */
+    m->pending_epc    = epc;
+    m->pending_excode = MIPS_EXCCODE_SYS;
+
+    uint64_t new_status = status | 0x2u;   /* set EXL */
+    uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &new_status);
+
+    uint64_t vec = mips_sext(0x80000180u);
+    uc_reg_write(uc, UC_MIPS_REG_PC, &vec);
+
+    /* (debug) fprintf(stderr, "[INTR] SYSCALL at EPC=0x%016" PRIX64
+                    ", routing to exception vector\n", epc); */
 }
 
 /*
@@ -232,6 +400,13 @@ machine_t *machine_create(const machine_config_t *cfg)
     uc_hook hk;
     uc_hook_add(m->uc, &hk, UC_HOOK_INSN_INVALID,
                 insn_invalid_hook, m, 1, 0);
+
+    /*
+     * Interrupt / CPU-exception hook.
+     * Handles MIPS SYSCALL exceptions that Unicorn 2.1.4 does not
+     * transparently route to the guest exception vector.
+     */
+    uc_hook_add(m->uc, &hk, UC_HOOK_INTR, intr_hook, m, 1, 0);
 
     /*
      * PRId intercept hook — fires for every instruction, checks for
