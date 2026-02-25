@@ -569,6 +569,52 @@ static void initcall_trace_hook(uc_engine *uc, uint64_t address,
 }
 
 /* ------------------------------------------------------------------ */
+/* RCU / wait_for_completion diagnostic probes                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Multi-fire probes for the RCU grace-period path.
+ * Each fires up to RCU_PROBE_LIMIT times, printing a short line so we
+ * can see whether these functions are reached while init is blocked in
+ * wait_for_completion.
+ *
+ * Addresses for linux4be20040908/vmlinux (confirmed via nm):
+ *   0x801ab590  wait_for_completion   — init should block here in synchronize_kernel
+ *   0x800379a8  do_timer              — called from timer interrupt handler
+ *   0x800428b8  rcu_check_callbacks   — called from scheduler_tick (via do_timer)
+ *   0x80042780  rcu_process_callbacks — RCU tasklet; fires the call_rcu callbacks
+ *   0x8000eb30  timer_interrupt       — top-level timer interrupt handler
+ */
+#define RCU_PROBE_LIMIT 8
+
+static int rcu_probe_wait_count    = 0;
+static int rcu_probe_dotimer_count = 0;
+static int rcu_probe_rcucheck_count= 0;
+static int rcu_probe_rcuproc_count = 0;
+static int rcu_probe_timerint_count= 0;
+
+static void rcu_probe_hook(uc_engine *uc, uint64_t address,
+                           uint32_t size, void *user_data)
+{
+    (void)uc; (void)size;
+    int idx = (int)(uintptr_t)user_data;
+    int *cnt;
+    const char *tag;
+    switch (idx) {
+        case 0: cnt = &rcu_probe_wait_count;     tag = "wait_for_completion";   break;
+        case 1: cnt = &rcu_probe_dotimer_count;  tag = "do_timer";              break;
+        case 2: cnt = &rcu_probe_rcucheck_count; tag = "rcu_check_callbacks";   break;
+        case 3: cnt = &rcu_probe_rcuproc_count;  tag = "rcu_process_callbacks"; break;
+        case 4: cnt = &rcu_probe_timerint_count; tag = "timer_interrupt";       break;
+        default: return;
+    }
+    if (*cnt >= RCU_PROBE_LIMIT) return;
+    (*cnt)++;
+    fprintf(stderr, "[RCU_PROBE] #%d %s  PC=0x%08" PRIX64 "\n",
+            *cnt, tag, (uint64_t)(uint32_t)address);
+}
+
+/* ------------------------------------------------------------------ */
 /* Machine lifecycle                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -665,6 +711,27 @@ machine_t *machine_create(const machine_config_t *cfg)
         uint64_t jalr_va = mips_sext(0x80272874u);
         uc_hook_add(m->uc, &hk, UC_HOOK_CODE, initcall_trace_hook, NULL,
                     jalr_va, jalr_va);
+    }
+
+    /* RCU / wait_for_completion diagnostic probes (multi-fire, up to 8 each) */
+    rcu_probe_wait_count     = 0;
+    rcu_probe_dotimer_count  = 0;
+    rcu_probe_rcucheck_count = 0;
+    rcu_probe_rcuproc_count  = 0;
+    rcu_probe_timerint_count = 0;
+    {
+        static const struct { uint32_t va; int idx; } rcu_probes[] = {
+            { 0x801ab590u, 0 },  /* wait_for_completion   */
+            { 0x800379a8u, 1 },  /* do_timer               */
+            { 0x800428b8u, 2 },  /* rcu_check_callbacks    */
+            { 0x80042780u, 3 },  /* rcu_process_callbacks  */
+            { 0x8000eb30u, 4 },  /* timer_interrupt        */
+        };
+        for (int i = 0; i < 5; i++) {
+            uint64_t va = mips_sext(rcu_probes[i].va);
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, rcu_probe_hook,
+                        (void *)(uintptr_t)rcu_probes[i].idx, va, va);
+        }
     }
 
     /* Kernel direct-boot mode: load ELF and set entry point */
