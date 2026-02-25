@@ -464,6 +464,8 @@ static const struct {
     const char *name;
     bool print_a0_str;
 } checkpoint_table[] = {
+    /* ICU / timer init */
+    { 0x80275b20u, "vr41xx_icu_init",                 false },
     /* High-level function entries */
     { 0x80001558u, "rest_init",                       false },
     { 0x80001580u, "do_pre_smp_initcalls",            false },
@@ -615,6 +617,42 @@ static void rcu_probe_hook(uc_engine *uc, uint64_t address,
 }
 
 /* ------------------------------------------------------------------ */
+/* ICU MSYSINT1 ETIME fixup                                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * vr41xx_icu_init (called from arch_init_irq → vr41xx_init_IRQ) correctly
+ * sets icu1_base = 0xAF000080 in kernel data, but then writes 0x0000 to
+ * MSYSINT1REG — disabling ALL SYSINT1 interrupt sources, including ETIME
+ * (bit 3).
+ *
+ * The timer was registered via setup_irq(11, …) during time_init(), but
+ * at that point icu1_base may have been 0, so the enable_irq write was
+ * silently lost.  Subsequent read-modify-write sequences on MSYSINT1REG
+ * do not re-enable ETIME because it was never in the initial mask.
+ *
+ * Fix: intercept the `jr $ra` return instruction of vr41xx_icu_init at
+ * 0x80275bec (confirmed by objdump).  At that point the function body has
+ * already run (msysint1 = 0), so we force bit 3 (ETIME) back on before
+ * control returns to the caller.  The one-shot guard prevents repeated
+ * fires (both the normal and error paths share this return site).
+ */
+static bool icu_etime_fixup_fired = false;
+
+static void icu_etime_fixup_hook(uc_engine *uc, uint64_t address,
+                                  uint32_t size, void *user_data)
+{
+    (void)uc; (void)address; (void)size;
+    if (icu_etime_fixup_fired) return;
+    icu_etime_fixup_fired = true;
+    machine_t *m = user_data;
+    m->icu.msysint1 |= ICU_SRC1_ETIME;
+    fprintf(stderr,
+            "[ICU_FIXUP] vr41xx_icu_init returning; forced ETIME in MSYSINT1=0x%04X\n",
+            m->icu.msysint1);
+}
+
+/* ------------------------------------------------------------------ */
 /* Machine lifecycle                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -732,6 +770,14 @@ machine_t *machine_create(const machine_config_t *cfg)
             uc_hook_add(m->uc, &hk, UC_HOOK_CODE, rcu_probe_hook,
                         (void *)(uintptr_t)rcu_probes[i].idx, va, va);
         }
+    }
+
+    /* ICU ETIME fixup: force-enable ETIME bit in MSYSINT1 after
+     * vr41xx_icu_init clears it.  Fires at the jr $ra (0x80275bec). */
+    icu_etime_fixup_fired = false;
+    {
+        uint64_t va = mips_sext(0x80275becu);
+        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, icu_etime_fixup_hook, m, va, va);
     }
 
     /* Kernel direct-boot mode: load ELF and set entry point */
