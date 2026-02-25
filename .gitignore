@@ -2,3 +2,6 @@ be300
 build/
 linux4be/
 *.o
+*.log
+boot_stdout*.txt
+linux4be20040908/
