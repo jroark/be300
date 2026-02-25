@@ -145,21 +145,31 @@ static bool mem_fault_cb(uc_engine *uc, uc_mem_type type,
     uc_reg_read(uc, UC_MIPS_REG_PC, &pc);
 
     if (type == UC_MEM_FETCH_UNMAPPED) {
-        fprintf(stderr, "[BUS] Unmapped FETCH @ 0x%08" PRIX64
+        fprintf(stderr, "[BUS] Unmapped FETCH @ 0x%016" PRIX64
                 " PC=0x%016" PRIX64 " — STOP\n", address, pc);
         return false;
     }
 
-    const char *kind = (type == UC_MEM_READ_UNMAPPED) ? "READ" : "WRITE";
-    fprintf(stderr, "[BUS] Unmapped %s @ 0x%08" PRIX64
+    /* Write-protection fault: region is mapped but not writable (e.g., ROM). */
+    if (type == UC_MEM_WRITE_PROT) {
+        fprintf(stderr, "[BUS] Write-prot WRITE @ 0x%016" PRIX64
+                " size=%d PC=0x%016" PRIX64 " — ignoring\n", address, size, pc);
+        return true;   /* skip the write, continue */
+    }
+
+    const char *kind = (type == UC_MEM_READ_UNMAPPED)  ? "READ"
+                     : (type == UC_MEM_WRITE_UNMAPPED) ? "WRITE"
+                     : "UNKNOWN";
+    fprintf(stderr, "[BUS] Unmapped %s @ 0x%016" PRIX64
             " size=%d PC=0x%016" PRIX64 "\n", kind, address, size, pc);
+    fflush(stderr);
 
     /* Map a 1 MB zeroed page at the 1 MB-aligned base of the faulting address */
     uint64_t block = address & ~((uint64_t)0xFFFFF);
     uc_err err = uc_mem_map(uc, block, 0x100000, UC_PROT_ALL);
     if (err != UC_ERR_OK && err != UC_ERR_MAP) {
         /* UC_ERR_MAP = already mapped (overlap), which is fine to ignore */
-        fprintf(stderr, "[BUS]   uc_mem_map @ 0x%08" PRIX64 " failed: %s\n",
+        fprintf(stderr, "[BUS]   uc_mem_map @ 0x%016" PRIX64 " failed: %s\n",
                 block, uc_strerror(err));
         return false;
     }
@@ -200,8 +210,9 @@ void bus_init(machine_t *m)
     /* Fault hook for unmapped accesses */
     uc_hook hk;
     uc_hook_add(m->uc, &hk,
-                UC_HOOK_MEM_READ_UNMAPPED |
+                UC_HOOK_MEM_READ_UNMAPPED  |
                 UC_HOOK_MEM_WRITE_UNMAPPED |
-                UC_HOOK_MEM_FETCH_UNMAPPED,
+                UC_HOOK_MEM_FETCH_UNMAPPED |
+                UC_HOOK_MEM_WRITE_PROT,
                 mem_fault_cb, m, 1, 0);
 }

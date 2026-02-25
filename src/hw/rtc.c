@@ -12,7 +12,15 @@ void rtc_init(rtc_state_t *s)
     s->etime = 0;
     s->etime_latched = 0;
     s->etime_reads = 0;
-    s->ecmp  = UINT64_MAX;   /* alarm far in the future */
+    /*
+     * The VR41xx Linux timer driver only writes the low 32 bits of ECMP
+     * (ECMPLREG + ECMPMREG); it never writes ECMPHREG (bits 47:32).
+     * Initialise to UINT32_MAX so bits 47:32 are zero — after the kernel
+     * writes ECMPL/ECMPM the full 48-bit compare value is correct.
+     * (UINT64_MAX would leave bits 47:32 = 0xFFFF after the kernel writes,
+     * so etime would never reach the compare threshold.)
+     */
+    s->ecmp  = UINT32_MAX;
     s->rtcl1 = 0;
     s->rtcl2 = 0;
     s->tclock = 0;
