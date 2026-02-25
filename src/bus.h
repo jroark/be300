@@ -26,7 +26,7 @@
 
 /* RTC — Real-Time Clock §13 */
 #define IO_RTC_BASE   0x0100u
-#define IO_RTC_SIZE   0x0020u
+#define IO_RTC_SIZE   0x0040u
 
 /* GPIO — General-Purpose I/O §14 */
 #define IO_GPIO_BASE  0x0140u

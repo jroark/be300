@@ -32,9 +32,9 @@
 #define ICU_SYSINT2REG   0x20u   /* System interrupt 2 status   */
 #define ICU_GIUINTHREG   0x22u   /* GIU interrupt high status   */
 #define ICU_FIRINTREG    0x24u   /* FIR interrupt status        */
-#define ICU_MSYSINT2REG  0x2Cu   /* System interrupt 2 mask     */
-#define ICU_MGIUINTHREG  0x2Eu   /* GIU interrupt high mask     */
-#define ICU_MFIRINTREG   0x30u   /* FIR interrupt mask          */
+#define ICU_MSYSINT2REG  0x26u   /* System interrupt 2 mask     */
+#define ICU_MGIUINTHREG  0x28u   /* GIU interrupt high mask     */
+#define ICU_MFIRINTREG   0x2Au   /* FIR interrupt mask          */
 
 /* SYSINT1 source bits */
 #define ICU_SRC1_POWER   (1u << 0)
