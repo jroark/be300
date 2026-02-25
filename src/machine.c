@@ -158,11 +158,18 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * (m->pending_excode != 0), return a synthesised Cause value with the
      * correct ExcCode in bits[6:2].
      */
-    if ((insn & 0xFFE0FFFFu) == 0x40006800u && m->pending_excode != 0) {
+    if ((insn & 0xFFE0FFFFu) == 0x40006800u &&
+        m->pending_excode != 0 && !m->pending_cause_served) {
         uint32_t rt = (insn >> 16) & 0x1F;
-        /* Cause.ExcCode lives in bits [6:2] */
-        uint64_t cause = (uint64_t)(m->pending_excode << 2);
+        /* Serve the injected Cause once (exception dispatch).  After this, let
+         * QEMU's real Cause register pass through so that synchronous nested
+         * exceptions (TLB invalid → page fault, ExcCode=3) are dispatched to
+         * do_page_fault rather than a wrong syscall handler.
+         * Asynchronous interrupts (CP0 timer, intno=27) reset pending_cause_served
+         * in intr_hook before arriving here, so they still get the injected value. */
+        uint64_t cause = m->pending_cause;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &cause);
+        m->pending_cause_served = true;
         uint64_t next_pc = address + 4;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
         return;
@@ -180,10 +187,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * Only intercept when we are inside our injected exception context
      * (pending_excode != 0).
      */
-    if ((insn & 0xFFE0FFFFu) == 0x40007000u && m->pending_excode != 0) {
+    if ((insn & 0xFFE0FFFFu) == 0x40007000u &&
+        m->pending_excode != 0 && !m->pending_epc_served) {
         uint32_t rt = (insn >> 16) & 0x1F;
+        /* Serve the injected EPC once (SAVE_SOME frame build).  Subsequent MFC0
+         * EPC reads (e.g. from nested exception handlers) get QEMU's real EPC so
+         * that the correct return address is saved for each nested exception. */
         uint64_t epc = m->pending_epc;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &epc);
+        m->pending_epc_served = true;
         uint64_t next_pc = address + 4;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
         return;
@@ -205,7 +217,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t val = 0;
         uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &val);
-        m->pending_epc = val;   /* update for next MFC0 EPC or ERET */
+        m->pending_epc      = val;   /* capture return address written by exit path */
+        m->epc_was_written  = true;  /* arm the ERET intercept for the next ERET    */
         uint64_t next_pc = address + 4;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
         return;
@@ -222,7 +235,18 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      *   2. Set PC = pending_epc.
      *   3. Clear pending state.
      */
-    if (insn == 0x42000018u && m->pending_excode != 0) {
+    /*
+     * ERET intercept: only fire when the kernel's exit path has already
+     * written the return address to EPC via MTC0 EPC (epc_was_written=true).
+     *
+     * Without this guard, the intercept would also fire for nested ERET
+     * instructions from TLB refill handlers (0x80000000) that run during
+     * user-space access faults inside the syscall/IRQ handler body.  Those
+     * intermediate ERETs must be left to Unicorn's native ERET logic, which
+     * reads the real CP0 EPC (set by the hardware TLB-miss exception entry)
+     * and returns to the faulting instruction correctly.
+     */
+    if (insn == 0x42000018u && m->pending_excode != 0 && m->epc_was_written) {
         uint64_t status = 0;
         uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
         status &= ~(uint64_t)0x2u;   /* clear EXL */
@@ -233,8 +257,12 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 
         /* (debug) fprintf(stderr, "[ERET] returning to EPC=0x%016" PRIX64 "\n", epc); */
 
-        m->pending_epc    = 0;
-        m->pending_excode = 0;
+        m->pending_epc          = 0;
+        m->pending_excode       = 0;
+        m->pending_cause        = 0;
+        m->epc_was_written      = false;
+        m->pending_cause_served = false;
+        m->pending_epc_served   = false;
         return;
     }
 }
@@ -283,6 +311,19 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     if (intno != 17u) {
         fprintf(stderr, "[INTR] intno=%u PC=0x%016" PRIX64
                         " STATUS=0x%016" PRIX64 "\n", intno, pc, status);
+        /*
+         * Async interrupt (CP0 timer, external IRQ, …).  QEMU has already set
+         * EXL=1, Cause, EPC and routed PC to the exception vector.  Reset the
+         * "served once" flags so that if an injected exception is in flight
+         * (pending_excode != 0) this async interrupt gets the injected Cause /
+         * EPC values on its first read — i.e. it behaves the same as before the
+         * "serve once" optimization.  Without this reset, the async interrupt
+         * would get QEMU's real Cause (ExcCode=0|IP7 for CP0 timer) and correctly
+         * dispatch to do_timer/schedule(), which causes excessive context switches
+         * to the idle task and starves the kernel boot thread.
+         */
+        m->pending_cause_served = false;
+        m->pending_epc_served   = false;
         return;
     }
 
@@ -298,8 +339,12 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
      * instructions inside prid_hook() below.
      */
     uint64_t epc = pc - 4u;   /* undo the PC advance Unicorn already applied */
-    m->pending_epc    = epc;
-    m->pending_excode = MIPS_EXCCODE_SYS;
+    m->pending_epc          = epc;
+    m->pending_excode       = MIPS_EXCCODE_SYS;
+    m->pending_cause        = (uint32_t)(MIPS_EXCCODE_SYS << 2);  /* Cause.ExcCode = 8 */
+    m->epc_was_written      = false;  /* reset; set by MTC0 EPC intercept on exit path */
+    m->pending_cause_served = false;
+    m->pending_epc_served   = false;
 
     uint64_t new_status = status | 0x2u;   /* set EXL */
     uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &new_status);
@@ -309,6 +354,71 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
 
     /* (debug) fprintf(stderr, "[INTR] SYSCALL at EPC=0x%016" PRIX64
                     ", routing to exception vector\n", epc); */
+}
+
+/*
+ * Inject a hardware interrupt (ExcCode=0 / INTR) into the guest CPU when
+ * the VR41xx ICU has a pending, enabled interrupt source.
+ *
+ * Called once per execution batch (before reading PC) so the injected
+ * exception vector is picked up as the start address of the next batch.
+ *
+ * Conditions for injection:
+ *   1. No other injected exception is already in flight (pending_excode==0).
+ *   2. ICU has at least one unmasked pending source (icu_pending()).
+ *   3. CPU is receptive: Status.IE=1, Status.EXL=0, Status.ERL=0.
+ *   4. Status.IM2 (bit 10) is set — HW0/INT0 interrupt line is unmasked.
+ *
+ * When all conditions are met, we perform the manual MIPS exception-entry
+ * sequence (same pattern as intr_hook for SYSCALL):
+ *   EPC  = current PC (instruction that would have run next)
+ *   pending_cause = IP2 set (bit 10), ExcCode=0 (Interrupt)
+ *   Status.EXL = 1
+ *   PC = 0x80000180 (general exception vector, BEV=0)
+ *
+ * The exception is then handled by the guest: except_vec3_r4000 reads
+ * Cause (returns pending_cause via prid_hook MFC0 intercept), finds
+ * ExcCode=0, dispatches to handle_int, which reads the VR41xx ICU to
+ * identify the source and calls the appropriate handler (e.g. do_timer
+ * for the ETIME tick, which advances jiffies and wakes sleeping tasks).
+ */
+static void inject_hw_irq_if_pending(machine_t *m)
+{
+    /* Only inject when no exception is already in flight */
+    if (m->pending_excode != 0)
+        return;
+
+    if (!icu_pending(&m->icu))
+        return;
+
+    uint64_t status = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
+    uint32_t s32 = (uint32_t)status;
+
+    /* CPU must be receptive: IE=1, EXL=0, ERL=0 (bits [2:0] == 0b001) */
+    if ((s32 & 0x7u) != 0x1u)
+        return;
+
+    /* INT0/HW0 mapped to IP2 = Status bit 10; check it is not masked */
+    if (!(s32 & (1u << 10)))
+        return;
+
+    /* Inject: save return address, build Cause, redirect to exception vector */
+    uint64_t pc = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+
+    m->pending_epc          = pc;
+    m->pending_excode       = 1u;           /* INTR sentinel — any non-zero value */
+    m->pending_cause        = (1u << 10);   /* IP2 = HW0 = INT0, ExcCode = 0     */
+    m->epc_was_written      = false;        /* reset; set by MTC0 EPC intercept   */
+    m->pending_cause_served = false;
+    m->pending_epc_served   = false;
+
+    uint64_t new_status = status | 0x2u;  /* set EXL */
+    uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &new_status);
+
+    uint64_t vec = mips_sext(0x80000180u);
+    uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
 }
 
 /*
@@ -543,7 +653,16 @@ void machine_run(machine_t *m)
     uc_reg_write(m->uc, UC_MIPS_REG_PC, &m->kernel_entry);
 
     while (m->running) {
+        /* Advance simulated time and update peripheral interrupt state.
+         * The VR4131 RTC runs at ~32.768 kHz; 33 ticks ≈ 1 ms per batch. */
+        rtc_tick(&m->rtc, 33);
+        tick_jiffies_hack(m);
         update_irq_lines(m);
+
+        /* Inject a hardware interrupt (INTR, ExcCode=0) if the ICU has a
+         * pending, unmasked source and the CPU is receptive.  The injected
+         * PC redirect is picked up by the uc_reg_read(PC) below. */
+        inject_hw_irq_if_pending(m);
 
         uint64_t pc = 0;
         uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
@@ -554,32 +673,37 @@ void machine_run(machine_t *m)
             uint64_t bad_pc = 0;
             uc_reg_read(m->uc, UC_MIPS_REG_PC, &bad_pc);
             uint64_t status = 0;
-            uint64_t sp = 0, ra = 0;
             uint32_t insn = 0;
             uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
-            uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
-            uc_reg_read(m->uc, UC_MIPS_REG_RA, &ra);
             if (!read_insn_best_effort(m->uc, bad_pc, &insn))
                 insn = 0xFFFFFFFFu;
             fprintf(stderr,
                     "[MACHINE] uc_emu_start error at PC=0x%016" PRIX64 ": %s\n",
                     bad_pc, uc_strerror(err));
             fprintf(stderr,
-                    "[MACHINE] State: STATUS=0x%016" PRIX64
-                    " SP=0x%016" PRIX64 " RA=0x%016" PRIX64 " INSN=0x%08X\n",
-                    status, sp, ra, insn);
+                    "[MACHINE] pending_excode=%u pending_cause=0x%08X pending_epc=0x%016" PRIX64 "\n",
+                    m->pending_excode, m->pending_cause, m->pending_epc);
+            /* Dump all 32 GPRs to help identify the faulting address */
+            static const char *gpr_names[] = {
+                "zero","at","v0","v1","a0","a1","a2","a3",
+                "t0","t1","t2","t3","t4","t5","t6","t7",
+                "s0","s1","s2","s3","s4","s5","s6","s7",
+                "t8","t9","k0","k1","gp","sp","fp","ra"
+            };
+            for (int r = 0; r < 32; r++) {
+                uint64_t val = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_0 + r, &val);
+                fprintf(stderr, "  $%-4s = 0x%016" PRIX64 "\n", gpr_names[r], val);
+            }
+            fprintf(stderr,
+                    "[MACHINE] STATUS=0x%016" PRIX64 " INSN=0x%08X\n",
+                    status, insn);
             m->running = false;
             break;
         }
 
         if (!m->cfg.trace)
             m->insn_count += BATCH_SIZE;
-
-        /* Advance RTC: treat one batch as ~1 ms worth of ticks.
-         * The VR4131 RTC runs at ~32.768 kHz; 33 ticks ≈ 1 ms. */
-        rtc_tick(&m->rtc, 33);
-        tick_jiffies_hack(m);
-        update_irq_lines(m);
     }
 
     fprintf(stderr, "[MACHINE] Stopped after %" PRIu64 " instructions\n",

@@ -56,9 +56,31 @@ struct machine_s {
     uint64_t insn_count;
     bool     running;
 
-    /* Manual MIPS exception-entry state (set by intr_hook, consumed by prid_hook) */
-    uint64_t pending_epc;      /* EPC to inject via MFC0 $14 intercept    */
-    uint32_t pending_excode;   /* Cause.ExcCode to inject via MFC0 $13 intercept */
+    /* Manual MIPS exception-entry state (set by intr_hook / inject_hw_irq_if_pending) */
+    uint64_t pending_epc;           /* EPC to return/restore via MFC0/ERET intercepts      */
+    uint32_t pending_excode;        /* non-zero = injected exception active (sentinel)      */
+    uint32_t pending_cause;         /* full CP0 Cause value to return via MFC0 $13          */
+    bool     epc_was_written;       /* MTC0 EPC has been seen; next ERET is the exit        */
+    /*
+     * "Serve once" flags for Cause and EPC intercepts.
+     *
+     * The initial exception dispatch at 0x80000180 reads Cause once to pick the
+     * handler.  SAVE_SOME reads EPC once to build the exception frame.  We serve
+     * our injected values for those first reads, then let QEMU's real register
+     * values pass through for all subsequent reads.
+     *
+     * This ensures that *synchronous* nested exceptions (TLB invalid → page fault,
+     * ExcCode=3) get QEMU's real Cause (not our injected ExcCode=8/0), so that
+     * do_page_fault is dispatched correctly instead of a wrong syscall handler.
+     *
+     * Asynchronous interrupts (CP0 timer, intno=27) call UC_HOOK_INTR.  We reset
+     * both flags there so they keep the same (harmless-wrong) behaviour as before,
+     * avoiding excessive do_timer/schedule() calls that would starve the boot
+     * thread.  Synchronous TLB exceptions do NOT call UC_HOOK_INTR, so they keep
+     * the "after-first-serve" semantics.
+     */
+    bool     pending_cause_served;  /* first MFC0 Cause read has been intercepted */
+    bool     pending_epc_served;    /* first MFC0 EPC read has been intercepted   */
 };
 
 machine_t *machine_create(const machine_config_t *cfg);
