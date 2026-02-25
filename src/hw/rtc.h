@@ -20,14 +20,34 @@
 #define RTC_ECMPHREG    0x0Cu   /* Compare high                    */
 #define RTC_RTCL1LREG   0x10u   /* RTC long-1 low  (calendar)      */
 #define RTC_RTCL1HREG   0x12u   /* RTC long-1 high                 */
-#define RTC_RTCL2LREG   0x14u   /* RTC long-2 low                  */
-#define RTC_RTCL2HREG   0x16u   /* RTC long-2 high                 */
+#define RTC_RTCL1CNTLREG 0x14u  /* RTC long-1 counter low          */
+#define RTC_RTCL1CNTHREG 0x16u  /* RTC long-1 counter high         */
+#define RTC_RTCL2LREG   0x18u   /* RTC long-2 low                  */
+#define RTC_RTCL2HREG   0x1Au   /* RTC long-2 high                 */
+#define RTC_RTCL2CNTLREG 0x1Cu  /* RTC long-2 counter low          */
+#define RTC_RTCL2CNTHREG 0x1Eu  /* RTC long-2 counter high         */
+
+/* RTC2 block (base + 0x20, i.e. PA 0x0F000120) */
+#define RTC_TCLKLREG     0x20u
+#define RTC_TCLKHREG     0x22u
+#define RTC_TCLKCNTLREG  0x24u
+#define RTC_TCLKCNTHREG  0x26u
+#define RTC_RTCINTREG    0x3Eu
+
+#define RTCINT_TCLOCK_INT      0x08u
+#define RTCINT_RTCLONG2_INT    0x04u
+#define RTCINT_RTCLONG1_INT    0x02u
+#define RTCINT_ELAPSEDTIME_INT 0x01u
 
 typedef struct {
     uint64_t etime;       /* simulated elapsed ticks              */
     uint64_t ecmp;        /* compare register                     */
     uint32_t rtcl1;       /* calendar long-1 (stub)               */
     uint32_t rtcl2;       /* calendar long-2 (stub)               */
+    uint32_t tclock;      /* programmable tclock period (stub)    */
+    uint16_t rtcint;      /* RTC interrupt status                 */
+    uint64_t etime_latched; /* stable snapshot across multi-read sequence */
+    uint8_t  etime_reads;   /* number of ETIME register reads in snapshot */
 } rtc_state_t;
 
 void     rtc_init (rtc_state_t *s);

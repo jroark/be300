@@ -16,6 +16,50 @@ static inline uint64_t mips_sext(uint32_t va32) {
     return (uint64_t)(int32_t)va32;
 }
 
+/*
+ * Temporary timer shim:
+ * linux4.be spins in calibrate_delay waiting for jiffies to change.
+ * Until CP0 timer/interrupt delivery is fully emulated, bump jiffies
+ * in RAM once per execution batch to keep early boot moving.
+ */
+static void tick_jiffies_hack(machine_t *m)
+{
+    static const uint32_t jiffies_pa = 0x0028D9E0u;
+    uint32_t j = 0;
+    if (uc_mem_read(m->uc, jiffies_pa, &j, sizeof(j)) == UC_ERR_OK) {
+        j += 1;
+        uc_mem_write(m->uc, jiffies_pa, &j, sizeof(j));
+    }
+}
+
+/* Convert kseg0/kseg1 VA to physical; return false for non-direct-mapped VA. */
+static bool va_to_pa_kseg(uint64_t va, uint64_t *pa_out)
+{
+    uint32_t va32 = (uint32_t)va;
+    if ((va32 >= 0x80000000u && va32 <= 0xBFFFFFFFu) ||
+        ((uint64_t)(int64_t)(int32_t)va32) == va) {
+        *pa_out = (uint64_t)(va32 & 0x1FFFFFFFu);
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Best-effort instruction read for hooks.
+ * Unicorn sometimes reports virtual PC while uc_mem_read expects mapped PA.
+ */
+static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *insn)
+{
+    if (uc_mem_read(uc, address, insn, 4) == UC_ERR_OK)
+        return true;
+
+    uint64_t pa = 0;
+    if (va_to_pa_kseg(address, &pa) && uc_mem_read(uc, pa, insn, 4) == UC_ERR_OK)
+        return true;
+
+    return false;
+}
+
 /* ------------------------------------------------------------------ */
 /* Unicorn hooks                                                         */
 /* ------------------------------------------------------------------ */
@@ -32,19 +76,20 @@ static void trace_hook(uc_engine *uc, uint64_t address,
     m->insn_count++;
 
     uint32_t insn = 0;
-    /* uc_mem_read uses physical addresses; strip kseg0/kseg1 bits */
-    uc_mem_read(uc, address & 0x1FFFFFFFu, &insn, 4);
+    if (!read_insn_best_effort(uc, address, &insn))
+        insn = 0xFFFFFFFFu;
 
     /* Read a few key registers for context */
     uint32_t pc = (uint32_t)address;
-    uint32_t at=0, v0=0, a0=0, sp=0, ra=0;
+    uint64_t at=0, v0=0, a0=0, sp=0, ra=0;
     uc_reg_read(uc, UC_MIPS_REG_AT, &at);
     uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
     uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
     uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
     uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
 
-    fprintf(stderr, "[T] %08X: %08X  at=%08X v0=%08X a0=%08X sp=%08X ra=%08X\n",
+    fprintf(stderr, "[T] %08X: %08X  at=%016" PRIX64 " v0=%016" PRIX64
+                    " a0=%016" PRIX64 " sp=%016" PRIX64 " ra=%016" PRIX64 "\n",
             pc, insn, at, v0, a0, sp, ra);
 }
 
@@ -70,12 +115,13 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     (void)size; (void)user_data;
 
     uint32_t insn = 0;
-    uc_mem_read(uc, address & 0x1FFFFFFFu, &insn, 4);
+    if (!read_insn_best_effort(uc, address, &insn))
+        return;
 
     /* MFC0 $rt, $15 (PRId) */
     if ((insn & 0xFFE0FFFFu) == 0x40007800u) {
         uint32_t rt = (insn >> 16) & 0x1F;
-        uint32_t prid = VR4131_PRID;
+        uint64_t prid = VR4131_PRID;
         /* UC_MIPS_REG_0 + rt gives the correct register enum for GPR $rt */
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &prid);
         uint64_t next_pc = address + 4;
@@ -90,12 +136,12 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 static bool insn_invalid_hook(uc_engine *uc, void *user_data)
 {
     (void)user_data;
-    uint32_t pc = 0;
+    uint64_t pc = 0;
     uc_reg_read(uc, UC_MIPS_REG_PC, &pc);
 
     uint32_t insn = 0;
-    if (uc_mem_read(uc, pc, &insn, 4) != UC_ERR_OK) {
-        fprintf(stderr, "[CPU] Cannot read insn at PC=0x%08X\n", pc);
+    if (!read_insn_best_effort(uc, pc, &insn)) {
+        fprintf(stderr, "[CPU] Cannot read insn at PC=0x%016" PRIX64 "\n", pc);
         return false;
     }
 
@@ -104,7 +150,7 @@ static bool insn_invalid_hook(uc_engine *uc, void *user_data)
         return true;
 
     /* Unknown instruction — log and stop */
-    fprintf(stderr, "[CPU] Illegal instruction PC=0x%08X insn=0x%08X\n",
+    fprintf(stderr, "[CPU] Illegal instruction PC=0x%016" PRIX64 " insn=0x%08X\n",
             pc, insn);
     return false;
 }
@@ -158,7 +204,7 @@ machine_t *machine_create(const machine_config_t *cfg)
     uc_ctl_set_cpu_model(m->uc, UC_CPU_MIPS64_VR5432);
 
     /* Set CP0 Status for reset state: BEV=1 (boot vectors), ERL=1 */
-    uint32_t status = 0x00400004u;
+    uint64_t status = 0x00400004u;
     uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
     bcu_init(&m->bcu);
     cmu_init(&m->cmu);
@@ -205,18 +251,25 @@ machine_t *machine_create(const machine_config_t *cfg)
          * The cmdline string (if any) is placed at a well-known low-SDRAM
          * address (0x00000200) so prom_init can find it.
          */
-        uint32_t a0 = 0, a1 = 0;
+        uint64_t a0 = 0, a1 = 0;
         if (cfg->cmdline && cfg->cmdline[0]) {
             const char *cl = cfg->cmdline;
-            uint32_t   cl_pa = 0x00000200u;   /* low SDRAM, safely below kernel text */
+            uint32_t   cl_pa = 0x00000200u;   /* physical backing in low SDRAM */
+            uint32_t   cl_va = 0xA0000200u;   /* kseg1 virtual pointer seen by kernel */
+            const char *arg0 = "be300";
+            uint32_t arg0_pa = 0x00000240u;
+            uint32_t arg0_va = 0xA0000240u;
             uc_mem_write(m->uc, cl_pa, cl, strlen(cl) + 1);
-            /* argv[0] pointer also written to SDRAM at cl_pa - 4 */
-            uint32_t argv0_pa = cl_pa - 4u;
-            uc_mem_write(m->uc, argv0_pa, &cl_pa, 4);
-            a0 = 1;
-            a1 = argv0_pa;
+            uc_mem_write(m->uc, arg0_pa, arg0, strlen(arg0) + 1);
+            /* Build argv[] in RAM and pass virtual address in $a1. */
+            uint32_t argv_pa = 0x000001F0u;
+            uint32_t argv_va = 0xA00001F0u;
+            uint32_t argv_words[3] = { arg0_va, cl_va, 0 };
+            uc_mem_write(m->uc, argv_pa, argv_words, sizeof(argv_words));
+            a0 = 2;
+            a1 = mips_sext(argv_va);
         }
-        uint32_t a2 = 0, a3 = 0;
+        uint64_t a2 = 0, a3 = 0;
         uc_reg_write(m->uc, UC_MIPS_REG_A0, &a0);
         uc_reg_write(m->uc, UC_MIPS_REG_A1, &a1);
         uc_reg_write(m->uc, UC_MIPS_REG_A2, &a2);
@@ -227,25 +280,19 @@ machine_t *machine_create(const machine_config_t *cfg)
          * BEV=0 (normal exception vectors), EXL=0, ERL=0, KSU=00 (kernel).
          * IM bits all enabled so the kernel can configure them itself.
          */
-        uint32_t kstatus = 0x0000FF00u; /* IM7-IM0 all set, no EXL/ERL/BEV */
+        uint64_t kstatus = 0x0000FF00u; /* IM7-IM0 all set, no EXL/ERL/BEV */
         uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &kstatus);
 
         /*
-         * Pre-fill BCU clock registers to match real BE-300 hardware.
-         * The linux4.be kernel reads CLKSPEEDREG during prom_init to
-         * compute PClock and TClock; a zero value causes 0 Hz clocks and
-         * potential divide-by-zero in loops_per_jiffy.
+         * Pre-fill BCU CLKSPEEDREG for VR4131-style encoding:
+         *   - CLKSP   bits [4:0]  : core clock step
+         *   - VTDIV   bits [10:8] : VT clock divisor selector (must be non-zero)
+         *   - TDIVMODE bit  [12]  : 0=/2, 1=/4
          *
-         * BE-300 hardware values (from VR4131 blog post / CyaCE config):
-         *   PClock = 165888000 Hz  (NEC VR4131 @ 165.888 MHz)
-         *   TClock =  41472000 Hz  (PClock / 4)
-         *
-         * CLKSPEEDREG encoding (BCU §7.2):
-         *   Bits [7:5] = TCLKDIV = 2  → TClock = PClock / 2^2 = PClock/4
-         *   Bits [4:0] = CPUCLK  = 10 → PClock = (10+8)*2 * 4608000 = 165888000
-         *   Value: (2 << 5) | 10 = 0x004A
+         * The previous value (0x004A) left VTDIV=0 and linux4.be executed a
+         * guarded DIVU with divisor 0, triggering BREAK.
          */
-        m->bcu.clkspeedreg = 0x004Au;
+        m->bcu.clkspeedreg = 0x1108u; /* TDIV=/4, VTDIV=1, CLKSP=8 */
 
         /* Verify entry-point bytes are correctly loaded */
         {
@@ -315,9 +362,21 @@ void machine_run(machine_t *m)
         if (err != UC_ERR_OK) {
             uint64_t bad_pc = 0;
             uc_reg_read(m->uc, UC_MIPS_REG_PC, &bad_pc);
+            uint64_t status = 0;
+            uint64_t sp = 0, ra = 0;
+            uint32_t insn = 0;
+            uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
+            uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(m->uc, UC_MIPS_REG_RA, &ra);
+            if (!read_insn_best_effort(m->uc, bad_pc, &insn))
+                insn = 0xFFFFFFFFu;
             fprintf(stderr,
                     "[MACHINE] uc_emu_start error at PC=0x%016" PRIX64 ": %s\n",
                     bad_pc, uc_strerror(err));
+            fprintf(stderr,
+                    "[MACHINE] State: STATUS=0x%016" PRIX64
+                    " SP=0x%016" PRIX64 " RA=0x%016" PRIX64 " INSN=0x%08X\n",
+                    status, sp, ra, insn);
             m->running = false;
             break;
         }
@@ -328,6 +387,7 @@ void machine_run(machine_t *m)
         /* Advance RTC: treat one batch as ~1 ms worth of ticks.
          * The VR4131 RTC runs at ~32.768 kHz; 33 ticks ≈ 1 ms. */
         rtc_tick(&m->rtc, 33);
+        tick_jiffies_hack(m);
     }
 
     fprintf(stderr, "[MACHINE] Stopped after %" PRIu64 " instructions\n",
