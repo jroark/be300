@@ -1,0 +1,150 @@
+Disclaimer!
+All information here is obtained in an experimental way and cannot be guaranteed to be correct. Use it on your own risk.
+
+All hardware specs are already listed here so I won't repeat them. Just want to mention two things. First, BE-300 is much closer to conventional PC than most other (especially old) PDAs. Casio used NAND-flash memory there, which is cheaper than NOR memory but lacks the possibility to execute code directly from it. You can think of NAND-memory as of "hard-drive" rather than ROM, which means that code should be loaded into RAM before you can execute it. No execute-in-place. Because of this, such architecture requires real ROM (analogous to PC's BIOS) to boot.
+
+It looks like BE-300 has 16K of ROM (masked?) at 0xBFC00000-0xBFC03FFF. But the code there is really strange. It even looks like Casio hides real ROM after boot and exposes the fake one. Maybe I'm wrong though...
+
+Second, BE-300 has custom chip for handling peripherial devices, such as touch-screen or compact flash socket. Even a serial port by some unknown reason uses this chip while Vr4131 CPU has its own serial port implementation.
+
+BE-300 video memory starts from address 0xAA200000. Each pixel is represented by two bytes. Bits 15-11 are responsible for red color, bits 10-5 are responsible for green color, and bits 4-0 are responsible for blue color. Each line takes 512 bytes of memory (though only 240 * 2 = 480 bytes are really used). So if you want to change the 5th pixel in 7th row (both are zero-based) you will need to use memory at
+    0xAA200000 + 7 * 512 + 5 * 2 = 0xAA200E0A     (and 0xAA200E0B)
+
+This page describes how hardware interrupts are handled inside Windows CE. Only IRQ0 and timer IRQ are processed. If any of the IRQ1-IRQ4 occurs BE tries to disable it.
+
+First thing that both interrupt handers (IRQ0 and Timer) do is writing 1 to three 32-bit registers: 0xAA001120, 0xAA00112C, and 0xAA001B20. Probably some kind of interrupt acknowledgement. Then in case of IRQ0 BE calls appropriate handler based on the value in System Interrupt Registers - SYSINT1REG (0xAF000080) and SYSINT2REG (0xAF0000A0). On my BE only four handlers are installed:
+    SYSINT1REG bit 0 (Battery interrupt request)
+    SYSINT1REG bit 1 (Power switch interrupt request)
+    SYSINT1REG bit 3 (Elapsed Time timer interrupt request)
+    SYSINT1REG bit 8 (GIU (higher/lower) interrupt request)
+
+
+    GIU Interrupts
+
+In case of GIU interrupt BE does similar to IRQ0 thing, which is calling a handler based on the value in interrupt mask register. In this case it's GIU Interrupt Lower Register - GIUINTLREG (0xAF000088). Again, not all handlers are defined, just six of them:
+    GIU Intr 0
+    GIU Intr 1
+    GIU Intr 7
+    GIU Intr 9
+    GIU Intr A
+    GIU Intr B
+
+GIU interrupts are heavily cascaded. For example, GIU Intr 0 is cascaded again based on the value in register 0xAA000004, and while bit 0 in this register means PCMCIA interrupt and bit 1 generates SYSINTR_KEYBOARD, bit 2 makes BE cascade even more based on register 0xAA001040.
+
+
+    Interrupt handling in BE-300
+
+W[xxxxxxxx]
+
+: word (32-bit)
+
+H[xxxxxxxx]
+
+: half-word (16-bit)
+
+B[xxxxxxxx]
+
+: byte (8-bit)
+
+IRQ0:
+
+W[AA00112C] = 1
+W[AA001120] = 1
+W[AA001B2C] = 1
+
+switch SYSINT1REG (AF000080):
+
+bit 0: Battery IRQ
+bit 1: Power Switch IRQ
+bit 3: Elapsed Timer IRQ
+bit 8: GIU IRQ
+
+
+GIU IRQ:
+
+switch GIUINTLREG (AF000088):
+
+bit 0: GIRQ0
+bit 1: GIRQ1
+bit 7: GIRQ7
+bit 9: GIRQ9
+bit A: GIRQA
+bit B: GIRQB
+
+GIRQ0:
+
+H[AF000148] = 1 (clear interrupt flag)
+
+switch W[AA000004]:
+
+bit 0: GIRQ0-0
+bit 1: GIRQ0-1
+bit 2: GIRQ0-2
+bit 4: GIRQ0-4
+bit 6: GIRQ0-6
+bit 7: GIRQ0-7
+bit 8: GIRQ0-8
+bit 9: GIRQ0-9
+bit C: GIRQ0-C
+bit 10: GIRQ0-10
+
+GIRQ0-0:
+
+if (H[AA00A03C] & 0x0022):
+
+W[AA000010] &= ~0x08
+return 0x15 (SYSINTR_PCMCIA_STATE)
+
+if (H[AA00A03C] & 0x0001):
+
+W[AA000010] &= ~0x08
+return 0x17 (SYSINTR_PCMCIA_LEVEL)
+
+else:
+
+return 0 (SYSINTR_NOP)
+
+GIRQ0-1:
+
+W[AA000014] &= ~0x08
+H[AF00008C] &= ~0x02
+(disable PowerSW interrupt?)
+return 0x10 (SYSINTR_KEYBOARD)
+
+GIRQ0-2:
+
+switch H[AA001040]:
+
+bit 0: GIRQ0-2-0
+bit 2: GIRQ0-2-2
+bit 4: GIRQ0-2-4
+
+GIRQ0-4:
+
+intr = H[AA008004] (byte 0 - pending interrupts)
+intr &= (intr >> 8) (byte 1 - interrupt mask)
+
+switch (intr):
+
+bit 0: GIRQ0-4-0
+bit 4: GIRQ0-4-4
+
+GIRQ0-9:
+
+intr = W[AA000304] (byte 0 - pending interrupts)
+intr &= (intr >> 8) (byte 1 - interrupt mask)
+
+if (intr & 0x5C):
+
+W[AA000304] &= 0xA300 (~5C00 & FF00)
+return 0x11 (SYSINTR_TOUCH)
+
+if (intr & 0x01):
+
+W[AA000304] &= 0xFE00 (~0100 & FF00)
+return 0x18 (SYSINTR_TOUCH_CHANGED)
+
+else:
+
+return 0 (SYSINTR_NOP)
+
