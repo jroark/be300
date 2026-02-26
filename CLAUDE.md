@@ -57,40 +57,46 @@ Freeing unused kernel memory: 112k freed          ← last line
 [CHECKPOINT] prepare_namespace
 [CHECKPOINT] run_init_process (entry)   a0="/sbin/init"
 [CHECKPOINT] create_elf_tables (entry)
-[TLB_INJECT] EPC=0x800015B0 (multiple intno=27 storms)
-[CHECKPOINT] do_page_fault (entry)
-← STUCK: repeated TLBS injections loop back to run_init_process and eventually
-         crash with UC_ERR_READ_UNMAPPED while fetching the exception vector.
+[EXC_SUSPEND] reason=tlb_store PC=0x800015B4
+[INTR27] STATUS=0x1000FF01 PC=0x800015B4 pending_excode=0 pending_epc=0x00000000
+← STUCK: endless intno=27 (TLB store refill) storms at PC=0x800015B4 while the
+         syscall never retires and no page-fault handler ever fires.
 ```
 
-`af_unix_init`, `packet_init`, `prepare_namespace`, and `run_init_process` now fire.
-The remaining blocker occurs after `create_elf_tables()` when the syscall never
-returns to user space and execution keeps re-entering the syscall site at
-0x800015B0 with intno=27 (TLB store misses).
+`af_unix_init`, `packet_init`, `prepare_namespace`, and `run_init_process` all
+fire. The remaining blocker occurs after `create_elf_tables()` when the execve
+syscall never returns to user space and execution keeps re-entering the syscall
+site at 0x800015B0. The new instrumentation shows that each intno=27 arrives
+with `pending_excode=0`, so the kernel is looping entirely inside the TLB
+refill handler without ever escalating to `do_page_fault`.
 
 ---
 
 ## Confirmed Root Cause of Current Blocker (2026‑02‑26)
 
 The RCU/timer issue is fixed; initcalls complete and `/sbin/init` is located.
-The new blocker is the syscall exit path for `run_init_process`:
+`run_init_process` successfully invokes `create_elf_tables`, but the execve
+syscall never reaches user mode. With the new exception plumbing:
 
-- After `create_elf_tables`, the init thread should write the user-mode entry
-  point into CP0 EPC and execute ERET.
-- Instead, repeated intno=27 (TLB store miss) interrupts arrive at
-  `run_init_process+0x4`, keeping `pending_excode=8` alive while the kernel
-  handles page faults.
-- Our instrumentation shows `MTC0 EPC` only ever writes kernel addresses, so the
-  user entry never sticks. Eventually Unicorn faults at 0x80000180 with
-  `UC_ERR_READ_UNMAPPED` because TLBS injections are happening while the vector
-  is already running.
+- Manual TLBS reinjection has been removed. intno=27 now arrives with
+  `pending_excode=0`, so refills execute entirely inside the kernel’s TLB miss
+  handler.
+- `[PF_PROBE]` never fires and even the checkpoint hook on `do_page_fault`
+  remains silent, proving that the kernel never escalates the fault to the
+  high-level C handler. The fast refill path keeps trying (and failing) to fill
+  the entry.
+- `[MTC0_EPC]` still only records kernel EPC values (0x8000AE64,
+  0x800405C4, …). No kuseg EPC write is observed before the refill storm, so
+  `start_thread()` is never given a chance to install the user entry point.
+- The init thread loops forever at PC=0x800015B4 while intno=27 fires millions
+  of times and `pending_epc` remains zero, confirming we’re stuck in the refill
+  hardware path rather than the software page-fault path.
 
-**Key insights from probes:**
-- `[MTC0_EPC]` logs show EPC toggling between kernel addresses; no kuseg value
-  is written before the TLBS storm.
-- `[TLB_INJECT]` confirms we’re manually reinjecting TLBS to reach
-  `do_page_fault`, but we don’t yet restore the exception vector cleanly after
-  multiple nesting levels.
+**Most likely cause:** the refill handler is walking the page tables but never
+managing to produce a writable TLB entry (e.g., the PTE’s dirty bit never gets
+set or the emulator isn’t honoring the guest’s TLB writes). Until the refill
+completes, `/sbin/init` can’t be mapped and the syscall continues to hammer the
+same address.
 
 ---
 
@@ -125,19 +131,19 @@ The new blocker is the syscall exit path for `run_init_process`:
 
 ## Next Steps (Priority Order)
 
-1. **Vector mapping audit:** the UC_ERR_READ_UNMAPPED happens while refetching
-   0x80000180. Verify that SDRAM still covers this page after repeated TLBS
-   injections, and ensure we’re not remapping over it. If needed, hard-map the
-   exception page in machine_create.
-2. **Syscall/TLBS sequencing:** only inject TLBS when not already on the general
-   exception vector, or extend the save/restore stack so nested TLBS can unwind
-   cleanly and restore the pending SYSCALL context.
-3. **Track user EPC writes:** enhance the `[MTC0_EPC]` log to flag when a kuseg
-   address is written; if it never happens, inspect `start_thread()` in the
-   BE-300 kernel (see `kernels/kernel-2.6/`) to determine whether extra fixes
-   are needed.
-4. **Initramfs follow-up:** once `/sbin/init` runs, we’ll need a proper mipsel
-   initramfs (build via the Docker cross-dev image scripts).
+1. **Instrument the TLB refill handler:** add hooks on the exception vectors
+   (0x80000000, 0x80000080, 0x80000180) to log BadVAddr/EntryHi/EntryLo writes.
+   We need to see whether the kernel is attempting to write dirty/writable PTEs
+   and whether `tlbwi` is executing.
+2. **Trace guest TLB writes:** add hooks in `machine.c` that watch for mtc0 to
+   CP0 registers 0/2 and for the `tlbwi` instruction. Dump the values being
+   written so we can confirm the emulator sees valid PTEs and ASIDs.
+3. **Verify emulator TLB state:** use Unicorn’s `uc_ctl` APIs (or temporary
+   instrumentation) to query whether tlbwi actually updates internal mappings.
+   If not, we may need to patch Unicorn or emulate the refill by directly
+   mapping the physical page when the kernel writes a TLB entry.
+4. **Initramfs follow-up:** once `/sbin/init` finally runs, we’ll still need a
+   proper mipsel initramfs (build via the Docker cross-dev image scripts).
 
 ---
 
@@ -188,11 +194,13 @@ llvm-objdump -d --start-address=0x<VA> --stop-address=0x<VA+N> linux4be20040908/
 
    # Inside the container
    make -j$(nproc)
-   ./be300 --kernel linux4be20040908/vmlinux > build/docker_stdout.log \
-     2> build/docker_stderr.log
+   timeout 120s ./be300 --kernel linux4be20040908/vmlinux \
+     > build/docker_stdout.log 2> build/docker_stderr.log
    ```
    The image installs clang/meson/ninja plus mipsel cross-compilers. `PKG_CONFIG_PATH`
-   already points at `/work/third_party/unicorn-linux/lib/pkgconfig`.
+   already points at `/work/third_party/unicorn-linux/lib/pkgconfig`, and the
+   base packages now include `gdb`, `gdb-multiarch`, `strace`, and `ltrace` for
+   cross-debugging.
 
 2. **Unicorn for macOS vs. Linux:**
    - macOS hosts use the prepatched dylib under `third_party/unicorn/`.
