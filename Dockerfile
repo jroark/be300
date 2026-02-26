@@ -30,9 +30,13 @@ RUN apt-get update && apt-get install -y \
     vim \
     cmake \
     ninja-build \
+    meson \
     clang \
     lld \
     gdb \
+    libglib2.0-dev \
+    libpixman-1-dev \
+    libfdt-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install MIPS and MIPS64 cross-compilers (little-endian)
