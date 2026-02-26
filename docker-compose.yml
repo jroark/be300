@@ -1,0 +1,8 @@
+services:
+  mips-dev:
+    build: .
+    image: mips-cross-dev
+    volumes:
+      - .:/work
+    stdin_open: true
+    tty: true
