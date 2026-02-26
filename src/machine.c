@@ -16,6 +16,32 @@ static inline uint64_t mips_sext(uint32_t va32) {
     return (uint64_t)(int32_t)va32;
 }
 
+static void save_pending_exception(machine_t *m)
+{
+    if (m->has_saved_exception)
+        return;
+    m->saved_pending_epc          = m->pending_epc;
+    m->saved_pending_excode       = m->pending_excode;
+    m->saved_pending_cause        = m->pending_cause;
+    m->saved_epc_was_written      = m->epc_was_written;
+    m->saved_pending_cause_served = m->pending_cause_served;
+    m->saved_pending_epc_served   = m->pending_epc_served;
+    m->has_saved_exception        = true;
+}
+
+static void restore_pending_exception(machine_t *m)
+{
+    if (!m->has_saved_exception)
+        return;
+    m->pending_epc          = m->saved_pending_epc;
+    m->pending_excode       = m->saved_pending_excode;
+    m->pending_cause        = m->saved_pending_cause;
+    m->epc_was_written      = m->saved_epc_was_written;
+    m->pending_cause_served = m->saved_pending_cause_served;
+    m->pending_epc_served   = m->saved_pending_epc_served;
+    m->has_saved_exception  = false;
+}
+
 static void update_irq_lines(machine_t *m)
 {
     /*
@@ -74,6 +100,10 @@ static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *ins
     return false;
 }
 
+/* CP0 Cause ExcCode values */
+#define MIPS_EXCCODE_TLBS 3u
+#define MIPS_EXCCODE_SYS  8u
+
 /* ------------------------------------------------------------------ */
 /* Unicorn hooks                                                         */
 /* ------------------------------------------------------------------ */
@@ -107,6 +137,31 @@ static void trace_hook(uc_engine *uc, uint64_t address,
             pc, insn, at, v0, a0, sp, ra);
 }
 
+static void inject_tlb_store_exception(machine_t *m, uint64_t pc)
+{
+    uint64_t fault_epc = (pc >= 4u) ? pc - 4u : pc;
+    if (m->pending_excode != 0)
+        save_pending_exception(m);
+    m->pending_epc          = fault_epc;
+    m->pending_excode       = MIPS_EXCCODE_TLBS;
+    m->pending_cause        = (uint32_t)(MIPS_EXCCODE_TLBS << 2);
+    m->epc_was_written      = false;
+    m->pending_cause_served = false;
+    m->pending_epc_served   = false;
+
+    uint64_t status = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
+    status |= 0x2u;
+    uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+    uint64_t vec = mips_sext(0x80000180u);
+    uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
+
+    fprintf(stderr,
+            "[TLB_INJECT] EPC=0x%08" PRIX64 " STATUS=0x%08" PRIX64 "\n",
+            (uint64_t)(uint32_t)fault_epc, status);
+}
+
 /*
  * PRId intercept hook.
  *
@@ -132,6 +187,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     static uint32_t mfc0_epc_seen_log = 0;
     static uint32_t mfc0_cause_inject_log = 0;
     static uint32_t mfc0_epc_inject_log = 0;
+    static uint32_t mtc0_epc_sys_log = 0;
 
     uint32_t insn = 0;
     if (!read_insn_best_effort(uc, address, &insn))
@@ -271,6 +327,26 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t val = 0;
         uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &val);
+        if (m->pending_excode == MIPS_EXCCODE_SYS &&
+            mtc0_epc_sys_log < 96) {
+            uint64_t sp = 0, ra = 0, status_now = 0;
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status_now);
+            const char *mode = (val & 0xFFFFFFFF80000000ull) == 0xFFFFFFFF80000000ull
+                               ? "kseg" : "kuseg";
+            fprintf(stderr,
+                    "[MTC0_EPC] pending_excode=%u old_epc=0x%08" PRIX64
+                    " new_epc=0x%08" PRIX64 " (%s) PC=0x%08" PRIX64
+                    " STATUS=0x%08" PRIX64 " sp=0x%08" PRIX64
+                    " ra=0x%08" PRIX64 " served_epc=%u epc_written=%u\n",
+                    m->pending_excode, (uint64_t)(uint32_t)m->pending_epc,
+                    (uint64_t)(uint32_t)val, mode,
+                    (uint64_t)(uint32_t)address, status_now,
+                    sp, ra, m->pending_epc_served ? 1u : 0u,
+                    m->epc_was_written ? 1u : 0u);
+            mtc0_epc_sys_log++;
+        }
         m->pending_epc      = val;   /* capture return address written by exit path */
         m->epc_was_written  = true;  /* arm the ERET intercept for the next ERET    */
         uint64_t next_pc = address + 4;
@@ -302,17 +378,22 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      */
     if (insn == 0x42000018u && m->pending_excode != 0) {
         static uint32_t eret_pending_log = 0;
-        if (eret_pending_log < 64) {
+        uint64_t status_snapshot = 0;
+        uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status_snapshot);
+        if (eret_pending_log < 96) {
             fprintf(stderr,
-                    "[ERET] pending_excode=%u epc_written=%u pending_epc=0x%08" PRIX64 " PC=0x%08" PRIX64 "\n",
+                    "[ERET] pending_excode=%u epc_written=%u pending_epc=0x%08" PRIX64
+                    " PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
+                    " served_epc=%u served_cause=%u\n",
                     m->pending_excode, m->epc_was_written ? 1u : 0u,
-                    (uint64_t)(uint32_t)m->pending_epc, (uint64_t)(uint32_t)address);
+                    (uint64_t)(uint32_t)m->pending_epc, (uint64_t)(uint32_t)address,
+                    status_snapshot,
+                    m->pending_epc_served ? 1u : 0u,
+                    m->pending_cause_served ? 1u : 0u);
             eret_pending_log++;
         }
         if (m->epc_was_written) {
-            uint64_t status = 0;
-            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
-            status &= ~(uint64_t)0x2u;   /* clear EXL */
+            uint64_t status = status_snapshot & ~(uint64_t)0x2u;   /* clear EXL */
             uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
             uint64_t epc = m->pending_epc;
@@ -326,6 +407,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             m->epc_was_written      = false;
             m->pending_cause_served = false;
             m->pending_epc_served   = false;
+            restore_pending_exception(m);
             return;
         }
 
@@ -340,6 +422,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         m->epc_was_written      = false;
         m->pending_cause_served = false;
         m->pending_epc_served   = false;
+        restore_pending_exception(m);
     }
 }
 
@@ -366,14 +449,12 @@ static void prid_hook(uc_engine *uc, uint64_t address,
  * (SYSCALL) when we are in an active SYSCALL entry.
  */
 
-/* CP0 Cause ExcCode for SYSCALL (MIPS spec table 5-1) */
-#define MIPS_EXCCODE_SYS  8u
-
 static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
 {
     machine_t *m = user_data;
     static uint32_t intr_log_count[64];
     static uint32_t syscall_entry_log_count = 0;
+    static uint32_t intr_log_count_27_detail = 0;
 
     uint64_t pc = 0, status = 0;
     uc_reg_read(uc, UC_MIPS_REG_PC,         &pc);
@@ -404,6 +485,22 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             intr_log_count[idx]++;
             if (intr_log_count[idx] == 8u)
                 fprintf(stderr, "[INTR] intno=%u further logs suppressed\n", intno);
+        }
+        if (intno == 27u && intr_log_count_27_detail < 32u) {
+            fprintf(stderr,
+                    "[INTR27] STATUS=0x%08" PRIX64 " PC=0x%08" PRIX64
+                    " pending_excode=%u pending_epc=0x%08" PRIX64
+                    " pending_cause=0x%08X epc_written=%u served_epc=%u served_cause=%u\n",
+                    status, (uint64_t)(uint32_t)pc,
+                    m->pending_excode, (uint64_t)(uint32_t)m->pending_epc,
+                    m->pending_cause, m->epc_was_written ? 1u : 0u,
+                    m->pending_epc_served ? 1u : 0u,
+                    m->pending_cause_served ? 1u : 0u);
+            intr_log_count_27_detail++;
+        }
+        if (intno == 27u) {
+            inject_tlb_store_exception(m, pc);
+            return;
         }
         /*
          * Async interrupt (CP0 timer, external IRQ, …).  QEMU has already set
@@ -502,22 +599,44 @@ static void inject_hw_irq_if_pending(machine_t *m)
         uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status64);
         uint32_t status = (uint32_t)status64;
         if ((status & 0x2u) == 0) {
-            if (log_stale_pending < 16) {
-                uint64_t pc = 0;
-                uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
-                fprintf(stderr,
-                        "[IRQ_GATE] stale pending_excode=%u cleared (EXL=0) PC=0x%08" PRIX64
-                        " STATUS=0x%08X pending_epc=0x%08" PRIX64 "\n",
-                        m->pending_excode, (uint64_t)(uint32_t)pc, status,
-                        (uint64_t)(uint32_t)m->pending_epc);
-                log_stale_pending++;
+            if (m->pending_excode == 1u) {
+                if (log_stale_pending < 32) {
+                    uint64_t pc = 0;
+                    uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+                    fprintf(stderr,
+                            "[IRQ_GATE] stale pending_excode=%u cleared (EXL=0) PC=0x%08" PRIX64
+                            " STATUS=0x%08X pending_epc=0x%08" PRIX64
+                            " epc_written=%u served_epc=%u served_cause=%u\n",
+                            m->pending_excode, (uint64_t)(uint32_t)pc, status,
+                            (uint64_t)(uint32_t)m->pending_epc,
+                            m->epc_was_written ? 1u : 0u,
+                            m->pending_epc_served ? 1u : 0u,
+                            m->pending_cause_served ? 1u : 0u);
+                    log_stale_pending++;
+                }
+                m->pending_epc          = 0;
+                m->pending_excode       = 0;
+                m->pending_cause        = 0;
+                m->epc_was_written      = false;
+                m->pending_cause_served = false;
+                m->pending_epc_served   = false;
+            } else {
+                static uint32_t log_syscall_exl_drop = 0;
+                if (log_syscall_exl_drop < 32) {
+                    uint64_t pc = 0;
+                    uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+                    fprintf(stderr,
+                            "[IRQ_GATE] syscall_exl_drop pending_excode=%u PC=0x%08" PRIX64
+                            " STATUS=0x%08X pending_epc=0x%08" PRIX64
+                            " epc_written=%u served_epc=%u served_cause=%u\n",
+                            m->pending_excode, (uint64_t)(uint32_t)pc, status,
+                            (uint64_t)(uint32_t)m->pending_epc,
+                            m->epc_was_written ? 1u : 0u,
+                            m->pending_epc_served ? 1u : 0u,
+                            m->pending_cause_served ? 1u : 0u);
+                    log_syscall_exl_drop++;
+                }
             }
-            m->pending_epc          = 0;
-            m->pending_excode       = 0;
-            m->pending_cause        = 0;
-            m->epc_was_written      = false;
-            m->pending_cause_served = false;
-            m->pending_epc_served   = false;
         }
     }
 
