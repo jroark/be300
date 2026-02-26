@@ -1,11 +1,18 @@
 CC      = clang
 # Prefer the pip-installed unicorn 2.1.4 over the apt 2.0.1 package.
 # PKG_CONFIG_PATH is set to pick up /usr/local/lib/pkgconfig/unicorn.pc first.
+LOCAL_UNICORN_DIR := $(CURDIR)/third_party/unicorn
+ifeq ($(wildcard $(LOCAL_UNICORN_DIR)/libunicorn.dylib),)
+DEFAULT_UNICORN_LIBDIR := $(shell pkg-config --variable=libdir unicorn)
+else
+DEFAULT_UNICORN_LIBDIR := $(LOCAL_UNICORN_DIR)
+endif
+UNICORN_LIBDIR ?= $(DEFAULT_UNICORN_LIBDIR)
+
 CFLAGS  = -std=c11 -Wall -Wextra -Isrc -g -O2 \
           $(shell pkg-config --cflags unicorn)
-UC_LIBDIR = $(shell pkg-config --variable=libdir unicorn)
-LDFLAGS = $(shell pkg-config --libs unicorn) \
-          -Wl,-rpath,$(UC_LIBDIR)
+LDFLAGS = -L$(UNICORN_LIBDIR) -lunicorn \
+          -Wl,-rpath,$(UNICORN_LIBDIR)
 
 OBJS = build/main.o \
        build/machine.o \
