@@ -30,7 +30,7 @@ Push with: `git push -u origin claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
 
 ---
 
-## Current Boot Status (as of 2026-02-25)
+## Current Boot Status (as of 2026-02-26)
 
 ### Last confirmed stdout output
 ```
@@ -38,7 +38,12 @@ Linux version 2.6.8.1 ...
 Calibrating delay loop... 99.84 BogoMIPS
 fb0: Casio BE-x00 frame buffer device
 RAMDISK / PPP / NFTL init
-NET: Registered protocol family 2        ← last line
+NET: Registered protocol family 2
+IP: routing cache hash table of 512 buckets, 4Kbytes
+TCP: Hash tables configured (established 512 bind 512)
+RAMDISK: Compressed image found at block 0
+VFS: Mounted root (ext2 filesystem) readonly.
+Freeing unused kernel memory: 112k freed          ← last line
 ```
 
 ### Checkpoint evidence (from latest run)
@@ -48,46 +53,44 @@ NET: Registered protocol family 2        ← last line
 [CHECKPOINT] do_pre_smp_initcalls
 [CHECKPOINT] do_basic_setup
 [CHECKPOINT] do_initcalls
-[INITCALL] #01–#58  (inet_init = #58 = 0x80285ea0)
-[CHECKPOINT] inet_init: JAL sock_register
-[CHECKPOINT] inet_init: JAL inet_register_protosw (loop)
-← STUCK: PC=0x80000180 for 1000M+ instructions
+[INITCALL] #01–#60  (packet_init = #60 = 0x802864d8)
+[CHECKPOINT] prepare_namespace
+[CHECKPOINT] run_init_process (entry)   a0="/sbin/init"
+[CHECKPOINT] create_elf_tables (entry)
+[TLB_INJECT] EPC=0x800015B0 (multiple intno=27 storms)
+[CHECKPOINT] do_page_fault (entry)
+← STUCK: repeated TLBS injections loop back to run_init_process and eventually
+         crash with UC_ERR_READ_UNMAPPED while fetching the exception vector.
 ```
 
-`af_unix_init`, `packet_init`, `arp_init`, `ip_init`, `tcp_init`, `prepare_namespace`,
-`run_init_process` — **none of these ever fire**.
+`af_unix_init`, `packet_init`, `prepare_namespace`, and `run_init_process` now fire.
+The remaining blocker occurs after `create_elf_tables()` when the syscall never
+returns to user space and execution keeps re-entering the syscall site at
+0x800015B0 with intno=27 (TLB store misses).
 
 ---
 
-## Confirmed Root Cause of Current Blocker
+## Confirmed Root Cause of Current Blocker (2026‑02‑26)
 
-`inet_register_protosw` tail-calls `synchronize_net` → `synchronize_kernel`
-→ `call_rcu` + **`wait_for_completion`**.
+The RCU/timer issue is fixed; initcalls complete and `/sbin/init` is located.
+The new blocker is the syscall exit path for `run_init_process`:
 
-`wait_for_completion` blocks the init thread until the RCU grace period completes.
-The grace period requires `rcu_check_callbacks` to be called from:
+- After `create_elf_tables`, the init thread should write the user-mode entry
+  point into CP0 EPC and execute ERET.
+- Instead, repeated intno=27 (TLB store miss) interrupts arrive at
+  `run_init_process+0x4`, keeping `pending_excode=8` alive while the kernel
+  handles page faults.
+- Our instrumentation shows `MTC0 EPC` only ever writes kernel addresses, so the
+  user entry never sticks. Eventually Unicorn faults at 0x80000180 with
+  `UC_ERR_READ_UNMAPPED` because TLBS injections are happening while the vector
+  is already running.
 
-```
-timer_interrupt → do_timer → update_process_times → scheduler_tick → rcu_check_callbacks
-                                                                      → __tasklet_schedule
-ll_timer_interrupt (on return) → do_softirq → rcu tasklet → rcu_process_callbacks
-                                                           → complete() → wakes init
-```
-
-**Suspected issue:** `tick_jiffies_hack` (in `machine_run`) advances `jiffies` directly
-in RAM every batch, bypassing the kernel's timer interrupt handler.
-As a result `do_timer` / `scheduler_tick` / `rcu_check_callbacks` may never
-be called, or the call rate is too low to complete the grace period before the
-emulator run limit is hit.
-
-**RCU diagnostic probes added (multi-fire, up to 8 each):**
-| Address    | Symbol                 |
-|------------|------------------------|
-| 0x801ab590 | `wait_for_completion`  |
-| 0x800379a8 | `do_timer`             |
-| 0x800428b8 | `rcu_check_callbacks`  |
-| 0x80042780 | `rcu_process_callbacks`|
-| 0x8000eb30 | `timer_interrupt`      |
+**Key insights from probes:**
+- `[MTC0_EPC]` logs show EPC toggling between kernel addresses; no kuseg value
+  is written before the TLBS storm.
+- `[TLB_INJECT]` confirms we’re manually reinjecting TLBS to reach
+  `do_page_fault`, but we don’t yet restore the exception vector cleanly after
+  multiple nesting levels.
 
 ---
 
@@ -122,30 +125,19 @@ emulator run limit is hit.
 
 ## Next Steps (Priority Order)
 
-1. **Run RCU probes** — confirm `wait_for_completion` fires and whether
-   `timer_interrupt` / `rcu_check_callbacks` / `rcu_process_callbacks` are reached.
-
-2. **If `rcu_check_callbacks` fires but `rcu_process_callbacks` does not:**
-   - The tasklet is being scheduled but `do_softirq` isn't processing it.
-   - Check `do_softirq` condition in `ll_timer_interrupt` (0x8000edec).
-
-3. **If `timer_interrupt` fires but `rcu_check_callbacks` does not:**
-   - `scheduler_tick` may not be calling `rcu_check_callbacks` due to a condition
-     check failing (user_mode flag, preempt_count, etc.).
-
-4. **If neither `timer_interrupt` nor `do_timer` fire:**
-   - `inject_hw_irq_if_pending` may not be generating the right interrupt or
-     the kernel may be dispatching it to the wrong handler.
-   - Consider removing `tick_jiffies_hack` and letting the real timer interrupt
-     path handle jiffies via `do_timer`.
-
-5. **Once RCU unblocks:** `af_unix_init`, `packet_init`, `prepare_namespace`
-   should fire. If they don't, check `do_softirq` path or task wakeup.
-
-6. **After initcalls complete:** `prepare_namespace` will try to mount root.
-   The kernel found an initrd but freed it ("looks like an initrd → freed 472k").
-   Need to provide a proper mipsel initramfs (use Docker cross-dev image to
-   build BusyBox + `create_initramfs.sh`).
+1. **Vector mapping audit:** the UC_ERR_READ_UNMAPPED happens while refetching
+   0x80000180. Verify that SDRAM still covers this page after repeated TLBS
+   injections, and ensure we’re not remapping over it. If needed, hard-map the
+   exception page in machine_create.
+2. **Syscall/TLBS sequencing:** only inject TLBS when not already on the general
+   exception vector, or extend the save/restore stack so nested TLBS can unwind
+   cleanly and restore the pending SYSCALL context.
+3. **Track user EPC writes:** enhance the `[MTC0_EPC]` log to flag when a kuseg
+   address is written; if it never happens, inspect `start_thread()` in the
+   BE-300 kernel (see `kernels/kernel-2.6/`) to determine whether extra fixes
+   are needed.
+4. **Initramfs follow-up:** once `/sbin/init` runs, we’ll need a proper mipsel
+   initramfs (build via the Docker cross-dev image scripts).
 
 ---
 
@@ -181,3 +173,42 @@ llvm-objdump -d --start-address=0x<VA> --stop-address=0x<VA+N> linux4be20040908/
   manual MIPS exception entry (EPC, EXL, vector redirect).
 - **PRId intercept:** `prid_hook` intercepts MFC0 PRId to return VR4131 value
   (0x0C80) so the kernel identifies the platform correctly.
+
+---
+
+## Development Workflow & Tooling
+
+1. **Work in Docker (Linux toolchain + Unicorn build):**
+   ```bash
+   # Build/update the container image
+   docker compose build mips-dev
+
+   # Drop into the dev shell
+   docker compose run --rm mips-dev /bin/bash
+
+   # Inside the container
+   make -j$(nproc)
+   ./be300 --kernel linux4be20040908/vmlinux > build/docker_stdout.log \
+     2> build/docker_stderr.log
+   ```
+   The image installs clang/meson/ninja plus mipsel cross-compilers. `PKG_CONFIG_PATH`
+   already points at `/work/third_party/unicorn-linux/lib/pkgconfig`.
+
+2. **Unicorn for macOS vs. Linux:**
+   - macOS hosts use the prepatched dylib under `third_party/unicorn/`.
+   - The container builds Unicorn 2.1.4 from source and installs it into
+     `third_party/unicorn-linux/` (Makefile auto-detects the `.so` there).
+
+3. **Logs & artifacts:**
+   - Always capture both stdout and stderr from emulator runs (`build/docker_*.log`).
+   - RCU/TLBS instrumentation prints to stderr; grep for `CHECKPOINT`, `TLB_INJECT`,
+     `MTC0_EPC`, etc.
+
+4. **Kernel sources:**
+   - `kernels/kernel-2.6/` holds the patched BE-300 kernel tree used to produce
+     `linux4be20040908/vmlinux`. Consult it when symbol hunting or adjusting
+     platform-specific code (`arch/mips/vr41xx/...`).
+
+5. **Commit etiquette:** every investigation (successful or not) gets its own
+   commit summarizing what happened, what was learned, and next steps, then
+   push to `claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`.
