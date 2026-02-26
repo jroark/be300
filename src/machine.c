@@ -489,7 +489,37 @@ static void inject_hw_irq_if_pending(machine_t *m)
     static uint32_t log_block_status = 0;
     static uint32_t log_block_im2 = 0;
     static uint32_t log_injected = 0;
+    static uint32_t log_stale_pending = 0;
     bool pending = icu_pending(&m->icu);
+
+    if (m->pending_excode != 0) {
+        /*
+         * Synthetic exception state should track EXL=1 while in-flight.
+         * If EXL is already clear, the guest has effectively returned from
+         * exception but we missed retirement bookkeeping; clear stale state.
+         */
+        uint64_t status64 = 0;
+        uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status64);
+        uint32_t status = (uint32_t)status64;
+        if ((status & 0x2u) == 0) {
+            if (log_stale_pending < 16) {
+                uint64_t pc = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+                fprintf(stderr,
+                        "[IRQ_GATE] stale pending_excode=%u cleared (EXL=0) PC=0x%08" PRIX64
+                        " STATUS=0x%08X pending_epc=0x%08" PRIX64 "\n",
+                        m->pending_excode, (uint64_t)(uint32_t)pc, status,
+                        (uint64_t)(uint32_t)m->pending_epc);
+                log_stale_pending++;
+            }
+            m->pending_epc          = 0;
+            m->pending_excode       = 0;
+            m->pending_cause        = 0;
+            m->epc_was_written      = false;
+            m->pending_cause_served = false;
+            m->pending_epc_served   = false;
+        }
+    }
 
     /* Only inject when no exception is already in flight */
     if (m->pending_excode != 0) {
@@ -1101,6 +1131,7 @@ void machine_run(machine_t *m)
 {
     m->running    = true;
     m->insn_count = 0;
+    int write_unmapped_recoveries = 0;
 
     fprintf(stderr, "[MACHINE] Starting execution at VA 0x%016" PRIX64 "\n",
             m->kernel_entry);
@@ -1135,6 +1166,48 @@ void machine_run(machine_t *m)
         if (err != UC_ERR_OK) {
             uint64_t bad_pc = 0;
             uc_reg_read(m->uc, UC_MIPS_REG_PC, &bad_pc);
+            if (err == UC_ERR_WRITE_UNMAPPED && write_unmapped_recoveries < 8) {
+                /*
+                 * Temporary recovery probe for first-userspace transition:
+                 * create_elf_tables() writes initial user-stack data and we
+                 * currently hit UC_ERR_WRITE_UNMAPPED.  Try mapping nearby
+                 * candidate blocks from key registers and retry.
+                 */
+                uint64_t v0 = 0, a0 = 0, t2 = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_V0, &v0);
+                uc_reg_read(m->uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(m->uc, UC_MIPS_REG_T2, &t2);
+                uint64_t candidates[3] = { v0, a0, t2 };
+                const char *names[3] = { "v0", "a0", "t2" };
+                bool mapped_any = false;
+
+                for (int i = 0; i < 3; i++) {
+                    uint64_t va = candidates[i];
+                    if (va < 0x1000u || va >= 0x80000000u)
+                        continue;
+                    uint64_t block = va & ~((uint64_t)0xFFFFF);
+                    uc_err me = uc_mem_map(m->uc, block, 0x100000, UC_PROT_ALL);
+                    if (me == UC_ERR_OK || me == UC_ERR_MAP) {
+                        if (!mapped_any) {
+                            fprintf(stderr,
+                                    "[MACHINE] write-unmapped recovery #%d at PC=0x%08" PRIX64 "\n",
+                                    write_unmapped_recoveries + 1,
+                                    (uint64_t)(uint32_t)bad_pc);
+                        }
+                        fprintf(stderr,
+                                "[MACHINE]   mapped block 0x%08" PRIX64 " via $%s=0x%08" PRIX64 "\n",
+                                (uint64_t)(uint32_t)block, names[i],
+                                (uint64_t)(uint32_t)va);
+                        mapped_any = true;
+                    }
+                }
+
+                if (mapped_any) {
+                    write_unmapped_recoveries++;
+                    continue;
+                }
+            }
+
             uint64_t status = 0;
             uint32_t insn = 0;
             uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status);

@@ -213,6 +213,7 @@ void bus_init(machine_t *m)
                 UC_HOOK_MEM_READ_UNMAPPED  |
                 UC_HOOK_MEM_WRITE_UNMAPPED |
                 UC_HOOK_MEM_FETCH_UNMAPPED |
-                UC_HOOK_MEM_WRITE_PROT,
+                UC_HOOK_MEM_WRITE_PROT     |
+                UC_HOOK_MEM_INVALID,
                 mem_fault_cb, m, 1, 0);
 }
