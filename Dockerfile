@@ -24,9 +24,15 @@ RUN apt-get update && apt-get install -y \
     cpio \
     pkg-config \
     python3 \
+    python3-pip \
     rsync \
     unzip \
     vim \
+    cmake \
+    ninja-build \
+    clang \
+    lld \
+    gdb \
     && rm -rf /var/lib/apt/lists/*
 
 # Install MIPS and MIPS64 cross-compilers (little-endian)
@@ -44,6 +50,9 @@ RUN apt-get update && apt-get install -y \
 
 # Set up work directory
 WORKDIR /work
+
+# Default pkg-config search path for the locally built Unicorn
+ENV PKG_CONFIG_PATH=/work/third_party/unicorn-linux/lib/pkgconfig
 
 # Default to bash
 CMD ["/bin/bash"]
