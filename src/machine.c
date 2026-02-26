@@ -137,27 +137,27 @@ static void trace_hook(uc_engine *uc, uint64_t address,
             pc, insn, at, v0, a0, sp, ra);
 }
 
-static void inject_tlb_store_exception(machine_t *m, uint64_t pc)
+static void suspend_pending_exception(machine_t *m,
+                                      const char *reason,
+                                      uint64_t pc)
 {
-    uint64_t fault_epc = (pc >= 4u) ? pc - 4u : pc;
-    m->pending_epc          = fault_epc;
-    m->pending_excode       = MIPS_EXCCODE_TLBS;
-    m->pending_cause        = (uint32_t)(MIPS_EXCCODE_TLBS << 2);
-    m->epc_was_written      = true;  /* return directly to fault site */
+    if (m->pending_excode == 0)
+        return;
+    save_pending_exception(m);
+    m->pending_epc          = 0;
+    m->pending_excode       = 0;
+    m->pending_cause        = 0;
+    m->epc_was_written      = false;
     m->pending_cause_served = false;
     m->pending_epc_served   = false;
-
-    uint64_t status = 0;
-    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
-    status |= 0x2u;
-    uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
-
-    uint64_t vec = mips_sext(0x80000180u);
-    uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
-
-    fprintf(stderr,
-            "[TLB_INJECT] EPC=0x%08" PRIX64 " STATUS=0x%08" PRIX64 "\n",
-            (uint64_t)(uint32_t)fault_epc, status);
+    static uint32_t suspend_log_count = 0;
+    if (suspend_log_count < 32) {
+        fprintf(stderr,
+                "[EXC_SUSPEND] reason=%s PC=0x%08" PRIX64 "\n",
+                reason ? reason : "unknown",
+                (uint64_t)(uint32_t)pc);
+        suspend_log_count++;
+    }
 }
 
 /*
@@ -503,11 +503,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             intr_log_count_27_detail++;
         }
         if (intno == 27u) {
-            if (m->pending_excode != 0 &&
-                m->pending_excode != MIPS_EXCCODE_TLBS)
-                save_pending_exception(m);
-            if (m->pending_excode != MIPS_EXCCODE_TLBS)
-                inject_tlb_store_exception(m, pc);
+            suspend_pending_exception(m, "tlb_store", pc);
             return;
         }
         /*
@@ -962,6 +958,32 @@ static void irq_probe_hook(uc_engine *uc, uint64_t address,
 }
 
 /* ------------------------------------------------------------------ */
+/* Page-fault probes                                                   */
+/* ------------------------------------------------------------------ */
+
+#define PF_PROBE_LIMIT 64
+static int pf_probe_count = 0;
+
+static void page_fault_probe_hook(uc_engine *uc, uint64_t address,
+                                  uint32_t size, void *user_data)
+{
+    (void)size; (void)user_data; (void)address;
+    if (pf_probe_count >= PF_PROBE_LIMIT)
+        return;
+    pf_probe_count++;
+    uint64_t regs = 0, write_flag = 0, badv = 0;
+    uc_reg_read(uc, UC_MIPS_REG_A0, &regs);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &write_flag);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &badv);
+    fprintf(stderr,
+            "[PF_PROBE] #%d badv=0x%08" PRIX64 " write=%u regs=0x%08" PRIX64 "\n",
+            pf_probe_count,
+            (uint64_t)(uint32_t)badv,
+            (unsigned)((write_flag & 1u) != 0),
+            (uint64_t)(uint32_t)regs);
+}
+
+/* ------------------------------------------------------------------ */
 /* ICU MSYSINT1 ETIME fixup                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1176,6 +1198,13 @@ machine_t *machine_create(const machine_config_t *cfg)
             uc_hook_add(m->uc, &hk, UC_HOOK_CODE, irq_probe_hook,
                         (void *)(uintptr_t)irq_probes[i].idx, va, va);
         }
+    }
+
+    /* Page-fault probe: log the first few do_page_fault invocations */
+    pf_probe_count = 0;
+    {
+        uint64_t va = mips_sext(0x80016ef0u);
+        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va, va);
     }
 
     /* ICU ETIME fixup: force-enable ETIME bit in MSYSINT1 after

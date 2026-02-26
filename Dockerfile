@@ -34,6 +34,9 @@ RUN apt-get update && apt-get install -y \
     clang \
     lld \
     gdb \
+    gdb-multiarch \
+    strace \
+    ltrace \
     libglib2.0-dev \
     libpixman-1-dev \
     libfdt-dev \
