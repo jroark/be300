@@ -296,6 +296,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
 {
     machine_t *m = user_data;
+    static uint32_t intr_log_count[64];
 
     uint64_t pc = 0, status = 0;
     uc_reg_read(uc, UC_MIPS_REG_PC,         &pc);
@@ -306,11 +307,27 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
      * When the hook fires, Unicorn has already advanced PC to SYSCALL+4;
      * the real EPC (address of the syscall instruction) is PC-4.
      *
-     * Log all interrupt events during development; only act on SYSCALL (17).
+     * Log early interrupt events during development; only act when the event
+     * looks like a SYSCALL (intno 17 on Unicorn 2.1.x, intno 26 on some
+     * older Unicorn builds).
      */
-    if (intno != 17u) {
-        fprintf(stderr, "[INTR] intno=%u PC=0x%016" PRIX64
-                        " STATUS=0x%016" PRIX64 "\n", intno, pc, status);
+    bool likely_syscall = false;
+    if (intno == 17u || intno == 26u) {
+        uint32_t maybe_sys = 0;
+        if (pc >= 4u && read_insn_best_effort(uc, pc - 4u, &maybe_sys) &&
+            maybe_sys == 0x0000000Cu)
+            likely_syscall = true;
+    }
+
+    if (!likely_syscall) {
+        uint32_t idx = intno < 64u ? intno : 63u;
+        if (intr_log_count[idx] < 8u) {
+            fprintf(stderr, "[INTR] intno=%u PC=0x%016" PRIX64
+                            " STATUS=0x%016" PRIX64 "\n", intno, pc, status);
+            intr_log_count[idx]++;
+            if (intr_log_count[idx] == 8u)
+                fprintf(stderr, "[INTR] intno=%u further logs suppressed\n", intno);
+        }
         /*
          * Async interrupt (CP0 timer, external IRQ, …).  QEMU has already set
          * EXL=1, Cause, EPC and routed PC to the exception vector.  Reset the
@@ -328,7 +345,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     }
 
     /*
-     * SYSCALL (intno 17): perform manual MIPS exception entry.
+     * SYSCALL: perform manual MIPS exception entry.
      *
      *   EPC  = PC - 4  (address of the syscall instruction itself)
      *   EXL  = 1       (Status bit 1 — enter exception mode)
