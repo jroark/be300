@@ -1,0 +1,28 @@
+Image UPloader (GPL).
+
+Sample configuration file for l4be uploader:
+<-- cut -->
+
+service l4be
+{
+	type		= UNLISTED
+	disable		= no
+	socket_type	= stream
+	wait		= no
+	user		= mouse
+	server		= /home/mouse/Linux4BE/loader/l4be
+	server_args	= /home/mouse/Linux4BE/loader
+	port		= 13131
+}
+
+<-- cut -->
+
+You must pass work-directory as argument for l4be program
+Work-directory must contains all necessary image files or symlinks, f.e. vmlinux
+
+Enjoy!
+
+Questions & comments please send to mouse@altlinux.ru
+
+Rgds,
+Anton
