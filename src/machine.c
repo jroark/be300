@@ -128,6 +128,10 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 {
     (void)size;
     machine_t *m = user_data;
+    static uint32_t mfc0_cause_seen_log = 0;
+    static uint32_t mfc0_epc_seen_log = 0;
+    static uint32_t mfc0_cause_inject_log = 0;
+    static uint32_t mfc0_epc_inject_log = 0;
 
     uint32_t insn = 0;
     if (!read_insn_best_effort(uc, address, &insn))
@@ -158,8 +162,27 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * (m->pending_excode != 0), return a synthesised Cause value with the
      * correct ExcCode in bits[6:2].
      */
-    if ((insn & 0xFFE0FFFFu) == 0x40006800u &&
-        m->pending_excode != 0 && !m->pending_cause_served) {
+    if ((insn & 0xFFE0FFFFu) == 0x40006800u) {
+        if (mfc0_cause_seen_log < 24) {
+            fprintf(stderr,
+                    "[CAUSE_MFC0] seen PC=0x%08" PRIX64 " pending_excode=%u served=%u cause=0x%08X\n",
+                    (uint64_t)(uint32_t)address, m->pending_excode,
+                    m->pending_cause_served ? 1u : 0u, m->pending_cause);
+            mfc0_cause_seen_log++;
+        }
+    }
+    bool irq_cause_stage_pc = ((uint32_t)address == 0x80000180u ||
+                               (uint32_t)address == 0x80007700u);
+    bool should_inject_cause = false;
+    if (m->pending_excode == 1u) {
+        /* External interrupt injection: serve at vector entry and
+         * once more in vr41xx_handle_interrupt (which re-reads Cause). */
+        should_inject_cause = irq_cause_stage_pc;
+    } else if (m->pending_excode != 0) {
+        /* SYSCALL and other synthetic exceptions: one-shot Cause inject. */
+        should_inject_cause = !m->pending_cause_served;
+    }
+    if ((insn & 0xFFE0FFFFu) == 0x40006800u && should_inject_cause) {
         uint32_t rt = (insn >> 16) & 0x1F;
         /* Serve the injected Cause once (exception dispatch).  After this, let
          * QEMU's real Cause register pass through so that synchronous nested
@@ -169,7 +192,17 @@ static void prid_hook(uc_engine *uc, uint64_t address,
          * in intr_hook before arriving here, so they still get the injected value. */
         uint64_t cause = m->pending_cause;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &cause);
-        m->pending_cause_served = true;
+        if (m->pending_excode == 1u) {
+            m->pending_cause_served = ((uint32_t)address == 0x80007700u);
+        } else {
+            m->pending_cause_served = true;
+        }
+        if (mfc0_cause_inject_log < 24) {
+            fprintf(stderr,
+                    "[CAUSE_MFC0] inject PC=0x%08" PRIX64 " cause=0x%08" PRIX64 " rt=%u\n",
+                    (uint64_t)(uint32_t)address, (uint64_t)(uint32_t)cause, rt);
+            mfc0_cause_inject_log++;
+        }
         uint64_t next_pc = address + 4;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
         return;
@@ -187,6 +220,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * Only intercept when we are inside our injected exception context
      * (pending_excode != 0).
      */
+    if ((insn & 0xFFE0FFFFu) == 0x40007000u) {
+        if (mfc0_epc_seen_log < 24) {
+            fprintf(stderr,
+                    "[EPC_MFC0] seen PC=0x%08" PRIX64 " pending_excode=%u served=%u epc=0x%08" PRIX64 "\n",
+                    (uint64_t)(uint32_t)address, m->pending_excode,
+                    m->pending_epc_served ? 1u : 0u, (uint64_t)(uint32_t)m->pending_epc);
+            mfc0_epc_seen_log++;
+        }
+    }
     if ((insn & 0xFFE0FFFFu) == 0x40007000u &&
         m->pending_excode != 0 && !m->pending_epc_served) {
         uint32_t rt = (insn >> 16) & 0x1F;
@@ -196,6 +238,12 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint64_t epc = m->pending_epc;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &epc);
         m->pending_epc_served = true;
+        if (mfc0_epc_inject_log < 24) {
+            fprintf(stderr,
+                    "[EPC_MFC0] inject PC=0x%08" PRIX64 " epc=0x%08" PRIX64 " rt=%u\n",
+                    (uint64_t)(uint32_t)address, (uint64_t)(uint32_t)epc, rt);
+            mfc0_epc_inject_log++;
+        }
         uint64_t next_pc = address + 4;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
         return;
@@ -246,24 +294,46 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * reads the real CP0 EPC (set by the hardware TLB-miss exception entry)
      * and returns to the faulting instruction correctly.
      */
-    if (insn == 0x42000018u && m->pending_excode != 0 && m->epc_was_written) {
-        uint64_t status = 0;
-        uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
-        status &= ~(uint64_t)0x2u;   /* clear EXL */
-        uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
+    if (insn == 0x42000018u && m->pending_excode != 0) {
+        static uint32_t eret_pending_log = 0;
+        if (eret_pending_log < 64) {
+            fprintf(stderr,
+                    "[ERET] pending_excode=%u epc_written=%u pending_epc=0x%08" PRIX64 " PC=0x%08" PRIX64 "\n",
+                    m->pending_excode, m->epc_was_written ? 1u : 0u,
+                    (uint64_t)(uint32_t)m->pending_epc, (uint64_t)(uint32_t)address);
+            eret_pending_log++;
+        }
+        if (m->epc_was_written) {
+            uint64_t status = 0;
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+            status &= ~(uint64_t)0x2u;   /* clear EXL */
+            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
-        uint64_t epc = m->pending_epc;
-        uc_reg_write(uc, UC_MIPS_REG_PC, &epc);
+            uint64_t epc = m->pending_epc;
+            uc_reg_write(uc, UC_MIPS_REG_PC, &epc);
 
-        /* (debug) fprintf(stderr, "[ERET] returning to EPC=0x%016" PRIX64 "\n", epc); */
+            /* (debug) fprintf(stderr, "[ERET] returning to EPC=0x%016" PRIX64 "\n", epc); */
 
+            m->pending_epc          = 0;
+            m->pending_excode       = 0;
+            m->pending_cause        = 0;
+            m->epc_was_written      = false;
+            m->pending_cause_served = false;
+            m->pending_epc_served   = false;
+            return;
+        }
+
+        /*
+         * If no explicit MTC0 EPC was observed, let Unicorn execute the
+         * native ERET, but still clear synthetic exception bookkeeping so
+         * we don't permanently block future injected interrupts.
+         */
         m->pending_epc          = 0;
         m->pending_excode       = 0;
         m->pending_cause        = 0;
         m->epc_was_written      = false;
         m->pending_cause_served = false;
         m->pending_epc_served   = false;
-        return;
     }
 }
 
@@ -297,6 +367,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
 {
     machine_t *m = user_data;
     static uint32_t intr_log_count[64];
+    static uint32_t syscall_entry_log_count = 0;
 
     uint64_t pc = 0, status = 0;
     uc_reg_read(uc, UC_MIPS_REG_PC,         &pc);
@@ -331,13 +402,8 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         /*
          * Async interrupt (CP0 timer, external IRQ, …).  QEMU has already set
          * EXL=1, Cause, EPC and routed PC to the exception vector.  Reset the
-         * "served once" flags so that if an injected exception is in flight
-         * (pending_excode != 0) this async interrupt gets the injected Cause /
-         * EPC values on its first read — i.e. it behaves the same as before the
-         * "serve once" optimization.  Without this reset, the async interrupt
-         * would get QEMU's real Cause (ExcCode=0|IP7 for CP0 timer) and correctly
-         * dispatch to do_timer/schedule(), which causes excessive context switches
-         * to the idle task and starves the kernel boot thread.
+         * one-shot serve flags so injected exceptions still provide synthetic
+         * Cause/EPC values on first read.
          */
         m->pending_cause_served = false;
         m->pending_epc_served   = false;
@@ -362,6 +428,13 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     m->epc_was_written      = false;  /* reset; set by MTC0 EPC intercept on exit path */
     m->pending_cause_served = false;
     m->pending_epc_served   = false;
+
+    if (syscall_entry_log_count < 32) {
+        fprintf(stderr,
+                "[SYSCALL_INJECT] EPC=0x%08" PRIX64 " cause=0x%08X STATUS=0x%08" PRIX64 "\n",
+                (uint64_t)(uint32_t)epc, m->pending_cause, (uint64_t)(uint32_t)status);
+        syscall_entry_log_count++;
+    }
 
     uint64_t new_status = status | 0x2u;   /* set EXL */
     uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &new_status);
@@ -401,11 +474,30 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
  */
 static void inject_hw_irq_if_pending(machine_t *m)
 {
-    /* Only inject when no exception is already in flight */
-    if (m->pending_excode != 0)
-        return;
+    static uint32_t log_block_pending_excode = 0;
+    static uint32_t log_block_status = 0;
+    static uint32_t log_block_im2 = 0;
+    static uint32_t log_injected = 0;
+    bool pending = icu_pending(&m->icu);
 
-    if (!icu_pending(&m->icu))
+    /* Only inject when no exception is already in flight */
+    if (m->pending_excode != 0) {
+        if (pending && log_block_pending_excode < 16) {
+            uint64_t pc = 0;
+            uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+            fprintf(stderr,
+                    "[IRQ_GATE] blocked: pending_excode=%u pending_cause=0x%08X pending_epc=0x%08" PRIX64
+                    " PC=0x%08" PRIX64 " SYSINT1=0x%04X MSYSINT1=0x%04X RTCINT=0x%04X\n",
+                    m->pending_excode, m->pending_cause,
+                    (uint64_t)(uint32_t)m->pending_epc,
+                    (uint64_t)(uint32_t)pc,
+                    m->icu.sysint1, m->icu.msysint1, m->rtc.rtcint);
+            log_block_pending_excode++;
+        }
+        return;
+    }
+
+    if (!pending)
         return;
 
     uint64_t status = 0;
@@ -413,17 +505,38 @@ static void inject_hw_irq_if_pending(machine_t *m)
     uint32_t s32 = (uint32_t)status;
 
     /* CPU must be receptive: IE=1, EXL=0, ERL=0 (bits [2:0] == 0b001) */
-    if ((s32 & 0x7u) != 0x1u)
+    if ((s32 & 0x7u) != 0x1u) {
+        if (log_block_status < 16) {
+            uint64_t pc = 0;
+            uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+            fprintf(stderr,
+                    "[IRQ_GATE] blocked: status gate STATUS=0x%08X PC=0x%08" PRIX64
+                    " SYSINT1=0x%04X MSYSINT1=0x%04X RTCINT=0x%04X\n",
+                    s32, (uint64_t)(uint32_t)pc,
+                    m->icu.sysint1, m->icu.msysint1, m->rtc.rtcint);
+            log_block_status++;
+        }
         return;
+    }
 
     /* INT0/HW0 mapped to IP2 = Status bit 10; check it is not masked */
-    if (!(s32 & (1u << 10)))
+    if (!(s32 & (1u << 10))) {
+        if (log_block_im2 < 16) {
+            uint64_t pc = 0;
+            uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+            fprintf(stderr,
+                    "[IRQ_GATE] blocked: IM2 masked STATUS=0x%08X PC=0x%08" PRIX64
+                    " SYSINT1=0x%04X MSYSINT1=0x%04X RTCINT=0x%04X\n",
+                    s32, (uint64_t)(uint32_t)pc,
+                    m->icu.sysint1, m->icu.msysint1, m->rtc.rtcint);
+            log_block_im2++;
+        }
         return;
+    }
 
     /* Inject: save return address, build Cause, redirect to exception vector */
     uint64_t pc = 0;
     uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
-
     m->pending_epc          = pc;
     m->pending_excode       = 1u;           /* INTR sentinel — any non-zero value */
     m->pending_cause        = (1u << 10);   /* IP2 = HW0 = INT0, ExcCode = 0     */
@@ -436,6 +549,15 @@ static void inject_hw_irq_if_pending(machine_t *m)
 
     uint64_t vec = mips_sext(0x80000180u);
     uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
+
+    if (log_injected < 16) {
+        fprintf(stderr,
+                "[IRQ_GATE] injected: EPC=0x%08" PRIX64 " STATUS=0x%08X"
+                " pending_cause=0x%08X SYSINT1=0x%04X MSYSINT1=0x%04X RTCINT=0x%04X\n",
+                (uint64_t)(uint32_t)pc, s32, m->pending_cause,
+                m->icu.sysint1, m->icu.msysint1, m->rtc.rtcint);
+        log_injected++;
+    }
 }
 
 /*
@@ -634,6 +756,42 @@ static void rcu_probe_hook(uc_engine *uc, uint64_t address,
 }
 
 /* ------------------------------------------------------------------ */
+/* IRQ path probes                                                      */
+/* ------------------------------------------------------------------ */
+
+#define IRQ_PROBE_LIMIT 24
+
+static int irq_probe_counts[8];
+
+static void irq_probe_hook(uc_engine *uc, uint64_t address,
+                           uint32_t size, void *user_data)
+{
+    (void)size;
+    int idx = (int)(uintptr_t)user_data;
+    const char *tag = NULL;
+    switch (idx) {
+        case 0: tag = "vr41xx_handle_interrupt"; break;
+        case 1: tag = "irq_dispatch";            break;
+        case 2: tag = "do_IRQ";                  break;
+        case 3: tag = "timer_interrupt";         break;
+        case 4: tag = "vr41xx_timer_ack";        break;
+        case 5: tag = "ll_timer_interrupt";      break;
+        case 6: tag = "local_timer_interrupt";   break;
+        case 7: tag = "ll_local_timer_interrupt"; break;
+        default: return;
+    }
+    if (irq_probe_counts[idx] >= IRQ_PROBE_LIMIT)
+        return;
+    irq_probe_counts[idx]++;
+
+    uint64_t a0 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    fprintf(stderr, "[IRQ_PROBE] #%d %s  PC=0x%08" PRIX64 " a0=0x%08" PRIX64 "\n",
+            irq_probe_counts[idx], tag, (uint64_t)(uint32_t)address,
+            (uint64_t)(uint32_t)a0);
+}
+
+/* ------------------------------------------------------------------ */
 /* ICU MSYSINT1 ETIME fixup                                              */
 /* ------------------------------------------------------------------ */
 
@@ -786,6 +944,26 @@ machine_t *machine_create(const machine_config_t *cfg)
             uint64_t va = mips_sext(rcu_probes[i].va);
             uc_hook_add(m->uc, &hk, UC_HOOK_CODE, rcu_probe_hook,
                         (void *)(uintptr_t)rcu_probes[i].idx, va, va);
+        }
+    }
+
+    /* IRQ dispatch path probes (multi-fire, up to 24 each) */
+    memset(irq_probe_counts, 0, sizeof(irq_probe_counts));
+    {
+        static const struct { uint32_t va; int idx; } irq_probes[] = {
+            { 0x800076c0u, 0 },  /* vr41xx_handle_interrupt */
+            { 0x80007508u, 1 },  /* irq_dispatch            */
+            { 0x80009c30u, 2 },  /* do_IRQ                  */
+            { 0x8000eb30u, 3 },  /* timer_interrupt         */
+            { 0x80007a98u, 4 },  /* vr41xx_timer_ack        */
+            { 0x8000ed88u, 5 },  /* ll_timer_interrupt      */
+            { 0x8000ea38u, 6 },  /* local_timer_interrupt   */
+            { 0x8000ee18u, 7 },  /* ll_local_timer_interrupt*/
+        };
+        for (int i = 0; i < 8; i++) {
+            uint64_t va = mips_sext(irq_probes[i].va);
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, irq_probe_hook,
+                        (void *)(uintptr_t)irq_probes[i].idx, va, va);
         }
     }
 
