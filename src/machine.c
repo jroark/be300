@@ -939,7 +939,11 @@ machine_t *machine_create(const machine_config_t *cfg)
             { 0x20000000u, 0x60000000u, "0x20000000–0x7FFFFFFF" }, /* after ROM, top of kuseg */
         };
         for (int gi = 0; gi < 4; gi++) {
-            uc_err uerr = uc_mem_map(m->uc, gaps[gi].base, gaps[gi].size, UC_PROT_ALL);
+            /* User-space gaps are only used for kernel writes until
+             * user space actually runs, so keep them RW to avoid
+             * Unicorn generating TBs (and invalidation) on macOS. */
+            uc_err uerr = uc_mem_map(m->uc, gaps[gi].base, gaps[gi].size,
+                                     UC_PROT_READ | UC_PROT_WRITE);
             if (uerr != UC_ERR_OK)
                 fprintf(stderr, "[MACHINE] user-space pre-map %s failed: %s\n",
                         gaps[gi].name, uc_strerror(uerr));
@@ -1228,7 +1232,8 @@ void machine_run(machine_t *m)
                     if (va < 0x1000u || va >= 0x80000000u)
                         continue;
                     uint64_t block = va & ~((uint64_t)0xFFFFF);
-                    uc_err me = uc_mem_map(m->uc, block, 0x100000, UC_PROT_ALL);
+                    uc_err me = uc_mem_map(m->uc, block, 0x100000,
+                                           UC_PROT_READ | UC_PROT_WRITE);
                     if (me == UC_ERR_OK) {
                         /* Fresh mapping — log it */
                         if (!mapped_any) {
