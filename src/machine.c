@@ -140,12 +140,10 @@ static void trace_hook(uc_engine *uc, uint64_t address,
 static void inject_tlb_store_exception(machine_t *m, uint64_t pc)
 {
     uint64_t fault_epc = (pc >= 4u) ? pc - 4u : pc;
-    if (m->pending_excode != 0)
-        save_pending_exception(m);
     m->pending_epc          = fault_epc;
     m->pending_excode       = MIPS_EXCCODE_TLBS;
     m->pending_cause        = (uint32_t)(MIPS_EXCCODE_TLBS << 2);
-    m->epc_was_written      = false;
+    m->epc_was_written      = true;  /* return directly to fault site */
     m->pending_cause_served = false;
     m->pending_epc_served   = false;
 
@@ -376,31 +374,51 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * reads the real CP0 EPC (set by the hardware TLB-miss exception entry)
      * and returns to the faulting instruction correctly.
      */
-    if (insn == 0x42000018u && m->pending_excode != 0) {
-        static uint32_t eret_pending_log = 0;
-        uint64_t status_snapshot = 0;
-        uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status_snapshot);
-        if (eret_pending_log < 96) {
-            fprintf(stderr,
-                    "[ERET] pending_excode=%u epc_written=%u pending_epc=0x%08" PRIX64
-                    " PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
-                    " served_epc=%u served_cause=%u\n",
-                    m->pending_excode, m->epc_was_written ? 1u : 0u,
-                    (uint64_t)(uint32_t)m->pending_epc, (uint64_t)(uint32_t)address,
-                    status_snapshot,
-                    m->pending_epc_served ? 1u : 0u,
-                    m->pending_cause_served ? 1u : 0u);
-            eret_pending_log++;
+    if (insn == 0x42000018u) {
+        if (m->pending_excode == 0 && m->has_saved_exception) {
+            restore_pending_exception(m);
+            return;
         }
-        if (m->epc_was_written) {
-            uint64_t status = status_snapshot & ~(uint64_t)0x2u;   /* clear EXL */
-            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
+        if (m->pending_excode != 0) {
+            static uint32_t eret_pending_log = 0;
+            uint64_t status_snapshot = 0;
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status_snapshot);
+            if (eret_pending_log < 96) {
+                fprintf(stderr,
+                        "[ERET] pending_excode=%u epc_written=%u pending_epc=0x%08" PRIX64
+                        " PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
+                        " served_epc=%u served_cause=%u\n",
+                        m->pending_excode, m->epc_was_written ? 1u : 0u,
+                        (uint64_t)(uint32_t)m->pending_epc, (uint64_t)(uint32_t)address,
+                        status_snapshot,
+                        m->pending_epc_served ? 1u : 0u,
+                        m->pending_cause_served ? 1u : 0u);
+                eret_pending_log++;
+            }
+            if (m->epc_was_written) {
+                uint64_t status = status_snapshot & ~(uint64_t)0x2u;   /* clear EXL */
+                uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
-            uint64_t epc = m->pending_epc;
-            uc_reg_write(uc, UC_MIPS_REG_PC, &epc);
+                uint64_t epc = m->pending_epc;
+                uc_reg_write(uc, UC_MIPS_REG_PC, &epc);
 
-            /* (debug) fprintf(stderr, "[ERET] returning to EPC=0x%016" PRIX64 "\n", epc); */
+                /* (debug) fprintf(stderr, "[ERET] returning to EPC=0x%016" PRIX64 "\n", epc); */
 
+                m->pending_epc          = 0;
+                m->pending_excode       = 0;
+                m->pending_cause        = 0;
+                m->epc_was_written      = false;
+                m->pending_cause_served = false;
+                m->pending_epc_served   = false;
+                restore_pending_exception(m);
+                return;
+            }
+
+            /*
+             * If no explicit MTC0 EPC was observed, let Unicorn execute the
+             * native ERET, but still clear synthetic exception bookkeeping so
+             * we don't permanently block future injected interrupts.
+             */
             m->pending_epc          = 0;
             m->pending_excode       = 0;
             m->pending_cause        = 0;
@@ -408,21 +426,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             m->pending_cause_served = false;
             m->pending_epc_served   = false;
             restore_pending_exception(m);
-            return;
         }
-
-        /*
-         * If no explicit MTC0 EPC was observed, let Unicorn execute the
-         * native ERET, but still clear synthetic exception bookkeeping so
-         * we don't permanently block future injected interrupts.
-         */
-        m->pending_epc          = 0;
-        m->pending_excode       = 0;
-        m->pending_cause        = 0;
-        m->epc_was_written      = false;
-        m->pending_cause_served = false;
-        m->pending_epc_served   = false;
-        restore_pending_exception(m);
     }
 }
 
@@ -499,7 +503,11 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             intr_log_count_27_detail++;
         }
         if (intno == 27u) {
-            inject_tlb_store_exception(m, pc);
+            if (m->pending_excode != 0 &&
+                m->pending_excode != MIPS_EXCCODE_TLBS)
+                save_pending_exception(m);
+            if (m->pending_excode != MIPS_EXCCODE_TLBS)
+                inject_tlb_store_exception(m, pc);
             return;
         }
         /*
