@@ -659,11 +659,13 @@ static const struct {
     { 0x80001630u, "init: JAL prepare_namespace",     false },
     { 0x80273470u, "prepare_namespace (entry)",       false },
     { 0x80001638u, "init: JAL free_initmem",          false },
-    /* exec path */
+    /* exec / page-fault path */
     { 0x80001690u, "init: JAL run_init_process [execute_command]", false },
     { 0x8000169cu, "init: JAL run_init_process [/sbin/init]",      false },
     { 0x80001598u, "run_init_process (entry)",        true  },
     { 0x80080cb0u, "do_execve (entry)",               true  },
+    { 0x80016ef0u, "do_page_fault (entry)",           false },
+    { 0x800a7378u, "create_elf_tables (entry)",       false },
     /* Post-inet_init initcalls (last two in table) */
     { 0x80286440u, "af_unix_init",                    false },
     { 0x802864d8u, "packet_init",                     false },
@@ -908,6 +910,43 @@ machine_t *machine_create(const machine_config_t *cfg)
      * our SDRAM range.  By calling bus_init first we win the region claim.
      */
     bus_init(m);
+
+    /*
+     * Pre-map the user-space (kuseg) VA range in Unicorn — gaps only.
+     *
+     * Unicorn MIPS SOFTMMU treats kuseg virtual addresses (0x00000000–
+     * 0x7FFFFFFF) as physical addresses for kernel-mode memory accesses,
+     * completely bypassing the MIPS TLB.  When the kernel writes to user-
+     * space VAs (e.g., create_elf_tables writing argv/envp/auxv to the user
+     * stack at ~0x7FFF7F40), Unicorn checks the physical memory map and
+     * returns UC_ERR_WRITE_UNMAPPED if unmapped — without calling the fault
+     * hook or routing to the guest TLB-miss handler.
+     *
+     * Physical memory layout (must not overlap):
+     *   0x00000000–0x00FFFFFF  SDRAM (already mapped by bus_init)
+     *   0x0A000000–0x0AFFFFFF  VRC4173 companion chip (MMIO)
+     *   0x0F000000–0x0F000FFF  Internal I/O (MMIO)
+     *   0x1E000000–0x1FFFFFFF  ROM/Flash (already mapped by bus_init)
+     *
+     * We fill in the "free" kuseg gaps between those regions.  Host OS uses
+     * lazy mmap so large holes cost no physical host RAM until touched.
+     */
+    {
+        static const struct { uint32_t base; uint32_t size; const char *name; } gaps[] = {
+            { 0x01000000u, 0x09000000u, "0x01000000–0x09FFFFFF" }, /* after SDRAM, before VRC4173 */
+            { 0x0B000000u, 0x04000000u, "0x0B000000–0x0EFFFFFF" }, /* after VRC4173, before IO */
+            { 0x0F001000u, 0x0EFFF000u, "0x0F001000–0x1DFFFFFF" }, /* after IO, before ROM */
+            { 0x20000000u, 0x60000000u, "0x20000000–0x7FFFFFFF" }, /* after ROM, top of kuseg */
+        };
+        for (int gi = 0; gi < 4; gi++) {
+            uc_err uerr = uc_mem_map(m->uc, gaps[gi].base, gaps[gi].size, UC_PROT_ALL);
+            if (uerr != UC_ERR_OK)
+                fprintf(stderr, "[MACHINE] user-space pre-map %s failed: %s\n",
+                        gaps[gi].name, uc_strerror(uerr));
+            else
+                fprintf(stderr, "[MACHINE] user-space pre-mapped %s\n", gaps[gi].name);
+        }
+    }
 
     /*
      * Select the NEC VR5432 CPU model (MIPS IV, NEC VR series).
@@ -1166,28 +1205,32 @@ void machine_run(machine_t *m)
         if (err != UC_ERR_OK) {
             uint64_t bad_pc = 0;
             uc_reg_read(m->uc, UC_MIPS_REG_PC, &bad_pc);
-            if (err == UC_ERR_WRITE_UNMAPPED && write_unmapped_recoveries < 8) {
+            if (err == UC_ERR_WRITE_UNMAPPED) {
                 /*
-                 * Temporary recovery probe for first-userspace transition:
-                 * create_elf_tables() writes initial user-stack data and we
-                 * currently hit UC_ERR_WRITE_UNMAPPED.  Try mapping nearby
-                 * candidate blocks from key registers and retry.
+                 * Fallback recovery for UC_ERR_WRITE_UNMAPPED.
+                 * Normally the user-space pre-map in machine_create() covers
+                 * all kuseg writes; this path handles any gaps (e.g., kernel
+                 * data writes above kseg0 that miss our static maps).
+                 * No limit — each unique block is only mapped once.
                  */
-                uint64_t v0 = 0, a0 = 0, t2 = 0;
+                uint64_t v0 = 0, a0 = 0, t2 = 0, sp = 0;
                 uc_reg_read(m->uc, UC_MIPS_REG_V0, &v0);
                 uc_reg_read(m->uc, UC_MIPS_REG_A0, &a0);
                 uc_reg_read(m->uc, UC_MIPS_REG_T2, &t2);
-                uint64_t candidates[3] = { v0, a0, t2 };
-                const char *names[3] = { "v0", "a0", "t2" };
+                uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
+                uint64_t candidates[4] = { v0, a0, t2, sp };
+                const char *names[4] = { "v0", "a0", "t2", "sp" };
                 bool mapped_any = false;
 
-                for (int i = 0; i < 3; i++) {
+                for (int i = 0; i < 4; i++) {
                     uint64_t va = candidates[i];
+                    /* Only attempt kuseg (user-space) addresses */
                     if (va < 0x1000u || va >= 0x80000000u)
                         continue;
                     uint64_t block = va & ~((uint64_t)0xFFFFF);
                     uc_err me = uc_mem_map(m->uc, block, 0x100000, UC_PROT_ALL);
-                    if (me == UC_ERR_OK || me == UC_ERR_MAP) {
+                    if (me == UC_ERR_OK) {
+                        /* Fresh mapping — log it */
                         if (!mapped_any) {
                             fprintf(stderr,
                                     "[MACHINE] write-unmapped recovery #%d at PC=0x%08" PRIX64 "\n",
@@ -1198,6 +1241,9 @@ void machine_run(machine_t *m)
                                 "[MACHINE]   mapped block 0x%08" PRIX64 " via $%s=0x%08" PRIX64 "\n",
                                 (uint64_t)(uint32_t)block, names[i],
                                 (uint64_t)(uint32_t)va);
+                        mapped_any = true;
+                    } else if (me == UC_ERR_MAP) {
+                        /* Already mapped — still count as handled */
                         mapped_any = true;
                     }
                 }
