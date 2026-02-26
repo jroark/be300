@@ -32,6 +32,21 @@ After `run_init_process("/sbin/init")`, Unicorn stops with:
 
 Nearest symbol for `0x800A74E0`: `create_elf_tables`.
 
+Additional 2026-02-26 evidence from current cycle:
+
+- With stale synthetic-exception cleanup enabled, `pending_excode` no longer
+  remains latched at crash time.
+- Failure persists as repeated `UC_ERR_WRITE_UNMAPPED` around:
+  - `0x800A74E8`..`0x800A7510` (`create_elf_tables` range),
+  - followed by stop at `0x800015B4`.
+- Recovery probe mapped candidate blocks:
+  - `0x7FF00000` (from `$v0/$a0` around `0x7FFF7F4x`),
+  - `0x2AA00000` (from `$t2=0x2AAA8000`),
+  but write-unmapped still recurred.
+- `UC_HOOK_MEM_*` fault callbacks did not receive this failure, indicating the
+  failing path is likely inside Unicorn/QEMU MMU handling rather than our bus
+  unmapped callback path.
+
 ---
 
 ## What Was Done in This Session

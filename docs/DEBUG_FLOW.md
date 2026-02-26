@@ -97,6 +97,13 @@ nm -n linux4be20040908/vmlinux | rg "symbol_name"
   - `PC=0` unmapped read crashes, or
   - repeated interrupt floods (`intno=26`) in some cmdline paths.
 
+- Mapping-only recovery for late `/sbin/init` crash:
+  - Tried temporary candidate-page mapping on `UC_ERR_WRITE_UNMAPPED`
+    (blocks around `0x7FFFxxxx` and `0x2AAAxxxx`) and retry.
+  - Result: repeated unmapped-write failures persisted; no stable progress
+    beyond the existing `create_elf_tables` crash window.
+  - Conclusion: this is not solved by a simple missing flat memory mapping.
+
 If syscall path changes are retried, keep them highly targeted and verify against the existing `intr_hook` design in `src/machine.c`.
 
 ## Current Debug Focus
