@@ -1,0 +1,408 @@
+{
+    "metadata": {
+        "target": "Casio Cassiopeia BE-300",
+        "generated_from": [
+            "/Users/jroark/src/linux4be/backup/06_docs_hw/Linux4.BE    Hackers    Memory Map.htm",
+            "/Users/jroark/src/linux4be/backup/06_docs_hw/Linux4.BE    Hackers    Registers.htm"
+        ],
+    "notes": [
+      "Memory Map page states only VR4131 info is from official manual; companion addresses are less certain.",
+      "Addresses are documented as physical MMIO map entries used by Linux4BE developers.",
+      "VRIP_NO_ADDR values are represented as null.",
+      "Field VRIP_SCU_ARR appears as-is in source doc (likely a typo for *_ADDR).",
+      "MIPS KSEG1 virtual accesses (0xAxxxxxxx) should map to physical addresses (lower 29 bits) in the machine model.",
+      "For emulator wiring, treat documented 0xaa/0xaf ranges as KSEG1 forms and map devices at corresponding physical 0x0a/0x0f ranges."
+    ]
+  },
+  "address_translation": {
+    "kseg1_rule": "physical = virtual & 0x1fffffff",
+    "examples": [
+      {
+        "virtual": "0xaa008680",
+        "physical": "0x0a008680",
+        "label": "Companion SIU/UART candidate"
+      },
+      {
+        "virtual": "0xaf000000",
+        "physical": "0x0f000000",
+        "label": "VRIP base"
+      },
+      {
+        "virtual": "0xaf000080",
+        "physical": "0x0f000080",
+        "label": "VRIP ICU base"
+      },
+      {
+        "virtual": "0xaa200000",
+        "physical": "0x0a200000",
+        "label": "Framebuffer candidate region"
+      }
+    ]
+  },
+  "implementation_hypotheses": {
+    "uart": {
+      "preferred_path": "companion_uart",
+      "rationale": "Linux4BE logs and driver references point to UART at 0xaa008680 (KSEG1), distinct from VR4131 internal SIU base.",
+      "fallback": "vr4131_siu_if_companion_model_fails"
+    },
+    "framebuffer": {
+      "address": "0xaa200000",
+      "confidence": "medium",
+      "notes": [
+        "May be dedicated VRAM or companion-bus mapped memory rather than a simple carve-out of 16 MiB main RAM.",
+        "Model initially as explicit MMIO/RAM region at mapped physical address, then refine after driver behavior validation."
+      ]
+    }
+  },
+    "be300_memory_map": [
+        {
+            "address": "0xaa000000",
+            "name": "Start Kj Companion",
+            "kind": "region_marker",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa000000",
+            "name": "PIU Base on companion",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa000000",
+            "name": "Cak Base on companion",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa000000",
+            "name": "GPIO Base on companion",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa000301",
+            "name": "touchpanel related",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa00031c",
+            "name": "touchpanel related",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa000980",
+            "name": "BlgReg_BASE",
+            "kind": "mmio",
+            "size": "0x68",
+            "source_hint": "Casio SDK buzzer.h",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa001000",
+            "name": "unknown base on companion, CF related",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa001128",
+            "name": "CmmReg_BASE",
+            "kind": "mmio",
+            "size": "0x04",
+            "source_hint": "Casio SDK buzzer.h",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa007800",
+            "name": "ScCmcu Base on companion",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa008000",
+            "name": "Vic/CommMode Base on companion",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa008680",
+            "name": "SIU Base on companion",
+            "kind": "uart_mmio",
+            "confidence": "medium"
+        },
+        {
+            "address": "0xaa00a000",
+            "name": "KjCMU Base on companion",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaa200000",
+            "name": "video memory (framebuffer)",
+            "kind": "framebuffer",
+            "confidence": "medium"
+        },
+        {
+            "address": "0xab000060",
+            "name": "CMU CLKMSK on companion",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xab00011c",
+            "name": "GIU_PODATL on companion",
+            "kind": "mmio",
+            "confidence": "low"
+        },
+        {
+            "address": "0xaf000000",
+            "name": "Start vr4131",
+            "kind": "region_marker",
+            "confidence": "high"
+        },
+        {
+            "address": "0xaf000000",
+            "name": "VRIP Base on vr4131",
+            "kind": "mmio",
+            "confidence": "high"
+        },
+        {
+            "address": "0xaf000060",
+            "name": "CMU on vr4131",
+            "kind": "mmio",
+            "confidence": "high"
+        },
+        {
+            "address": "0xaf000100",
+            "name": "RTC on vr4131",
+            "kind": "mmio",
+            "confidence": "high"
+        },
+        {
+            "address": "0xaf000140",
+            "name": "GIU on vr4131 (used by serial)",
+            "kind": "mmio",
+            "confidence": "high"
+        },
+        {
+            "address": "0xaf000800",
+            "name": "SIU Base on vr4131",
+            "kind": "mmio",
+            "confidence": "high"
+        },
+        {
+            "address": "0xaf000820",
+            "name": "DSIU Base on vr4131",
+            "kind": "mmio",
+            "confidence": "high"
+        },
+        {
+            "address": "0xaf000c00",
+            "name": "PCI Addr on vr4131",
+            "kind": "mmio",
+            "confidence": "high"
+        },
+        {
+            "address": "0xaf000d00",
+            "name": "PCICONF Addr on vr4131",
+            "kind": "mmio",
+            "confidence": "high"
+        },
+        {
+            "address": "0xbfc00000",
+            "name": "Start bootrom",
+            "kind": "region_marker",
+            "confidence": "high"
+        },
+        {
+            "address": "0xbfc00000",
+            "name": "Reset NMI (in bootrom)",
+            "kind": "boot_vector",
+            "confidence": "high"
+        },
+        {
+            "address": "0xbfc00200",
+            "name": "TLB Refill (in bootrom)",
+            "kind": "boot_vector",
+            "confidence": "high"
+        },
+        {
+            "address": "0xbfc00280",
+            "name": "XTLB Refill (in bootrom)",
+            "kind": "boot_vector",
+            "confidence": "high"
+        },
+        {
+            "address": "0xbfc00300",
+            "name": "Cache Error (in bootrom)",
+            "kind": "boot_vector",
+            "confidence": "high"
+        }
+    ],
+    "vrip_register_bases": {
+        "VRIP_BASE_ADDR": {
+            "vr4131": "0x0f000000",
+            "vr4102": "0x0b000000",
+            "vr4181": "0x0a000000"
+        },
+        "VRIP_BCU_ADDR": {
+            "vr4131": "0x0f000000",
+            "vr4102": "0x0b000000",
+            "vr4181": "0x0a000000"
+        },
+        "VRIP_DMAAU_ADDR": {
+            "vr4131": "0x0f000020",
+            "vr4102": "0x0b000020",
+            "vr4181": null
+        },
+        "VRIP_DCU_ADDR": {
+            "vr4131": "0x0f000040",
+            "vr4102": "0x0b000040",
+            "vr4181": null
+        },
+        "VRIP_CMU_ADDR": {
+            "vr4131": "0x0f000060",
+            "vr4102": "0x0b000060",
+            "vr4181": "0x0a000004"
+        },
+        "VRIP_ICU_ADDR": {
+            "vr4131": "0x0f000080",
+            "vr4102": "0x0b000080",
+            "vr4181": "0x0a000080"
+        },
+        "VRIP_PMU_ADDR": {
+            "vr4131": "0x0f0000c0",
+            "vr4102": "0x0b0000a0",
+            "vr4181": "0x0a0000a0"
+        },
+        "VRIP_RTC_ADDR": {
+            "vr4131": "0x0f000100",
+            "vr4102": "0x0b0000c0",
+            "vr4181": "0x0a0000c0"
+        },
+        "VRIP_DSU_ADDR": {
+            "vr4131": null,
+            "vr4102": "0x0b0000e0",
+            "vr4181": "0x0a0000e0"
+        },
+        "VRIP_GIU_ADDR": {
+            "vr4131": "0x0f000140",
+            "vr4102": "0x0b000100",
+            "vr4181": null
+        },
+        "VRIP_PIU_ADDR": {
+            "vr4131": null,
+            "vr4102": "0x0b000120",
+            "vr4181": "0x0a000122"
+        },
+        "VRIP_AIU_ADDR": {
+            "vr4131": null,
+            "vr4102": "0x0b000160",
+            "vr4181": "0x0a000160"
+        },
+        "VRIP_KIU_ADDR": {
+            "vr4131": null,
+            "vr4102": "0x0b000180",
+            "vr4181": "0x0a000180"
+        },
+        "VRIP_DSIU_ADDR": {
+            "vr4131": "0x0f000820",
+            "vr4102": "0x0b0001a0",
+            "vr4181": "0x0a0001a0"
+        },
+        "VRIP_LED_ADDR": {
+            "vr4131": "0x0f000180",
+            "vr4102": "0x0b000240",
+            "vr4181": "0x0a000240"
+        },
+        "VRIP_SIU_ADDR": {
+            "vr4131": "0x0f000800",
+            "vr4102": "0x0c000000",
+            "vr4181": "0x0c000010"
+        },
+        "VRIP_HSP_ADDR": {
+            "vr4131": null,
+            "vr4102": "0x0c000020",
+            "vr4181": "0x0a000020"
+        },
+        "VRIP_FIR_ADDR": {
+            "vr4131": "0x0f000840",
+            "vr4102": "0x0b000000",
+            "vr4181": "0x0a000000"
+        },
+        "VRIP_MEMCON_ADDR": {
+            "vr4131": null,
+            "vr4102": null,
+            "vr4181": "0x0a000300"
+        },
+        "VRIP_ISABRG_ADDR": {
+            "vr4131": null,
+            "vr4102": null,
+            "vr4181": "0x0b0002c0"
+        },
+        "VRIP_ECU_ADDR": {
+            "vr4131": null,
+            "vr4102": null,
+            "vr4181": "0x0b0006e0"
+        },
+        "VRIP_DCU81_ADDR": {
+            "vr4131": null,
+            "vr4102": null,
+            "vr4181": "0x0a000020"
+        },
+        "VRIP_CSI81_ADDR": {
+            "vr4131": null,
+            "vr4102": null,
+            "vr4181": "0x0b000900"
+        },
+        "VRIP_GIU81_ADDR": {
+            "vr4131": null,
+            "vr4102": null,
+            "vr4181": "0x0b000300"
+        },
+        "VRIP_LCD_ADDR": {
+            "vr4131": null,
+            "vr4102": null,
+            "vr4181": "0x0a000400"
+        },
+        "VRIP_SIU1_ADDR": {
+            "vr4131": null,
+            "vr4102": null,
+            "vr4181": "0x0c000000"
+        },
+        "VRIP_SCU_ARR": {
+            "vr4131": "0x0f001000",
+            "vr4102": null,
+            "vr4181": null
+        },
+        "VRIP_SDRAMU_ADDR": {
+            "vr4131": "0x0f000400",
+            "vr4102": null,
+            "vr4181": null
+        },
+        "VRIP_PCI_ADDR": {
+            "vr4131": "0x0f000c00",
+            "vr4102": null,
+            "vr4181": null
+        },
+        "VRIP_PCICONF_ADDR": {
+            "vr4131": "0x0f000d00",
+            "vr4102": null,
+            "vr4181": null
+        },
+        "VRIP_CSI_ADDR": {
+            "vr4131": "0x0f0001a0",
+            "vr4102": null,
+            "vr4181": null
+        }
+    },
+  "be300_emulator_priority_addresses": {
+    "uart_mmio": "0xaa008680",
+    "uart_irq": 19,
+    "framebuffer_base": "0xaa200000",
+    "vrip_base": "0xaf000000",
+    "vrip_icu_base": "0xaf000080",
+    "bootrom_base": "0xbfc00000"
+  }
+}

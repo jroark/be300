@@ -1,0 +1,10 @@
+config BE300
+    bool "Casio Cassiopeia BE-300 Machine"
+    default y
+    depends on MIPS64 || MIPS
+    select MIPS_CPUDEVS
+    select VR4131_ICU
+    select VR4131_RTC
+    help
+      Enable support for the Casio Cassiopeia BE-300 emulator,
+      featuring the NEC VR4131 MIPS SOC.
