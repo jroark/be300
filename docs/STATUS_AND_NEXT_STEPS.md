@@ -1,11 +1,9 @@
 # BE-300 Emulator Boot Status and Next Steps
 
-## Current Status (2026-02-25)
+## Current Status (2026-02-26)
 
-The emulator boots through early kernel init up to and including
-`NET: Registered protocol family 2` (inet_init).  Checkpoint
-instrumentation has now been added to `src/machine.c` to precisely
-pinpoint where execution goes silent after inet_init.
+The emulator now boots far beyond inet initcalls and reaches root mount
+plus `/sbin/init` handoff.
 
 ### Baseline Boot Output (last confirmed)
 
@@ -17,11 +15,50 @@ initrd detection / free
 fb0: Casio BE-x00 frame buffer device
 RAMDISK / PPP / NFTL init
 NET: Registered protocol family 2
+NET: Registered protocol family 17
+RAMDISK: Compressed image found at block 0
+VFS: Mounted root (ext2 filesystem) readonly.
+Freeing unused kernel memory: 112k freed
 ```
+
+### Current blocker signature
+
+After `run_init_process("/sbin/init")`, Unicorn stops with:
+
+```
+[MACHINE] uc_emu_start error at PC=0xFFFFFFFF800A74E0: Invalid memory write (UC_ERR_WRITE_UNMAPPED)
+[MACHINE] pending_excode=8 pending_cause=0x00000020 pending_epc=0xFFFFFFFF800015B0
+```
+
+Nearest symbol for `0x800A74E0`: `create_elf_tables`.
 
 ---
 
 ## What Was Done in This Session
+
+### IRQ cause staging fix (critical progress)
+
+- In `src/machine.c` (`prid_hook`), IRQ `Cause` injection was extended to all
+  observed reads in the VR41xx interrupt path:
+  - `0x80000180` (vector),
+  - `0x80007700`,
+  - `0x800077A8`.
+- `pending_cause_served` now flips true only after `0x800077A8`.
+- This made IRQ dispatch reliable (`irq_dispatch`/`do_IRQ`/`do_timer`) and
+  unblocked RCU callbacks (`rcu_check_callbacks`/`rcu_process_callbacks`),
+  allowing initcalls to complete past inet.
+
+### Additional kernel sweep (`kernels/`)
+
+- Tested:
+  - `kernels/vmlinux`
+  - `kernels/vmlinux-mw`
+  - `kernels/vmlinux-pgui-demo`
+  - `kernels/vmlinux-pgui-test1`
+  - `kernels/vmlinux_sdlregtest`
+- All five currently stall in/near `calibrate_delay` (steady PCs near that
+  symbol), including runs with `--cmdline 'lpj=1000000'`.
+- Current best debug target remains `linux4be20040908/vmlinux`.
 
 ### Checkpoint instrumentation (`src/machine.c`)
 
@@ -75,34 +112,27 @@ All addresses are for `linux4be20040908/vmlinux` (verified via `nm`).
 
 ## Next Steps (Priority Order)
 
-1. **Build and run** with the new checkpoint instrumentation:
+1. **Focus on `/sbin/init` exec path crash** (new top priority):
    ```bash
    make -j4
    ./be300 --kernel linux4be20040908/vmlinux > /tmp/be300.out 2> /tmp/be300.err
-   grep -E '(CHECKPOINT|INITCALL|PROGRESS)' /tmp/be300.err | head -80
-   tail -n 50 /tmp/be300.out
+   rg -n '(run_init_process|do_execve|uc_emu_start error|pending_excode|SYSCALL_INJECT|IRQ_GATE)' /tmp/be300.err
    ```
 
-2. **Analyse checkpoint output**:
-   - If `do_basic_setup` / `do_initcalls` appear → early init is running; map
-     `[INITCALL]` function pointers via `nm linux4be20040908/vmlinux` to see
-     which initcall stalls.
-   - If `prepare_namespace` appears → VFS mount path is reached; check for
-     mount errors in stdout.
-   - If `run_init_process` appears → note the printed string (which `/init`
-     path is tried); investigate initrd layout.
-   - If `do_execve` appears → kernel is handing off to userspace; look for
-     ELF load / segment-fault issues.
-   - If no checkpoints fire after `NET: Registered protocol family 2` →
-     execution is looping or stalling inside inet_init sub-functions; check
-     `[PROGRESS]` PC samples against `nm` output.
+2. **Instrument syscall exception lifetime near execve**:
+   - Add targeted logs for syscall-context `mfc0 Cause`, `mfc0 EPC`,
+     `mtc0 EPC`, and `ERET` events near the crash window.
+   - Verify whether nested page-fault exceptions during `create_elf_tables`
+     are dispatched with the correct non-syscall `Cause.ExcCode`.
 
-3. **Fix the identified blocker** based on checkpoint evidence.
+3. **Validate address-space behavior during `create_elf_tables`**:
+   - Capture faulting virtual write target (`$a0/$v1` etc.) and map to expected
+     user stack setup.
+   - Confirm whether kernel page-fault path runs and returns before the write.
 
-4. **If stall is inside an initcall sub-function**:
-   - Narrow with a short `--trace` run around the stall PC.
-   - Map PC range to source via `nm` / objdump.
-   - Only then consider targeted exception/syscall-path adjustments.
+4. **Re-test alternate kernels only after syscall-fault path is fixed**:
+   - Their current `calibrate_delay` stall likely shares timer/exception
+     assumptions and is lower priority than the now-advanced 2.6.8.1 path.
 
 ---
 

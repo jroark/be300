@@ -172,7 +172,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         }
     }
     bool irq_cause_stage_pc = ((uint32_t)address == 0x80000180u ||
-                               (uint32_t)address == 0x80007700u);
+                               (uint32_t)address == 0x80007700u ||
+                               (uint32_t)address == 0x800077A8u);
     bool should_inject_cause = false;
     if (m->pending_excode == 1u) {
         /* External interrupt injection: serve at vector entry and
@@ -193,7 +194,12 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint64_t cause = m->pending_cause;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &cause);
         if (m->pending_excode == 1u) {
-            m->pending_cause_served = ((uint32_t)address == 0x80007700u);
+            /*
+             * vr41xx_handle_interrupt re-reads Cause later in the path
+             * (0x800077A8) while selecting the IRQ source. Keep IP2 visible
+             * until that read has been serviced.
+             */
+            m->pending_cause_served = ((uint32_t)address == 0x800077A8u);
         } else {
             m->pending_cause_served = true;
         }
@@ -401,12 +407,17 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         }
         /*
          * Async interrupt (CP0 timer, external IRQ, …).  QEMU has already set
-         * EXL=1, Cause, EPC and routed PC to the exception vector.  Reset the
-         * one-shot serve flags so injected exceptions still provide synthetic
-         * Cause/EPC values on first read.
+         * EXL=1, Cause, EPC and routed PC to the exception vector.
+         *
+         * Only reset one-shot serve flags when we are in our injected IRQ
+         * context (pending_excode==1).  Doing this during an in-flight
+         * SYSCALL (pending_excode==8) can re-arm syscall Cause injection and
+         * mis-dispatch nested exceptions (e.g. page faults in execve).
          */
-        m->pending_cause_served = false;
-        m->pending_epc_served   = false;
+        if (m->pending_excode == 1u) {
+            m->pending_cause_served = false;
+            m->pending_epc_served   = false;
+        }
         return;
     }
 

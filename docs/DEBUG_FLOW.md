@@ -52,6 +52,28 @@ nm -n linux4be20040908/vmlinux | rg "symbol_name"
 
 ## What Worked
 
+### 0) 2026-02-26: IRQ Cause staging through VR41xx dispatch
+
+- Problem:
+  - IRQs reached `vr41xx_handle_interrupt` but often failed to continue to
+    `irq_dispatch` / `do_IRQ` / `do_timer`.
+- Fix:
+  - In `src/machine.c` (`prid_hook`), extend injected `Cause` staging for
+    IRQ context (`pending_excode==1`) to include all observed reads:
+    - `0x80000180` (vector),
+    - `0x80007700`,
+    - `0x800077A8`.
+  - Mark `pending_cause_served` only after `0x800077A8`.
+- Result:
+  - IRQ flow consistently reaches `irq_dispatch`, `do_IRQ`,
+    `timer_interrupt`, `do_timer`, and later `rcu_check_callbacks` /
+    `rcu_process_callbacks`.
+  - Boot now progresses past previous inet/RCU blocker and reaches:
+    - `af_unix_init`, `packet_init`,
+    - `prepare_namespace`,
+    - root mount,
+    - `run_init_process("/sbin/init")`.
+
 ### 1) Clock/timer bring-up and jiffies progress
 
 - Fixed early blocking at `Calibrating delay loop...` by aligning RTC/ICU behavior:
@@ -79,13 +101,15 @@ If syscall path changes are retried, keep them highly targeted and verify agains
 
 ## Current Debug Focus
 
-- Boot now advances well past delay calibration and deep into init/driver setup.
-- Remaining issue appears post-early init: either a real stall or silent progress without more visible console output.
-- Next debugging should be checkpoint-style instrumentation around:
-  - `do_initcalls`
-  - `do_basic_setup`
-  - `prepare_namespace`
-  - `run_init_process`
+- Boot now reaches `/sbin/init` handoff and then fails with:
+  - `UC_ERR_WRITE_UNMAPPED` at `PC=0xFFFFFFFF800A74E0`
+  - nearest symbol: `create_elf_tables`
+  - pending synthetic syscall context still active:
+    `pending_excode=8`, `pending_epc=0xFFFFFFFF800015B0`.
+- Next debugging should focus on syscall exception lifetime during execve:
+  - verify nested exception dispatch while `pending_excode=8`,
+  - verify `MTC0 EPC`/`ERET` retirement ordering in syscall exit path,
+  - ensure page-fault handling in `create_elf_tables` is not misrouted.
 
 Use symbol addresses from `nm` and minimal one-shot logging to avoid perturbing control flow.
 
