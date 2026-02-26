@@ -22,11 +22,32 @@ Push with: `git push -u origin claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
 
 **Target:** Casio BE-300 (NEC VR4131 MIPS little-endian) emulator in Unicorn.
 
-**Kernel:** `linux4be20040908/vmlinux` — ELF32 MIPS LE, 2.6.8.1, built 2004-09-08.
+**Kernels**
+- `linux4be20040908/vmlinux`   — ELF32 MIPS LE, 2.6.8.1, built 2004-09-08.
+- `kernels/vmlinux`            - ELF 32-bit LSB executable, MIPS, MIPS-II version 1 (SYSV), statically linked, not stripped, too many notes (256)
+- `kernels/vmlinux_sdlregtest` - ELF32 MIPS LE, Linux version 2.4.18-mips (mouse@mouse.office.altlinux.ru) (gcc version 3.0.4) #325 ��� ��� 20 14:06:02 MSK 2003
+- `kernels/vmlinux-mw`         - ELF32 MIPS LE, Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
+- `kernels/vmlinux-pgui-demo`  - ELF32
+- `kernels/vmlinux-pgui-test1` - ELF32
+
+**Kernel Changes for BE-300**
+- `kernels/linux-2.6`
 
 **Cross-dev Docker image:** `git@github.com:jroark/mipsel-cross-image.git`
 - Provides `mipsel-linux-gnu-gcc` toolchain for building userspace / initramfs.
 - Scripts: `build_tcl_kernel.sh`, `build_busybox.sh`, `create_initramfs.sh`.
+
+**WinCE flash image**
+- `BACKUP.bin` - restore image from Casio CDROM
+
+**WinCE ELF loader**
+- `linux4be20040908/loader.exe` - CyaCE compiled binary
+- `linux4be20040908/cyacecfg.txt` - CyaCE config
+- `ce/cyace` - source code for loader
+
+**Things to note**
+- originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
+- None of the test kernels had full hw support
 
 ---
 
