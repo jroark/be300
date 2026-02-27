@@ -68,6 +68,9 @@ struct machine_s {
     bool     epc_was_written;       /* MTC0 EPC has been seen; next ERET is the exit        */
     bool     pending_cause_served;  /* first MFC0 Cause read has been intercepted */
     bool     pending_epc_served;    /* first MFC0 EPC read has been intercepted   */
+    uint32_t pending_syscall_nr;    /* syscall number captured at SYSCALL inject */
+    uint64_t pending_syscall_a0;    /* syscall arg0 captured at SYSCALL inject   */
+    char     pending_syscall_a0_str[128]; /* best-effort arg0 string (if pointer) */
     bool     has_saved_exception;   /* nested real exception (e.g., TLBS) saved            */
     uint64_t saved_pending_epc;
     uint32_t saved_pending_excode;

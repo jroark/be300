@@ -600,8 +600,29 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         }
         if (m->pending_excode != 0) {
             static uint32_t eret_pending_log = 0;
+            static uint32_t syscall_ret_log = 0;
             uint64_t status_snapshot = 0;
             uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status_snapshot);
+            if (m->pending_excode == MIPS_EXCCODE_SYS &&
+                m->epc_was_written &&
+                syscall_ret_log < 128) {
+                uint64_t v0 = 0, a3 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                fprintf(stderr,
+                        "[SYSCALL_RET] EPC=0x%08" PRIX64 " nr=%u"
+                        " a0=0x%08" PRIX64 " \"%s\""
+                        " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
+                        " status=0x%08" PRIX64 "\n",
+                        (uint64_t)(uint32_t)m->pending_epc,
+                        m->pending_syscall_nr,
+                        (uint64_t)(uint32_t)m->pending_syscall_a0,
+                        m->pending_syscall_a0_str,
+                        (uint64_t)(uint32_t)v0,
+                        (uint64_t)(uint32_t)a3,
+                        status_snapshot);
+                syscall_ret_log++;
+            }
             if (eret_pending_log < 96) {
                 uint64_t v0 = 0, a3 = 0;
                 uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
@@ -795,7 +816,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     m->pending_cause_served = false;
     m->pending_epc_served   = false;
 
-    if (syscall_entry_log_count < 64) {
+    {
         uint64_t v0 = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
         uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
         uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
@@ -804,17 +825,25 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
         char a0s[128] = "<unreadable>";
         read_guest_string(uc, a0, a0s, sizeof(a0s));
-        fprintf(stderr,
-                "[SYSCALL_INJECT] EPC=0x%08" PRIX64 " nr=%" PRIu64
-                " a0=0x%08" PRIX64 " \"%s\" a1=0x%08" PRIX64
-                " a2=0x%08" PRIX64 " a3=0x%08" PRIX64
-                " cause=0x%08X STATUS=0x%08" PRIX64 "\n",
-                (uint64_t)(uint32_t)epc, (uint64_t)(uint32_t)v0,
-                (uint64_t)(uint32_t)a0, a0s,
-                (uint64_t)(uint32_t)a1, (uint64_t)(uint32_t)a2,
-                (uint64_t)(uint32_t)a3, m->pending_cause,
-                (uint64_t)(uint32_t)status);
-        syscall_entry_log_count++;
+
+        m->pending_syscall_nr = (uint32_t)v0;
+        m->pending_syscall_a0 = a0;
+        strncpy(m->pending_syscall_a0_str, a0s, sizeof(m->pending_syscall_a0_str) - 1);
+        m->pending_syscall_a0_str[sizeof(m->pending_syscall_a0_str) - 1] = '\0';
+
+        if (syscall_entry_log_count < 64) {
+            fprintf(stderr,
+                    "[SYSCALL_INJECT] EPC=0x%08" PRIX64 " nr=%" PRIu64
+                    " a0=0x%08" PRIX64 " \"%s\" a1=0x%08" PRIX64
+                    " a2=0x%08" PRIX64 " a3=0x%08" PRIX64
+                    " cause=0x%08X STATUS=0x%08" PRIX64 "\n",
+                    (uint64_t)(uint32_t)epc, (uint64_t)(uint32_t)v0,
+                    (uint64_t)(uint32_t)a0, a0s,
+                    (uint64_t)(uint32_t)a1, (uint64_t)(uint32_t)a2,
+                    (uint64_t)(uint32_t)a3, m->pending_cause,
+                    (uint64_t)(uint32_t)status);
+            syscall_entry_log_count++;
+        }
     }
 
     uint64_t new_status = status | 0x2u;   /* set EXL */
