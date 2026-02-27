@@ -225,15 +225,12 @@ llvm-objdump -d --start-address=0x<VA> --stop-address=0x<VA+N> linux4be20040908/
    timeout 120s ./be300 --kernel ../linux4be20040908/vmlinux \
      > docker_stdout.log 2> docker_stderr.log
    ```
-   The image installs clang/meson/ninja plus mipsel cross-compilers. `PKG_CONFIG_PATH`
-   already points at `/work/third_party/unicorn-linux/lib/pkgconfig`, and the
-   base packages now include `gdb`, `gdb-multiarch`, `strace`, and `ltrace` for
+   The image installs clang/meson/ninja plus mipsel cross-compilers.
+   Base packages now include `gdb`, `gdb-multiarch`, `strace`, and `ltrace` for
    cross-debugging.
 
 2. **Unicorn for macOS vs. Linux:**
    - macOS hosts use the system-installed or Homebrew unicorn (found via CMake).
-   - The container builds Unicorn 2.1.4 from source and installs it into
-     `third_party/unicorn-linux/` (CMake fallback auto-detects it).
 
 3. **Logs & artifacts:**
    - Always capture both stdout and stderr from emulator runs (`docker_*.log`).
