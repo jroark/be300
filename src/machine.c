@@ -142,6 +142,25 @@ static void tick_jiffies_hack(machine_t *m)
     }
 }
 
+static bool mem_unmapped_hook(uc_engine *uc, uc_mem_type type,
+                              uint64_t address, int size, int64_t value,
+                              void *user_data)
+{
+    (void)uc;
+    machine_t *m = user_data;
+    uint64_t pc = 0, status = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
+    fprintf(stderr,
+            "[UNMAPPED] type=%d addr=0x%08" PRIX64 " size=%d value=0x%08" PRIX64
+            " PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
+            " pending_excode=%u pending_epc=0x%08" PRIX64 "\n",
+            (int)type, (uint64_t)(uint32_t)address, size, (uint64_t)(uint32_t)value,
+            (uint64_t)(uint32_t)pc, status,
+            m->pending_excode, (uint64_t)(uint32_t)m->pending_epc);
+    return false;
+}
+
 /* Convert kseg0/kseg1 VA to physical; return false for non-direct-mapped VA. */
 static bool va_to_pa_kseg(uint64_t va, uint64_t *pa_out)
 {
@@ -1885,6 +1904,11 @@ machine_t *machine_create(const machine_config_t *cfg)
     uc_hook hk;
     uc_hook_add(m->uc, &hk, UC_HOOK_INSN_INVALID,
                 insn_invalid_hook, m, 1, 0);
+    uc_hook_add(m->uc, &hk,
+                UC_HOOK_MEM_READ_UNMAPPED |
+                UC_HOOK_MEM_WRITE_UNMAPPED |
+                UC_HOOK_MEM_FETCH_UNMAPPED,
+                mem_unmapped_hook, m, 1, 0);
 
     /*
      * Interrupt / CPU-exception hook.
