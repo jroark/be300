@@ -924,8 +924,28 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
              * Let Unicorn/QEMU deliver TLBL/TLBS natively.
              * Manual reinjection here caused a hard failure path:
              *   intno=26/27 -> forced vector -> UC_ERR_READ_UNMAPPED @ 0x80000000.
+             *
+             * If a synthetic exception (notably SYSCALL) is currently pending,
+             * suspend it so MFC0 Cause/EPC reads in the nested TLB handler see
+             * native CP0 values (ExcCode 2/3), not the synthetic ones.
              */
             static uint32_t tlb_passthrough_log_count = 0;
+            static uint32_t tlb_nested_suspend_log = 0;
+            if (m->pending_excode != 0 && !m->has_saved_exception) {
+                save_pending_exception(m);
+                m->pending_epc          = 0;
+                m->pending_excode       = 0;
+                m->pending_cause        = 0;
+                m->epc_was_written      = false;
+                m->pending_cause_served = false;
+                m->pending_epc_served   = false;
+                if (tlb_nested_suspend_log < 64) {
+                    fprintf(stderr,
+                            "[TLB_NESTED] suspend synthetic excode for intno=%u at PC=0x%08" PRIX64 "\n",
+                            intno, (uint64_t)(uint32_t)pc);
+                    tlb_nested_suspend_log++;
+                }
+            }
             if (tlb_trace_window_active(m) && tlb_passthrough_log_count < 96) {
                 fprintf(stderr,
                         "[TLB_PASS] intno=%u PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
