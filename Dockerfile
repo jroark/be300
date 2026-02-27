@@ -40,8 +40,17 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-dev \
     libpixman-1-dev \
     libfdt-dev \
-    libunicorn-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Build and install Unicorn 2.1.4 from source
+RUN git clone https://github.com/unicorn-engine/unicorn.git /tmp/unicorn && \
+    cd /tmp/unicorn && \
+    git checkout 2.1.4 && \
+    mkdir build && cd build && \
+    cmake .. -DUNICORN_ARCH=mips -DUNICORN_HAS_MIPS=ON -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc) && \
+    make install && \
+    cd / && rm -rf /tmp/unicorn && ldconfig
 
 # Install MIPS and MIPS64 cross-compilers (little-endian)
 RUN apt-get update && apt-get install -y \

@@ -179,8 +179,8 @@ same address.
 ## Verification Commands
 
 ```bash
-# Build and run tests
-mkdir -p build && cd build
+# Build and run tests (HOST)
+mkdir -p build-host && cd build-host
 cmake .. -DCMAKE_OSX_ARCHITECTURES=arm64  # arm64 for M1/M2/M3 Macs
 make -j$(sysctl -n hw.ncpu)
 ./test_basic
@@ -227,7 +227,7 @@ llvm-objdump -d --start-address=0x<VA> --stop-address=0x<VA+N> linux4be20040908/
    docker compose run --rm mips-dev /bin/bash
 
    # Inside the container
-   mkdir -p build && cd build
+   mkdir -p build-docker && cd build-docker
    cmake ..
    make -j$(nproc)
    timeout 120s ./be300 --kernel ../linux4be20040908/vmlinux \
