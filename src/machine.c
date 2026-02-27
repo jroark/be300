@@ -183,6 +183,84 @@ static bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out)
     return false;
 }
 
+/*
+ * Execve pointer shim:
+ * 2.4 init code invokes execve() from kernel context with kernel pointers.
+ * If addr_limit is USER_DS on this path, copy_from_user-style checks reject
+ * those kseg pointers with -EFAULT.  Re-home filename/argv/envp into a stable
+ * mapped kuseg scratch page and rewrite A0/A1/A2 to user-space addresses.
+ */
+static bool prepare_execve_user_ptrs(uc_engine *uc,
+                                     uint64_t old_a0, uint64_t old_a1, uint64_t old_a2,
+                                     uint32_t *new_a0, uint32_t *new_a1, uint32_t *new_a2)
+{
+    const uint32_t base = 0x01020000u;
+    const uint32_t argv_base = base + 0x00000020u;
+    const uint32_t envp_base = base + 0x00000080u;
+    const uint32_t str_base  = base + 0x00000200u;
+    uint32_t str_cur = str_base;
+
+    char s[192];
+    if (read_guest_string(uc, old_a0, s, sizeof(s)) <= 0)
+        return false;
+    if (uc_mem_write(uc, str_cur, s, strlen(s) + 1) != UC_ERR_OK)
+        return false;
+    *new_a0 = str_cur;
+    str_cur += (uint32_t)strlen(s) + 1u;
+
+    if ((uint32_t)old_a1 != 0) {
+        for (int i = 0; i < 15; i++) {
+            uint32_t p = 0;
+            uint32_t dst = 0;
+            if (!read_guest_u32(uc, old_a1 + (uint64_t)(i * 4), &p))
+                return false;
+            if (p == 0) {
+                if (uc_mem_write(uc, argv_base + (uint32_t)(i * 4), &dst, 4) != UC_ERR_OK)
+                    return false;
+                break;
+            }
+            if (read_guest_string(uc, p, s, sizeof(s)) <= 0)
+                return false;
+            dst = str_cur;
+            if (uc_mem_write(uc, str_cur, s, strlen(s) + 1) != UC_ERR_OK)
+                return false;
+            if (uc_mem_write(uc, argv_base + (uint32_t)(i * 4), &dst, 4) != UC_ERR_OK)
+                return false;
+            str_cur += (uint32_t)strlen(s) + 1u;
+        }
+        *new_a1 = argv_base;
+    } else {
+        *new_a1 = 0;
+    }
+
+    if ((uint32_t)old_a2 != 0) {
+        for (int i = 0; i < 15; i++) {
+            uint32_t p = 0;
+            uint32_t dst = 0;
+            if (!read_guest_u32(uc, old_a2 + (uint64_t)(i * 4), &p))
+                return false;
+            if (p == 0) {
+                if (uc_mem_write(uc, envp_base + (uint32_t)(i * 4), &dst, 4) != UC_ERR_OK)
+                    return false;
+                break;
+            }
+            if (read_guest_string(uc, p, s, sizeof(s)) <= 0)
+                return false;
+            dst = str_cur;
+            if (uc_mem_write(uc, str_cur, s, strlen(s) + 1) != UC_ERR_OK)
+                return false;
+            if (uc_mem_write(uc, envp_base + (uint32_t)(i * 4), &dst, 4) != UC_ERR_OK)
+                return false;
+            str_cur += (uint32_t)strlen(s) + 1u;
+        }
+        *new_a2 = envp_base;
+    } else {
+        *new_a2 = 0;
+    }
+
+    return true;
+}
+
 static uc_err write_mem_best_effort(uc_engine *uc, uint64_t address,
                                     const void *data, size_t size)
 {
@@ -900,6 +978,32 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
         uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
         uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+        uint64_t old_a0 = a0, old_a1 = a1, old_a2 = a2;
+
+        if ((uint32_t)v0 == 4011u) {
+            uint32_t sh_a0 = 0, sh_a1 = 0, sh_a2 = 0;
+            if (prepare_execve_user_ptrs(uc, a0, a1, a2, &sh_a0, &sh_a1, &sh_a2)) {
+                uint64_t na0 = sh_a0, na1 = sh_a1, na2 = sh_a2;
+                uc_reg_write(uc, UC_MIPS_REG_A0, &na0);
+                uc_reg_write(uc, UC_MIPS_REG_A1, &na1);
+                uc_reg_write(uc, UC_MIPS_REG_A2, &na2);
+                a0 = na0;
+                a1 = na1;
+                a2 = na2;
+                static uint32_t execve_shim_log = 0;
+                if (execve_shim_log < 32) {
+                    fprintf(stderr,
+                            "[EXECVE_SHIM] a0:0x%08" PRIX64 "->0x%08" PRIX64
+                            " a1:0x%08" PRIX64 "->0x%08" PRIX64
+                            " a2:0x%08" PRIX64 "->0x%08" PRIX64 "\n",
+                            (uint64_t)(uint32_t)old_a0, (uint64_t)(uint32_t)a0,
+                            (uint64_t)(uint32_t)old_a1, (uint64_t)(uint32_t)a1,
+                            (uint64_t)(uint32_t)old_a2, (uint64_t)(uint32_t)a2);
+                    execve_shim_log++;
+                }
+            }
+        }
+
         char a0s[128] = "<unreadable>";
         read_guest_string(uc, a0, a0s, sizeof(a0s));
 
