@@ -164,20 +164,13 @@ static bool mem_unmapped_hook(uc_engine *uc, uc_mem_type type,
     return false;
 }
 
-static bool map_kseg_mirror_block(machine_t *m, uint64_t va_block)
+static bool map_kseg_alias_block(machine_t *m, uint64_t map_base, uint64_t pa_base)
 {
-    uint32_t va32 = (uint32_t)va_block;
-    if (va32 < 0x80000000u || va32 > 0xBFFFFFFFu)
-        return false;
-
-    uint64_t map_base = (uint64_t)(int64_t)(int32_t)va32;
-    uint64_t pa_base = (uint64_t)(va32 & 0x1FFFFFFFu);
     uc_err me = uc_mem_map(m->uc, map_base, 0x100000, UC_PROT_ALL);
     if (me != UC_ERR_OK && me != UC_ERR_MAP)
         return false;
 
     if (me == UC_ERR_OK) {
-        /* Populate the mirrored VA block from underlying PA bytes. */
         uint8_t buf[4096];
         for (uint64_t off = 0; off < 0x100000; off += sizeof(buf)) {
             if (uc_mem_read(m->uc, pa_base + off, buf, sizeof(buf)) != UC_ERR_OK)
@@ -186,6 +179,32 @@ static bool map_kseg_mirror_block(machine_t *m, uint64_t va_block)
                 break;
         }
     }
+    return true;
+}
+
+static bool map_kseg_mirror_block(machine_t *m, uint64_t va_block)
+{
+    uint32_t va32 = (uint32_t)va_block;
+    if (va32 < 0x80000000u || va32 > 0xBFFFFFFFu)
+        return false;
+
+    uint64_t map_base = (uint64_t)(int64_t)(int32_t)va32;
+    uint64_t map_base_zero = (uint64_t)va32;
+    uint64_t pa_base = (uint64_t)(va32 & 0x1FFFFFFFu);
+    bool mapped_any = false;
+
+    if (map_kseg_alias_block(m, map_base, pa_base))
+        mapped_any = true;
+
+    /*
+     * Some Unicorn paths surface zero-extended 0x8000xxxx VAs in MIPS64 mode.
+     * Mirror both aliases so exception-vector fetches can resolve either form.
+     */
+    if (map_base_zero != map_base && map_kseg_alias_block(m, map_base_zero, pa_base))
+        mapped_any = true;
+
+    if (!mapped_any)
+        return false;
     return true;
 }
 
@@ -2502,8 +2521,10 @@ void machine_run(machine_t *m)
                  * derived from registers and retry execution.
                  */
                 uint64_t badv = 0, at = 0, a0 = 0, a1 = 0, a2 = 0, k0 = 0, k1 = 0, t2 = 0, sp = 0;
+                uc_mem_type fault_type = (uc_mem_type)0;
                 if (m->last_unmapped_valid) {
                     badv = m->last_unmapped_addr;
+                    fault_type = m->last_unmapped_type;
                 } else if (m->shadow_cp0_badvaddr != 0) {
                     badv = m->shadow_cp0_badvaddr;
                 }
@@ -2516,11 +2537,11 @@ void machine_run(machine_t *m)
                 uc_reg_read(m->uc, UC_MIPS_REG_K1, &k1);
                 uc_reg_read(m->uc, UC_MIPS_REG_T2, &t2);
                 uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
-                uint64_t candidates[9] = { badv, at, a0, a1, a2, k0, k1, t2, sp };
-                const char *names[9] = { "badv", "at", "a0", "a1", "a2", "k0", "k1", "t2", "sp" };
+                uint64_t candidates[10] = { bad_pc, badv, at, a0, a1, a2, k0, k1, t2, sp };
+                const char *names[10] = { "pc", "badv", "at", "a0", "a1", "a2", "k0", "k1", "t2", "sp" };
                 bool mapped_any = false;
 
-                for (int i = 0; i < 9; i++) {
+                for (int i = 0; i < 10; i++) {
                     uint64_t va = candidates[i];
                     uint32_t va32 = (uint32_t)va;
                     if (va32 < 0x1000u)
@@ -2537,11 +2558,16 @@ void machine_run(machine_t *m)
 
                     if (mapped) {
                         if (!mapped_any) {
+                            uint32_t bad_insn = 0xFFFFFFFFu;
+                            read_insn_best_effort(m->uc, bad_pc, &bad_insn);
                             fprintf(stderr,
                                     "[MACHINE] read-unmapped recovery at PC=0x%08" PRIX64
-                                    " badv=0x%08" PRIX64 "\n",
+                                    " badv=0x%08" PRIX64
+                                    " type=%d insn=0x%08X\n",
                                     (uint64_t)(uint32_t)bad_pc,
-                                    (uint64_t)(uint32_t)badv);
+                                    (uint64_t)(uint32_t)badv,
+                                    (int)fault_type,
+                                    bad_insn);
                         }
                         fprintf(stderr,
                                 "[MACHINE]   mapped block 0x%08" PRIX64 " via $%s=0x%08" PRIX64 "\n",
