@@ -72,8 +72,10 @@ static uint64_t mmio_read_cb(uc_engine *uc, uint64_t offset,
         val = pmu_read(&m->pmu, (uint32_t)(offset - IO_PMU_BASE), size);
     else if (offset >= IO_CMU_BASE && offset < IO_CMU_BASE + IO_CMU_SIZE)
         val = cmu_read(&m->cmu, (uint32_t)(offset - IO_CMU_BASE), size);
-    else if (offset >= IO_ICU_BASE && offset < IO_ICU_BASE + IO_ICU_SIZE)
+    else if (offset >= IO_ICU_BASE && offset < IO_ICU_BASE + IO_ICU_SIZE) {
+        m->saw_icu_mmio = true;
         val = icu_read(&m->icu, (uint32_t)(offset - IO_ICU_BASE), size);
+    }
     else if (offset >= IO_RTC_BASE && offset < IO_RTC_BASE + IO_RTC_SIZE)
         val = rtc_read(&m->rtc, (uint32_t)(offset - IO_RTC_BASE), size);
     else if (offset >= IO_GPIO_BASE && offset < IO_GPIO_BASE + IO_GPIO_SIZE)
@@ -108,8 +110,10 @@ static void mmio_write_cb(uc_engine *uc, uint64_t offset,
         pmu_write(&m->pmu, (uint32_t)(offset - IO_PMU_BASE), size, (uint32_t)value);
     else if (offset >= IO_CMU_BASE && offset < IO_CMU_BASE + IO_CMU_SIZE)
         cmu_write(&m->cmu, (uint32_t)(offset - IO_CMU_BASE), size, (uint32_t)value);
-    else if (offset >= IO_ICU_BASE && offset < IO_ICU_BASE + IO_ICU_SIZE)
+    else if (offset >= IO_ICU_BASE && offset < IO_ICU_BASE + IO_ICU_SIZE) {
+        m->saw_icu_mmio = true;
         icu_write(&m->icu, (uint32_t)(offset - IO_ICU_BASE), size, (uint32_t)value);
+    }
     else if (offset >= IO_RTC_BASE && offset < IO_RTC_BASE + IO_RTC_SIZE)
         rtc_write(&m->rtc, (uint32_t)(offset - IO_RTC_BASE), size, (uint32_t)value);
     else if (offset >= IO_GPIO_BASE && offset < IO_GPIO_BASE + IO_GPIO_SIZE)

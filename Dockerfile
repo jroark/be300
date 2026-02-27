@@ -40,10 +40,10 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-dev \
     libpixman-1-dev \
     libfdt-dev \
+    libunicorn-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install MIPS and MIPS64 cross-compilers (little-endian)
-# Note: For MIPS64EL, the suffix 'abi64' is required in Ubuntu repositories.
 RUN apt-get update && apt-get install -y \
     gcc-mipsel-linux-gnu \
     g++-mipsel-linux-gnu \
@@ -57,9 +57,6 @@ RUN apt-get update && apt-get install -y \
 
 # Set up work directory
 WORKDIR /work
-
-# Default pkg-config search path for the locally built Unicorn
-ENV PKG_CONFIG_PATH=/work/third_party/unicorn-linux/lib/pkgconfig
 
 # Default to bash
 CMD ["/bin/bash"]

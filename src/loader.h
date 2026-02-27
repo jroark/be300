@@ -27,4 +27,6 @@ int loader_load_ram(machine_t *m, const char *path);
  *
  * Returns 0 on success, -1 on error.
  */
-int loader_load_elf(machine_t *m, const char *path, uint32_t *entry_va_out);
+int loader_load_elf(machine_t *m, const char *path,
+                    uint32_t *entry_va_out,
+                    uint32_t *jiffies_pa_out);

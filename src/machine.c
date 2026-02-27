@@ -133,7 +133,8 @@ static void update_irq_lines(machine_t *m)
  */
 static void tick_jiffies_hack(machine_t *m)
 {
-    static const uint32_t jiffies_pa = 0x001CD9E0u;
+    static const uint32_t default_jiffies_pa = 0x001CD9E0u;
+    uint32_t jiffies_pa = m->has_jiffies_pa ? m->jiffies_pa : default_jiffies_pa;
     uint32_t j = 0;
     if (uc_mem_read(m->uc, jiffies_pa, &j, sizeof(j)) == UC_ERR_OK) {
         j += 1;
@@ -447,14 +448,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             mfc0_cause_seen_log++;
         }
     }
-    bool irq_cause_stage_pc = ((uint32_t)address == 0x80000180u ||
-                               (uint32_t)address == 0x80007700u ||
-                               (uint32_t)address == 0x800077A8u);
     bool should_inject_cause = false;
     if (m->pending_excode == 1u) {
-        /* External interrupt injection: serve at vector entry and
-         * once more in vr41xx_handle_interrupt (which re-reads Cause). */
-        should_inject_cause = irq_cause_stage_pc;
+        /*
+         * External interrupt injection:
+         * keep IP2 visible on all Cause reads while the synthetic IRQ is
+         * in flight. This is less address-fragile across kernel versions
+         * (2.4 vs 2.6 have different handler PCs).
+         */
+        should_inject_cause = true;
     } else if (m->pending_excode != 0) {
         /* SYSCALL and other synthetic exceptions: one-shot Cause inject. */
         should_inject_cause = !m->pending_cause_served;
@@ -469,14 +471,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
          * in intr_hook before arriving here, so they still get the injected value. */
         uint64_t cause = m->pending_cause;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &cause);
-        if (m->pending_excode == 1u) {
-            /*
-             * vr41xx_handle_interrupt re-reads Cause later in the path
-             * (0x800077A8) while selecting the IRQ source. Keep IP2 visible
-             * until that read has been serviced.
-             */
-            m->pending_cause_served = ((uint32_t)address == 0x800077A8u);
-        } else {
+        if (m->pending_excode != 1u) {
             m->pending_cause_served = true;
         }
         if (mfc0_cause_inject_log < 24) {
@@ -1048,6 +1043,7 @@ static void inject_hw_irq_if_pending(machine_t *m)
 
     uint64_t vec = mips_sext(0x80000180u);
     uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
+    m->irq_injected_count++;
 
     if (log_injected < 16) {
         fprintf(stderr,
@@ -1056,6 +1052,64 @@ static void inject_hw_irq_if_pending(machine_t *m)
                 (uint64_t)(uint32_t)pc, s32, m->pending_cause,
                 m->icu.sysint1, m->icu.msysint1, m->rtc.rtcint);
         log_injected++;
+    }
+}
+
+/*
+ * Fallback timer IRQ injection for kernels that never touch VR41xx ICU MMIO.
+ *
+ * Some 2.4 test kernels appear to rely on CP0 timer-style interrupt cadence
+ * during early networking/tasklet bring-up, but do not configure/use the ICU
+ * path implemented above. If no ICU MMIO has been observed after early boot,
+ * periodically inject an interrupt with IP7 set.
+ */
+static void inject_fallback_timer_irq_if_needed(machine_t *m)
+{
+    static uint32_t log_fallback = 0;
+
+    if (m->pending_excode != 0)
+        return;
+    if (m->irq_injected_count > 0)
+        return;
+    if (m->insn_count < 20000000ull)
+        return;
+
+    uint64_t status = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
+    uint32_t s32 = (uint32_t)status;
+
+    /* CPU receptive and IP7 unmasked */
+    if ((s32 & 0x7u) != 0x1u)
+        return;
+    if ((s32 & (1u << 15)) == 0u)
+        return;
+
+    /* Rate-limit to one interrupt every 8 execution batches. */
+    m->fallback_timer_div++;
+    if (m->fallback_timer_div < 8u)
+        return;
+    m->fallback_timer_div = 0;
+
+    uint64_t pc = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+    m->pending_epc          = pc;
+    m->pending_excode       = 1u;
+    m->pending_cause        = (1u << 15); /* IP7 */
+    m->epc_was_written      = false;
+    m->pending_cause_served = false;
+    m->pending_epc_served   = false;
+
+    uint64_t new_status = status | 0x2u;  /* EXL=1 */
+    uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &new_status);
+    uint64_t vec = mips_sext(0x80000180u);
+    uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
+
+    if (log_fallback < 32) {
+        fprintf(stderr,
+                "[IRQ_FALLBACK] injected IP7 EPC=0x%08" PRIX64
+                " STATUS=0x%08X insns=%" PRIu64 "M\n",
+                (uint64_t)(uint32_t)pc, s32, m->insn_count / 1000000ull);
+        log_fallback++;
     }
 }
 
@@ -1189,6 +1243,27 @@ static void checkpoint_hook(uc_engine *uc, uint64_t address,
     } else {
         fprintf(stderr, "[CHECKPOINT] >>> %s <<<\n", checkpoint_table[idx].name);
     }
+}
+
+/*
+ * Arm a focused late-boot trace window when init starts execing /sbin/init.
+ * This gives per-batch visibility into whether uc_emu_start keeps returning
+ * (slow loop) or wedges inside a single batch right after run_init_process.
+ */
+static void run_init_entry_trace_hook(uc_engine *uc, uint64_t address,
+                                      uint32_t size, void *user_data)
+{
+    (void)uc; (void)address; (void)size;
+    machine_t *m = user_data;
+    if (m->post_init_trace_window)
+        return;
+    m->post_init_trace_window = true;
+    m->post_init_trace_batches = 0;
+    if (!m->tlb_trace_window) {
+        m->tlb_trace_window = true;
+        fprintf(stderr, "[TLB_TRACE] armed by run_init_process entry\n");
+    }
+    fprintf(stderr, "[POST_INIT] run_init_process entry -> batch tracing enabled\n");
 }
 
 /*
@@ -1532,6 +1607,10 @@ machine_t *machine_create(const machine_config_t *cfg)
         uc_hook_add(m->uc, &hk, UC_HOOK_CODE, checkpoint_hook,
                     (void *)(uintptr_t)i, va, va);
     }
+    {
+        uint64_t va = mips_sext(0x80001598u); /* run_init_process */
+        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, run_init_entry_trace_hook, m, va, va);
+    }
 
     /* do_initcalls tracer: logs which function pointer is called at JALR site */
     initcall_trace_count = 0;
@@ -1615,12 +1694,21 @@ machine_t *machine_create(const machine_config_t *cfg)
     /* Kernel direct-boot mode: load ELF and set entry point */
     if (cfg->kernel_path) {
         uint32_t entry_va = 0;
-        if (loader_load_elf(m, cfg->kernel_path, &entry_va) != 0) {
+        uint32_t jiffies_pa = 0;
+        if (loader_load_elf(m, cfg->kernel_path, &entry_va, &jiffies_pa) != 0) {
             fprintf(stderr, "[MACHINE] Kernel ELF load failed\n");
             machine_destroy(m);
             return NULL;
         }
         m->kernel_entry = mips_sext(entry_va);
+        if (jiffies_pa != 0) {
+            m->jiffies_pa = jiffies_pa;
+            m->has_jiffies_pa = true;
+            fprintf(stderr, "[MACHINE] jiffies tick target PA=0x%08X\n", m->jiffies_pa);
+        } else {
+            m->jiffies_pa = 0;
+            m->has_jiffies_pa = false;
+        }
 
         /*
          * MIPS Linux prom_init() calling convention (linux4.be / arch/mips/vr41xx):
@@ -1722,11 +1810,14 @@ void machine_destroy(machine_t *m)
  * internally; they are transparent to this loop.
  */
 #define BATCH_SIZE 100000u
+#define POST_INIT_BATCH_SIZE 1000u
 
 void machine_run(machine_t *m)
 {
     m->running    = true;
     m->insn_count = 0;
+    m->post_init_trace_window = false;
+    m->post_init_trace_batches = 0;
     int write_unmapped_recoveries = 0;
 
     fprintf(stderr, "[MACHINE] Starting execution at VA 0x%016" PRIX64 "\n",
@@ -1746,9 +1837,33 @@ void machine_run(machine_t *m)
          * pending, unmasked source and the CPU is receptive.  The injected
          * PC redirect is picked up by the uc_reg_read(PC) below. */
         inject_hw_irq_if_pending(m);
+        inject_fallback_timer_irq_if_needed(m);
 
         uint64_t pc = 0;
         uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+
+        if (m->post_init_trace_window) {
+            if (m->post_init_trace_batches < 512u) {
+                uint64_t status = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
+                fprintf(stderr,
+                        "[POST_INIT] batch=%u pre PC=0x%08" PRIX64
+                        " STATUS=0x%08" PRIX64
+                        " pending_excode=%u pending_epc=0x%08" PRIX64
+                        " pending_cause=0x%08X epc_written=%u served_epc=%u served_cause=%u\n",
+                        m->post_init_trace_batches,
+                        (uint64_t)(uint32_t)pc, status,
+                        m->pending_excode, (uint64_t)(uint32_t)m->pending_epc,
+                        m->pending_cause,
+                        m->epc_was_written ? 1u : 0u,
+                        m->pending_epc_served ? 1u : 0u,
+                        m->pending_cause_served ? 1u : 0u);
+                m->post_init_trace_batches++;
+            } else if (m->post_init_trace_batches == 512u) {
+                fprintf(stderr, "[POST_INIT] batch trace suppressed after 512 samples\n");
+                m->post_init_trace_batches++;
+            }
+        }
 
         /* Periodic PC sample: log PC every 100 batches (~10M insns) to
          * show where execution is spending time when silent. */
@@ -1757,7 +1872,8 @@ void machine_run(machine_t *m)
                     m->insn_count / 1000000, (uint64_t)(uint32_t)pc);
         }
 
-        uc_err err = uc_emu_start(m->uc, pc, 0, 0, BATCH_SIZE);
+        uint32_t step_count = m->post_init_trace_window ? POST_INIT_BATCH_SIZE : BATCH_SIZE;
+        uc_err err = uc_emu_start(m->uc, pc, 0, 0, step_count);
 
         if (err != UC_ERR_OK) {
             uint64_t bad_pc = 0;
@@ -1843,7 +1959,7 @@ void machine_run(machine_t *m)
         }
 
         if (!m->cfg.trace)
-            m->insn_count += BATCH_SIZE;
+            m->insn_count += step_count;
     }
 
     fprintf(stderr, "[MACHINE] Stopped after %" PRIu64 " instructions\n",

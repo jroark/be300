@@ -53,6 +53,11 @@ struct machine_s {
     gpio_state_t gpio;
 
     uint64_t kernel_entry;  /* VA to start execution from, sign-extended for MIPS64 */
+    uint32_t jiffies_pa;    /* PA of kernel jiffies symbol (resolved from ELF) */
+    bool     has_jiffies_pa;
+    bool     saw_icu_mmio;  /* true once guest touches ICU MMIO window */
+    uint32_t fallback_timer_div;
+    uint64_t irq_injected_count;
     uint64_t insn_count;
     bool     running;
 
@@ -90,6 +95,8 @@ struct machine_s {
 
     /* Late-boot TLB/refill debug window (armed near run_init_process). */
     bool     tlb_trace_window;
+    bool     post_init_trace_window;
+    uint32_t post_init_trace_batches;
 
     /* Runtime instruction patching: temporarily rewrite tlbwi -> tlbwr. */
     bool     tlbwi_patch_pending;
