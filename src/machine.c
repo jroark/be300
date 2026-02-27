@@ -1050,7 +1050,30 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                     read_insn_best_effort(uc, pc - 4u, &prev_insn) &&
                                     prev_insn == 0x0000000Cu);
             static uint32_t tlb_nested_keep_log = 0;
+            static uint32_t tlb_nested_defer_log = 0;
             if (at_syscall_site && m->pending_excode == MIPS_EXCCODE_SYS) {
+                /*
+                 * Some Unicorn builds surface intno=26/27 at EPC+4 with EXL=0.
+                 * In that state, do not mutate syscall bookkeeping here: we are
+                 * no longer in exception context, and re-arming Cause/EPC can
+                 * corrupt later syscall-exit state.
+                 */
+                if ((status & 0x2u) == 0u) {
+                    if (tlb_nested_defer_log < 64) {
+                        uint64_t v0 = 0, a3 = 0;
+                        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                        uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                        fprintf(stderr,
+                                "[TLB_NESTED_DEFER] intno=%u PC=0x%08" PRIX64
+                                " STATUS=0x%08" PRIX64 " pending_epc=0x%08" PRIX64
+                                " v0=0x%08" PRIX64 " a3=0x%08" PRIX64 "\n",
+                                intno, (uint64_t)(uint32_t)pc, status,
+                                (uint64_t)(uint32_t)m->pending_epc,
+                                (uint64_t)(uint32_t)v0, (uint64_t)(uint32_t)a3);
+                        tlb_nested_defer_log++;
+                    }
+                    return;
+                }
                 bool old_cause_served = m->pending_cause_served;
                 bool old_epc_served = m->pending_epc_served;
                 /*
@@ -1388,9 +1411,26 @@ static void inject_hw_irq_if_pending(machine_t *m)
             } else if (m->pending_excode == MIPS_EXCCODE_SYS) {
                 static uint32_t log_syscall_exl_drop = 0;
                 static uint32_t log_syscall_ret_fallback = 0;
-                if (log_syscall_exl_drop < 32) {
-                    uint64_t pc = 0;
-                    uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+                uint64_t pc = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+                uint32_t ret_site = (uint32_t)m->pending_epc + 4u;
+                bool at_ret_site = ((uint32_t)pc == ret_site);
+                if (!at_ret_site) {
+                    if (log_syscall_exl_drop < 64) {
+                        fprintf(stderr,
+                                "[IRQ_GATE] syscall_exl_drop_defer pending_excode=%u"
+                                " PC=0x%08" PRIX64 " STATUS=0x%08X pending_epc=0x%08" PRIX64
+                                " ret_site=0x%08X epc_written=%u served_epc=%u served_cause=%u\n",
+                                m->pending_excode, (uint64_t)(uint32_t)pc, status,
+                                (uint64_t)(uint32_t)m->pending_epc, ret_site,
+                                m->epc_was_written ? 1u : 0u,
+                                m->pending_epc_served ? 1u : 0u,
+                                m->pending_cause_served ? 1u : 0u);
+                        log_syscall_exl_drop++;
+                    }
+                    return;
+                }
+                if (log_syscall_exl_drop < 64) {
                     fprintf(stderr,
                             "[IRQ_GATE] syscall_exl_drop pending_excode=%u PC=0x%08" PRIX64
                             " STATUS=0x%08X pending_epc=0x%08" PRIX64
@@ -1403,8 +1443,7 @@ static void inject_hw_irq_if_pending(machine_t *m)
                     log_syscall_exl_drop++;
                 }
                 if (log_syscall_ret_fallback < 64) {
-                    uint64_t pc = 0, v0 = 0, a3 = 0;
-                    uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+                    uint64_t v0 = 0, a3 = 0;
                     uc_reg_read(m->uc, UC_MIPS_REG_V0, &v0);
                     uc_reg_read(m->uc, UC_MIPS_REG_A3, &a3);
                     fprintf(stderr,
