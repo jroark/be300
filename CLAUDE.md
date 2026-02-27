@@ -225,23 +225,21 @@ llvm-objdump -d --start-address=0x<VA> --stop-address=0x<VA+N> linux4be20040908/
    timeout 120s ./be300 --kernel ../linux4be20040908/vmlinux \
      > docker_stdout.log 2> docker_stderr.log
    ```
-   The image installs clang/meson/ninja plus mipsel cross-compilers.
+   The image installs clang/meson/ninja plus mipsel cross-compilers and
+   libunicorn-dev.
    Base packages now include `gdb`, `gdb-multiarch`, `strace`, and `ltrace` for
    cross-debugging.
 
-2. **Unicorn for macOS vs. Linux:**
-   - macOS hosts use the system-installed or Homebrew unicorn (found via CMake).
-
-3. **Logs & artifacts:**
+2. **Logs & artifacts:**
    - Always capture both stdout and stderr from emulator runs (`docker_*.log`).
    - RCU/TLBS instrumentation prints to stderr; grep for `CHECKPOINT`, `TLB_INJECT`,
      `MTC0_EPC`, etc.
 
-4. **Kernel sources:**
+3. **Kernel sources:**
    - `kernels/kernel-2.6/` holds the patched BE-300 kernel tree used to produce
      `linux4be20040908/vmlinux`. Consult it when symbol hunting or adjusting
      platform-specific code (`arch/mips/vr41xx/...`).
 
-5. **Commit etiquette:** every investigation (successful or not) gets its own
+4. **Commit etiquette:** every investigation (successful or not) gets its own
    commit summarizing what happened, what was learned, and next steps, then
    push to `claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`.
