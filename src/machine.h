@@ -92,6 +92,9 @@ struct machine_s {
     uint64_t shadow_cp0_badvaddr;
     uint64_t shadow_cp0_entryhi;
     uint64_t shadow_cp0_epc;
+    uint64_t last_unmapped_addr;     /* fault VA reported by mem_unmapped_hook */
+    uc_mem_type last_unmapped_type;  /* corresponding UC_MEM_* access type      */
+    bool     last_unmapped_valid;
 
     /* Deferred MFC0 readback (value is observed from $rt at the following insn). */
     bool     cp0_readback_pending;

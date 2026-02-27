@@ -148,6 +148,9 @@ static bool mem_unmapped_hook(uc_engine *uc, uc_mem_type type,
 {
     (void)uc;
     machine_t *m = user_data;
+    m->last_unmapped_addr = address;
+    m->last_unmapped_type = type;
+    m->last_unmapped_valid = true;
     uint64_t pc = 0, status = 0;
     uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
     uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
@@ -1031,6 +1034,9 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             if (at_syscall_site && m->pending_excode == MIPS_EXCCODE_SYS) {
                 if ((status & 0x2u) == 0u) {
                     static uint32_t syscall_stale_drop_log = 0;
+                    uint64_t v0 = 0, a3 = 0;
+                    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
                     m->pending_epc          = 0;
                     m->pending_excode       = 0;
                     m->pending_cause        = 0;
@@ -1041,8 +1047,12 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     if (syscall_stale_drop_log < 64) {
                         fprintf(stderr,
                                 "[SYSCALL_STALE_DROP] intno=%u PC=0x%08" PRIX64
-                                " prev=0x%08X STATUS=0x%08" PRIX64 "\n",
-                                intno, (uint64_t)(uint32_t)pc, prev_insn, status);
+                                " prev=0x%08X STATUS=0x%08" PRIX64
+                                " nr=%u v0=0x%08" PRIX64 " a3=0x%08" PRIX64 "\n",
+                                intno, (uint64_t)(uint32_t)pc, prev_insn, status,
+                                m->pending_syscall_nr,
+                                (uint64_t)(uint32_t)v0,
+                                (uint64_t)(uint32_t)a3);
                         syscall_stale_drop_log++;
                     }
                     return;
@@ -2492,6 +2502,12 @@ void machine_run(machine_t *m)
                  * derived from registers and retry execution.
                  */
                 uint64_t badv = 0, at = 0, a0 = 0, a1 = 0, a2 = 0, k0 = 0, k1 = 0, t2 = 0, sp = 0;
+                if (m->last_unmapped_valid) {
+                    badv = m->last_unmapped_addr;
+                } else if (m->shadow_cp0_badvaddr != 0) {
+                    badv = m->shadow_cp0_badvaddr;
+                }
+                m->last_unmapped_valid = false;
                 uc_reg_read(m->uc, UC_MIPS_REG_AT, &at);
                 uc_reg_read(m->uc, UC_MIPS_REG_A0, &a0);
                 uc_reg_read(m->uc, UC_MIPS_REG_A1, &a1);
