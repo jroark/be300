@@ -940,6 +940,27 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         }
         if (intno == 26u || intno == 27u) {
             /*
+             * Guard against misclassifying a syscall-site interrupt as nested
+             * TLB traffic. We have observed intno=26 at PC=syscall+4 with
+             * (PC-4)==SYSCALL encoding; clearing synthetic syscall state there
+             * corrupts return-path bookkeeping and can crash at 0x80000180.
+             */
+            uint32_t prev_insn = 0;
+            bool at_syscall_site = (pc >= 4u &&
+                                    read_insn_best_effort(uc, pc - 4u, &prev_insn) &&
+                                    prev_insn == 0x0000000Cu);
+            static uint32_t tlb_nested_keep_log = 0;
+            if (at_syscall_site && m->pending_excode == MIPS_EXCCODE_SYS) {
+                if (tlb_nested_keep_log < 64) {
+                    fprintf(stderr,
+                            "[TLB_NESTED_KEEP] kept syscall excode for intno=%u"
+                            " at PC=0x%08" PRIX64 " (prev=0x%08X)\n",
+                            intno, (uint64_t)(uint32_t)pc, prev_insn);
+                    tlb_nested_keep_log++;
+                }
+                return;
+            }
+            /*
              * Let Unicorn/QEMU deliver TLBL/TLBS natively.
              * Manual reinjection here caused a hard failure path:
              *   intno=26/27 -> forced vector -> UC_ERR_READ_UNMAPPED @ 0x80000000.
