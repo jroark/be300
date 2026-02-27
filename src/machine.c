@@ -74,7 +74,7 @@ static inline bool tlb_trace_window_active(const machine_t *m)
     return m->tlb_trace_window;
 }
 
-static void save_pending_exception(machine_t *m)
+static void __attribute__((unused)) save_pending_exception(machine_t *m)
 {
     if (m->has_saved_exception)
         return;
@@ -736,77 +736,20 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     m->pending_cause_served ? 1u : 0u);
             intr_log_count_27_detail++;
         }
-        if (intno == 26u) {
+        if (intno == 26u || intno == 27u) {
             /*
-             * Treat intno=26 as TLBL and route it to the refill vector.
-             * Unlike TLBS (which we currently force through 0x80000180 for
-             * stability), TLBL here appears immediately after tlbwi and is more
-             * likely to be a canonical refill-path event.
+             * Let Unicorn/QEMU deliver TLBL/TLBS natively.
+             * Manual reinjection here caused a hard failure path:
+             *   intno=26/27 -> forced vector -> UC_ERR_READ_UNMAPPED @ 0x80000000.
              */
-            static uint32_t tlbl_inject_log_count = 0;
-            uint32_t excode = MIPS_EXCCODE_TLBL;
-            save_pending_exception(m);
-
-            m->pending_epc          = pc;
-            m->pending_excode       = excode;
-            m->pending_cause        = (uint32_t)(excode << 2);
-            m->epc_was_written      = false;
-            m->pending_cause_served = false;
-            m->pending_epc_served   = false;
-
-            uint32_t vec32 = 0x80000000u;
-            uint64_t new_status = status | 0x2u;  /* EXL=1 */
-            uint64_t vec = mips_sext(vec32);
-            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &new_status);
-            uc_reg_write(uc, UC_MIPS_REG_PC, &vec);
-
-            if (tlbl_inject_log_count < 64) {
+            static uint32_t tlb_passthrough_log_count = 0;
+            if (tlb_trace_window_active(m) && tlb_passthrough_log_count < 96) {
                 fprintf(stderr,
-                        "[TLB_INJECT] intno=%u excode=%u EPC=0x%08" PRIX64
-                        " vec=0x%08X STATUS=0x%08" PRIX64
-                        " saved=%u pending_excode=%u\n",
-                        intno, excode, (uint64_t)(uint32_t)pc, vec32, new_status,
-                        m->has_saved_exception ? 1u : 0u, m->pending_excode);
-                tlbl_inject_log_count++;
-            }
-            return;
-        }
-        if (intno == 27u) {
-            static uint32_t tlbs_inject_log_count = 0;
-            uint32_t excode = MIPS_EXCCODE_TLBS;
-            /*
-             * Unicorn marks all UC_HOOK_INTR callbacks as "caught". If we do
-             * nothing here, EXCP_TLBS/TLBL never reaches mips_cpu_do_interrupt().
-             * Manually inject a TLB exception entry so the guest handler can run.
-             */
-            save_pending_exception(m);
-
-            m->pending_epc          = pc;  /* Unicorn reports fault PC directly. */
-            m->pending_excode       = excode;
-            m->pending_cause        = (uint32_t)(excode << 2);
-            m->epc_was_written      = false;
-            m->pending_cause_served = false;
-            m->pending_epc_served   = false;
-
-            /*
-             * Route TLBS to the general exception vector.
-             * Fast refill (0x80000000) executes tlbwr but currently trips
-             * UC_ERR_READ_UNMAPPED immediately after the write.
-             */
-            uint32_t vec32 = 0x80000180u;
-            uint64_t new_status = status | 0x2u;  /* EXL=1 */
-            uint64_t vec = mips_sext(vec32);
-            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &new_status);
-            uc_reg_write(uc, UC_MIPS_REG_PC, &vec);
-
-            if (tlbs_inject_log_count < 96) {
-                fprintf(stderr,
-                        "[TLB_INJECT] intno=%u excode=%u EPC=0x%08" PRIX64
-                        " vec=0x%08X STATUS=0x%08" PRIX64
-                        " saved=%u pending_excode=%u\n",
-                        intno, excode, (uint64_t)(uint32_t)pc, vec32, new_status,
-                        m->has_saved_exception ? 1u : 0u, m->pending_excode);
-                tlbs_inject_log_count++;
+                        "[TLB_PASS] intno=%u PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
+                        " pending_excode=%u pending_epc=0x%08" PRIX64 "\n",
+                        intno, (uint64_t)(uint32_t)pc, status,
+                        m->pending_excode, (uint64_t)(uint32_t)m->pending_epc);
+                tlb_passthrough_log_count++;
             }
             return;
         }
@@ -1545,6 +1488,7 @@ machine_t *machine_create(const machine_config_t *cfg)
             { 0x20000000u, 0x60000000u, "0x20000000–0x7FFFFFFF" }, /* after ROM, top of kuseg */
         };
         for (int gi = 0; gi < 4; gi++) {
+            fprintf(stderr, "[MACHINE] user-space pre-map begin %s\n", gaps[gi].name);
             /* User-space gaps are only used for kernel writes until
              * user space actually runs, so keep them RW to avoid
              * Unicorn generating TBs (and invalidation) on macOS. */

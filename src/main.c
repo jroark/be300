@@ -24,6 +24,9 @@ static void usage(const char *prog)
 
 int main(int argc, char *argv[])
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     machine_config_t cfg = {
         .trace       = false,
         .log_mmio    = false,
