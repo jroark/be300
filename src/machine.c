@@ -951,6 +951,23 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                     prev_insn == 0x0000000Cu);
             static uint32_t tlb_nested_keep_log = 0;
             if (at_syscall_site && m->pending_excode == MIPS_EXCCODE_SYS) {
+                if ((status & 0x2u) == 0u) {
+                    static uint32_t syscall_stale_drop_log = 0;
+                    m->pending_epc          = 0;
+                    m->pending_excode       = 0;
+                    m->pending_cause        = 0;
+                    m->epc_was_written      = false;
+                    m->pending_cause_served = false;
+                    m->pending_epc_served   = false;
+                    m->has_saved_exception  = false;
+                    if (syscall_stale_drop_log < 64) {
+                        fprintf(stderr,
+                                "[SYSCALL_STALE_DROP] intno=%u PC=0x%08" PRIX64
+                                " prev=0x%08X STATUS=0x%08" PRIX64 "\n",
+                                intno, (uint64_t)(uint32_t)pc, prev_insn, status);
+                        syscall_stale_drop_log++;
+                    }
+                }
                 if (tlb_nested_keep_log < 64) {
                     fprintf(stderr,
                             "[TLB_NESTED_KEEP] kept syscall excode for intno=%u"
@@ -1028,6 +1045,26 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
      * They are emulated by intercepting the matching MFC0 / MTC0 / ERET
      * instructions inside prid_hook() below.
      */
+    if (m->pending_excode != 0 && (status & 0x2u) == 0u) {
+        static uint32_t syscall_entry_stale_clear_log = 0;
+        if (syscall_entry_stale_clear_log < 64) {
+            fprintf(stderr,
+                    "[SYSCALL_ENTRY_STALE_CLEAR] intno=%u PC=0x%08" PRIX64
+                    " STATUS=0x%08" PRIX64
+                    " old_excode=%u old_epc=0x%08" PRIX64 "\n",
+                    intno, (uint64_t)(uint32_t)pc, status,
+                    m->pending_excode, (uint64_t)(uint32_t)m->pending_epc);
+            syscall_entry_stale_clear_log++;
+        }
+        m->pending_epc          = 0;
+        m->pending_excode       = 0;
+        m->pending_cause        = 0;
+        m->epc_was_written      = false;
+        m->pending_cause_served = false;
+        m->pending_epc_served   = false;
+        m->has_saved_exception  = false;
+    }
+
     uint64_t epc = pc - 4u;   /* undo the PC advance Unicorn already applied */
     m->pending_epc          = epc;
     m->pending_excode       = MIPS_EXCCODE_SYS;
