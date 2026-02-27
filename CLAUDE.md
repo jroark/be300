@@ -25,7 +25,7 @@ Push with: `git push -u origin claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
 **Kernels**
 - `linux4be20040908/vmlinux`   — ELF32 MIPS LE, 2.6.8.1, built 2004-09-08.
 - `kernels/vmlinux`            - ELF 32-bit LSB executable, MIPS, MIPS-II version 1 (SYSV), statically linked, not stripped, too many notes (256)
-- `kernels/vmlinux_sdlregtest` - ELF32 MIPS LE, Linux version 2.4.18-mips (mouse@mouse.office.altlinux.ru) (gcc version 3.0.4) #325 ��� ��� 20 14:06:02 MSK 2003
+- `kernels/vmlinux_sdlregtest` - ELF32 MIPS LE, Linux version 2.4.18-mips (mouse@mouse.office.altlinux.ru) (gcc version 3.0.4) #325   20 14:06:02 MSK 2003
 - `kernels/vmlinux-mw`         - ELF32 MIPS LE, Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
 - `kernels/vmlinux-pgui-demo`  - ELF32
 - `kernels/vmlinux-pgui-test1` - ELF32
@@ -171,12 +171,17 @@ same address.
 ## Verification Commands
 
 ```bash
-# Build and run with probes
-make -j4 && ./be300 --kernel linux4be20040908/vmlinux > /tmp/be300.out 2> /tmp/be300.err
+# Build and run tests
+mkdir -p build && cd build
+cmake .. -DCMAKE_OSX_ARCHITECTURES=arm64  # arm64 for M1/M2/M3 Macs
+make -j$(sysctl -n hw.ncpu)
+./test_basic
+
+# Run emulator
+./be300 --kernel ../linux4be20040908/vmlinux
 
 # Check probe output
 grep -E '(RCU_PROBE|CHECKPOINT|INITCALL|PROGRESS)' /tmp/be300.err | head -80
-tail -30 /tmp/be300.out
 
 # Symbol lookup
 nm linux4be20040908/vmlinux | grep <symbol>
@@ -214,9 +219,11 @@ llvm-objdump -d --start-address=0x<VA> --stop-address=0x<VA+N> linux4be20040908/
    docker compose run --rm mips-dev /bin/bash
 
    # Inside the container
+   mkdir -p build && cd build
+   cmake ..
    make -j$(nproc)
-   timeout 120s ./be300 --kernel linux4be20040908/vmlinux \
-     > build/docker_stdout.log 2> build/docker_stderr.log
+   timeout 120s ./be300 --kernel ../linux4be20040908/vmlinux \
+     > docker_stdout.log 2> docker_stderr.log
    ```
    The image installs clang/meson/ninja plus mipsel cross-compilers. `PKG_CONFIG_PATH`
    already points at `/work/third_party/unicorn-linux/lib/pkgconfig`, and the
@@ -224,12 +231,12 @@ llvm-objdump -d --start-address=0x<VA> --stop-address=0x<VA+N> linux4be20040908/
    cross-debugging.
 
 2. **Unicorn for macOS vs. Linux:**
-   - macOS hosts use the prepatched dylib under `third_party/unicorn/`.
+   - macOS hosts use the system-installed or Homebrew unicorn (found via CMake).
    - The container builds Unicorn 2.1.4 from source and installs it into
-     `third_party/unicorn-linux/` (Makefile auto-detects the `.so` there).
+     `third_party/unicorn-linux/` (CMake fallback auto-detects it).
 
 3. **Logs & artifacts:**
-   - Always capture both stdout and stderr from emulator runs (`build/docker_*.log`).
+   - Always capture both stdout and stderr from emulator runs (`docker_*.log`).
    - RCU/TLBS instrumentation prints to stderr; grep for `CHECKPOINT`, `TLB_INJECT`,
      `MTC0_EPC`, etc.
 

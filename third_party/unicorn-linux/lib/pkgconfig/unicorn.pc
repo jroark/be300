@@ -1,8 +1,0 @@
-Name: unicorn
-Description: Unicorn emulator engine
-Version: 2.1.4
-libdir=/work/third_party/unicorn-linux/lib
-includedir=/work/third_party/unicorn-linux/include
-Libs: -L${libdir} -lunicorn
-Libs.private: -lpthread -lm
-Cflags: -I${includedir}

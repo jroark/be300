@@ -5,8 +5,6 @@ services:
     volumes:
       - .:/work
     working_dir: /work
-    environment:
-      - PKG_CONFIG_PATH=/work/third_party/unicorn-linux/lib/pkgconfig
     command: /bin/bash
     stdin_open: true
     tty: true

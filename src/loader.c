@@ -15,6 +15,8 @@
 #define ELFCLASS32      1
 #define ELFDATA2LSB     1   /* little-endian */
 #define PT_LOAD         1
+#define SHT_SYMTAB      2
+#define SHT_DYNSYM      11
 
 typedef struct {
     uint8_t  e_ident[16];
@@ -43,6 +45,28 @@ typedef struct {
     uint32_t p_flags;
     uint32_t p_align;
 } __attribute__((packed)) Elf32_Phdr;
+
+typedef struct {
+    uint32_t sh_name;
+    uint32_t sh_type;
+    uint32_t sh_flags;
+    uint32_t sh_addr;
+    uint32_t sh_offset;
+    uint32_t sh_size;
+    uint32_t sh_link;
+    uint32_t sh_info;
+    uint32_t sh_addralign;
+    uint32_t sh_entsize;
+} __attribute__((packed)) Elf32_Shdr;
+
+typedef struct {
+    uint32_t st_name;
+    uint32_t st_value;
+    uint32_t st_size;
+    uint8_t  st_info;
+    uint8_t  st_other;
+    uint16_t st_shndx;
+} __attribute__((packed)) Elf32_Sym;
 
 static int load_file(machine_t *m, const char *path,
                      uint64_t pa, uint64_t region_size,
@@ -114,7 +138,70 @@ int loader_load_ram(machine_t *m, const char *path)
     return load_file(m, path, PA_SDRAM_BASE, m->cfg.sdram_size, "RAM");
 }
 
-int loader_load_elf(machine_t *m, const char *path, uint32_t *entry_va_out)
+static bool find_jiffies_symbol_pa(const uint8_t *data, long fsize,
+                                   const Elf32_Ehdr *eh,
+                                   uint32_t *jiffies_pa_out)
+{
+    if (!jiffies_pa_out)
+        return false;
+    *jiffies_pa_out = 0;
+
+    if (eh->e_shoff == 0 || eh->e_shnum == 0 || eh->e_shentsize < sizeof(Elf32_Shdr))
+        return false;
+    if (eh->e_shoff + (uint32_t)eh->e_shnum * eh->e_shentsize > (uint32_t)fsize)
+        return false;
+
+    const Elf32_Shdr *shdrs = (const Elf32_Shdr *)(data + eh->e_shoff);
+    uint32_t fallback_pa = 0;
+    bool have_fallback = false;
+
+    for (uint32_t i = 0; i < eh->e_shnum; i++) {
+        const Elf32_Shdr *sym_sh = (const Elf32_Shdr *)((const uint8_t *)shdrs + i * eh->e_shentsize);
+        if (sym_sh->sh_type != SHT_SYMTAB && sym_sh->sh_type != SHT_DYNSYM)
+            continue;
+        if (sym_sh->sh_entsize < sizeof(Elf32_Sym) || sym_sh->sh_size < sym_sh->sh_entsize)
+            continue;
+        if (sym_sh->sh_offset + sym_sh->sh_size > (uint32_t)fsize)
+            continue;
+        if (sym_sh->sh_link >= eh->e_shnum)
+            continue;
+
+        const Elf32_Shdr *str_sh = (const Elf32_Shdr *)((const uint8_t *)shdrs + sym_sh->sh_link * eh->e_shentsize);
+        if (str_sh->sh_offset + str_sh->sh_size > (uint32_t)fsize || str_sh->sh_size == 0)
+            continue;
+
+        const uint8_t *strtab = data + str_sh->sh_offset;
+        const Elf32_Sym *syms = (const Elf32_Sym *)(data + sym_sh->sh_offset);
+        uint32_t sym_count = sym_sh->sh_size / sym_sh->sh_entsize;
+
+        for (uint32_t s = 0; s < sym_count; s++) {
+            const Elf32_Sym *sym = (const Elf32_Sym *)((const uint8_t *)syms + s * sym_sh->sh_entsize);
+            if (sym->st_name >= str_sh->sh_size)
+                continue;
+            const char *name = (const char *)(strtab + sym->st_name);
+            uint32_t va = sym->st_value;
+            uint32_t pa = va & 0x1FFFFFFFu;
+            if (strcmp(name, "jiffies") == 0) {
+                *jiffies_pa_out = pa;
+                return true;
+            }
+            if (!have_fallback && strcmp(name, "jiffies_64") == 0) {
+                fallback_pa = pa;
+                have_fallback = true;
+            }
+        }
+    }
+
+    if (have_fallback) {
+        *jiffies_pa_out = fallback_pa;
+        return true;
+    }
+    return false;
+}
+
+int loader_load_elf(machine_t *m, const char *path,
+                    uint32_t *entry_va_out,
+                    uint32_t *jiffies_pa_out)
 {
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -222,6 +309,17 @@ int loader_load_elf(machine_t *m, const char *path, uint32_t *entry_va_out)
     uint32_t entry_va = eh->e_entry;   /* save before free(data) */
     if (entry_va_out)
         *entry_va_out = entry_va;
+
+    if (jiffies_pa_out) {
+        uint32_t jiffies_pa = 0;
+        if (find_jiffies_symbol_pa(data, fsize, eh, &jiffies_pa)) {
+            *jiffies_pa_out = jiffies_pa;
+            fprintf(stderr, "[LOADER] Symbol jiffies PA=0x%08X\n", jiffies_pa);
+        } else {
+            *jiffies_pa_out = 0;
+            fprintf(stderr, "[LOADER] Symbol jiffies not found in ELF symbols\n");
+        }
+    }
 
     free(data);
     fprintf(stderr, "[LOADER] ELF loaded, entry VA=0x%08X\n", entry_va);

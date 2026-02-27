@@ -1,7 +1,21 @@
+# Core emulator binary
 be300
+test_basic
+
+# Build artifacts
 build/
-linux4be/
 *.o
 *.log
 boot_stdout*.txt
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+
+# Project specific ignores
+linux4be/
 linux4be20040908/
+.DS_Store
