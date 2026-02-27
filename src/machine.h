@@ -70,6 +70,31 @@ struct machine_s {
     bool     saved_epc_was_written;
     bool     saved_pending_cause_served;
     bool     saved_pending_epc_served;
+
+    /* CP0 shadow state for TLB/refill diagnostics (Unicorn API lacks CP0 accessors). */
+    uint64_t shadow_cp0_index;
+    uint64_t shadow_cp0_entrylo0;
+    uint64_t shadow_cp0_entrylo1;
+    uint64_t shadow_cp0_context;
+    uint64_t shadow_cp0_pagemask;
+    uint64_t shadow_cp0_badvaddr;
+    uint64_t shadow_cp0_entryhi;
+    uint64_t shadow_cp0_epc;
+
+    /* Deferred MFC0 readback (value is observed from $rt at the following insn). */
+    bool     cp0_readback_pending;
+    uint8_t  cp0_readback_rt;
+    uint8_t  cp0_readback_rd;
+    uint8_t  cp0_readback_sel;
+    uint64_t cp0_readback_next_pc;
+
+    /* Late-boot TLB/refill debug window (armed near run_init_process). */
+    bool     tlb_trace_window;
+
+    /* Runtime instruction patching: temporarily rewrite tlbwi -> tlbwr. */
+    bool     tlbwi_patch_pending;
+    uint64_t tlbwi_patch_addr;
+    uint32_t tlbwi_patch_orig;
 };
 
 machine_t *machine_create(const machine_config_t *cfg);

@@ -16,6 +16,64 @@ static inline uint64_t mips_sext(uint32_t va32) {
     return (uint64_t)(int32_t)va32;
 }
 
+static const char *cp0_reg_name(uint32_t rd, uint32_t sel)
+{
+    if (sel != 0)
+        return NULL;
+    switch (rd) {
+    case 0:  return "Index";
+    case 2:  return "EntryLo0";
+    case 3:  return "EntryLo1";
+    case 4:  return "Context";
+    case 5:  return "PageMask";
+    case 8:  return "BadVAddr";
+    case 10: return "EntryHi";
+    case 13: return "Cause";
+    case 14: return "EPC";
+    default: return NULL;
+    }
+}
+
+static bool cp0_is_tlb_diag_reg(uint32_t rd, uint32_t sel)
+{
+    if (sel != 0)
+        return false;
+    switch (rd) {
+    case 0:   /* Index */
+    case 2:   /* EntryLo0 */
+    case 3:   /* EntryLo1 */
+    case 4:   /* Context */
+    case 5:   /* PageMask */
+    case 8:   /* BadVAddr */
+    case 10:  /* EntryHi */
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void cp0_shadow_write(machine_t *m, uint32_t rd, uint32_t sel, uint64_t val)
+{
+    if (sel != 0)
+        return;
+    switch (rd) {
+    case 0:  m->shadow_cp0_index    = val; break;
+    case 2:  m->shadow_cp0_entrylo0 = val; break;
+    case 3:  m->shadow_cp0_entrylo1 = val; break;
+    case 4:  m->shadow_cp0_context  = val; break;
+    case 5:  m->shadow_cp0_pagemask = val; break;
+    case 8:  m->shadow_cp0_badvaddr = val; break;
+    case 10: m->shadow_cp0_entryhi  = val; break;
+    case 14: m->shadow_cp0_epc      = val; break;
+    default: break;
+    }
+}
+
+static inline bool tlb_trace_window_active(const machine_t *m)
+{
+    return m->tlb_trace_window;
+}
+
 static void save_pending_exception(machine_t *m)
 {
     if (m->has_saved_exception)
@@ -33,6 +91,17 @@ static void restore_pending_exception(machine_t *m)
 {
     if (!m->has_saved_exception)
         return;
+    static uint32_t restore_log_count = 0;
+    if (tlb_trace_window_active(m) && restore_log_count < 96) {
+        fprintf(stderr,
+                "[EXC_RESTORE] from excode=%u/epc=0x%08" PRIX64
+                " -> excode=%u/epc=0x%08" PRIX64
+                " saved_epc_written=%u\n",
+                m->pending_excode, (uint64_t)(uint32_t)m->pending_epc,
+                m->saved_pending_excode, (uint64_t)(uint32_t)m->saved_pending_epc,
+                m->saved_epc_was_written ? 1u : 0u);
+        restore_log_count++;
+    }
     m->pending_epc          = m->saved_pending_epc;
     m->pending_excode       = m->saved_pending_excode;
     m->pending_cause        = m->saved_pending_cause;
@@ -100,7 +169,21 @@ static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *ins
     return false;
 }
 
+static uc_err write_mem_best_effort(uc_engine *uc, uint64_t address,
+                                    const void *data, size_t size)
+{
+    uc_err err = uc_mem_write(uc, address, data, size);
+    if (err == UC_ERR_OK)
+        return err;
+
+    uint64_t pa = 0;
+    if (va_to_pa_kseg(address, &pa))
+        err = uc_mem_write(uc, pa, data, size);
+    return err;
+}
+
 /* CP0 Cause ExcCode values */
+#define MIPS_EXCCODE_TLBL 2u
 #define MIPS_EXCCODE_TLBS 3u
 #define MIPS_EXCCODE_SYS  8u
 
@@ -137,29 +220,6 @@ static void trace_hook(uc_engine *uc, uint64_t address,
             pc, insn, at, v0, a0, sp, ra);
 }
 
-static void suspend_pending_exception(machine_t *m,
-                                      const char *reason,
-                                      uint64_t pc)
-{
-    if (m->pending_excode == 0)
-        return;
-    save_pending_exception(m);
-    m->pending_epc          = 0;
-    m->pending_excode       = 0;
-    m->pending_cause        = 0;
-    m->epc_was_written      = false;
-    m->pending_cause_served = false;
-    m->pending_epc_served   = false;
-    static uint32_t suspend_log_count = 0;
-    if (suspend_log_count < 32) {
-        fprintf(stderr,
-                "[EXC_SUSPEND] reason=%s PC=0x%08" PRIX64 "\n",
-                reason ? reason : "unknown",
-                (uint64_t)(uint32_t)pc);
-        suspend_log_count++;
-    }
-}
-
 /*
  * PRId intercept hook.
  *
@@ -186,10 +246,172 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     static uint32_t mfc0_cause_inject_log = 0;
     static uint32_t mfc0_epc_inject_log = 0;
     static uint32_t mtc0_epc_sys_log = 0;
+    static uint32_t mtc0_cp0_log = 0;
+    static uint32_t mfc0_cp0_readback_log = 0;
+    static uint32_t tlbop_log = 0;
+    static uint32_t tlbwi_patch_log = 0;
+
+    /* Restore a previous one-instruction tlbwi->tlbwr runtime patch. */
+    if (m->tlbwi_patch_pending && address != m->tlbwi_patch_addr) {
+        write_mem_best_effort(uc, m->tlbwi_patch_addr, &m->tlbwi_patch_orig, 4);
+        m->tlbwi_patch_pending = false;
+    }
+
+    /*
+     * MFC0 readback helper:
+     * UC_HOOK_CODE fires before instruction execution. For native MFC0 reads
+     * that we don't intercept, capture the read value from $rt on the next
+     * instruction.
+     */
+    if (m->cp0_readback_pending) {
+        if ((uint32_t)address == (uint32_t)m->cp0_readback_next_pc) {
+            uint64_t val = 0;
+            uc_reg_read(uc, UC_MIPS_REG_0 + (int)m->cp0_readback_rt, &val);
+            cp0_shadow_write(m, m->cp0_readback_rd, m->cp0_readback_sel, val);
+            const char *name = cp0_reg_name(m->cp0_readback_rd, m->cp0_readback_sel);
+            if (name != NULL &&
+                cp0_is_tlb_diag_reg(m->cp0_readback_rd, m->cp0_readback_sel) &&
+                tlb_trace_window_active(m) &&
+                mfc0_cp0_readback_log < 512) {
+                fprintf(stderr,
+                        "[MFC0_CP0] rd=%s rt=$%u val=0x%08" PRIX64
+                        " mfc0_pc=0x%08" PRIX64 " next_pc=0x%08" PRIX64 "\n",
+                        name, (unsigned)m->cp0_readback_rt,
+                        (uint64_t)(uint32_t)val,
+                        (uint64_t)(uint32_t)(m->cp0_readback_next_pc - 4u),
+                        (uint64_t)(uint32_t)address);
+                mfc0_cp0_readback_log++;
+            }
+        }
+        m->cp0_readback_pending = false;
+    }
 
     uint32_t insn = 0;
     if (!read_insn_best_effort(uc, address, &insn))
         return;
+    uint32_t op  = (insn >> 26) & 0x3Fu;
+    uint32_t rs  = (insn >> 21) & 0x1Fu;
+    uint32_t rt  = (insn >> 16) & 0x1Fu;
+    uint32_t rd  = (insn >> 11) & 0x1Fu;
+    uint32_t sel =  insn        & 0x07u;
+
+    /* Queue readback only in late TLB-debug window to avoid early log saturation. */
+    if (tlb_trace_window_active(m) && op == 0x10u && rs == 0u) {
+        const char *name = cp0_reg_name(rd, sel);
+        if (name != NULL && cp0_is_tlb_diag_reg(rd, sel)) {
+            m->cp0_readback_pending = true;
+            m->cp0_readback_rt = (uint8_t)rt;
+            m->cp0_readback_rd = (uint8_t)rd;
+            m->cp0_readback_sel = (uint8_t)sel;
+            m->cp0_readback_next_pc = address + 4u;
+        }
+    }
+
+    /*
+     * Workaround: when writing CP0 Index (rd=0), clear bit31 (P/probe-fail)
+     * in the source GPR so tlbwi uses a concrete index. Linux often carries
+     * Index=0x8000001F through tlbp-miss paths; hardware ignores P for tlbwi.
+     */
+    if (op == 0x10u && rs == 4u && rd == 0u && sel == 0u) {
+        uint64_t idx_val = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &idx_val);
+        if (idx_val & 0x80000000u) {
+            uint64_t fixed = idx_val & 0x7FFFFFFFu;
+            uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &fixed);
+            static uint32_t idx_fix_log = 0;
+            if (tlb_trace_window_active(m) && idx_fix_log < 128) {
+                fprintf(stderr,
+                        "[INDEX_FIX] rt=$%u old=0x%08" PRIX64 " new=0x%08" PRIX64
+                        " PC=0x%08" PRIX64 "\n",
+                        rt, (uint64_t)(uint32_t)idx_val,
+                        (uint64_t)(uint32_t)fixed,
+                        (uint64_t)(uint32_t)address);
+                idx_fix_log++;
+            }
+        }
+    }
+
+    /* Track guest CP0 writes and keep a shadow copy for TLB diagnostics. */
+    if (op == 0x10u && rs == 4u) {
+        uint64_t val = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &val);
+        cp0_shadow_write(m, rd, sel, val);
+        const char *name = cp0_reg_name(rd, sel);
+        if (name != NULL &&
+            cp0_is_tlb_diag_reg(rd, sel) &&
+            tlb_trace_window_active(m) &&
+            mtc0_cp0_log < 512) {
+            uint64_t status_now = 0;
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status_now);
+            fprintf(stderr,
+                    "[MTC0_CP0] rd=%s rt=$%u val=0x%08" PRIX64
+                    " PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
+                    " pending_excode=%u\n",
+                    name, rt, (uint64_t)(uint32_t)val,
+                    (uint64_t)(uint32_t)address, status_now,
+                    m->pending_excode);
+            mtc0_cp0_log++;
+        }
+    }
+
+    /* Observe TLB management instructions with current CP0 shadow state. */
+    if (insn == 0x42000002u || insn == 0x42000006u ||
+        insn == 0x42000008u || insn == 0x42000001u) {
+        /*
+         * Work around suspected Unicorn tlbwi(index with P-bit) behavior by
+         * rewriting this single instruction to tlbwr for one execution.
+         */
+        if (insn == 0x42000002u &&
+            tlb_trace_window_active(m) &&
+            !m->tlbwi_patch_pending) {
+            uint32_t replacement = 0x42000006u; /* tlbwr */
+            uc_err patch_err = write_mem_best_effort(uc, address, &replacement, 4);
+            if (patch_err == UC_ERR_OK) {
+                m->tlbwi_patch_pending = true;
+                m->tlbwi_patch_addr = address;
+                m->tlbwi_patch_orig = insn;
+                if (tlbwi_patch_log < 64) {
+                    fprintf(stderr,
+                            "[TLBWI_PATCH] PC=0x%08" PRIX64
+                            " idx=0x%08" PRIX64 " -> tlbwr\n",
+                            (uint64_t)(uint32_t)address,
+                            (uint64_t)(uint32_t)m->shadow_cp0_index);
+                    tlbwi_patch_log++;
+                }
+            } else if (tlbwi_patch_log < 64) {
+                fprintf(stderr,
+                        "[TLBWI_PATCH_FAIL] PC=0x%08" PRIX64 " idx=0x%08" PRIX64
+                        " err=%s\n",
+                        (uint64_t)(uint32_t)address,
+                        (uint64_t)(uint32_t)m->shadow_cp0_index,
+                        uc_strerror(patch_err));
+                tlbwi_patch_log++;
+            }
+        }
+        if (tlb_trace_window_active(m) && tlbop_log < 512) {
+            const char *opname = (insn == 0x42000002u) ? "tlbwi" :
+                                 (insn == 0x42000006u) ? "tlbwr" :
+                                 (insn == 0x42000008u) ? "tlbp"  : "tlbr";
+            uint64_t status_now = 0;
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status_now);
+            fprintf(stderr,
+                    "[TLB_OP] %s PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
+                    " idx=0x%08" PRIX64 " hi=0x%08" PRIX64
+                    " lo0=0x%08" PRIX64 " lo1=0x%08" PRIX64
+                    " mask=0x%08" PRIX64 " ctx=0x%08" PRIX64
+                    " badv=0x%08" PRIX64 " pending_excode=%u\n",
+                    opname, (uint64_t)(uint32_t)address, status_now,
+                    (uint64_t)(uint32_t)m->shadow_cp0_index,
+                    (uint64_t)(uint32_t)m->shadow_cp0_entryhi,
+                    (uint64_t)(uint32_t)m->shadow_cp0_entrylo0,
+                    (uint64_t)(uint32_t)m->shadow_cp0_entrylo1,
+                    (uint64_t)(uint32_t)m->shadow_cp0_pagemask,
+                    (uint64_t)(uint32_t)m->shadow_cp0_context,
+                    (uint64_t)(uint32_t)m->shadow_cp0_badvaddr,
+                    m->pending_excode);
+            tlbop_log++;
+        }
+    }
 
     /* MFC0 $rt, $15, 0  — PRId (CP0 register 15, sel 0)
      * Encoding: 000100 00000 rt 01111 00000 000000
@@ -419,6 +641,17 @@ static void prid_hook(uc_engine *uc, uint64_t address,
              * native ERET, but still clear synthetic exception bookkeeping so
              * we don't permanently block future injected interrupts.
              */
+            static uint32_t eret_native_log = 0;
+            if (tlb_trace_window_active(m) && eret_native_log < 128) {
+                fprintf(stderr,
+                        "[ERET_NATIVE] pending_excode=%u pending_epc=0x%08" PRIX64
+                        " PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
+                        " has_saved=%u\n",
+                        m->pending_excode, (uint64_t)(uint32_t)m->pending_epc,
+                        (uint64_t)(uint32_t)address, status_snapshot,
+                        m->has_saved_exception ? 1u : 0u);
+                eret_native_log++;
+            }
             m->pending_epc          = 0;
             m->pending_excode       = 0;
             m->pending_cause        = 0;
@@ -474,7 +707,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
      * older Unicorn builds).
      */
     bool likely_syscall = false;
-    if (intno == 17u || intno == 26u) {
+    if (intno == 17u) {
         uint32_t maybe_sys = 0;
         if (pc >= 4u && read_insn_best_effort(uc, pc - 4u, &maybe_sys) &&
             maybe_sys == 0x0000000Cu)
@@ -491,6 +724,12 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 fprintf(stderr, "[INTR] intno=%u further logs suppressed\n", intno);
         }
         if (intno == 27u && intr_log_count_27_detail < 32u) {
+            if (!m->tlb_trace_window && (uint32_t)pc == 0x800015B4u) {
+                m->tlb_trace_window = true;
+                fprintf(stderr,
+                        "[TLB_TRACE] activated by first TLBS at PC=0x%08" PRIX64 "\n",
+                        (uint64_t)(uint32_t)pc);
+            }
             fprintf(stderr,
                     "[INTR27] STATUS=0x%08" PRIX64 " PC=0x%08" PRIX64
                     " pending_excode=%u pending_epc=0x%08" PRIX64
@@ -502,8 +741,78 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     m->pending_cause_served ? 1u : 0u);
             intr_log_count_27_detail++;
         }
+        if (intno == 26u) {
+            /*
+             * Treat intno=26 as TLBL and route it to the refill vector.
+             * Unlike TLBS (which we currently force through 0x80000180 for
+             * stability), TLBL here appears immediately after tlbwi and is more
+             * likely to be a canonical refill-path event.
+             */
+            static uint32_t tlbl_inject_log_count = 0;
+            uint32_t excode = MIPS_EXCCODE_TLBL;
+            save_pending_exception(m);
+
+            m->pending_epc          = pc;
+            m->pending_excode       = excode;
+            m->pending_cause        = (uint32_t)(excode << 2);
+            m->epc_was_written      = false;
+            m->pending_cause_served = false;
+            m->pending_epc_served   = false;
+
+            uint32_t vec32 = 0x80000000u;
+            uint64_t new_status = status | 0x2u;  /* EXL=1 */
+            uint64_t vec = mips_sext(vec32);
+            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &new_status);
+            uc_reg_write(uc, UC_MIPS_REG_PC, &vec);
+
+            if (tlbl_inject_log_count < 64) {
+                fprintf(stderr,
+                        "[TLB_INJECT] intno=%u excode=%u EPC=0x%08" PRIX64
+                        " vec=0x%08X STATUS=0x%08" PRIX64
+                        " saved=%u pending_excode=%u\n",
+                        intno, excode, (uint64_t)(uint32_t)pc, vec32, new_status,
+                        m->has_saved_exception ? 1u : 0u, m->pending_excode);
+                tlbl_inject_log_count++;
+            }
+            return;
+        }
         if (intno == 27u) {
-            suspend_pending_exception(m, "tlb_store", pc);
+            static uint32_t tlbs_inject_log_count = 0;
+            uint32_t excode = MIPS_EXCCODE_TLBS;
+            /*
+             * Unicorn marks all UC_HOOK_INTR callbacks as "caught". If we do
+             * nothing here, EXCP_TLBS/TLBL never reaches mips_cpu_do_interrupt().
+             * Manually inject a TLB exception entry so the guest handler can run.
+             */
+            save_pending_exception(m);
+
+            m->pending_epc          = pc;  /* Unicorn reports fault PC directly. */
+            m->pending_excode       = excode;
+            m->pending_cause        = (uint32_t)(excode << 2);
+            m->epc_was_written      = false;
+            m->pending_cause_served = false;
+            m->pending_epc_served   = false;
+
+            /*
+             * Route TLBS to the general exception vector.
+             * Fast refill (0x80000000) executes tlbwr but currently trips
+             * UC_ERR_READ_UNMAPPED immediately after the write.
+             */
+            uint32_t vec32 = 0x80000180u;
+            uint64_t new_status = status | 0x2u;  /* EXL=1 */
+            uint64_t vec = mips_sext(vec32);
+            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &new_status);
+            uc_reg_write(uc, UC_MIPS_REG_PC, &vec);
+
+            if (tlbs_inject_log_count < 96) {
+                fprintf(stderr,
+                        "[TLB_INJECT] intno=%u excode=%u EPC=0x%08" PRIX64
+                        " vec=0x%08X STATUS=0x%08" PRIX64
+                        " saved=%u pending_excode=%u\n",
+                        intno, excode, (uint64_t)(uint32_t)pc, vec32, new_status,
+                        m->has_saved_exception ? 1u : 0u, m->pending_excode);
+                tlbs_inject_log_count++;
+            }
             return;
         }
         /*
@@ -593,6 +902,15 @@ static void inject_hw_irq_if_pending(machine_t *m)
     static uint32_t log_stale_pending = 0;
     bool pending = icu_pending(&m->icu);
 
+    if (!m->tlb_trace_window &&
+        m->pending_excode == MIPS_EXCCODE_SYS &&
+        (uint32_t)m->pending_epc == 0x800015B0u) {
+        m->tlb_trace_window = true;
+        fprintf(stderr,
+                "[TLB_TRACE] armed near run_init_process pending_epc=0x%08" PRIX64 "\n",
+                (uint64_t)(uint32_t)m->pending_epc);
+    }
+
     if (m->pending_excode != 0) {
         /*
          * Synthetic exception state should track EXL=1 while in-flight.
@@ -624,7 +942,7 @@ static void inject_hw_irq_if_pending(machine_t *m)
                 m->epc_was_written      = false;
                 m->pending_cause_served = false;
                 m->pending_epc_served   = false;
-            } else {
+            } else if (m->pending_excode == MIPS_EXCCODE_SYS) {
                 static uint32_t log_syscall_exl_drop = 0;
                 if (log_syscall_exl_drop < 32) {
                     uint64_t pc = 0;
@@ -640,6 +958,23 @@ static void inject_hw_irq_if_pending(machine_t *m)
                             m->pending_cause_served ? 1u : 0u);
                     log_syscall_exl_drop++;
                 }
+            } else {
+                if (log_stale_pending < 32) {
+                    uint64_t pc = 0;
+                    uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+                    fprintf(stderr,
+                            "[IRQ_GATE] stale non-sys pending_excode=%u cleared (EXL=0)"
+                            " PC=0x%08" PRIX64 " STATUS=0x%08X pending_epc=0x%08" PRIX64 "\n",
+                            m->pending_excode, (uint64_t)(uint32_t)pc, status,
+                            (uint64_t)(uint32_t)m->pending_epc);
+                    log_stale_pending++;
+                }
+                m->pending_epc          = 0;
+                m->pending_excode       = 0;
+                m->pending_cause        = 0;
+                m->epc_was_written      = false;
+                m->pending_cause_served = false;
+                m->pending_epc_served   = false;
             }
         }
     }
@@ -958,6 +1293,53 @@ static void irq_probe_hook(uc_engine *uc, uint64_t address,
 }
 
 /* ------------------------------------------------------------------ */
+/* Exception vector probes                                            */
+/* ------------------------------------------------------------------ */
+
+#define VEC_PROBE_LIMIT 256
+static int vec_probe_counts[3];
+
+static void exception_vector_probe_hook(uc_engine *uc, uint64_t address,
+                                        uint32_t size, void *user_data)
+{
+    (void)size;
+    machine_t *m = user_data;
+    uint32_t va = (uint32_t)address;
+    int idx = -1;
+    const char *tag = NULL;
+    if (va == 0x80000000u) { idx = 0; tag = "refill"; }
+    else if (va == 0x80000080u) { idx = 1; tag = "xtlb_refill"; }
+    else if (va == 0x80000180u) { idx = 2; tag = "general"; }
+    if (idx < 0)
+        return;
+    if (!tlb_trace_window_active(m))
+        return;
+    if (va == 0x80000180u && m->pending_excode == 1u)
+        return; /* Skip normal timer IRQ traffic once late tracing is armed. */
+    if (vec_probe_counts[idx] >= VEC_PROBE_LIMIT)
+        return;
+    vec_probe_counts[idx]++;
+
+    uint64_t status = 0, sp = 0, k0 = 0, k1 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_K0, &k0);
+    uc_reg_read(uc, UC_MIPS_REG_K1, &k1);
+    fprintf(stderr,
+            "[VEC_PROBE] #%d %s PC=0x%08X STATUS=0x%08" PRIX64
+            " sp=0x%08" PRIX64 " k0=0x%08" PRIX64 " k1=0x%08" PRIX64
+            " pending_excode=%u hi=0x%08" PRIX64 " lo0=0x%08" PRIX64
+            " lo1=0x%08" PRIX64 " badv=0x%08" PRIX64 "\n",
+            vec_probe_counts[idx], tag, va, status,
+            (uint64_t)(uint32_t)sp, (uint64_t)(uint32_t)k0,
+            (uint64_t)(uint32_t)k1, m->pending_excode,
+            (uint64_t)(uint32_t)m->shadow_cp0_entryhi,
+            (uint64_t)(uint32_t)m->shadow_cp0_entrylo0,
+            (uint64_t)(uint32_t)m->shadow_cp0_entrylo1,
+            (uint64_t)(uint32_t)m->shadow_cp0_badvaddr);
+}
+
+/* ------------------------------------------------------------------ */
 /* Page-fault probes                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -1197,6 +1579,21 @@ machine_t *machine_create(const machine_config_t *cfg)
             uint64_t va = mips_sext(irq_probes[i].va);
             uc_hook_add(m->uc, &hk, UC_HOOK_CODE, irq_probe_hook,
                         (void *)(uintptr_t)irq_probes[i].idx, va, va);
+        }
+    }
+
+    /* Exception vector probes (TLB refill + general exception vectors). */
+    memset(vec_probe_counts, 0, sizeof(vec_probe_counts));
+    {
+        static const uint32_t vecs[] = {
+            0x80000000u, /* refill vector */
+            0x80000080u, /* xtlb refill   */
+            0x80000180u, /* general       */
+        };
+        for (int i = 0; i < 3; i++) {
+            uint64_t va = mips_sext(vecs[i]);
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, exception_vector_probe_hook,
+                        m, va, va);
         }
     }
 
