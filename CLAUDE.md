@@ -35,7 +35,9 @@ Push with: `git push -u origin claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
 - `kernels/vmlinux`            - ELF 32-bit LSB executable, MIPS, MIPS-II version 1 (SYSV), statically linked, not stripped, too many notes (256)
 - `kernels/vmlinux_sdlregtest` - ELF32 MIPS LE, Linux version 2.4.18-mips (mouse@mouse.office.altlinux.ru) (gcc version 3.0.4) #325   20 14:06:02 MSK 2003
 - `kernels/vmlinux-mw`         - ELF32 MIPS LE, Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
-- `kernels/vmlinux-pgui-demo`  - ELF32
+- `kernels/vmlinux-pgui-demo`  - ELF32 MIPS LE, Linux version
+  2.4.18-mips known good kernel and ramdisk (booted to userspace on real
+hardware)
 - `kernels/vmlinux-pgui-test1` - ELF32
 
 **Kernel Changes for BE-300**
@@ -51,11 +53,15 @@ Push with: `git push -u origin claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
 **WinCE ELF loader**
 - `linux4be20040908/loader.exe` - CyaCE compiled binary
 - `linux4be20040908/cyacecfg.txt` - CyaCE config
-- `ce/cyace` - source code for loader
+- `ce/cyace` - source code for CyaCE loader
 
 **Things to note**
 - originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
 - None of the test kernels had full hw support
+
+**References**
+- GXemul - git@github.com:bitedits/gxe.git - implements various NEC
+  vr41xx CPUs
 
 ---
 
