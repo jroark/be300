@@ -71,6 +71,7 @@ struct machine_s {
     uint32_t pending_syscall_nr;    /* syscall number captured at SYSCALL inject */
     uint64_t pending_syscall_a0;    /* syscall arg0 captured at SYSCALL inject   */
     char     pending_syscall_a0_str[128]; /* best-effort arg0 string (if pointer) */
+    uint64_t pending_syscall_epc;   /* ORIGINAL syscall VA; not overwritten by MTC0 EPC */
     bool     execve_watch_active;   /* waiting to log do_execve return value      */
     uint64_t execve_watch_ret_pc;   /* caller PC to observe on do_execve return   */
     uint64_t execve_watch_a0;       /* do_execve filename pointer (entry arg0)    */
@@ -107,6 +108,8 @@ struct machine_s {
     bool     tlb_trace_window;
     bool     post_init_trace_window;
     uint32_t post_init_trace_batches;
+    uint32_t refill_insn_count;
+    uint32_t general_insn_count;
 
     /* Runtime instruction patching: temporarily rewrite tlbwi -> tlbwr. */
     bool     tlbwi_patch_pending;
