@@ -71,6 +71,10 @@ struct machine_s {
     uint32_t pending_syscall_nr;    /* syscall number captured at SYSCALL inject */
     uint64_t pending_syscall_a0;    /* syscall arg0 captured at SYSCALL inject   */
     char     pending_syscall_a0_str[128]; /* best-effort arg0 string (if pointer) */
+    bool     execve_watch_active;   /* waiting to log do_execve return value      */
+    uint64_t execve_watch_ret_pc;   /* caller PC to observe on do_execve return   */
+    uint64_t execve_watch_a0;       /* do_execve filename pointer (entry arg0)    */
+    char     execve_watch_path[128];/* do_execve filename snapshot                 */
     bool     has_saved_exception;   /* nested real exception (e.g., TLBS) saved            */
     uint64_t saved_pending_epc;
     uint32_t saved_pending_excode;
