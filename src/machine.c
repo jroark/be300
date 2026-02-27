@@ -161,6 +161,31 @@ static bool mem_unmapped_hook(uc_engine *uc, uc_mem_type type,
     return false;
 }
 
+static bool map_kseg_mirror_block(machine_t *m, uint64_t va_block)
+{
+    uint32_t va32 = (uint32_t)va_block;
+    if (va32 < 0x80000000u || va32 > 0xBFFFFFFFu)
+        return false;
+
+    uint64_t map_base = (uint64_t)(int64_t)(int32_t)va32;
+    uint64_t pa_base = (uint64_t)(va32 & 0x1FFFFFFFu);
+    uc_err me = uc_mem_map(m->uc, map_base, 0x100000, UC_PROT_ALL);
+    if (me != UC_ERR_OK && me != UC_ERR_MAP)
+        return false;
+
+    if (me == UC_ERR_OK) {
+        /* Populate the mirrored VA block from underlying PA bytes. */
+        uint8_t buf[4096];
+        for (uint64_t off = 0; off < 0x100000; off += sizeof(buf)) {
+            if (uc_mem_read(m->uc, pa_base + off, buf, sizeof(buf)) != UC_ERR_OK)
+                memset(buf, 0, sizeof(buf));
+            if (uc_mem_write(m->uc, map_base + off, buf, sizeof(buf)) != UC_ERR_OK)
+                break;
+        }
+    }
+    return true;
+}
+
 /* Convert kseg0/kseg1 VA to physical; return false for non-direct-mapped VA. */
 static bool va_to_pa_kseg(uint64_t va, uint64_t *pa_out)
 {
@@ -2319,6 +2344,58 @@ void machine_run(machine_t *m)
                     write_unmapped_recoveries++;
                     continue;
                 }
+            }
+            if (err == UC_ERR_READ_UNMAPPED) {
+                /*
+                 * Recovery for occasional unmapped reads while entering the
+                 * exception vector path. Try mapping likely candidate blocks
+                 * derived from registers and retry execution.
+                 */
+                uint64_t badv = 0, at = 0, a0 = 0, a1 = 0, a2 = 0, k0 = 0, k1 = 0, t2 = 0, sp = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_AT, &at);
+                uc_reg_read(m->uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(m->uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(m->uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(m->uc, UC_MIPS_REG_K0, &k0);
+                uc_reg_read(m->uc, UC_MIPS_REG_K1, &k1);
+                uc_reg_read(m->uc, UC_MIPS_REG_T2, &t2);
+                uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
+                uint64_t candidates[9] = { badv, at, a0, a1, a2, k0, k1, t2, sp };
+                const char *names[9] = { "badv", "at", "a0", "a1", "a2", "k0", "k1", "t2", "sp" };
+                bool mapped_any = false;
+
+                for (int i = 0; i < 9; i++) {
+                    uint64_t va = candidates[i];
+                    uint32_t va32 = (uint32_t)va;
+                    if (va32 < 0x1000u)
+                        continue;
+                    uint64_t block = va & ~((uint64_t)0xFFFFF);
+                    bool mapped = false;
+
+                    if (va32 >= 0x80000000u && va32 <= 0xBFFFFFFFu) {
+                        mapped = map_kseg_mirror_block(m, block);
+                    } else if (va32 < 0x80000000u) {
+                        uc_err me = uc_mem_map(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+                        mapped = (me == UC_ERR_OK || me == UC_ERR_MAP);
+                    }
+
+                    if (mapped) {
+                        if (!mapped_any) {
+                            fprintf(stderr,
+                                    "[MACHINE] read-unmapped recovery at PC=0x%08" PRIX64
+                                    " badv=0x%08" PRIX64 "\n",
+                                    (uint64_t)(uint32_t)bad_pc,
+                                    (uint64_t)(uint32_t)badv);
+                        }
+                        fprintf(stderr,
+                                "[MACHINE]   mapped block 0x%08" PRIX64 " via $%s=0x%08" PRIX64 "\n",
+                                (uint64_t)(uint32_t)block, names[i], (uint64_t)(uint32_t)va);
+                        mapped_any = true;
+                    }
+                }
+
+                if (mapped_any)
+                    continue;
             }
 
             uint64_t status = 0;
