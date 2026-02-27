@@ -981,8 +981,17 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         uint64_t old_a0 = a0, old_a1 = a1, old_a2 = a2;
 
         if ((uint32_t)v0 == 4011u) {
+            uint32_t a0_32 = (uint32_t)a0;
+            uint32_t a1_32 = (uint32_t)a1;
+            uint32_t a2_32 = (uint32_t)a2;
+            bool needs_execve_shim =
+                (a0_32 >= 0x80000000u) ||
+                (a1_32 != 0u && a1_32 >= 0x80000000u) ||
+                (a2_32 != 0u && a2_32 >= 0x80000000u);
+
             uint32_t sh_a0 = 0, sh_a1 = 0, sh_a2 = 0;
-            if (prepare_execve_user_ptrs(uc, a0, a1, a2, &sh_a0, &sh_a1, &sh_a2)) {
+            if (needs_execve_shim &&
+                prepare_execve_user_ptrs(uc, a0, a1, a2, &sh_a0, &sh_a1, &sh_a2)) {
                 uint64_t na0 = sh_a0, na1 = sh_a1, na2 = sh_a2;
                 uc_reg_write(uc, UC_MIPS_REG_A0, &na0);
                 uc_reg_write(uc, UC_MIPS_REG_A1, &na1);
