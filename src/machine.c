@@ -170,6 +170,8 @@ static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *ins
     return false;
 }
 
+static int read_guest_string(uc_engine *uc, uint64_t va, char *buf, int bufsz);
+
 static uc_err write_mem_best_effort(uc_engine *uc, uint64_t address,
                                     const void *data, size_t size)
 {
@@ -601,13 +603,18 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             uint64_t status_snapshot = 0;
             uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status_snapshot);
             if (eret_pending_log < 96) {
+                uint64_t v0 = 0, a3 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
                 fprintf(stderr,
                         "[ERET] pending_excode=%u epc_written=%u pending_epc=0x%08" PRIX64
                         " PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
+                        " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
                         " served_epc=%u served_cause=%u\n",
                         m->pending_excode, m->epc_was_written ? 1u : 0u,
                         (uint64_t)(uint32_t)m->pending_epc, (uint64_t)(uint32_t)address,
-                        status_snapshot,
+                        status_snapshot, (uint64_t)(uint32_t)v0,
+                        (uint64_t)(uint32_t)a3,
                         m->pending_epc_served ? 1u : 0u,
                         m->pending_cause_served ? 1u : 0u);
                 eret_pending_log++;
@@ -788,10 +795,25 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     m->pending_cause_served = false;
     m->pending_epc_served   = false;
 
-    if (syscall_entry_log_count < 32) {
+    if (syscall_entry_log_count < 64) {
+        uint64_t v0 = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+        uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+        uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+        uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+        uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+        char a0s[128] = "<unreadable>";
+        read_guest_string(uc, a0, a0s, sizeof(a0s));
         fprintf(stderr,
-                "[SYSCALL_INJECT] EPC=0x%08" PRIX64 " cause=0x%08X STATUS=0x%08" PRIX64 "\n",
-                (uint64_t)(uint32_t)epc, m->pending_cause, (uint64_t)(uint32_t)status);
+                "[SYSCALL_INJECT] EPC=0x%08" PRIX64 " nr=%" PRIu64
+                " a0=0x%08" PRIX64 " \"%s\" a1=0x%08" PRIX64
+                " a2=0x%08" PRIX64 " a3=0x%08" PRIX64
+                " cause=0x%08X STATUS=0x%08" PRIX64 "\n",
+                (uint64_t)(uint32_t)epc, (uint64_t)(uint32_t)v0,
+                (uint64_t)(uint32_t)a0, a0s,
+                (uint64_t)(uint32_t)a1, (uint64_t)(uint32_t)a2,
+                (uint64_t)(uint32_t)a3, m->pending_cause,
+                (uint64_t)(uint32_t)status);
         syscall_entry_log_count++;
     }
 
@@ -1088,8 +1110,9 @@ static bool insn_invalid_hook(uc_engine *uc, void *user_data)
 
 /*
  * Checkpoint table: VA of well-known kernel functions / branch sites.
- * These addresses are for linux4be20040908/vmlinux (confirmed via nm).
- * Each hook fires once and prints to stderr without perturbing execution.
+ * This table intentionally mixes symbols from multiple known test kernels
+ * (linux4be 2.6.8.1 and older 2.4.x images) so the same binary can probe
+ * whichever kernel is currently booted.
  *
  * Flags:
  *   print_a0_str: read $a0 as a VA→string and print alongside the name.
@@ -1104,6 +1127,7 @@ static const struct {
     /* High-level function entries */
     { 0x80001558u, "rest_init",                       false },
     { 0x80001580u, "do_pre_smp_initcalls",            false },
+    { 0x80001770u, "init (kernel thread, 2.4)",       false },
     { 0x800015d0u, "init (kernel thread)",            false },
     { 0x80272918u, "do_basic_setup",                  false },
     { 0x802727d0u, "do_initcalls",                    false },
@@ -1118,6 +1142,10 @@ static const struct {
     { 0x80001690u, "init: JAL run_init_process [execute_command]", false },
     { 0x8000169cu, "init: JAL run_init_process [/sbin/init]",      false },
     { 0x80001598u, "run_init_process (entry)",        true  },
+    { 0x80007394u, "sys_execve (entry, 2.4)",         true  },
+    { 0x8004a9d0u, "do_execve (entry, 2.4)",          true  },
+    { 0x8004a774u, "search_binary_handler (2.4)",     false },
+    { 0x80017a40u, "panic (2.4)",                     true  },
     { 0x80080cb0u, "do_execve (entry)",               true  },
     { 0x80016ef0u, "do_page_fault (entry)",           false },
     { 0x800a7378u, "create_elf_tables (entry)",       false },
@@ -1163,6 +1191,22 @@ static int read_guest_string(uc_engine *uc, uint64_t va, char *buf, int bufsz)
         }
         buf[i] = 0;
         return i;
+    }
+    /*
+     * Fallback: try reading directly at VA.  Useful for user pointers when
+     * Unicorn already has the corresponding pages mapped.
+     */
+    {
+        int i;
+        for (i = 0; i < bufsz - 1; i++) {
+            uint8_t c = 0;
+            if (uc_mem_read(uc, va + i, &c, 1) != UC_ERR_OK) break;
+            buf[i] = (char)c;
+            if (c == 0) { buf[i] = 0; return i; }
+        }
+        buf[i] = 0;
+        if (i > 0)
+            return i;
     }
     buf[0] = 0;
     return 0;
