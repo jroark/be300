@@ -16,6 +16,14 @@ All work goes on: `claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
 
 Push with: `git push -u origin claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
 
+## Execution Environment Policy
+
+- Build and test in the Docker container (`mips-dev`) only.
+- Commit and push from the host environment only (not from inside Docker).
+- Typical split:
+  - Container: `cmake`, `make`, emulator/test runs, log generation.
+  - Host: `git add`, `git commit`, `git push`.
+
 ---
 
 ## Project Context
