@@ -253,6 +253,30 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     static uint32_t mfc0_cp0_readback_log = 0;
     static uint32_t tlbop_log = 0;
     static uint32_t tlbwi_patch_log = 0;
+    static uint32_t do_execve_enter_log = 0;
+    static uint32_t do_execve_ret_log = 0;
+
+    /* Precise do_execve return probe: capture at function entry, log at caller PC. */
+    if (m->execve_watch_active &&
+        (uint32_t)address == (uint32_t)m->execve_watch_ret_pc) {
+        uint64_t v0 = 0, a3 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+        uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+        if (do_execve_ret_log < 128) {
+            fprintf(stderr,
+                    "[DO_EXECVE_RET] pc=0x%08" PRIX64 " path_ptr=0x%08" PRIX64
+                    " \"%s\" v0=0x%08" PRIX64 " a3=0x%08" PRIX64
+                    " pending_sys_nr=%u\n",
+                    (uint64_t)(uint32_t)address,
+                    (uint64_t)(uint32_t)m->execve_watch_a0,
+                    m->execve_watch_path,
+                    (uint64_t)(uint32_t)v0,
+                    (uint64_t)(uint32_t)a3,
+                    m->pending_syscall_nr);
+            do_execve_ret_log++;
+        }
+        m->execve_watch_active = false;
+    }
 
     /* Restore a previous one-instruction tlbwi->tlbwr runtime patch. */
     if (m->tlbwi_patch_pending && address != m->tlbwi_patch_addr) {
@@ -297,6 +321,47 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t rt  = (insn >> 16) & 0x1Fu;
     uint32_t rd  = (insn >> 11) & 0x1Fu;
     uint32_t sel =  insn        & 0x07u;
+
+    /*
+     * Capture do_execve entry for both known kernels:
+     *   2.4: 0x8004a9d0
+     *   2.6: 0x80080cb0
+     */
+    if ((uint32_t)address == 0x8004A9D0u || (uint32_t)address == 0x80080CB0u) {
+        uint64_t ra = 0, a0 = 0;
+        char path[128] = "<unreadable>";
+        uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+        uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+        read_guest_string(uc, a0, path, sizeof(path));
+
+        if (m->execve_watch_active && do_execve_enter_log < 128) {
+            fprintf(stderr,
+                    "[DO_EXECVE_WATCH_OVERRUN] old_ret=0x%08" PRIX64
+                    " old_path=\"%s\" new_ret=0x%08" PRIX64 " new_path=\"%s\"\n",
+                    (uint64_t)(uint32_t)m->execve_watch_ret_pc,
+                    m->execve_watch_path,
+                    (uint64_t)(uint32_t)ra,
+                    path);
+            do_execve_enter_log++;
+        }
+
+        m->execve_watch_active = true;
+        m->execve_watch_ret_pc = ra;
+        m->execve_watch_a0 = a0;
+        strncpy(m->execve_watch_path, path, sizeof(m->execve_watch_path) - 1);
+        m->execve_watch_path[sizeof(m->execve_watch_path) - 1] = '\0';
+
+        if (do_execve_enter_log < 128) {
+            fprintf(stderr,
+                    "[DO_EXECVE_ENTER] pc=0x%08" PRIX64 " ra=0x%08" PRIX64
+                    " path_ptr=0x%08" PRIX64 " \"%s\"\n",
+                    (uint64_t)(uint32_t)address,
+                    (uint64_t)(uint32_t)ra,
+                    (uint64_t)(uint32_t)a0,
+                    path);
+            do_execve_enter_log++;
+        }
+    }
 
     /* Queue readback only in late TLB-debug window to avoid early log saturation. */
     if (tlb_trace_window_active(m) && op == 0x10u && rs == 0u) {
