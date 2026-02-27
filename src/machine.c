@@ -933,6 +933,7 @@ static void inject_hw_irq_if_pending(machine_t *m)
                 m->pending_epc_served   = false;
             } else if (m->pending_excode == MIPS_EXCCODE_SYS) {
                 static uint32_t log_syscall_exl_drop = 0;
+                static uint32_t log_syscall_ret_fallback = 0;
                 if (log_syscall_exl_drop < 32) {
                     uint64_t pc = 0;
                     uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
@@ -947,6 +948,39 @@ static void inject_hw_irq_if_pending(machine_t *m)
                             m->pending_cause_served ? 1u : 0u);
                     log_syscall_exl_drop++;
                 }
+                if (log_syscall_ret_fallback < 64) {
+                    uint64_t pc = 0, v0 = 0, a3 = 0;
+                    uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+                    uc_reg_read(m->uc, UC_MIPS_REG_V0, &v0);
+                    uc_reg_read(m->uc, UC_MIPS_REG_A3, &a3);
+                    fprintf(stderr,
+                            "[SYSCALL_RET_FALLBACK] pending_epc=0x%08" PRIX64
+                            " pc=0x%08" PRIX64 " nr=%u"
+                            " a0=0x%08" PRIX64 " \"%s\""
+                            " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
+                            " status=0x%08X\n",
+                            (uint64_t)(uint32_t)m->pending_epc,
+                            (uint64_t)(uint32_t)pc,
+                            m->pending_syscall_nr,
+                            (uint64_t)(uint32_t)m->pending_syscall_a0,
+                            m->pending_syscall_a0_str,
+                            (uint64_t)(uint32_t)v0,
+                            (uint64_t)(uint32_t)a3,
+                            status);
+                    log_syscall_ret_fallback++;
+                }
+                /*
+                 * Treat EXL=0 with a pending synthetic SYSCALL as completed
+                 * return-path bookkeeping we failed to retire in the ERET hook.
+                 * Clear synthetic state so later IRQ/syscall handling is not
+                 * blocked by stale pending_excode=SYS.
+                 */
+                m->pending_epc          = 0;
+                m->pending_excode       = 0;
+                m->pending_cause        = 0;
+                m->epc_was_written      = false;
+                m->pending_cause_served = false;
+                m->pending_epc_served   = false;
             } else {
                 if (log_stale_pending < 32) {
                     uint64_t pc = 0;
