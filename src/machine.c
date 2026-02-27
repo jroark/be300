@@ -1813,6 +1813,46 @@ static void rcu_probe_hook(uc_engine *uc, uint64_t address,
             *cnt, tag, (uint64_t)(uint32_t)address);
 }
 
+/* 2.4 init fallback execve return sites (right after syscall insn). */
+static void init_execve_site_probe_hook(uc_engine *uc, uint64_t address,
+                                        uint32_t size, void *user_data)
+{
+    (void)size;
+    machine_t *m = user_data;
+    uint32_t pc = (uint32_t)address;
+    int idx = -1;
+    const char *site = NULL;
+    switch (pc) {
+    case 0x80001850u: idx = 0; site = "/sbin/init"; break;
+    case 0x80001870u: idx = 1; site = "/etc/init";  break;
+    case 0x80001890u: idx = 2; site = "/bin/init";  break;
+    case 0x800018B0u: idx = 3; site = "/bin/sh";    break;
+    default: return;
+    }
+
+    static uint32_t counts[4];
+    if (counts[idx] >= 64u)
+        return;
+    counts[idx]++;
+
+    uint64_t v0 = 0, a3 = 0, a0 = 0, a1 = 0, a2 = 0, status = 0;
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+    fprintf(stderr,
+            "[INIT_EXECVE_SITE] #%u %s PC=0x%08X"
+            " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
+            " a0=0x%08" PRIX64 " a1=0x%08" PRIX64 " a2=0x%08" PRIX64
+            " STATUS=0x%08" PRIX64 " pending_excode=%u\n",
+            counts[idx], site, pc,
+            (uint64_t)(uint32_t)v0, (uint64_t)(uint32_t)a3,
+            (uint64_t)(uint32_t)a0, (uint64_t)(uint32_t)a1,
+            (uint64_t)(uint32_t)a2, status, m->pending_excode);
+}
+
 /* ------------------------------------------------------------------ */
 /* IRQ path probes                                                      */
 /* ------------------------------------------------------------------ */
@@ -2098,6 +2138,16 @@ machine_t *machine_create(const machine_config_t *cfg)
     {
         uint64_t va = mips_sext(0x80001598u); /* run_init_process */
         uc_hook_add(m->uc, &hk, UC_HOOK_CODE, run_init_entry_trace_hook, m, va, va);
+    }
+    /* 2.4 init fallback execve return sites (/sbin/init,/etc/init,/bin/init,/bin/sh). */
+    {
+        static const uint32_t execve_sites[] = {
+            0x80001850u, 0x80001870u, 0x80001890u, 0x800018B0u,
+        };
+        for (int i = 0; i < 4; i++) {
+            uint64_t va = mips_sext(execve_sites[i]);
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, init_execve_site_probe_hook, m, va, va);
+        }
     }
 
     /* do_initcalls tracer: logs which function pointer is called at JALR site */
