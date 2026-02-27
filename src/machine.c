@@ -305,6 +305,59 @@ static bool prepare_execve_user_ptrs(uc_engine *uc,
     return true;
 }
 
+/*
+ * Fallback execve shim for stale kernel init fallback paths:
+ * build argv/envp explicitly when the kernel-side argv/envp pointers have
+ * been clobbered by nested exception/retry behavior.
+ */
+static bool prepare_execve_user_ptrs_defaults(uc_engine *uc,
+                                              uint64_t old_a0,
+                                              uint32_t *new_a0,
+                                              uint32_t *new_a1,
+                                              uint32_t *new_a2)
+{
+    const uint32_t base = 0x01020000u;
+    const uint32_t argv_base = base + 0x00000020u;
+    const uint32_t envp_base = base + 0x00000080u;
+    const uint32_t str_base  = base + 0x00000200u;
+    uint32_t str_cur = str_base;
+
+    char filename[192];
+    if (read_guest_string(uc, old_a0, filename, sizeof(filename)) <= 0)
+        return false;
+    if (uc_mem_write(uc, str_cur, filename, strlen(filename) + 1) != UC_ERR_OK)
+        return false;
+    *new_a0 = str_cur;
+    str_cur += (uint32_t)strlen(filename) + 1u;
+
+    const char *argv0 = "init";
+    uint32_t argv0_ptr = str_cur;
+    if (uc_mem_write(uc, str_cur, argv0, strlen(argv0) + 1) != UC_ERR_OK)
+        return false;
+    str_cur += (uint32_t)strlen(argv0) + 1u;
+
+    const char *env0 = "HOME=/";
+    const char *env1 = "TERM=linux";
+    uint32_t env0_ptr = str_cur;
+    if (uc_mem_write(uc, str_cur, env0, strlen(env0) + 1) != UC_ERR_OK)
+        return false;
+    str_cur += (uint32_t)strlen(env0) + 1u;
+    uint32_t env1_ptr = str_cur;
+    if (uc_mem_write(uc, str_cur, env1, strlen(env1) + 1) != UC_ERR_OK)
+        return false;
+
+    uint32_t z = 0;
+    if (uc_mem_write(uc, argv_base + 0, &argv0_ptr, 4) != UC_ERR_OK) return false;
+    if (uc_mem_write(uc, argv_base + 4, &z, 4) != UC_ERR_OK) return false;
+    if (uc_mem_write(uc, envp_base + 0, &env0_ptr, 4) != UC_ERR_OK) return false;
+    if (uc_mem_write(uc, envp_base + 4, &env1_ptr, 4) != UC_ERR_OK) return false;
+    if (uc_mem_write(uc, envp_base + 8, &z, 4) != UC_ERR_OK) return false;
+
+    *new_a1 = argv_base;
+    *new_a2 = envp_base;
+    return true;
+}
+
 static uc_err write_mem_best_effort(uc_engine *uc, uint64_t address,
                                     const void *data, size_t size)
 {
@@ -1116,10 +1169,17 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 (a0_32 >= 0x80000000u) ||
                 (a1_32 != 0u && a1_32 >= 0x80000000u) ||
                 (a2_32 != 0u && a2_32 >= 0x80000000u);
+            bool kernel_path_with_stale_vecs =
+                (a0_32 >= 0x80000000u) &&
+                ((a1_32 != 0u && a1_32 < 0x80000000u) ||
+                 (a2_32 != 0u && a2_32 < 0x80000000u));
 
             uint32_t sh_a0 = 0, sh_a1 = 0, sh_a2 = 0;
             if (needs_execve_shim &&
-                prepare_execve_user_ptrs(uc, a0, a1, a2, &sh_a0, &sh_a1, &sh_a2)) {
+                ((kernel_path_with_stale_vecs &&
+                  prepare_execve_user_ptrs_defaults(uc, a0, &sh_a0, &sh_a1, &sh_a2)) ||
+                 (!kernel_path_with_stale_vecs &&
+                  prepare_execve_user_ptrs(uc, a0, a1, a2, &sh_a0, &sh_a1, &sh_a2)))) {
                 uint64_t na0 = sh_a0, na1 = sh_a1, na2 = sh_a2;
                 uc_reg_write(uc, UC_MIPS_REG_A0, &na0);
                 uc_reg_write(uc, UC_MIPS_REG_A1, &na1);
@@ -1129,13 +1189,23 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 a2 = na2;
                 static uint32_t execve_shim_log = 0;
                 if (execve_shim_log < 32) {
-                    fprintf(stderr,
-                            "[EXECVE_SHIM] a0:0x%08" PRIX64 "->0x%08" PRIX64
-                            " a1:0x%08" PRIX64 "->0x%08" PRIX64
-                            " a2:0x%08" PRIX64 "->0x%08" PRIX64 "\n",
-                            (uint64_t)(uint32_t)old_a0, (uint64_t)(uint32_t)a0,
-                            (uint64_t)(uint32_t)old_a1, (uint64_t)(uint32_t)a1,
-                            (uint64_t)(uint32_t)old_a2, (uint64_t)(uint32_t)a2);
+                    if (kernel_path_with_stale_vecs) {
+                        fprintf(stderr,
+                                "[EXECVE_SHIM_DEFAULTS] a0:0x%08" PRIX64 "->0x%08" PRIX64
+                                " a1:0x%08" PRIX64 "->0x%08" PRIX64
+                                " a2:0x%08" PRIX64 "->0x%08" PRIX64 "\n",
+                                (uint64_t)(uint32_t)old_a0, (uint64_t)(uint32_t)a0,
+                                (uint64_t)(uint32_t)old_a1, (uint64_t)(uint32_t)a1,
+                                (uint64_t)(uint32_t)old_a2, (uint64_t)(uint32_t)a2);
+                    } else {
+                        fprintf(stderr,
+                                "[EXECVE_SHIM] a0:0x%08" PRIX64 "->0x%08" PRIX64
+                                " a1:0x%08" PRIX64 "->0x%08" PRIX64
+                                " a2:0x%08" PRIX64 "->0x%08" PRIX64 "\n",
+                                (uint64_t)(uint32_t)old_a0, (uint64_t)(uint32_t)a0,
+                                (uint64_t)(uint32_t)old_a1, (uint64_t)(uint32_t)a1,
+                                (uint64_t)(uint32_t)old_a2, (uint64_t)(uint32_t)a2);
+                    }
                     execve_shim_log++;
                 }
             }
