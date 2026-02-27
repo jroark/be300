@@ -172,6 +172,17 @@ static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *ins
 
 static int read_guest_string(uc_engine *uc, uint64_t va, char *buf, int bufsz);
 
+static bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out)
+{
+    if (uc_mem_read(uc, va, out, sizeof(*out)) == UC_ERR_OK)
+        return true;
+    uint64_t pa = 0;
+    if (va_to_pa_kseg(va, &pa) &&
+        uc_mem_read(uc, pa, out, sizeof(*out)) == UC_ERR_OK)
+        return true;
+    return false;
+}
+
 static uc_err write_mem_best_effort(uc_engine *uc, uint64_t address,
                                     const void *data, size_t size)
 {
@@ -780,6 +791,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     static uint32_t intr_log_count[64];
     static uint32_t syscall_entry_log_count = 0;
     static uint32_t intr_log_count_27_detail = 0;
+    static uint32_t execve_args_log = 0;
 
     uint64_t pc = 0, status = 0;
     uc_reg_read(uc, UC_MIPS_REG_PC,         &pc);
@@ -908,6 +920,50 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     (uint64_t)(uint32_t)a3, m->pending_cause,
                     (uint64_t)(uint32_t)status);
             syscall_entry_log_count++;
+        }
+
+        if ((uint32_t)v0 == 4011u && execve_args_log < 48u) {
+            uint32_t argp = (uint32_t)a1;
+            uint32_t envp = (uint32_t)a2;
+            fprintf(stderr,
+                    "[EXECVE_ARGS] filename=\"%s\" argv=0x%08X envp=0x%08X\n",
+                    a0s, argp, envp);
+
+            for (int i = 0; i < 4; i++) {
+                uint32_t p = 0;
+                char s[96] = "<unreadable>";
+                if (argp != 0 && read_guest_u32(uc, (uint64_t)argp + (uint64_t)(i * 4), &p)) {
+                    if (p != 0)
+                        read_guest_string(uc, p, s, sizeof(s));
+                    else
+                        strcpy(s, "<NULL>");
+                    fprintf(stderr, "[EXECVE_ARGS] argv[%d]=0x%08X \"%s\"\n", i, p, s);
+                    if (p == 0)
+                        break;
+                } else {
+                    fprintf(stderr, "[EXECVE_ARGS] argv[%d]=<unreadable-ptr>\n", i);
+                    break;
+                }
+            }
+
+            for (int i = 0; i < 4; i++) {
+                uint32_t p = 0;
+                char s[96] = "<unreadable>";
+                if (envp != 0 && read_guest_u32(uc, (uint64_t)envp + (uint64_t)(i * 4), &p)) {
+                    if (p != 0)
+                        read_guest_string(uc, p, s, sizeof(s));
+                    else
+                        strcpy(s, "<NULL>");
+                    fprintf(stderr, "[EXECVE_ARGS] envp[%d]=0x%08X \"%s\"\n", i, p, s);
+                    if (p == 0)
+                        break;
+                } else {
+                    fprintf(stderr, "[EXECVE_ARGS] envp[%d]=<unreadable-ptr>\n", i);
+                    break;
+                }
+            }
+
+            execve_args_log++;
         }
     }
 
