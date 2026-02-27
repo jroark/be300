@@ -945,24 +945,29 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
              *   intno=26/27 -> forced vector -> UC_ERR_READ_UNMAPPED @ 0x80000000.
              *
              * If a synthetic exception (notably SYSCALL) is currently pending,
-             * suspend it so MFC0 Cause/EPC reads in the nested TLB handler see
-             * native CP0 values (ExcCode 2/3), not the synthetic ones.
+             * drop it before native TLB handling so MFC0 Cause/EPC reads see
+             * native CP0 values (ExcCode 2/3), not synthetic syscall state.
+             *
+             * We intentionally do NOT save/restore synthetic state here:
+             * intno=26/27 delivery timing can occur before we reliably observe
+             * a matching nested ERET, and stale saved state can poison later
+             * exception returns.
              */
             static uint32_t tlb_passthrough_log_count = 0;
-            static uint32_t tlb_nested_suspend_log = 0;
-            if (m->pending_excode != 0 && !m->has_saved_exception) {
-                save_pending_exception(m);
+            static uint32_t tlb_nested_drop_log = 0;
+            if (m->pending_excode != 0) {
                 m->pending_epc          = 0;
                 m->pending_excode       = 0;
                 m->pending_cause        = 0;
                 m->epc_was_written      = false;
                 m->pending_cause_served = false;
                 m->pending_epc_served   = false;
-                if (tlb_nested_suspend_log < 64) {
+                m->has_saved_exception  = false;
+                if (tlb_nested_drop_log < 64) {
                     fprintf(stderr,
-                            "[TLB_NESTED] suspend synthetic excode for intno=%u at PC=0x%08" PRIX64 "\n",
+                            "[TLB_NESTED_DROP] cleared synthetic excode for intno=%u at PC=0x%08" PRIX64 "\n",
                             intno, (uint64_t)(uint32_t)pc);
-                    tlb_nested_suspend_log++;
+                    tlb_nested_drop_log++;
                 }
             }
             if (tlb_trace_window_active(m) && tlb_passthrough_log_count < 96) {
@@ -1009,6 +1014,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     m->epc_was_written      = false;  /* reset; set by MTC0 EPC intercept on exit path */
     m->pending_cause_served = false;
     m->pending_epc_served   = false;
+    m->has_saved_exception  = false;  /* stale nested state must not leak across syscalls */
 
     {
         uint64_t v0 = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
