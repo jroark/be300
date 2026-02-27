@@ -1051,36 +1051,23 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                     prev_insn == 0x0000000Cu);
             static uint32_t tlb_nested_keep_log = 0;
             if (at_syscall_site && m->pending_excode == MIPS_EXCCODE_SYS) {
-                if ((status & 0x2u) == 0u) {
-                    static uint32_t syscall_stale_drop_log = 0;
-                    uint64_t v0 = 0, a3 = 0;
-                    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-                    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
-                    m->pending_epc          = 0;
-                    m->pending_excode       = 0;
-                    m->pending_cause        = 0;
-                    m->epc_was_written      = false;
-                    m->pending_cause_served = false;
-                    m->pending_epc_served   = false;
-                    m->has_saved_exception  = false;
-                    if (syscall_stale_drop_log < 64) {
-                        fprintf(stderr,
-                                "[SYSCALL_STALE_DROP] intno=%u PC=0x%08" PRIX64
-                                " prev=0x%08X STATUS=0x%08" PRIX64
-                                " nr=%u v0=0x%08" PRIX64 " a3=0x%08" PRIX64 "\n",
-                                intno, (uint64_t)(uint32_t)pc, prev_insn, status,
-                                m->pending_syscall_nr,
-                                (uint64_t)(uint32_t)v0,
-                                (uint64_t)(uint32_t)a3);
-                        syscall_stale_drop_log++;
-                    }
-                    return;
-                }
+                bool old_cause_served = m->pending_cause_served;
+                bool old_epc_served = m->pending_epc_served;
+                /*
+                 * Nested TLB/aux interrupts can bounce through the vector while a
+                 * syscall is still in flight. Re-arm one-shot Cause/EPC injection
+                 * so the resumed exception path still decodes as SYSCALL.
+                 */
+                m->pending_cause_served = false;
+                m->pending_epc_served = false;
                 if (tlb_nested_keep_log < 64) {
                     fprintf(stderr,
                             "[TLB_NESTED_KEEP] kept syscall excode for intno=%u"
-                            " at PC=0x%08" PRIX64 " (prev=0x%08X)\n",
-                            intno, (uint64_t)(uint32_t)pc, prev_insn);
+                            " at PC=0x%08" PRIX64 " (prev=0x%08X STATUS=0x%08" PRIX64
+                            " served_cause:%u->%u served_epc:%u->%u)\n",
+                            intno, (uint64_t)(uint32_t)pc, prev_insn, status,
+                            old_cause_served ? 1u : 0u, m->pending_cause_served ? 1u : 0u,
+                            old_epc_served ? 1u : 0u, m->pending_epc_served ? 1u : 0u);
                     tlb_nested_keep_log++;
                 }
                 return;
@@ -1211,25 +1198,21 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         uint64_t old_a0 = a0, old_a1 = a1, old_a2 = a2;
 
         if ((uint32_t)v0 == 4011u) {
-            uint32_t a0_32 = (uint32_t)a0;
             uint32_t a1_32 = (uint32_t)a1;
             uint32_t a2_32 = (uint32_t)a2;
             bool needs_execve_shim =
-                (a0_32 >= 0x80000000u) ||
                 (a1_32 != 0u && a1_32 >= 0x80000000u) ||
                 (a2_32 != 0u && a2_32 >= 0x80000000u);
-            bool kernel_path_with_stale_vecs =
-                (a0_32 >= 0x80000000u) &&
-                ((a1_32 != 0u && a1_32 < 0x80000000u) ||
-                 (a2_32 != 0u && a2_32 < 0x80000000u));
-
             uint32_t sh_a0 = 0, sh_a1 = 0, sh_a2 = 0;
             if (needs_execve_shim &&
-                ((kernel_path_with_stale_vecs &&
-                  prepare_execve_user_ptrs_defaults(uc, a0, &sh_a0, &sh_a1, &sh_a2)) ||
-                 (!kernel_path_with_stale_vecs &&
-                  prepare_execve_user_ptrs(uc, a0, a1, a2, &sh_a0, &sh_a1, &sh_a2)))) {
-                uint64_t na0 = sh_a0, na1 = sh_a1, na2 = sh_a2;
+                (prepare_execve_user_ptrs_defaults(uc, a0, &sh_a0, &sh_a1, &sh_a2) ||
+                 prepare_execve_user_ptrs(uc, a0, a1, a2, &sh_a0, &sh_a1, &sh_a2))) {
+                /*
+                 * Keep filename pointer intact and only normalize argv/envp.
+                 * This preserves kernel-provided path pointers while avoiding
+                 * EFAULT from kernel-space arg/env vectors.
+                 */
+                uint64_t na0 = old_a0, na1 = sh_a1, na2 = sh_a2;
                 uc_reg_write(uc, UC_MIPS_REG_A0, &na0);
                 uc_reg_write(uc, UC_MIPS_REG_A1, &na1);
                 uc_reg_write(uc, UC_MIPS_REG_A2, &na2);
@@ -1238,23 +1221,13 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 a2 = na2;
                 static uint32_t execve_shim_log = 0;
                 if (execve_shim_log < 32) {
-                    if (kernel_path_with_stale_vecs) {
-                        fprintf(stderr,
-                                "[EXECVE_SHIM_DEFAULTS] a0:0x%08" PRIX64 "->0x%08" PRIX64
-                                " a1:0x%08" PRIX64 "->0x%08" PRIX64
-                                " a2:0x%08" PRIX64 "->0x%08" PRIX64 "\n",
-                                (uint64_t)(uint32_t)old_a0, (uint64_t)(uint32_t)a0,
-                                (uint64_t)(uint32_t)old_a1, (uint64_t)(uint32_t)a1,
-                                (uint64_t)(uint32_t)old_a2, (uint64_t)(uint32_t)a2);
-                    } else {
-                        fprintf(stderr,
-                                "[EXECVE_SHIM] a0:0x%08" PRIX64 "->0x%08" PRIX64
-                                " a1:0x%08" PRIX64 "->0x%08" PRIX64
-                                " a2:0x%08" PRIX64 "->0x%08" PRIX64 "\n",
-                                (uint64_t)(uint32_t)old_a0, (uint64_t)(uint32_t)a0,
-                                (uint64_t)(uint32_t)old_a1, (uint64_t)(uint32_t)a1,
-                                (uint64_t)(uint32_t)old_a2, (uint64_t)(uint32_t)a2);
-                    }
+                    fprintf(stderr,
+                            "[EXECVE_SHIM_DEFAULTS] a0:0x%08" PRIX64 "->0x%08" PRIX64
+                            " a1:0x%08" PRIX64 "->0x%08" PRIX64
+                            " a2:0x%08" PRIX64 "->0x%08" PRIX64 "\n",
+                            (uint64_t)(uint32_t)old_a0, (uint64_t)(uint32_t)a0,
+                            (uint64_t)(uint32_t)old_a1, (uint64_t)(uint32_t)a1,
+                            (uint64_t)(uint32_t)old_a2, (uint64_t)(uint32_t)a2);
                     execve_shim_log++;
                 }
             }
