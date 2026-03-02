@@ -17,12 +17,13 @@ int ui_init(machine_t *m)
     m->fb_height = 320;
     /*
      * fb_stride: pixels per row in the 16-bit RGB565 framebuffer.
-     * The BE-300 display is 240 pixels wide with no row padding.
-     * Previous value (256) treated the buffer as 32-bit words, causing
-     * every other pixel to be read at double stride and wrapping to the
-     * next row at x=120, producing a doubled side-by-side image.
+     * The BE-300 video memory starts at 0xAA200000 (PA 0x0A200000).
+     * Each row occupies 512 bytes (256 pixels) even though only 240 pixels
+     * (480 bytes) are visible — the remaining 16 pixels are padding.
+     * stride=256 means guest_fb[y*256 + x] for x=0..239 indexes the correct
+     * pixel at row y without drifting into adjacent rows.
      */
-    m->fb_stride = 240;
+    m->fb_stride = 256;
 
     m->sdl_window = SDL_CreateWindow("BE-300 Emulator",
                                     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
