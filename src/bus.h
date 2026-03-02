@@ -52,4 +52,7 @@
 #define VRC4173_UART_THR   0x8680u   /* transmit holding register */
 #define VRC4173_UART_LSR   0x8694u   /* line status register (+0x14) */
 
+#define PA_FRAMEBUFFER_BASE UINT32_C(0x0A200000)
+#define PA_FRAMEBUFFER_SIZE (2u * 1024u * 1024u)   /* 2 MB VRAM */
+
 void bus_init(machine_t *m);

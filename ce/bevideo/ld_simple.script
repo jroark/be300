@@ -1,0 +1,19 @@
+OUTPUT_ARCH(mips)
+ENTRY(kernel_entry)
+SECTIONS
+{
+  . = 0x80001000;
+  .text : {
+    *(.text)
+    *(.rodata)
+  }
+  .data : {
+    *(.data)
+  }
+  .bss : {
+    _bss_start = .;
+    *(.bss)
+    *(COMMON)
+    _end = .;
+  }
+}

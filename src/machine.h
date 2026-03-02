@@ -75,6 +75,10 @@ struct machine_s {
     bool     execve_watch_active;   /* waiting to log do_execve return value      */
     uint64_t execve_watch_ret_pc;   /* caller PC to observe on do_execve return   */
     uint64_t execve_watch_a0;       /* do_execve filename pointer (entry arg0)    */
+    uint64_t execve_saved_a1;       /* argv pointer saved at do_execve entry      */
+    uint64_t execve_saved_a2;       /* envp pointer saved at do_execve entry      */
+    uint64_t execve_saved_sp;       /* $sp saved at do_execve entry (restored on DEFER_SKIP) */
+    uint64_t execve_entry_pc;       /* VA of do_execve entry (for stale-TLB retry)*/
     char     execve_watch_path[128];/* do_execve filename snapshot                 */
     bool     has_saved_exception;   /* nested real exception (e.g., TLBS) saved            */
     uint64_t saved_pending_epc;
@@ -93,6 +97,15 @@ struct machine_s {
     uint64_t shadow_cp0_badvaddr;
     uint64_t shadow_cp0_entryhi;
     uint64_t shadow_cp0_epc;
+
+    /* Framebuffer / UI */
+    uint32_t fb_width;
+    uint32_t fb_height;
+    uint32_t fb_stride;
+    uint8_t *fb_ptr;    /* pointer to host memory if mapped, or NULL */
+    void    *sdl_window;
+    void    *sdl_renderer;
+    void    *sdl_texture;
     uint64_t last_unmapped_addr;     /* fault VA reported by mem_unmapped_hook */
     uc_mem_type last_unmapped_type;  /* corresponding UC_MEM_* access type      */
     bool     last_unmapped_valid;
@@ -115,6 +128,14 @@ struct machine_s {
     bool     tlbwi_patch_pending;
     uint64_t tlbwi_patch_addr;
     uint32_t tlbwi_patch_orig;
+
+    /* TLB notification de-duplication for execve DEFER.
+     * Unicorn re-delivers the same notification-only intno=26 at SYSCALL+4
+     * after ERET_EXECVE_RETRY redirects to do_execve (before any instruction
+     * there executes). After the first DEFER, subsequent notifications at
+     * SYSCALL+4 while execve_watch_active are spurious: just restore PC to
+     * do_execve and return so execution can continue. */
+    uint32_t tlb_defer_count;
 };
 
 machine_t *machine_create(const machine_config_t *cfg);

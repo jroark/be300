@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "machine.h"
+#include "ui.h"
 
 static void usage(const char *prog)
 {

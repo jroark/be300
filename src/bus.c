@@ -202,14 +202,31 @@ void bus_init(machine_t *m)
                       mmio_read_cb,  m,
                       mmio_write_cb, m);
     if (err != UC_ERR_OK)
-        fprintf(stderr, "[BUS] MMIO map failed: %s\n", uc_strerror(err));
 
-    /* VRC4173 companion chip (CS3) — UART + USB + KbC stubs */
-    err = uc_mmio_map(m->uc, PA_VRC4173_BASE, PA_VRC4173_SIZE,
+    /* Region 1: Base to Framebuffer start */
+    err = uc_mmio_map(m->uc, PA_VRC4173_BASE, PA_FRAMEBUFFER_BASE - PA_VRC4173_BASE,
                       vrc4173_read_cb,  m,
                       vrc4173_write_cb, m);
     if (err != UC_ERR_OK)
-        fprintf(stderr, "[BUS] VRC4173 MMIO map failed: %s\n", uc_strerror(err));
+        fprintf(stderr, "[BUS] VRC4173 MMIO Region 1 map failed: %s\n", uc_strerror(err));
+
+    /* Region 2: Framebuffer VRAM (mapped as RAM) */
+    err = uc_mem_map(m->uc, PA_FRAMEBUFFER_BASE, PA_FRAMEBUFFER_SIZE, UC_PROT_ALL);
+    if (err != UC_ERR_OK)
+        fprintf(stderr, "[BUS] Framebuffer VRAM map failed: %s\n", uc_strerror(err));
+
+    /* Region 3: After Framebuffer to end of CS3 */
+    uint32_t region3_base = PA_FRAMEBUFFER_BASE + PA_FRAMEBUFFER_SIZE;
+    uint32_t region3_size = (PA_VRC4173_BASE + PA_VRC4173_SIZE) - region3_base;
+    if (region3_size > 0) {
+        err = uc_mmio_map(m->uc, region3_base, region3_size,
+                          vrc4173_read_cb,  m,
+                          vrc4173_write_cb, m);
+        if (err != UC_ERR_OK)
+            fprintf(stderr, "[BUS] VRC4173 MMIO Region 2 map failed: %s\n", uc_strerror(err));
+    }
+        fprintf(stderr, "[BUS] MMIO map failed: %s\n", uc_strerror(err));
+
 
     /* Fault hook for unmapped accesses */
     uc_hook hk;
