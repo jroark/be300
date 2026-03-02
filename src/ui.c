@@ -63,6 +63,42 @@ void ui_update(machine_t *m)
     if (!guest_fb)
         guest_fb = malloc(PA_FRAMEBUFFER_SIZE);
 
+    /*
+     * Probe the framebuffer location once on first update.
+     * The sfb driver uses kseg1 VA 0xAA200000 (= PA 0x0A200000) and does a
+     * memset at sfb_init time, so at least one of these addresses should hold
+     * the 0xE0E0 fill value if the kernel wrote to the expected region.
+     */
+    /*
+     * Diagnose where the kernel's sfb_init memset actually landed.
+     * sfb.c writes 0xE0 bytes to kseg1 VA 0xAA200000 (= PA 0x0A200000).
+     * Probe three candidate addresses every 60 frames until non-zero data is
+     * found at one of them, then log which address "won" and stop probing.
+     */
+    static int fb_probe_frame = 0;
+    static bool fb_probe_resolved = false;
+    if (!fb_probe_resolved && (fb_probe_frame++ % 60) == 0) {
+        static const struct { uint64_t addr; const char *label; } probes[] = {
+            { 0x0A200000u,                             "PA  0x0A200000          " },
+            { 0xAA200000u,                             "VA  0xAA200000 (kseg1)  " },
+            { (uint64_t)(int64_t)(int32_t)0xAA200000u, "VA  0xFFFFFFFFAA200000  " },
+        };
+        for (int pi = 0; pi < 3; pi++) {
+            uint32_t sample[4] = {0};
+            uc_err re = uc_mem_read(m->uc, probes[pi].addr, sample, sizeof(sample));
+            bool nonzero = (re == UC_ERR_OK) &&
+                           (sample[0] || sample[1] || sample[2] || sample[3]);
+            if (nonzero || fb_probe_frame <= 61) {
+                fprintf(stderr, "[FB_PROBE] %s read=%s %08X %08X %08X %08X%s\n",
+                        probes[pi].label,
+                        re == UC_ERR_OK ? "OK " : uc_strerror(re),
+                        sample[0], sample[1], sample[2], sample[3],
+                        nonzero ? " <-- DATA HERE" : "");
+            }
+            if (nonzero && pi == 0) fb_probe_resolved = true; /* PA matches — as expected */
+        }
+    }
+
     if (uc_mem_read(m->uc, PA_FRAMEBUFFER_BASE, guest_fb, PA_FRAMEBUFFER_SIZE) != UC_ERR_OK)
         return;
 
