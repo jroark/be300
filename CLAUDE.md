@@ -21,8 +21,10 @@ Push with: `git push -u origin claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
 - Build and test in the Docker container (`mips-dev`) only.
 - Commit and push from the host environment only (not from inside Docker).
 - Typical split:
-  - Container: `cmake`, `make`, emulator/test runs, log generation.
-  - Host: `git add`, `git commit`, `git push`.
+  - Container: `cmake`, `make`, emulator/test runs, log generation (The /tmp dir doesn't persist between container invocations.).
+    - The local dir is mounted as /work in the container
+    - The container has a mips cross developement toolchain for analyzing the kernels and other mips binaries
+  - Host: `git add`, `git commit`, `git push`. (host does not have mipsel cross development)
 
 ---
 
@@ -200,8 +202,8 @@ grep -E '(RCU_PROBE|CHECKPOINT|INITCALL|PROGRESS)' /tmp/be300.err | head -80
 # Symbol lookup
 nm linux4be20040908/vmlinux | grep <symbol>
 
-# Disassembly
-llvm-objdump -d --start-address=0x<VA> --stop-address=0x<VA+N> linux4be20040908/vmlinux
+# Disassembly from the container only
+mipsel-linux-gnu-objdump -d --start-address=0x<VA> --stop-address=0x<VA+N> linux4be20040908/vmlinux
 ```
 
 ---

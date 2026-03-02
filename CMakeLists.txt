@@ -20,6 +20,7 @@ add_compile_options(-Wall -Wextra -g -O2)
 find_package(PkgConfig QUIET)
 if(PKG_CONFIG_FOUND)
     pkg_check_modules(UNICORN QUIET unicorn)
+    pkg_check_modules(SDL2 QUIET sdl2)
 endif()
 
 if(NOT UNICORN_FOUND)
@@ -40,7 +41,15 @@ if(NOT UNICORN_FOUND)
 endif()
 
 # Include directories
+find_package(SDL2 QUIET)
 include_directories(src ${UNICORN_INCLUDE_DIRS})
+if(SDL2_FOUND OR SDL2_LIBRARIES)
+    include_directories(${SDL2_INCLUDE_DIRS})
+    add_compile_definitions(HAVE_SDL2)
+    message(STATUS "SDL2 found — building with display support")
+else()
+    message(STATUS "SDL2 not found — building headless (no display)")
+endif()
 
 # Source files for the core emulator logic (shared between main and tests)
 set(BE300_CORE_SOURCES
@@ -48,6 +57,7 @@ set(BE300_CORE_SOURCES
     src/bus.c
     src/loader.c
     src/macc.c
+    src/ui.c
     src/hw/bcu.c
     src/hw/cmu.c
     src/hw/pmu.c
@@ -59,12 +69,12 @@ set(BE300_CORE_SOURCES
 
 # Main executable
 add_executable(be300 src/main.c ${BE300_CORE_SOURCES})
-target_link_libraries(be300 ${UNICORN_LIBRARIES})
+target_link_libraries(be300 ${UNICORN_LIBRARIES} ${SDL2_LIBRARIES})
 
 # Tests
 enable_testing()
 
 add_executable(test_basic tests/test_basic.c ${BE300_CORE_SOURCES})
-target_link_libraries(test_basic ${UNICORN_LIBRARIES})
+target_link_libraries(test_basic ${UNICORN_LIBRARIES} ${SDL2_LIBRARIES})
 
 add_test(NAME basic_test COMMAND test_basic)
