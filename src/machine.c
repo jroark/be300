@@ -1256,6 +1256,36 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 tlb_badvaddr_log++;
             }
             /*
+             * If PC is in the low kuseg range (< 0x10000), this is almost
+             * certainly a NULL function-pointer call from kernel code.
+             * Log $ra (return address of caller) and $t9 (indirect call target)
+             * so we can identify which kernel function made the bad call.
+             */
+            static uint32_t null_ptr_log = 0;
+            if ((uint32_t)pc < 0x10000u && null_ptr_log < 8u) {
+                uint64_t ra = 0, t9 = 0, gp = 0, sp = 0;
+                uint64_t a0 = 0, a1 = 0, a2 = 0, v0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+                uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
+                uc_reg_read(uc, UC_MIPS_REG_GP, &gp);
+                uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                fprintf(stderr,
+                        "[NULL_CALL] PC=0x%08" PRIX64 " ra=0x%08" PRIX64
+                        " t9=0x%08" PRIX64 " gp=0x%08" PRIX64 " sp=0x%08" PRIX64
+                        " a0=0x%08" PRIX64 " a1=0x%08" PRIX64
+                        " a2=0x%08" PRIX64 " v0=0x%08" PRIX64 "\n",
+                        (uint64_t)(uint32_t)pc,
+                        (uint64_t)(uint32_t)ra, (uint64_t)(uint32_t)t9,
+                        (uint64_t)(uint32_t)gp, (uint64_t)(uint32_t)sp,
+                        (uint64_t)(uint32_t)a0, (uint64_t)(uint32_t)a1,
+                        (uint64_t)(uint32_t)a2, (uint64_t)(uint32_t)v0);
+                null_ptr_log++;
+            }
+            /*
              * Guard against misclassifying a syscall-site interrupt as nested
              * TLB traffic. We have observed intno=26 at PC=syscall+4 with
              * (PC-4)==SYSCALL encoding; clearing synthetic syscall state there
