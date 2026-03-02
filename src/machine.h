@@ -136,6 +136,19 @@ struct machine_s {
      * SYSCALL+4 while execve_watch_active are spurious: just restore PC to
      * do_execve and return so execution can continue. */
     uint32_t tlb_defer_count;
+
+    /* open_exec fd-leak compensation.
+     * open_exec (JAL at 0x8004A9F8) allocates a struct file (nr_files++) and
+     * returns a file pointer in $v0.  When do_execve is restarted by
+     * ERET_EXECVE_RETRY or TLB_DEFER_SKIP the allocated struct file is
+     * abandoned without calling fput(), leaking the nr_files count.  After
+     * enough restarts nr_files >= max_files → ENFILE.
+     *
+     * execve_open_exec_ran is set when execution reaches the open_exec return
+     * point (0x8004AA00) and cleared at each do_execve entry.  When it is
+     * set at the time of a do_execve restart, we decrement nr_files directly
+     * in guest memory to undo the orphaned increment. */
+    bool     execve_open_exec_ran;
 };
 
 machine_t *machine_create(const machine_config_t *cfg);

@@ -484,6 +484,29 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 m->tlb_defer_count);
     }
 
+    /*
+     * open_exec return probe (vmlinux-pgui-demo 2.4.18).
+     * JAL open_exec is at 0x8004A9F8; MIPS sets ra = JAL+8 = 0x8004AA00.
+     * When execution reaches 0x8004AA00, $v0 holds the struct file* returned
+     * by open_exec (positive = success, negative = error code).
+     * Mark execve_open_exec_ran so ERET_EXECVE_RETRY / TLB_DEFER_SKIP know
+     * to compensate for the leaked nr_files increment before restarting.
+     */
+    if ((uint32_t)address == 0x8004AA00u) {
+        uint64_t v0 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+        m->execve_open_exec_ran = true;
+        static uint32_t open_exec_ret_log = 0;
+        if (open_exec_ret_log < 32) {
+            fprintf(stderr,
+                    "[OPEN_EXEC_RET] #%u v0=0x%08" PRIX64
+                    " (file_ptr) defer_count=%u\n",
+                    open_exec_call_count, (uint64_t)(uint32_t)v0,
+                    m->tlb_defer_count);
+            open_exec_ret_log++;
+        }
+    }
+
     /* Precise do_execve return probe: capture at function entry, log at caller PC. */
     if (m->execve_watch_active &&
         (uint32_t)address == (uint32_t)m->execve_watch_ret_pc) {
@@ -607,13 +630,14 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             do_execve_enter_log++;
         }
 
-        m->execve_watch_active = true;
-        m->execve_watch_ret_pc = ra;
-        m->execve_entry_pc     = address;  /* saved for stale-TLB retry redirect */
-        m->execve_watch_a0     = a0;
-        m->execve_saved_a1     = a1;       /* argv — restored on stale-TLB retry */
-        m->execve_saved_a2     = a2;       /* envp — restored on stale-TLB retry */
-        m->execve_saved_sp     = sp;       /* $sp  — restored on stale-TLB retry (prevents frame drift) */
+        m->execve_watch_active    = true;
+        m->execve_watch_ret_pc    = ra;
+        m->execve_entry_pc        = address;  /* saved for stale-TLB retry redirect */
+        m->execve_watch_a0        = a0;
+        m->execve_saved_a1        = a1;       /* argv — restored on stale-TLB retry */
+        m->execve_saved_a2        = a2;       /* envp — restored on stale-TLB retry */
+        m->execve_saved_sp        = sp;       /* $sp  — restored on stale-TLB retry (prevents frame drift) */
+        m->execve_open_exec_ran   = false;    /* reset fd-leak flag for this invocation */
         strncpy(m->execve_watch_path, path, sizeof(m->execve_watch_path) - 1);
         m->execve_watch_path[sizeof(m->execve_watch_path) - 1] = '\0';
 
@@ -1069,6 +1093,25 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 uc_reg_write(uc, UC_MIPS_REG_A0, &a0_v);
                 uc_reg_write(uc, UC_MIPS_REG_A1, &a1_v);
                 uc_reg_write(uc, UC_MIPS_REG_A2, &a2_v);
+                /*
+                 * fd-leak compensation: open_exec (JAL at 0x8004A9F8) ran
+                 * during this do_execve invocation and allocated a struct file
+                 * (nr_files++) that is now orphaned because we are restarting
+                 * do_execve without calling fput().  Decrement nr_files
+                 * directly in guest memory to prevent ENFILE accumulation.
+                 */
+                if (m->execve_open_exec_ran) {
+                    uint32_t nr_files = 0;
+                    if (uc_mem_read(m->uc, 0x80178104u, &nr_files, sizeof(nr_files)) == UC_ERR_OK
+                        && nr_files > 0) {
+                        nr_files--;
+                        uc_mem_write(m->uc, 0x80178104u, &nr_files, sizeof(nr_files));
+                        fprintf(stderr,
+                                "[ENFILE_FIX] ERET_RETRY: closed orphaned open_exec fd;"
+                                " nr_files now %u\n", nr_files);
+                    }
+                    m->execve_open_exec_ran = false;
+                }
                 uint64_t retry = m->execve_entry_pc;
                 uc_reg_write(uc, UC_MIPS_REG_PC, &retry);
                 /* Re-arm one-shot Cause/EPC injection for the re-entered do_execve. */
@@ -1388,6 +1431,19 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         uc_reg_write(uc, UC_MIPS_REG_A1, &a1_v);
                         uc_reg_write(uc, UC_MIPS_REG_A2, &a2_v);
                         uc_reg_write(uc, UC_MIPS_REG_SP, &sp_v);
+                        /* fd-leak compensation: same rationale as ERET_EXECVE_RETRY. */
+                        if (m->execve_open_exec_ran) {
+                            uint32_t nr_files = 0;
+                            if (uc_mem_read(m->uc, 0x80178104u, &nr_files, sizeof(nr_files)) == UC_ERR_OK
+                                && nr_files > 0) {
+                                nr_files--;
+                                uc_mem_write(m->uc, 0x80178104u, &nr_files, sizeof(nr_files));
+                                fprintf(stderr,
+                                        "[ENFILE_FIX] DEFER_SKIP: closed orphaned open_exec fd;"
+                                        " nr_files now %u\n", nr_files);
+                            }
+                            m->execve_open_exec_ran = false;
+                        }
                         /* Restore PC to do_execve; EXL stays 0 (notification-only). */
                         uint64_t do_execve_pc = m->execve_entry_pc;
                         uc_reg_write(uc, UC_MIPS_REG_PC, &do_execve_pc);
