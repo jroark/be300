@@ -202,8 +202,9 @@ void bus_init(machine_t *m)
                       mmio_read_cb,  m,
                       mmio_write_cb, m);
     if (err != UC_ERR_OK)
+        fprintf(stderr, "[BUS] Internal I/O MMIO map failed: %s\n", uc_strerror(err));
 
-    /* Region 1: Base to Framebuffer start */
+    /* Region 1: VRC4173 companion chip (Base to Framebuffer start) */
     err = uc_mmio_map(m->uc, PA_VRC4173_BASE, PA_FRAMEBUFFER_BASE - PA_VRC4173_BASE,
                       vrc4173_read_cb,  m,
                       vrc4173_write_cb, m);
@@ -225,7 +226,6 @@ void bus_init(machine_t *m)
         if (err != UC_ERR_OK)
             fprintf(stderr, "[BUS] VRC4173 MMIO Region 2 map failed: %s\n", uc_strerror(err));
     }
-        fprintf(stderr, "[BUS] MMIO map failed: %s\n", uc_strerror(err));
 
 
     /* Fault hook for unmapped accesses */
