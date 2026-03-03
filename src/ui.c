@@ -106,19 +106,32 @@ void ui_update(machine_t *m)
     int pitch;
     if (SDL_LockTexture(m->sdl_texture, NULL, (void**)&pixels, &pitch) == 0) {
         uint32_t stride = m->fb_stride;   /* pixels per row (16-bit units) */
-        for (uint32_t y = 0; y < m->fb_height; y++) {
-            for (uint32_t x = 0; x < m->fb_width; x++) {
-                uint16_t p = guest_fb[y * stride + x];
-                /*
-                 * The sfb driver declares green as 5 bits at offset 5,
-                 * so the pixel layout is R[15:11] X[10] G[9:5] B[4:0].
-                 * SDL_PIXELFORMAT_RGB565 expects R[15:11] G[10:5] B[4:0]
-                 * (6-bit green).  Expand the 5-bit green to 6 bits by
-                 * replicating its MSB into the new LSB position.
-                 */
-                uint16_t g5 = (p >> 5) & 0x1Fu;
-                uint16_t g6 = (g5 << 1) | (g5 >> 4);
-                pixels[y * (pitch / 2) + x] = (p & 0xF81Fu) | (uint16_t)(g6 << 5);
+        if (m->cfg.sfb_5bit_green) {
+            /*
+             * 2.6 sfb.c non-standard format: green is 5 bits at offset 5,
+             * so the pixel layout is R[15:11] X[10] G[9:5] B[4:0].
+             * SDL_PIXELFORMAT_RGB565 expects R[15:11] G[10:5] B[4:0]
+             * (6-bit green).  Expand the 5-bit green to 6 bits by
+             * replicating its MSB into the new LSB position.
+             */
+            for (uint32_t y = 0; y < m->fb_height; y++) {
+                for (uint32_t x = 0; x < m->fb_width; x++) {
+                    uint16_t p = guest_fb[y * stride + x];
+                    uint16_t g5 = (p >> 5) & 0x1Fu;
+                    uint16_t g6 = (g5 << 1) | (g5 >> 4);
+                    pixels[y * (pitch / 2) + x] = (p & 0xF81Fu) | (uint16_t)(g6 << 5);
+                }
+            }
+        } else {
+            /*
+             * Standard true RGB565: R[15:11] G[10:5] B[4:0].
+             * SDL_PIXELFORMAT_RGB565 uses the same layout — pass through directly.
+             * This is correct for Linux 2.4 kernels and any standard RGB565 framebuffer.
+             */
+            for (uint32_t y = 0; y < m->fb_height; y++) {
+                for (uint32_t x = 0; x < m->fb_width; x++) {
+                    pixels[y * (pitch / 2) + x] = guest_fb[y * stride + x];
+                }
             }
         }
         SDL_UnlockTexture(m->sdl_texture);

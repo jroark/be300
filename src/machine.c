@@ -209,6 +209,62 @@ static bool map_kseg_mirror_block(machine_t *m, uint64_t va_block)
     return true;
 }
 
+/*
+ * tlb_map_kuseg_page — directly map a physical SDRAM page into kuseg virtual
+ * address space in Unicorn's host region table.
+ *
+ * Background: Unicorn's MIPS64 softmmu TLB may not honour TLBWI for kuseg
+ * addresses, causing an infinite TLB-store-miss storm at PC=0x800015B4.
+ * Two root causes are addressed together:
+ *
+ *  (a) Stale softmmu TLB entry: the softmmu cached a read-only (D=0) entry
+ *      that isn't evicted when handle_tlbs upgrades the PTE to D=1 + TLBWI.
+ *      Fixed by uc_ctl_flush_tlb() after TLBWI/TLBWR (see pending_tlb_flush).
+ *
+ *  (b) Unicorn kuseg bypass: some Unicorn builds skip the MIPS hardware TLB
+ *      for kuseg and use the flat Unicorn region table keyed by VA directly.
+ *      Fixed by pre-mapping the faulting VA block in Unicorn's region table
+ *      with a copy of the corresponding SDRAM content.
+ *
+ * Both fixes are applied together; whichever is relevant for the current
+ * Unicorn build will unblock execution.
+ */
+static void tlb_map_kuseg_page(machine_t *m, uint64_t kuseg_va, uint64_t pa)
+{
+    if ((uint32_t)kuseg_va >= 0x80000000u)
+        return;  /* safety: only handle user-space addresses */
+
+    uint64_t va_blk = kuseg_va & ~(uint64_t)0xFFFFF;   /* 1 MB-aligned VA */
+    uint64_t pa_blk = pa       & ~(uint64_t)0xFFFFF;   /* 1 MB-aligned PA */
+
+    uc_err me = uc_mem_map(m->uc, va_blk, 0x100000, UC_PROT_ALL);
+    if (me == UC_ERR_MAP)
+        return;  /* already present in Unicorn's region table — OK */
+    if (me != UC_ERR_OK) {
+        static uint32_t err_log = 0;
+        if (err_log++ < 16)
+            fprintf(stderr, "[TLB_MAP_FAIL] VA_blk=0x%08" PRIX64 " err=%s\n",
+                    va_blk, uc_strerror(me));
+        return;
+    }
+
+    /* Populate the new VA block from the corresponding SDRAM PA block.
+     * Copy 4 KB at a time to avoid a large stack allocation. */
+    if (pa_blk < (uint64_t)m->cfg.sdram_size) {
+        uint8_t buf[4096];
+        for (uint64_t off = 0; off < 0x100000; off += sizeof(buf)) {
+            if (uc_mem_read(m->uc, pa_blk + off, buf, sizeof(buf)) != UC_ERR_OK)
+                memset(buf, 0, sizeof(buf));
+            uc_mem_write(m->uc, va_blk + off, buf, sizeof(buf));
+        }
+    }
+
+    static uint32_t map_log = 0;
+    if (map_log++ < 64)
+        fprintf(stderr, "[TLB_MAP] kuseg 1MB VA=0x%08" PRIX64
+                " <- SDRAM PA=0x%08" PRIX64 "\n", va_blk, pa_blk);
+}
+
 /* Convert kseg0/kseg1 VA to physical; return false for non-direct-mapped VA. */
 static bool va_to_pa_kseg(uint64_t va, uint64_t *pa_out)
 {
@@ -507,6 +563,178 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         }
     }
 
+    /*
+     * parse_one NULL unknown-param callback intercept (linux4be20040908/vmlinux).
+     *
+     * parse_one() at 0x80042EF0 loops over the kernel_param table searching for
+     * a command-line argument match. When no match is found it falls through to:
+     *
+     *   80042f7c:  beqz  t3, 80042f8c   ; intended: skip if unknown-cb is NULL
+     *   80042f80:  li    v0, -2          ; delay slot: default return value
+     *   80042f84:  jalr  t3              ; call the unknown-param handler
+     *   80042f88:  move  a1, t4          ; delay slot
+     *   80042f8c:  ld    ra, 16(sp)      ; function epilogue
+     *   80042f90:  jr    ra
+     *
+     * t3 = *(sp+40) is the 5th argument — the "unknown param" callback.
+     * When parse_args() passes NULL the beqz t3 at 0x80042F7C SHOULD skip the
+     * jalr, but Unicorn's MIPS branch-delay-slot emulation has a bug: when the
+     * branch IS taken it can execute the instruction two words after the branch
+     * (0x80042F84: jalr t3) as the "delay slot" instead of the true delay slot
+     * at 0x80042F80 (li v0,-2).  This fires "jalr t3" with t3=0, jumping to
+     * VA=0x00000000 and causing an infinite TLB-miss storm.
+     *
+     * Fix: intercept at the beqz site (0x80042F7C) BEFORE the instruction
+     * executes.  When $t3==0, set v0=-2 (what the delay-slot li would have done)
+     * and redirect PC directly to the function epilogue at 0x80042F8C, skipping
+     * the beqz + delay slot + jalr + delay slot entirely.
+     */
+    /*
+     * do_early_param entry probe — confirm whether do_early_param is reached
+     * after jalr t3 from parse_one.
+     */
+    if ((uint32_t)address == 0x80272450u) {
+        static uint32_t dep_entry_log = 0;
+        if (dep_entry_log < 8u) {
+            uint64_t a0 = 0, a1 = 0, ra_val = 0;
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra_val);
+            fprintf(stderr,
+                    "[DEP_ENTRY] #%u do_early_param a0=0x%08" PRIX64
+                    " a1=0x%08" PRIX64 " ra=0x%08" PRIX64 "\n",
+                    dep_entry_log,
+                    (uint64_t)(uint32_t)a0, (uint64_t)(uint32_t)a1,
+                    (uint64_t)(uint32_t)ra_val);
+            dep_entry_log++;
+        }
+    }
+
+    /*
+     * parse_one beqz intercept at 0x80042F7C (linux4be20040908/vmlinux).
+     *
+     * The instruction sequence in parse_one is:
+     *   80042f7c: beqz  t3, 80042f8c   ; skip jalr if unknown-cb is NULL
+     *   80042f80: li    v0, -2          ; true delay slot
+     *   80042f84: jalr  t3              ; call unknown-param callback
+     *
+     * When t3==0 and the beqz IS taken, Unicorn's MIPS delay-slot emulation
+     * has a bug: it executes the instruction at beqz+8 (jalr t3 at 0x80042F84)
+     * as the "delay slot" instead of the correct slot at beqz+4 (li v0,-2).
+     * This fires jalr t3 with t3=0, jumping to VA=0.
+     *
+     * Crucially, the prid_hook does NOT fire for 0x80042F84 in this case because
+     * Unicorn treats it as an internal delay-slot execution without a code hook.
+     *
+     * Fix: intercept at the beqz BEFORE it executes.  When t3==0, rewrite t3
+     * to the epilogue address (0x80042F8C) and set v0=-2.  This converts:
+     *   "beqz taken, wrong delay slot jalr t3(=0) → PC=0"
+     * into:
+     *   "beqz NOT taken (t3 now non-zero), li v0,-2, jalr t3(=0x80042F8C) → epilogue"
+     * The jalr then jumps to parse_one's epilogue which correctly unwinds the frame.
+     */
+    if ((uint32_t)address == 0x80042F7Cu) {
+        uint64_t t3_full = 0;
+        uc_reg_read(uc, UC_MIPS_REG_T3, &t3_full);
+        if ((uint32_t)t3_full == 0u) {
+            /* Redirect: make jalr t3 jump to the epilogue instead of PC=0 */
+            uint64_t safe_t3 = mips_sext(0x80042F8Cu);
+            uint64_t neg2    = (uint64_t)(uint32_t)-2;
+            uc_reg_write(uc, UC_MIPS_REG_T3, &safe_t3);
+            uc_reg_write(uc, UC_MIPS_REG_V0, &neg2);
+            static uint32_t beqz_fix_log = 0;
+            if (beqz_fix_log < 16u) {
+                fprintf(stderr,
+                        "[BEQZ_T3_FIX] #%u parse_one beqz t3==0; redirect t3→0x%016"
+                        PRIX64 " v0=-2\n", beqz_fix_log, safe_t3);
+                beqz_fix_log++;
+            }
+        }
+    }
+
+    /* Probe full 64-bit t3 at the jalr t3 site to detect sign-extension issues.
+     * Also intercepts when t3==0 to prevent the null jalr before it happens. */
+    if ((uint32_t)address == 0x80042F84u) {
+        uint64_t t3_full = 0;
+        uc_reg_read(uc, UC_MIPS_REG_T3, &t3_full);
+        static uint32_t jalr_t3_log = 0;
+        /* Always log when t3==0 (null call about to happen), cap otherwise */
+        if (jalr_t3_log < 8u || (uint32_t)t3_full == 0u) {
+            fprintf(stderr, "[JALR_T3] #%u PC=0x80042F84 t3_full=0x%016" PRIX64
+                    " (hi=%s)\n", jalr_t3_log, t3_full,
+                    (t3_full >> 32) == 0xFFFFFFFFu ? "FF(OK)" :
+                    (t3_full == 0u)                ? "NULL"   : "WRONG");
+            jalr_t3_log++;
+        }
+        /* If t3==0 (null unknown-param callback), set v0=-2 and redirect to
+         * parse_one's epilogue at 0x80042F8C.  Because Unicorn still executes
+         * the jalr after this hook returns, this redirect may be overridden by
+         * the jalr's own PC write; the intr_hook NULL_CALL_RECOVER is the
+         * definitive safety net. */
+        if ((uint32_t)t3_full == 0u) {
+            uint64_t new_pc = mips_sext(0x80042F8Cu);
+            uint64_t neg2   = (uint64_t)(uint32_t)-2;
+            uc_reg_write(uc, UC_MIPS_REG_PC, &new_pc);
+            uc_reg_write(uc, UC_MIPS_REG_V0, &neg2);
+        }
+        /* If t3 is zero-extended (0x0000000080xxxxxx) instead of sign-extended
+         * (0xFFFFFFFF80xxxxxx), the jalr jumps to user-space and causes a TLB
+         * miss storm.  Force sign-extension. */
+        if ((t3_full >> 32) == 0u && (uint32_t)t3_full >= 0x80000000u) {
+            uint64_t fixed_t3 = mips_sext((uint32_t)t3_full);
+            uc_reg_write(uc, UC_MIPS_REG_T3, &fixed_t3);
+            fprintf(stderr,
+                    "[JALR_T3_FIX] zero-extended t3=0x%016" PRIX64
+                    " -> sign-extended 0x%016" PRIX64 "\n",
+                    t3_full, fixed_t3);
+        }
+    }
+
+    /*
+     * do_early_param NULL fn-pointer intercept (linux4be20040908/vmlinux).
+     *
+     * do_early_param() at 0x80272450 is the "unknown param" callback passed
+     * to parse_args.  It walks the __setup table and for each matching entry
+     * calls entry.fn via:
+     *
+     *   802724d0:  lw  v0, 4(s1)    ; v0 = entry.fn (function pointer)
+     *   802724d4:  jalr v0           ; call entry.fn(val)
+     *   802724d8:  nop               ; delay slot
+     *   802724dc:  addiu a0,s2,-3096 ; next insn (beqz v0 at 802724e0 skips
+     *   802724e0:  beqz v0,802724f0  ;  the printk if fn returned 0)
+     *
+     * Some __setup entries have a NULL fn (e.g., obsolete/empty entries).
+     * When v0==0 the jalr jumps to VA=0x00000000 causing a TLB-miss storm.
+     *
+     * Fix: at 0x802724D4, if v0==0, skip the call by redirecting to
+     * 0x802724DC (the instruction after the delay slot) with v0 unchanged
+     * (=0), which is treated as "param not handled" by the beqz at 802724e0.
+     */
+    if ((uint32_t)address == 0x802724D4u) {
+        uint64_t v0 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+        static uint32_t ep_jalrv0_log = 0;
+        if (ep_jalrv0_log < 32u) {
+            uint64_t s1 = 0, a0 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            fprintf(stderr,
+                    "[EP_JALRV0] #%u v0=0x%08" PRIX64 " s1=0x%08" PRIX64
+                    " a0=0x%08" PRIX64 "%s\n",
+                    ep_jalrv0_log,
+                    (uint64_t)(uint32_t)v0, (uint64_t)(uint32_t)s1,
+                    (uint64_t)(uint32_t)a0,
+                    (uint32_t)v0 == 0u ? " <NULL fn — will skip>" : "");
+            ep_jalrv0_log++;
+        }
+        if ((uint32_t)v0 == 0u) {
+            /* NULL fn pointer in __setup table: skip the call.
+             * v0 stays 0 → beqz v0 at 802724e0 takes the "skip printk" branch */
+            uint64_t new_pc = mips_sext(0x802724DCu);
+            uc_reg_write(uc, UC_MIPS_REG_PC, &new_pc);
+        }
+    }
+
     /* Precise do_execve return probe: capture at function entry, log at caller PC. */
     if (m->execve_watch_active &&
         (uint32_t)address == (uint32_t)m->execve_watch_ret_pc) {
@@ -558,6 +786,21 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 m->general_insn_count++;
             }
         }
+    }
+
+    /* Flush Unicorn's softmmu TLB after the previous TLBWI/TLBWR executed.
+     * prid_hook fires BEFORE each instruction, so we arm the flag when the
+     * TLBWI instruction is seen, then flush at the very next instruction
+     * (after TLBWI has actually run and updated the hardware TLB).
+     * This evicts any stale read-only (D=0) softmmu entry so the retry store
+     * at the faulting PC can fill fresh from the updated hardware TLB. */
+    if (m->pending_tlb_flush) {
+        uc_ctl_flush_tlb(uc);
+        m->pending_tlb_flush = false;
+        static uint32_t tlb_flush_log = 0;
+        if (tlb_flush_log++ < 64)
+            fprintf(stderr, "[TLB_FLUSH] softmmu flushed at PC=0x%08" PRIX64 "\n",
+                    (uint64_t)(uint32_t)address);
     }
 
     /* Restore a previous one-instruction tlbwi->tlbwr runtime patch. */
@@ -656,10 +899,23 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         }
     }
 
-    /* Queue readback only in late TLB-debug window to avoid early log saturation. */
+    /* Always capture MFC0 BadVAddr (rd=8) via deferred readback so that
+     * shadow_cp0_badvaddr is current when TLBWI fires.  This is needed for
+     * the tlb_map_kuseg_page call even before tlb_trace_window is active. */
+    if (op == 0x10u && rs == 0u && rd == 8u && sel == 0u) {
+        m->cp0_readback_pending = true;
+        m->cp0_readback_rt  = (uint8_t)rt;
+        m->cp0_readback_rd  = 8u;
+        m->cp0_readback_sel = 0u;
+        m->cp0_readback_next_pc = address + 4u;
+    }
+
+    /* Queue readback for other TLB diagnostic registers when the debug window
+     * is active (avoid log saturation from early-boot MFC0 reads). */
     if (tlb_trace_window_active(m) && op == 0x10u && rs == 0u) {
         const char *name = cp0_reg_name(rd, sel);
-        if (name != NULL && cp0_is_tlb_diag_reg(rd, sel)) {
+        if (name != NULL && cp0_is_tlb_diag_reg(rd, sel) &&
+            !(rd == 8u && sel == 0u)) {  /* BadVAddr already queued above */
             m->cp0_readback_pending = true;
             m->cp0_readback_rt = (uint8_t)rt;
             m->cp0_readback_rd = (uint8_t)rd;
@@ -771,6 +1027,54 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                     (uint64_t)(uint32_t)m->shadow_cp0_badvaddr,
                     m->pending_excode);
             tlbop_log++;
+        }
+
+        /*
+         * TLBWI/TLBWR dual fix for kuseg TLB storm at PC=0x800015B4.
+         *
+         * Root cause A — stale softmmu TLB: Unicorn's QEMU softmmu caches a
+         * read-only (D=0) TLB entry for the kuseg VA.  After handle_tlbs sets
+         * D=1 and runs TLBWI, the stale softmmu entry remains, so the retry
+         * store still fails.  Fix: arm pending_tlb_flush so uc_ctl_flush_tlb()
+         * is called at the next instruction (after TLBWI has actually executed
+         * and updated the hardware TLB).  This forces QEMU to re-fill the
+         * softmmu from the hardware TLB on the next access.
+         *
+         * Root cause B — Unicorn flat VA mapping: some Unicorn builds bypass
+         * the MIPS hardware TLB for kuseg and look up the flat Unicorn region
+         * table directly by VA.  Fix: directly map the faulting kuseg VA block
+         * in Unicorn's region table using the PFN from EntryLo0/EntryLo1 and
+         * populate it from the corresponding SDRAM PA block.
+         *
+         * Both fixes are applied together; each is harmless if the other is
+         * the actual root cause.
+         */
+        if (insn == 0x42000002u || insn == 0x42000006u) {
+            /* Arm the softmmu TLB flush (fix A). */
+            m->pending_tlb_flush = true;
+
+            /* Direct kuseg mapping (fix B).
+             * shadow_cp0_badvaddr is populated by the MFC0 $8 readback that
+             * fires when tlb_trace_window is active (which is guaranteed
+             * before create_elf_tables by the run_init_process checkpoint). */
+            uint32_t badvaddr = (uint32_t)m->shadow_cp0_badvaddr;
+            if (badvaddr != 0u && badvaddr < 0x80000000u) {
+                /* Even page: VA = VPN2 (badvaddr & ~0x1FFF), PA from EntryLo0 */
+                uint32_t even_va = badvaddr & ~0x1FFFu;
+                uint32_t lo0     = (uint32_t)m->shadow_cp0_entrylo0;
+                uint32_t lo1     = (uint32_t)m->shadow_cp0_entrylo1;
+                /* V bit (valid) = bit 1 of EntryLo */
+                if (lo0 & 0x2u) {
+                    uint64_t pfn0 = (uint64_t)((lo0 >> 6) & 0xFFFFFu);
+                    tlb_map_kuseg_page(m, (uint64_t)even_va, pfn0 << 12);
+                }
+                /* Odd page: VA = even_va + 4096, PA from EntryLo1 */
+                uint32_t odd_va = even_va + 0x1000u;
+                if (lo1 & 0x2u) {
+                    uint64_t pfn1 = (uint64_t)((lo1 >> 6) & 0xFFFFFu);
+                    tlb_map_kuseg_page(m, (uint64_t)odd_va, pfn1 << 12);
+                }
+            }
         }
     }
 
@@ -1256,13 +1560,32 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 tlb_badvaddr_log++;
             }
             /*
-             * If PC is in the low kuseg range (< 0x10000), this is almost
-             * certainly a NULL function-pointer call from kernel code.
-             * Log $ra (return address of caller) and $t9 (indirect call target)
-             * so we can identify which kernel function made the bad call.
+             * NULL function-pointer recovery.
+             *
+             * If PC is in the low kuseg range (< 0x10000) this is almost
+             * certainly a NULL indirect call from kernel code (jalr $t3 or
+             * similar with a zero call-target).  Unicorn's MIPS BEQZ delay-slot
+             * emulation has a known bug: when the beqz is taken, it can execute
+             * the instruction two words after the branch (instead of the true
+             * delay slot one word after), so a NULL-guard like
+             *
+             *   beqz t3, epilogue       ; intended: if t3==0 skip call
+             *   li   v0, -2             ; delay-slot (skipped by Unicorn bug)
+             *   jalr t3                 ; "delay slot" that Unicorn runs instead
+             *
+             * ends up executing "jalr t3" even when t3==0, landing here.
+             *
+             * Recovery: read $ra (return address deposited by jalr PC+8) and,
+             * if it is a valid kseg0 kernel address, treat the NULL call as a
+             * no-op function that returns 0 and redirect PC to $ra.  We also
+             * set v0=0 so the caller sees a clean zero return.
+             *
+             * This is safe because the only side-effect of skipping the call is
+             * that the "unknown parameter" handler is not invoked — which is
+             * exactly what the kernel intended when it checked for NULL.
              */
             static uint32_t null_ptr_log = 0;
-            if ((uint32_t)pc < 0x10000u && null_ptr_log < 8u) {
+            if ((uint32_t)pc < 0x10000u) {
                 uint64_t ra = 0, t9 = 0, gp = 0, sp = 0;
                 uint64_t a0 = 0, a1 = 0, a2 = 0, v0 = 0;
                 uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
@@ -1273,17 +1596,104 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
                 uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
                 uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-                fprintf(stderr,
-                        "[NULL_CALL] PC=0x%08" PRIX64 " ra=0x%08" PRIX64
-                        " t9=0x%08" PRIX64 " gp=0x%08" PRIX64 " sp=0x%08" PRIX64
-                        " a0=0x%08" PRIX64 " a1=0x%08" PRIX64
-                        " a2=0x%08" PRIX64 " v0=0x%08" PRIX64 "\n",
-                        (uint64_t)(uint32_t)pc,
-                        (uint64_t)(uint32_t)ra, (uint64_t)(uint32_t)t9,
-                        (uint64_t)(uint32_t)gp, (uint64_t)(uint32_t)sp,
-                        (uint64_t)(uint32_t)a0, (uint64_t)(uint32_t)a1,
-                        (uint64_t)(uint32_t)a2, (uint64_t)(uint32_t)v0);
-                null_ptr_log++;
+                if (null_ptr_log < 8u) {
+                    fprintf(stderr,
+                            "[NULL_CALL] PC=0x%08" PRIX64 " ra=0x%08" PRIX64
+                            " t9=0x%08" PRIX64 " gp=0x%08" PRIX64 " sp=0x%08" PRIX64
+                            " a0=0x%08" PRIX64 " a1=0x%08" PRIX64
+                            " a2=0x%08" PRIX64 " v0=0x%08" PRIX64 "\n",
+                            (uint64_t)(uint32_t)pc,
+                            (uint64_t)(uint32_t)ra, (uint64_t)(uint32_t)t9,
+                            (uint64_t)(uint32_t)gp, (uint64_t)(uint32_t)sp,
+                            (uint64_t)(uint32_t)a0, (uint64_t)(uint32_t)a1,
+                            (uint64_t)(uint32_t)a2, (uint64_t)(uint32_t)v0);
+                    null_ptr_log++;
+                }
+                /* If $ra matches the known parse_one jalr-t3 call-site
+                 * (0x80042F8C = jalr_addr+8), the prid_hook intercept at
+                 * 0x80042F7C fired too late (basic-block boundary).
+                 *
+                 * We can't safely redirect to 0x80042F8C (the epilogue) because
+                 * the epilogue uses `ld ra,16(sp)` — a 64-bit load — and Unicorn
+                 * stores sd/ld with zero-extension in MIPS32 mode, so the reloaded
+                 * ra ends up in the kuseg range and generates another TLB miss.
+                 *
+                 * Instead, reconstruct the full frame unwind manually:
+                 *   1. Read the 4-byte saved-ra from the stack (sp+16, little-endian).
+                 *   2. Sign-extend it to a kseg0 address.
+                 *   3. Restore sp (add 24, undoing parse_one's prologue).
+                 *   4. Set v0 = -2 (the "unknown param" return value).
+                 *   5. Jump directly to the restored ra (parse_args return site).
+                 */
+                uint32_t ra32 = (uint32_t)ra;
+                if (ra32 == 0x80042F8Cu) {
+                    /*
+                     * NULL jalr t3 from parse_one at 0x80042F84.
+                     * ra=0x80042F8C = jalr+8 (parse_one's epilogue return).
+                     *
+                     * We cannot safely run parse_one's epilogue (`ld ra,16(sp)`
+                     * then `jr ra`) because Unicorn's 64-bit sd/ld zero-extends
+                     * addresses stored by jal, making the loaded ra land in
+                     * kuseg and causing another TLB miss.
+                     *
+                     * Instead, manually unwind parse_one's stack frame:
+                     *   sp+16 (PA) holds the saved ra (parse_args return site).
+                     *   Frame size = 24 bytes (addiu sp,-24 in prologue).
+                     *
+                     * BUG FIX (v2): read the saved ra from the kseg0 alias VA,
+                     * NOT from the raw PA.  The kernel's `sd ra,16(sp)` writes
+                     * to mips_sext(sp32)+16 (the sign-extended kseg0 VA that
+                     * map_kseg_alias_block maps separately from SDRAM PA=0).
+                     * Reading from PA (sp32 & 0x1FFFFFFF) would return whatever
+                     * the ELF loader placed there — not the live stack data.
+                     */
+                    uint32_t saved_ra_lo = 0;
+                    uint64_t sp_val = 0;
+                    uc_reg_read(uc, UC_MIPS_REG_SP, &sp_val);
+                    uint32_t sp32   = (uint32_t)sp_val;
+                    uint64_t va_sp  = mips_sext(sp32);   /* kseg0 alias VA */
+                    uc_mem_read(uc, va_sp + 16u, &saved_ra_lo, 4u);
+                    /* restore frame */
+                    uint64_t new_sp = mips_sext(sp32 + 24u);
+                    uint64_t new_ra = mips_sext(saved_ra_lo);
+                    uint64_t neg2   = (uint64_t)(uint32_t)-2;
+                    fprintf(stderr,
+                            "[NULL_CALL_RECOVER] parse_one jalr t3 NULL;"
+                            " va_sp=0x%016" PRIX64 " saved_ra=0x%08" PRIX32
+                            " new_sp=0x%08" PRIX64 "\n",
+                            va_sp, saved_ra_lo, (uint64_t)(uint32_t)new_sp);
+                    if (saved_ra_lo >= 0x80000000u) {
+                        /* Valid kseg0 return site — unwind and continue. */
+                        uc_reg_write(uc, UC_MIPS_REG_SP, &new_sp);
+                        uc_reg_write(uc, UC_MIPS_REG_RA, &new_ra);
+                        uc_reg_write(uc, UC_MIPS_REG_V0, &neg2);
+                        uc_reg_write(uc, UC_MIPS_REG_PC, &new_ra);
+                        return;   /* skip normal TLB-miss handling */
+                    }
+                    /* saved_ra was garbage (read failed or kuseg) — fall through
+                     * to the general recovery below which redirects to ra. */
+                }
+                /*
+                 * General NULL-call recovery: for any kseg0 ra, treat this as
+                 * a null function call that returned 0.  Just redirect PC to ra
+                 * (the return address deposited by the faulting jalr) with v0=0.
+                 * This handles do_early_param's `jalr v0` when v0==0
+                 * (ra=0x802724DC) and any other null indirect calls.
+                 */
+                if (ra32 >= 0x80000000u) {
+                    uint64_t new_pc = mips_sext(ra32);
+                    uint64_t zero   = 0;
+                    uc_reg_write(uc, UC_MIPS_REG_PC, &new_pc);
+                    uc_reg_write(uc, UC_MIPS_REG_V0, &zero);
+                    static uint32_t gen_recover_log = 0;
+                    if (gen_recover_log < 16u) {
+                        fprintf(stderr,
+                                "[NULL_CALL_RECOVER_GENERAL] PC=0 ra=0x%08" PRIX32
+                                " → redirecting to ra (v0=0)\n", ra32);
+                        gen_recover_log++;
+                    }
+                    return;   /* skip normal TLB-miss handling */
+                }
             }
             /*
              * Guard against misclassifying a syscall-site interrupt as nested
