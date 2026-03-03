@@ -75,6 +75,39 @@ static inline bool tlb_trace_window_active(const machine_t *m)
     return m->tlb_trace_window;
 }
 
+#define RUN_INIT_SYSCALL_EPC      0x800015B0u
+#define RUN_INIT_SYSCALL_RET_PC   0x800015B4u
+#define TLB_DEFER_RETRY_LIMIT     32u
+#define TLB_EXL_DROP_DEFER_LIMIT  64u
+
+static void reset_tlb_defer_state(machine_t *m)
+{
+    m->tlb_defer_count = 0;
+    m->tlb_defer_active = false;
+    m->tlb_defer_owner_epc = 0;
+    m->tlb_exl_drop_defer_count = 0;
+}
+
+static void clear_synthetic_syscall_state(machine_t *m, bool clear_execve_watch)
+{
+    m->pending_epc          = 0;
+    m->pending_syscall_epc  = 0;
+    m->pending_excode       = 0;
+    m->pending_cause        = 0;
+    m->epc_was_written      = false;
+    m->pending_cause_served = false;
+    m->pending_epc_served   = false;
+    m->pending_syscall_nr   = 0;
+    m->pending_syscall_a0   = 0;
+    m->pending_syscall_a0_str[0] = '\0';
+    reset_tlb_defer_state(m);
+    if (clear_execve_watch) {
+        m->execve_watch_active = false;
+        m->execve_entry_pc = 0;
+        m->execve_last_pc = 0;
+    }
+}
+
 static void save_pending_exception(machine_t *m)
 {
     if (m->has_saved_exception)
@@ -437,6 +470,22 @@ static bool prepare_execve_user_ptrs_defaults(uc_engine *uc,
     return true;
 }
 
+static bool prepare_execve_user_filename(uc_engine *uc,
+                                         uint64_t old_a0,
+                                         uint32_t *new_a0)
+{
+    const uint32_t base = 0x01020000u;
+    const uint32_t str_base = base + 0x00000200u;
+    char filename[192];
+
+    if (read_guest_string(uc, old_a0, filename, sizeof(filename)) <= 0)
+        return false;
+    if (uc_mem_write(uc, str_base, filename, strlen(filename) + 1) != UC_ERR_OK)
+        return false;
+    *new_a0 = str_base;
+    return true;
+}
+
 static uc_err write_mem_best_effort(uc_engine *uc, uint64_t address,
                                     const void *data, size_t size)
 {
@@ -735,6 +784,19 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         }
     }
 
+    /*
+     * Track most-recent do_execve PC while an execve syscall is in flight.
+     * Skip SYSCALL+4 notification addresses so DEFER retries can resume useful
+     * in-flight progress instead of rewinding to the syscall site.
+     */
+    if (m->execve_watch_active) {
+        uint32_t pc32 = (uint32_t)address;
+        uint32_t notify_pc = (uint32_t)m->pending_syscall_epc + 4u;
+        bool is_exception_vector = (pc32 >= 0x80000000u && pc32 < 0x80000200u);
+        if (pc32 != notify_pc && !is_exception_vector)
+            m->execve_last_pc = address;
+    }
+
     /* Precise do_execve return probe: capture at function entry, log at caller PC. */
     if (m->execve_watch_active &&
         (uint32_t)address == (uint32_t)m->execve_watch_ret_pc) {
@@ -848,6 +910,48 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t sel =  insn        & 0x07u;
 
     /*
+     * sys_execve path probes (2.4 kernel):
+     *   0x800073dc: error fast-return path (getname failed)
+     *   0x800073f4: call do_execve path (getname succeeded)
+     *   0x80007400: do_execve return consumed into kmem_cache_free
+     */
+    if ((uint32_t)address == 0x800073DCu ||
+        (uint32_t)address == 0x800073F4u ||
+        (uint32_t)address == 0x80007400u) {
+        static uint32_t sys_execve_path_log = 0;
+        if (sys_execve_path_log < 128) {
+            const char *tag = ((uint32_t)address == 0x800073DCu) ? "err_return" :
+                              ((uint32_t)address == 0x800073F4u) ? "call_do_execve" :
+                                                                    "post_do_execve";
+            uint64_t v0 = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0, s0 = 0, s1 = 0, ra = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+            uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+            uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+            uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            fprintf(stderr,
+                    "[SYS_EXECVE_PATH] %s PC=0x%08" PRIX64
+                    " v0=0x%08" PRIX64 " s0=0x%08" PRIX64 " s1=0x%08" PRIX64
+                    " a0=0x%08" PRIX64 " a1=0x%08" PRIX64
+                    " a2=0x%08" PRIX64 " a3=0x%08" PRIX64
+                    " ra=0x%08" PRIX64 "\n",
+                    tag, (uint64_t)(uint32_t)address,
+                    (uint64_t)(uint32_t)v0,
+                    (uint64_t)(uint32_t)s0,
+                    (uint64_t)(uint32_t)s1,
+                    (uint64_t)(uint32_t)a0,
+                    (uint64_t)(uint32_t)a1,
+                    (uint64_t)(uint32_t)a2,
+                    (uint64_t)(uint32_t)a3,
+                    (uint64_t)(uint32_t)ra);
+            sys_execve_path_log++;
+        }
+    }
+
+    /*
      * Capture do_execve entry for both known kernels:
      *   2.4: 0x8004a9d0
      *   2.6: 0x80080cb0
@@ -876,6 +980,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         m->execve_watch_active    = true;
         m->execve_watch_ret_pc    = ra;
         m->execve_entry_pc        = address;  /* saved for stale-TLB retry redirect */
+        m->execve_last_pc         = address;
         m->execve_watch_a0        = a0;
         m->execve_saved_a1        = a1;       /* argv — restored on stale-TLB retry */
         m->execve_saved_a2        = a2;       /* envp — restored on stale-TLB retry */
@@ -1308,6 +1413,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
              *      always intercept regardless of execve state.
              *  (b) pending_excode==SYS and execve NOT in flight: the syscall body has
              *      returned normally and we should deliver to SYSCALL+4.
+             *      For execve (nr=4011), require explicit EPC write to avoid
+             *      premature retirement at notification-only SYSCALL+4 events.
              *
              * Do NOT intercept when execve_watch_active is true and epc_was_written is
              * false: that means a nested TLB handler is executing its ERET while
@@ -1317,8 +1424,13 @@ static void prid_hook(uc_engine *uc, uint64_t address,
              * the kernel's TLB refill ERET can return to the faulting instruction
              * inside do_execve and let it continue running.
              */
+            bool syscall_is_execve =
+                (m->pending_excode == MIPS_EXCCODE_SYS &&
+                 m->pending_syscall_nr == 4011u);
             if (m->epc_was_written ||
-                (m->pending_excode == MIPS_EXCCODE_SYS && !m->execve_watch_active)) {
+                (m->pending_excode == MIPS_EXCCODE_SYS &&
+                 !m->execve_watch_active &&
+                 !syscall_is_execve)) {
                 uint64_t status = status_snapshot & ~(uint64_t)0x2u;   /* clear EXL */
                 uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
@@ -1333,13 +1445,16 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                     fprintf(stderr, "[ERET_MANUAL] returning to EPC=0x%08" PRIX64 "\n", epc);
                 }
 
-                m->pending_epc          = 0;
-                m->pending_syscall_epc  = 0;
-                m->pending_excode       = 0;
-                m->pending_cause        = 0;
-                m->epc_was_written      = false;
-                m->pending_cause_served = false;
-                m->pending_epc_served   = false;
+                if (m->pending_excode == MIPS_EXCCODE_SYS)
+                    clear_synthetic_syscall_state(m, true);
+                else {
+                    m->pending_epc          = 0;
+                    m->pending_excode       = 0;
+                    m->pending_cause        = 0;
+                    m->epc_was_written      = false;
+                    m->pending_cause_served = false;
+                    m->pending_epc_served   = false;
+                }
                 restore_pending_exception(m);
                 return;
             }
@@ -1353,7 +1468,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
              * values they had when do_execve was first called.
              *
              * Redirect to do_execve's entry point instead of the fault PC
-             * (0x80001850 / SYSCALL+4 in init()).  This restarts do_execve
+             * (run_init's 0x800015B4 / SYSCALL+4).  This restarts do_execve
              * from the beginning with correct arguments, and this time the
              * TLB entry is present so the stale miss will not repeat.
              *
@@ -1364,6 +1479,10 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 m->execve_watch_active &&
                 m->execve_entry_pc != 0) {
                 static uint32_t eret_execve_retry_log = 0;
+                uint64_t resume_pc = m->execve_last_pc != 0 ?
+                                     m->execve_last_pc : m->execve_entry_pc;
+                bool resume_entry =
+                    ((uint32_t)resume_pc == (uint32_t)m->execve_entry_pc);
                 uint64_t ra_v  = m->execve_watch_ret_pc;
                 uint64_t a0_v  = m->execve_watch_a0;
                 uint64_t a1_v  = m->execve_saved_a1;
@@ -1371,12 +1490,14 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 if (eret_execve_retry_log < 16) {
                     fprintf(stderr,
                             "[ERET_EXECVE_RETRY] TLB entry filled;"
-                            " redirecting ERET 0x%08" PRIX64 " -> do_execve 0x%08" PRIX64
+                            " redirecting ERET 0x%08" PRIX64 " -> 0x%08" PRIX64
+                            " mode=%s"
                             " pending_epc=0x%08" PRIX64
                             " a0=0x%08" PRIX64 " a1=0x%08" PRIX64
                             " a2=0x%08" PRIX64 " ra=0x%08" PRIX64 "\n",
                             (uint64_t)(uint32_t)address,
-                            (uint64_t)(uint32_t)m->execve_entry_pc,
+                            (uint64_t)(uint32_t)resume_pc,
+                            resume_entry ? "entry" : "last_pc",
                             (uint64_t)(uint32_t)m->pending_epc,
                             (uint64_t)(uint32_t)a0_v,
                             (uint64_t)(uint32_t)a1_v,
@@ -1387,40 +1508,37 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 uint64_t status = status_snapshot & ~(uint64_t)0x2u;  /* clear EXL */
                 uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
                 /*
-                 * Restore the do_execve argument registers saved at function
-                 * entry.  The MIPS TLB refill handler (0x80000000) only modifies
-                 * $k0/$k1, but by the time the handler ERETSs the full register
-                 * context has been through the TLB handler's call chain.  We saved
-                 * a0/a1/a2/ra at do_execve entry so we can reconstruct a clean call.
+                 * Restore entry registers only when we must rewind all the way to
+                 * do_execve() entry; re-applying them while resuming in-flight code
+                 * clobbers progress through count()/copy_strings().
                  */
-                uc_reg_write(uc, UC_MIPS_REG_RA, &ra_v);
-                uc_reg_write(uc, UC_MIPS_REG_A0, &a0_v);
-                uc_reg_write(uc, UC_MIPS_REG_A1, &a1_v);
-                uc_reg_write(uc, UC_MIPS_REG_A2, &a2_v);
-                /*
-                 * fd-leak compensation: open_exec (JAL at 0x8004A9F8) ran
-                 * during this do_execve invocation and allocated a struct file
-                 * (nr_files++) that is now orphaned because we are restarting
-                 * do_execve without calling fput().  Decrement nr_files
-                 * directly in guest memory to prevent ENFILE accumulation.
-                 */
-                if (m->execve_open_exec_ran) {
-                    uint32_t nr_files = 0;
-                    if (uc_mem_read(m->uc, 0x80178104u, &nr_files, sizeof(nr_files)) == UC_ERR_OK
-                        && nr_files > 0) {
-                        nr_files--;
-                        uc_mem_write(m->uc, 0x80178104u, &nr_files, sizeof(nr_files));
-                        fprintf(stderr,
-                                "[ENFILE_FIX] ERET_RETRY: closed orphaned open_exec fd;"
-                                " nr_files now %u\n", nr_files);
+                if (resume_entry) {
+                    uc_reg_write(uc, UC_MIPS_REG_RA, &ra_v);
+                    uc_reg_write(uc, UC_MIPS_REG_A0, &a0_v);
+                    uc_reg_write(uc, UC_MIPS_REG_A1, &a1_v);
+                    uc_reg_write(uc, UC_MIPS_REG_A2, &a2_v);
+                    /*
+                     * fd-leak compensation when we rewind to do_execve() entry.
+                     */
+                    if (m->execve_open_exec_ran) {
+                        uint32_t nr_files = 0;
+                        if (uc_mem_read(m->uc, 0x80178104u, &nr_files, sizeof(nr_files)) == UC_ERR_OK
+                            && nr_files > 0) {
+                            nr_files--;
+                            uc_mem_write(m->uc, 0x80178104u, &nr_files, sizeof(nr_files));
+                            fprintf(stderr,
+                                    "[ENFILE_FIX] ERET_RETRY: closed orphaned open_exec fd;"
+                                    " nr_files now %u\n", nr_files);
+                        }
+                        m->execve_open_exec_ran = false;
                     }
-                    m->execve_open_exec_ran = false;
                 }
-                uint64_t retry = m->execve_entry_pc;
-                uc_reg_write(uc, UC_MIPS_REG_PC, &retry);
-                /* Re-arm one-shot Cause/EPC injection for the re-entered do_execve. */
-                m->pending_cause_served = false;
-                m->pending_epc_served   = false;
+                uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
+                /* Re-arm one-shot Cause/EPC injection only when rewinding entry. */
+                if (resume_entry) {
+                    m->pending_cause_served = false;
+                    m->pending_epc_served   = false;
+                }
                 return;
             }
 
@@ -1442,13 +1560,16 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         m->has_saved_exception ? 1u : 0u);
                 eret_native_log++;
             }
-            m->pending_epc          = 0;
-            m->pending_syscall_epc  = 0;
-            m->pending_excode       = 0;
-            m->pending_cause        = 0;
-            m->epc_was_written      = false;
-            m->pending_cause_served = false;
-            m->pending_epc_served   = false;
+            if (m->pending_excode == MIPS_EXCCODE_SYS)
+                clear_synthetic_syscall_state(m, true);
+            else {
+                m->pending_epc          = 0;
+                m->pending_excode       = 0;
+                m->pending_cause        = 0;
+                m->epc_was_written      = false;
+                m->pending_cause_served = false;
+                m->pending_epc_served   = false;
+            }
             restore_pending_exception(m);
         }
     }
@@ -1516,7 +1637,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 fprintf(stderr, "[INTR] intno=%u further logs suppressed\n", intno);
         }
         if (intno == 27u && intr_log_count_27_detail < 32u) {
-            if (!m->tlb_trace_window && (uint32_t)pc == 0x800015B4u) {
+            if (!m->tlb_trace_window && (uint32_t)pc == RUN_INIT_SYSCALL_RET_PC) {
                 m->tlb_trace_window = true;
                 fprintf(stderr,
                         "[TLB_TRACE] activated by first TLBS at PC=0x%08" PRIX64 "\n",
@@ -1540,7 +1661,11 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
              * the SYSCALL itself or a data miss during early do_execve.
              */
             static uint32_t tlb_badvaddr_log = 0;
-            if (tlb_badvaddr_log < 48u) {
+            bool focus_fault =
+                ((uint32_t)pc == RUN_INIT_SYSCALL_RET_PC) ||
+                ((uint32_t)pc == 0x80000000u) ||
+                ((uint32_t)pc == 0x80000180u);
+            if (focus_fault && tlb_badvaddr_log < 96u) {
                 /* BadVAddr not accessible via Unicorn API; use shadow + last_unmapped. */
                 uint64_t k0 = 0, k1 = 0;
                 uc_reg_read(uc, UC_MIPS_REG_K0, &k0);
@@ -1766,7 +1891,12 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                      * spurious v0=0 / a3=<garbage> return and continues to the next
                      * execve path, eventually hitting "No init found." panic.
                      *
-                     * While execve_watch_active is set, defer this retirement:
+                     * While execve_watch_active is set, defer this retirement.
+                     * Also defer for syscall nr=4011 even if watch is inactive:
+                     * some kernels don't hit our do_execve watch hook address, and
+                     * retiring on at_ret_site alone causes false success/failure data.
+                     *
+                     * In deferred mode:
                      *   - Native TLB handling continues (we return without clearing).
                      *   - The nested TLB handler's ERET is also guarded (see above)
                      *     so it passes through natively and returns to the faulting
@@ -1774,7 +1904,10 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                      *   - stale_post_mtc0 still fires correctly once start_thread or
                      *     restore_all writes EPC via MTC0.
                      */
-                    if ((at_ret_site && !m->execve_watch_active) || stale_post_mtc0) {
+                    bool syscall_is_execve = (m->pending_syscall_nr == 4011u);
+                    bool retire_at_ret_site =
+                        (at_ret_site && !m->execve_watch_active && !syscall_is_execve);
+                    if (retire_at_ret_site || stale_post_mtc0) {
                         static uint32_t tlb_nested_retire_log = 0;
                         static uint32_t syscall_ret_fallback_log = 0;
                         uint64_t v0 = 0, a3 = 0;
@@ -1816,77 +1949,130 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                     at_ret_site ? 1u : 0u, stale_post_mtc0 ? 1u : 0u);
                             syscall_ret_fallback_log++;
                         }
-                        m->pending_epc          = 0;
-                        m->pending_syscall_epc  = 0;
-                        m->pending_excode       = 0;
-                        m->pending_cause        = 0;
-                        m->epc_was_written      = false;
-                        m->pending_cause_served = false;
-                        m->pending_epc_served   = false;
+                        clear_synthetic_syscall_state(m, true);
                         m->has_saved_exception  = false;
                         return;
                     }
+                    if (syscall_is_execve && at_ret_site &&
+                        !m->execve_watch_active && !stale_post_mtc0) {
+                        static uint32_t tlb_nested_keep_nowatch_log = 0;
+                        bool old_cause_served = m->pending_cause_served;
+                        bool old_epc_served = m->pending_epc_served;
+                        m->pending_cause_served = false;
+                        m->pending_epc_served = false;
+                        if (tlb_nested_keep_nowatch_log < 64) {
+                            uint64_t v0 = 0, a3 = 0;
+                            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                            fprintf(stderr,
+                                    "[TLB_NESTED_KEEP_NOWATCH] intno=%u PC=0x%08" PRIX64
+                                    " STATUS=0x%08" PRIX64
+                                    " syscall_epc=0x%08" PRIX64 " pending_epc=0x%08" PRIX64
+                                    " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
+                                    " served_cause:%u->%u served_epc:%u->%u\n",
+                                    intno, (uint64_t)(uint32_t)pc, status,
+                                    (uint64_t)(uint32_t)m->pending_syscall_epc,
+                                    (uint64_t)(uint32_t)m->pending_epc,
+                                    (uint64_t)(uint32_t)v0,
+                                    (uint64_t)(uint32_t)a3,
+                                    old_cause_served ? 1u : 0u, m->pending_cause_served ? 1u : 0u,
+                                    old_epc_served ? 1u : 0u, m->pending_epc_served ? 1u : 0u);
+                            tlb_nested_keep_nowatch_log++;
+                        }
+                        return;
+                    }
+                    uint32_t syscall_epc = (uint32_t)pc - 4u;
+                    if (!m->tlb_defer_active || m->tlb_defer_owner_epc != syscall_epc) {
+                        static uint32_t defer_owner_reset_log = 0;
+                        if (m->tlb_defer_active && defer_owner_reset_log < 32) {
+                            fprintf(stderr,
+                                    "[TLB_DEFER_OWNER_RESET] old_epc=0x%08X new_epc=0x%08X"
+                                    " count=%u\n",
+                                    m->tlb_defer_owner_epc, syscall_epc, m->tlb_defer_count);
+                            defer_owner_reset_log++;
+                        }
+                        m->tlb_defer_active = true;
+                        m->tlb_defer_owner_epc = syscall_epc;
+                        m->tlb_defer_count = 0;
+                    }
+
                     /*
                      * Spurious re-delivery guard.
                      *
                      * After the first DEFER fires (tlb_defer_count==1) and
-                     * ERET_EXECVE_RETRY redirects PC to do_execve, Unicorn
-                     * re-delivers the same notification-only intno=26 for the
-                     * original fault address (SYSCALL+4 = 0x80001850) before
-                     * any instruction at do_execve executes.  This happens
-                     * because Unicorn temporarily restores PC to the fault
-                     * address when firing the notification hook, and the
-                     * pending notification is re-queued internally.
+                     * ERET_EXECVE_RETRY redirects PC to do_execve, Unicorn can
+                     * re-deliver the same notification-only intno=26 for
+                     * run_init's SYSCALL+4 (0x800015B4) before any instruction at
+                     * do_execve executes.
                      *
-                     * Deferring again sends execution to the TLB handler a
-                     * second time, producing an infinite loop.  Instead,
-                     * detect subsequent notifications (tlb_defer_count > 0)
-                     * and restore PC directly to do_execve so the kernel
-                     * function can actually run.
+                     * Bound the retries per owner syscall EPC and hard-clear stale
+                     * synthetic state when the retry budget is exceeded.
                      */
-                    if (m->tlb_defer_count > 0 && m->execve_entry_pc != 0) {
+                    if (m->tlb_defer_count > 0 &&
+                        m->execve_entry_pc != 0 &&
+                        m->tlb_defer_owner_epc == syscall_epc) {
                         static uint32_t defer_skip_log = 0;
-                        if (defer_skip_log < 16) {
+                        static uint32_t defer_abort_log = 0;
+                        m->tlb_defer_count++;
+                        if (m->tlb_defer_count > TLB_DEFER_RETRY_LIMIT) {
+                            if (defer_abort_log < 32) {
+                                fprintf(stderr,
+                                        "[TLB_DEFER_ABORT] owner_epc=0x%08X pc=0x%08" PRIX64
+                                        " retries=%u limit=%u action=clear_syscall\n",
+                                        m->tlb_defer_owner_epc,
+                                        (uint64_t)(uint32_t)pc,
+                                        m->tlb_defer_count,
+                                        TLB_DEFER_RETRY_LIMIT);
+                                defer_abort_log++;
+                            }
+                            clear_synthetic_syscall_state(m, true);
+                            m->has_saved_exception = false;
+                            return;
+                        }
+                        uint64_t resume_pc = m->execve_last_pc != 0 ?
+                                             m->execve_last_pc : m->execve_entry_pc;
+                        bool resume_entry = ((uint32_t)resume_pc == (uint32_t)m->execve_entry_pc);
+                        if (defer_skip_log < 32) {
                             fprintf(stderr,
-                                    "[TLB_DEFER_SKIP] spurious re-delivery #%u"
-                                    " intno=%u PC=0x%08" PRIX64
-                                    " -> restoring do_execve 0x%08" PRIX64 "\n",
-                                    m->tlb_defer_count + 1u,
+                                    "[TLB_DEFER_SKIP] owner_epc=0x%08X retry=%u"
+                                    " intno=%u PC=0x%08" PRIX64 " resume=0x%08" PRIX64
+                                    " mode=%s\n",
+                                    m->tlb_defer_owner_epc,
+                                    m->tlb_defer_count,
                                     intno, (uint64_t)(uint32_t)pc,
-                                    (uint64_t)(uint32_t)m->execve_entry_pc);
+                                    (uint64_t)(uint32_t)resume_pc,
+                                    resume_entry ? "entry" : "last_pc");
                             defer_skip_log++;
                         }
-                        m->tlb_defer_count++;
-                        /* Restore do_execve call registers (same as ERET_EXECVE_RETRY).
-                         * Each spurious re-delivery resets PC to do_execve entry, causing
-                         * its prologue (ADDIU SP,SP,-352) to re-execute and drift $sp.
-                         * Restoring $sp here prevents cumulative stack corruption. */
-                        uint64_t ra_v = m->execve_watch_ret_pc;
-                        uint64_t a0_v = m->execve_watch_a0;
-                        uint64_t a1_v = m->execve_saved_a1;
-                        uint64_t a2_v = m->execve_saved_a2;
-                        uint64_t sp_v = m->execve_saved_sp;
-                        uc_reg_write(uc, UC_MIPS_REG_RA, &ra_v);
-                        uc_reg_write(uc, UC_MIPS_REG_A0, &a0_v);
-                        uc_reg_write(uc, UC_MIPS_REG_A1, &a1_v);
-                        uc_reg_write(uc, UC_MIPS_REG_A2, &a2_v);
-                        uc_reg_write(uc, UC_MIPS_REG_SP, &sp_v);
-                        /* fd-leak compensation: same rationale as ERET_EXECVE_RETRY. */
-                        if (m->execve_open_exec_ran) {
-                            uint32_t nr_files = 0;
-                            if (uc_mem_read(m->uc, 0x80178104u, &nr_files, sizeof(nr_files)) == UC_ERR_OK
-                                && nr_files > 0) {
-                                nr_files--;
-                                uc_mem_write(m->uc, 0x80178104u, &nr_files, sizeof(nr_files));
-                                fprintf(stderr,
-                                        "[ENFILE_FIX] DEFER_SKIP: closed orphaned open_exec fd;"
-                                        " nr_files now %u\n", nr_files);
+                        if (resume_entry) {
+                            /* Restore do_execve call registers only when rewinding to entry.
+                             * Replaying the prologue without restoring $sp causes frame drift. */
+                            uint64_t ra_v = m->execve_watch_ret_pc;
+                            uint64_t a0_v = m->execve_watch_a0;
+                            uint64_t a1_v = m->execve_saved_a1;
+                            uint64_t a2_v = m->execve_saved_a2;
+                            uint64_t sp_v = m->execve_saved_sp;
+                            uc_reg_write(uc, UC_MIPS_REG_RA, &ra_v);
+                            uc_reg_write(uc, UC_MIPS_REG_A0, &a0_v);
+                            uc_reg_write(uc, UC_MIPS_REG_A1, &a1_v);
+                            uc_reg_write(uc, UC_MIPS_REG_A2, &a2_v);
+                            uc_reg_write(uc, UC_MIPS_REG_SP, &sp_v);
+                            /* fd-leak compensation: same rationale as ERET_EXECVE_RETRY. */
+                            if (m->execve_open_exec_ran) {
+                                uint32_t nr_files = 0;
+                                if (uc_mem_read(m->uc, 0x80178104u, &nr_files, sizeof(nr_files)) == UC_ERR_OK
+                                    && nr_files > 0) {
+                                    nr_files--;
+                                    uc_mem_write(m->uc, 0x80178104u, &nr_files, sizeof(nr_files));
+                                    fprintf(stderr,
+                                            "[ENFILE_FIX] DEFER_SKIP: closed orphaned open_exec fd;"
+                                            " nr_files now %u\n", nr_files);
+                                }
+                                m->execve_open_exec_ran = false;
                             }
-                            m->execve_open_exec_ran = false;
                         }
-                        /* Restore PC to do_execve; EXL stays 0 (notification-only). */
-                        uint64_t do_execve_pc = m->execve_entry_pc;
-                        uc_reg_write(uc, UC_MIPS_REG_PC, &do_execve_pc);
+                        /* Resume the best known in-flight do_execve PC. */
+                        uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
                         return;
                     }
 
@@ -1925,6 +2111,22 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                      * though we are setting EXL and redirecting manually here.
                      */
                     m->tlb_defer_count++;
+                    if (m->tlb_defer_count > TLB_DEFER_RETRY_LIMIT) {
+                        static uint32_t defer_entry_abort_log = 0;
+                        if (defer_entry_abort_log < 32) {
+                            fprintf(stderr,
+                                    "[TLB_DEFER_ABORT] owner_epc=0x%08X pc=0x%08" PRIX64
+                                    " retries=%u limit=%u action=clear_syscall\n",
+                                    m->tlb_defer_owner_epc,
+                                    (uint64_t)(uint32_t)pc,
+                                    m->tlb_defer_count,
+                                    TLB_DEFER_RETRY_LIMIT);
+                            defer_entry_abort_log++;
+                        }
+                        clear_synthetic_syscall_state(m, true);
+                        m->has_saved_exception = false;
+                        return;
+                    }
                     {
                         uint64_t exl_status = status | 0x2u;   /* set EXL=1 */
                         uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exl_status);
@@ -1932,8 +2134,10 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         uc_reg_write(uc, UC_MIPS_REG_PC, &tlb_vec);
                         fprintf(stderr,
                                 "[TLB_DEFER_ENTRY] intno=%u fault_pc=0x%08" PRIX64
+                                " owner_epc=0x%08X retry=%u"
                                 " -> EXL=1 PC=0x80000000 (TLB refill handler)\n",
-                                intno, (uint64_t)(uint32_t)pc);
+                                intno, (uint64_t)(uint32_t)pc,
+                                m->tlb_defer_owner_epc, m->tlb_defer_count);
                     }
                     return;
                 }
@@ -1994,13 +2198,17 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     }
                     return;
                 }
-                m->pending_epc          = 0;
-                m->pending_syscall_epc  = 0;
-                m->pending_excode       = 0;
-                m->pending_cause        = 0;
-                m->epc_was_written      = false;
-                m->pending_cause_served = false;
-                m->pending_epc_served   = false;
+                if (m->pending_excode == MIPS_EXCCODE_SYS)
+                    clear_synthetic_syscall_state(m, true);
+                else {
+                    m->pending_epc          = 0;
+                    m->pending_excode       = 0;
+                    m->pending_cause        = 0;
+                    m->epc_was_written      = false;
+                    m->pending_cause_served = false;
+                    m->pending_epc_served   = false;
+                    reset_tlb_defer_state(m);
+                }
                 m->has_saved_exception  = false;
                 if (tlb_nested_drop_log < 64) {
                     fprintf(stderr,
@@ -2057,13 +2265,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     m->pending_excode, (uint64_t)(uint32_t)m->pending_epc);
             syscall_entry_stale_clear_log++;
         }
-        m->pending_epc          = 0;
-        m->pending_syscall_epc  = 0;
-        m->pending_excode       = 0;
-        m->pending_cause        = 0;
-        m->epc_was_written      = false;
-        m->pending_cause_served = false;
-        m->pending_epc_served   = false;
+        clear_synthetic_syscall_state(m, true);
         m->has_saved_exception  = false;
     }
 
@@ -2076,7 +2278,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     m->pending_cause_served = false;
     m->pending_epc_served   = false;
     m->has_saved_exception  = false;  /* stale nested state must not leak across syscalls */
-    m->tlb_defer_count      = 0;      /* reset DEFER retry counter for this syscall */
+    reset_tlb_defer_state(m);         /* reset DEFER retry/ownership for this syscall */
 
     {
         uint64_t v0 = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
@@ -2088,28 +2290,41 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         uint64_t old_a0 = a0, old_a1 = a1, old_a2 = a2;
 
         if ((uint32_t)v0 == 4011u) {
+            uint32_t a0_32 = (uint32_t)a0;
             uint32_t a1_32 = (uint32_t)a1;
             uint32_t a2_32 = (uint32_t)a2;
-            bool needs_execve_shim =
-                ((a1_32 != 0u && a1_32 >= 0x80000000u) ||
-                 (a2_32 != 0u && a2_32 >= 0x80000000u));
+            /*
+             * Do not rewrite valid kernel argv/envp vectors (kseg addresses):
+             * run_init_process() in this 2.4 kernel intentionally passes
+             * kernel-space init_argv/init_envp pointers.
+             *
+             * Only apply shim for obviously clobbered tiny pointers.
+             */
+            bool needs_execve_defaults =
+                ((a1_32 != 0u && a1_32 < 0x1000u) ||
+                 (a2_32 != 0u && a2_32 < 0x1000u));
+            bool needs_execve_filename_shim = (!needs_execve_defaults &&
+                                               a0_32 >= 0x80000000u);
             uint32_t sh_a0 = 0, sh_a1 = 0, sh_a2 = 0;
             bool used_defaults = false;
+            bool filename_only = false;
             bool have_shim_ptrs = false;
-            if (needs_execve_shim) {
-                have_shim_ptrs = prepare_execve_user_ptrs(uc, a0, a1, a2, &sh_a0, &sh_a1, &sh_a2);
-                if (!have_shim_ptrs) {
-                    used_defaults = true;
-                    have_shim_ptrs = prepare_execve_user_ptrs_defaults(uc, a0, &sh_a0, &sh_a1, &sh_a2);
-                }
+            if (needs_execve_defaults) {
+                used_defaults = true;
+                have_shim_ptrs = prepare_execve_user_ptrs_defaults(uc, a0, &sh_a0, &sh_a1, &sh_a2);
+            } else if (needs_execve_filename_shim) {
+                filename_only = true;
+                have_shim_ptrs = prepare_execve_user_filename(uc, a0, &sh_a0);
+                sh_a1 = a1_32;
+                sh_a2 = a2_32;
             }
             if (have_shim_ptrs) {
                 /*
-                 * Keep filename pointer intact and only normalize argv/envp.
-                 * This preserves kernel-provided path pointers while avoiding
-                 * EFAULT from kernel-space arg/env vectors.
+                 * Filename-only mode: keep kernel argv/envp vectors intact and
+                 * just re-home filename into user scratch for getname().
                  */
-                uint64_t na0 = old_a0, na1 = sh_a1, na2 = sh_a2;
+                uint64_t na0 = filename_only ? sh_a0 : old_a0;
+                uint64_t na1 = sh_a1, na2 = sh_a2;
                 uc_reg_write(uc, UC_MIPS_REG_A0, &na0);
                 uc_reg_write(uc, UC_MIPS_REG_A1, &na1);
                 uc_reg_write(uc, UC_MIPS_REG_A2, &na2);
@@ -2122,7 +2337,8 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                             "[EXECVE_SHIM_%s] a0:0x%08" PRIX64 "->0x%08" PRIX64
                             " a1:0x%08" PRIX64 "->0x%08" PRIX64
                             " a2:0x%08" PRIX64 "->0x%08" PRIX64 "\n",
-                            used_defaults ? "DEFAULTS" : "COPY",
+                            used_defaults ? "DEFAULTS" :
+                            (filename_only ? "FILENAME" : "COPY"),
                             (uint64_t)(uint32_t)old_a0, (uint64_t)(uint32_t)a0,
                             (uint64_t)(uint32_t)old_a1, (uint64_t)(uint32_t)a1,
                             (uint64_t)(uint32_t)old_a2, (uint64_t)(uint32_t)a2);
@@ -2250,7 +2466,7 @@ static void inject_hw_irq_if_pending(machine_t *m)
 
     if (!m->tlb_trace_window &&
         m->pending_excode == MIPS_EXCCODE_SYS &&
-        (uint32_t)m->pending_epc == 0x800015B0u) {
+        (uint32_t)m->pending_epc == RUN_INIT_SYSCALL_EPC) {
         m->tlb_trace_window = true;
         fprintf(stderr,
                 "[TLB_TRACE] armed near run_init_process pending_epc=0x%08" PRIX64 "\n",
@@ -2288,28 +2504,48 @@ static void inject_hw_irq_if_pending(machine_t *m)
                 m->epc_was_written      = false;
                 m->pending_cause_served = false;
                 m->pending_epc_served   = false;
+                reset_tlb_defer_state(m);
             } else if (m->pending_excode == MIPS_EXCCODE_SYS) {
                 static uint32_t log_syscall_exl_drop = 0;
                 static uint32_t log_syscall_ret_fallback = 0;
+                static uint32_t log_syscall_exl_drop_abort = 0;
                 uint64_t pc = 0;
                 uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
                 uint32_t ret_site = (uint32_t)m->pending_epc + 4u;
                 bool at_ret_site = ((uint32_t)pc == ret_site);
                 if (!at_ret_site) {
+                    m->tlb_exl_drop_defer_count++;
                     if (log_syscall_exl_drop < 64) {
                         fprintf(stderr,
                                 "[IRQ_GATE] syscall_exl_drop_defer pending_excode=%u"
                                 " PC=0x%08" PRIX64 " STATUS=0x%08X pending_epc=0x%08" PRIX64
-                                " ret_site=0x%08X epc_written=%u served_epc=%u served_cause=%u\n",
+                                " ret_site=0x%08X defer_count=%u epc_written=%u"
+                                " served_epc=%u served_cause=%u\n",
                                 m->pending_excode, (uint64_t)(uint32_t)pc, status,
                                 (uint64_t)(uint32_t)m->pending_epc, ret_site,
+                                m->tlb_exl_drop_defer_count,
                                 m->epc_was_written ? 1u : 0u,
                                 m->pending_epc_served ? 1u : 0u,
                                 m->pending_cause_served ? 1u : 0u);
                         log_syscall_exl_drop++;
                     }
+                    if (m->tlb_exl_drop_defer_count > TLB_EXL_DROP_DEFER_LIMIT) {
+                        if (log_syscall_exl_drop_abort < 32) {
+                            fprintf(stderr,
+                                    "[IRQ_GATE] syscall_exl_drop_abort PC=0x%08" PRIX64
+                                    " pending_epc=0x%08" PRIX64 " defer_count=%u limit=%u\n",
+                                    (uint64_t)(uint32_t)pc,
+                                    (uint64_t)(uint32_t)m->pending_epc,
+                                    m->tlb_exl_drop_defer_count,
+                                    TLB_EXL_DROP_DEFER_LIMIT);
+                            log_syscall_exl_drop_abort++;
+                        }
+                        clear_synthetic_syscall_state(m, true);
+                        m->has_saved_exception = false;
+                    }
                     return;
                 }
+                m->tlb_exl_drop_defer_count = 0;
                 if (log_syscall_exl_drop < 64) {
                     fprintf(stderr,
                             "[IRQ_GATE] syscall_exl_drop pending_excode=%u PC=0x%08" PRIX64
@@ -2348,12 +2584,8 @@ static void inject_hw_irq_if_pending(machine_t *m)
                  * Clear synthetic state so later IRQ/syscall handling is not
                  * blocked by stale pending_excode=SYS.
                  */
-                m->pending_epc          = 0;
-                m->pending_excode       = 0;
-                m->pending_cause        = 0;
-                m->epc_was_written      = false;
-                m->pending_cause_served = false;
-                m->pending_epc_served   = false;
+                clear_synthetic_syscall_state(m, true);
+                m->has_saved_exception  = false;
             } else {
                 if (log_stale_pending < 32) {
                     uint64_t pc = 0;
@@ -2371,6 +2603,7 @@ static void inject_hw_irq_if_pending(machine_t *m)
                 m->epc_was_written      = false;
                 m->pending_cause_served = false;
                 m->pending_epc_served   = false;
+                reset_tlb_defer_state(m);
             }
         }
     }
@@ -2752,7 +2985,7 @@ static void rcu_probe_hook(uc_engine *uc, uint64_t address,
             *cnt, tag, (uint64_t)(uint32_t)address);
 }
 
-/* 2.4 init fallback execve return sites (right after syscall insn). */
+/* run_init_process execve syscall site probes (2.4 kernel). */
 static void init_execve_site_probe_hook(uc_engine *uc, uint64_t address,
                                         uint32_t size, void *user_data)
 {
@@ -2762,16 +2995,12 @@ static void init_execve_site_probe_hook(uc_engine *uc, uint64_t address,
     int idx = -1;
     const char *site = NULL;
     switch (pc) {
-    case 0x80001850u: idx = 0; site = "/sbin/init"; break;
-    case 0x80001870u: idx = 1; site = "/etc/init";  break;
-    case 0x80001890u: idx = 2; site = "/bin/init";  break;
-    case 0x800018B0u: idx = 3; site = "/bin/sh";    break;
-    case 0x800015B0u: idx = 4; site = "run_init SYSCALL"; break;
-    case 0x800015B4u: idx = 5; site = "run_init RET";     break;
+    case RUN_INIT_SYSCALL_EPC:    idx = 0; site = "run_init SYSCALL"; break;
+    case RUN_INIT_SYSCALL_RET_PC: idx = 1; site = "run_init RET";     break;
     default: return;
     }
 
-    static uint32_t counts[6];
+    static uint32_t counts[2];
     if (counts[idx] >= 1024u)
         return;
     counts[idx]++;
@@ -3198,13 +3427,13 @@ machine_t *machine_create(const machine_config_t *cfg)
         uint64_t va = mips_sext(0x80001598u); /* run_init_process */
         uc_hook_add(m->uc, &hk, UC_HOOK_CODE, run_init_entry_trace_hook, m, va, va);
     }
-    /* 2.4 init fallback execve return sites (/sbin/init,/etc/init,/bin/init,/bin/sh). */
+    /* run_init_process execve site probes (real failing path). */
     {
         static const uint32_t execve_sites[] = {
-            0x80001850u, 0x80001870u, 0x80001890u, 0x800018B0u,
-            0x800015B0u, 0x800015B4u,
+            RUN_INIT_SYSCALL_EPC,
+            RUN_INIT_SYSCALL_RET_PC,
         };
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 2; i++) {
             uint64_t va = mips_sext(execve_sites[i]);
             uc_hook_add(m->uc, &hk, UC_HOOK_CODE, init_execve_site_probe_hook, m, va, va);
         }
@@ -3641,13 +3870,29 @@ void machine_run(machine_t *m)
                     if (va32 < 0x1000u)
                         continue;
                     uint64_t block = va & ~((uint64_t)0xFFFFF);
+                    uint64_t block32 = (uint64_t)(va32 & ~0xFFFFFu);
                     bool mapped = false;
 
                     if (va32 >= 0x80000000u && va32 <= 0xBFFFFFFFu) {
                         mapped = map_kseg_mirror_block(m, block);
                     } else if (va32 < 0x80000000u) {
-                        uc_err me = uc_mem_map(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
-                        mapped = (me == UC_ERR_OK || me == UC_ERR_MAP);
+                        /*
+                         * User-space VA alias handling in Unicorn MIPS64:
+                         * faults may surface with either raw 64-bit VA (e.g.
+                         * 0xFFFFFFFF0102xxxx) or canonical 32-bit form
+                         * (0x000000000102xxxx).  Map both 1MB aliases.
+                         */
+                        uc_err me32 = uc_mem_map(m->uc, block32, 0x100000,
+                                                 UC_PROT_READ | UC_PROT_WRITE);
+                        if (me32 == UC_ERR_OK || me32 == UC_ERR_MAP)
+                            mapped = true;
+
+                        if (block != block32) {
+                            uc_err meraw = uc_mem_map(m->uc, block, 0x100000,
+                                                      UC_PROT_READ | UC_PROT_WRITE);
+                            if (meraw == UC_ERR_OK || meraw == UC_ERR_MAP)
+                                mapped = true;
+                        }
                     }
 
                     if (mapped) {
@@ -3665,7 +3910,7 @@ void machine_run(machine_t *m)
                         }
                         fprintf(stderr,
                                 "[MACHINE]   mapped block 0x%08" PRIX64 " via $%s=0x%08" PRIX64 "\n",
-                                (uint64_t)(uint32_t)block, names[i], (uint64_t)(uint32_t)va);
+                                (uint64_t)(uint32_t)block32, names[i], (uint64_t)(uint32_t)va);
                         mapped_any = true;
                     }
                 }
@@ -3697,16 +3942,8 @@ void machine_run(machine_t *m)
                 }
                 /* Clear synthetic exception bookkeeping so subsequent
                  * SYSCALL injections start fresh. */
-                m->pending_epc          = 0;
-                m->pending_syscall_epc  = 0;
-                m->pending_excode       = 0;
-                m->pending_cause        = 0;
-                m->epc_was_written      = false;
-                m->pending_cause_served = false;
-                m->pending_epc_served   = false;
+                clear_synthetic_syscall_state(m, true);
                 m->has_saved_exception  = false;
-                m->execve_watch_active  = false;
-                m->tlb_defer_count      = 0;
                 /* Advance past the faulting instruction. */
                 uint64_t skip_pc = bad_pc + 4u;
                 uc_reg_write(m->uc, UC_MIPS_REG_PC, &skip_pc);

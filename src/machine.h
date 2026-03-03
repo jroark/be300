@@ -81,6 +81,7 @@ struct machine_s {
     uint64_t execve_saved_a2;       /* envp pointer saved at do_execve entry      */
     uint64_t execve_saved_sp;       /* $sp saved at do_execve entry (restored on DEFER_SKIP) */
     uint64_t execve_entry_pc;       /* VA of do_execve entry (for stale-TLB retry)*/
+    uint64_t execve_last_pc;        /* most recent in-flight do_execve PC         */
     char     execve_watch_path[128];/* do_execve filename snapshot                 */
     bool     has_saved_exception;   /* nested real exception (e.g., TLBS) saved            */
     uint64_t saved_pending_epc;
@@ -143,6 +144,9 @@ struct machine_s {
      * SYSCALL+4 while execve_watch_active are spurious: just restore PC to
      * do_execve and return so execution can continue. */
     uint32_t tlb_defer_count;
+    bool     tlb_defer_active;       /* true after first DEFER for current syscall */
+    uint32_t tlb_defer_owner_epc;    /* syscall EPC that owns current DEFER state  */
+    uint32_t tlb_exl_drop_defer_count; /* IRQ gate deferrals while EXL unexpectedly cleared */
 
     /* open_exec fd-leak compensation.
      * open_exec (JAL at 0x8004A9F8) allocates a struct file (nr_files++) and
