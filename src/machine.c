@@ -1312,32 +1312,6 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint64_t val = 0;
         uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &val);
         if (m->pending_excode == MIPS_EXCCODE_SYS &&
-            m->pending_syscall_nr == 4011u &&
-            !m->execve_watch_active) {
-            uint32_t val32 = (uint32_t)val;
-            uint32_t ret_site = (uint32_t)m->pending_syscall_epc + 4u;
-            bool val_is_user = (val32 < 0x80000000u);
-            bool val_matches_ret_site = (val32 == ret_site);
-            if (!val_is_user && !val_matches_ret_site) {
-                static uint32_t mtc0_epc_execve_ignore_log = 0;
-                if (mtc0_epc_execve_ignore_log < 64) {
-                    uint64_t status_now = 0;
-                    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status_now);
-                    fprintf(stderr,
-                            "[MTC0_EPC_EXECVE_IGNORE] PC=0x%08" PRIX64
-                            " pending_epc=0x%08" PRIX64 " syscall_epc=0x%08" PRIX64
-                            " new_epc=0x%08" PRIX64 " STATUS=0x%08" PRIX64 "\n",
-                            (uint64_t)(uint32_t)address,
-                            (uint64_t)(uint32_t)m->pending_epc,
-                            (uint64_t)(uint32_t)m->pending_syscall_epc,
-                            (uint64_t)(uint32_t)val,
-                            status_now);
-                    mtc0_epc_execve_ignore_log++;
-                }
-                return; /* let native MTC0 EPC execute; keep synthetic execve state */
-            }
-        }
-        if (m->pending_excode == MIPS_EXCCODE_SYS &&
             mtc0_epc_sys_log < 96) {
             uint64_t sp = 0, ra = 0, status_now = 0;
             uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
@@ -1585,29 +1559,6 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         (uint64_t)(uint32_t)address, status_snapshot,
                         m->has_saved_exception ? 1u : 0u);
                 eret_native_log++;
-            }
-            bool keep_execve_native_eret =
-                (m->pending_excode == MIPS_EXCCODE_SYS &&
-                 m->pending_syscall_nr == 4011u &&
-                 !m->epc_was_written);
-            if (keep_execve_native_eret) {
-                static uint32_t eret_native_keep_log = 0;
-                if (eret_native_keep_log < 64) {
-                    fprintf(stderr,
-                            "[ERET_NATIVE_KEEP] preserving syscall state"
-                            " nr=%u pending_epc=0x%08" PRIX64
-                            " syscall_epc=0x%08" PRIX64
-                            " PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
-                            " served_epc=%u served_cause=%u\n",
-                            m->pending_syscall_nr,
-                            (uint64_t)(uint32_t)m->pending_epc,
-                            (uint64_t)(uint32_t)m->pending_syscall_epc,
-                            (uint64_t)(uint32_t)address, status_snapshot,
-                            m->pending_epc_served ? 1u : 0u,
-                            m->pending_cause_served ? 1u : 0u);
-                    eret_native_keep_log++;
-                }
-                return;
             }
             if (m->pending_excode == MIPS_EXCCODE_SYS)
                 clear_synthetic_syscall_state(m, true);
@@ -1904,33 +1855,6 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                  * while do_execve is still running (in-flight TLB miss at SYSCALL+4).
                  */
                 if ((status & 0x2u) == 0u) {
-                    if (intno != 26u) {
-                        static uint32_t tlb_nested_non26_keep_log = 0;
-                        bool old_cause_served = m->pending_cause_served;
-                        bool old_epc_served = m->pending_epc_served;
-                        m->pending_cause_served = false;
-                        m->pending_epc_served = false;
-                        if (tlb_nested_non26_keep_log < 64) {
-                            uint64_t v0 = 0, a3 = 0;
-                            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-                            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
-                            fprintf(stderr,
-                                    "[TLB_NESTED_KEEP_NON26] intno=%u PC=0x%08" PRIX64
-                                    " STATUS=0x%08" PRIX64
-                                    " syscall_epc=0x%08" PRIX64 " pending_epc=0x%08" PRIX64
-                                    " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
-                                    " served_cause:%u->%u served_epc:%u->%u\n",
-                                    intno, (uint64_t)(uint32_t)pc, status,
-                                    (uint64_t)(uint32_t)m->pending_syscall_epc,
-                                    (uint64_t)(uint32_t)m->pending_epc,
-                                    (uint64_t)(uint32_t)v0,
-                                    (uint64_t)(uint32_t)a3,
-                                    old_cause_served ? 1u : 0u, m->pending_cause_served ? 1u : 0u,
-                                    old_epc_served ? 1u : 0u, m->pending_epc_served ? 1u : 0u);
-                            tlb_nested_non26_keep_log++;
-                        }
-                        return;
-                    }
                     /*
                      * at_ret_site: we are at the instruction immediately after the
                      * SYSCALL that started this exception.  pending_epc may have been
@@ -2027,6 +1951,34 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         }
                         clear_synthetic_syscall_state(m, true);
                         m->has_saved_exception  = false;
+                        return;
+                    }
+                    if (syscall_is_execve && at_ret_site &&
+                        !m->execve_watch_active && !stale_post_mtc0) {
+                        static uint32_t tlb_nested_keep_nowatch_log = 0;
+                        bool old_cause_served = m->pending_cause_served;
+                        bool old_epc_served = m->pending_epc_served;
+                        m->pending_cause_served = false;
+                        m->pending_epc_served = false;
+                        if (tlb_nested_keep_nowatch_log < 64) {
+                            uint64_t v0 = 0, a3 = 0;
+                            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                            fprintf(stderr,
+                                    "[TLB_NESTED_KEEP_NOWATCH] intno=%u PC=0x%08" PRIX64
+                                    " STATUS=0x%08" PRIX64
+                                    " syscall_epc=0x%08" PRIX64 " pending_epc=0x%08" PRIX64
+                                    " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
+                                    " served_cause:%u->%u served_epc:%u->%u\n",
+                                    intno, (uint64_t)(uint32_t)pc, status,
+                                    (uint64_t)(uint32_t)m->pending_syscall_epc,
+                                    (uint64_t)(uint32_t)m->pending_epc,
+                                    (uint64_t)(uint32_t)v0,
+                                    (uint64_t)(uint32_t)a3,
+                                    old_cause_served ? 1u : 0u, m->pending_cause_served ? 1u : 0u,
+                                    old_epc_served ? 1u : 0u, m->pending_epc_served ? 1u : 0u);
+                            tlb_nested_keep_nowatch_log++;
+                        }
                         return;
                     }
                     uint32_t syscall_epc = (uint32_t)pc - 4u;
@@ -2178,12 +2130,12 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     {
                         uint64_t exl_status = status | 0x2u;   /* set EXL=1 */
                         uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exl_status);
-                        uint64_t tlb_vec = mips_sext(0x80000180u);
+                        uint64_t tlb_vec = mips_sext(0x80000000u);
                         uc_reg_write(uc, UC_MIPS_REG_PC, &tlb_vec);
                         fprintf(stderr,
                                 "[TLB_DEFER_ENTRY] intno=%u fault_pc=0x%08" PRIX64
                                 " owner_epc=0x%08X retry=%u"
-                                " -> EXL=1 PC=0x80000180 (general exception handler)\n",
+                                " -> EXL=1 PC=0x80000000 (TLB refill handler)\n",
                                 intno, (uint64_t)(uint32_t)pc,
                                 m->tlb_defer_owner_epc, m->tlb_defer_count);
                     }
