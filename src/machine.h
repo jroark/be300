@@ -32,6 +32,8 @@ typedef struct machine_s machine_t;
 typedef struct {
     bool        trace;        /* log each instruction to stderr */
     bool        log_mmio;     /* log all MMIO register accesses */
+    bool        sfb_5bit_green; /* true = apply 5-bit green expansion (2.6 sfb.c non-standard)
+                                 * false (default) = pass pixels through as-is (true RGB565) */
     const char *rom_path;     /* path to flat ROM image, loaded at PA_RESET_VECTOR */
     const char *kernel_path;  /* path to ELF kernel (vmlinux); if set, skip ROM boot */
     const char *cmdline;      /* kernel command line (passed in $a1 as argv[0]) */
@@ -128,6 +130,11 @@ struct machine_s {
     bool     tlbwi_patch_pending;
     uint64_t tlbwi_patch_addr;
     uint32_t tlbwi_patch_orig;
+
+    /* After TLBWI/TLBWR executes, flush Unicorn's softmmu TLB at the next
+     * instruction so stale TLB entries (e.g. D=0 → D=1 upgrade) don't
+     * prevent the retry store from succeeding. */
+    bool     pending_tlb_flush;
 
     /* TLB notification de-duplication for execve DEFER.
      * Unicorn re-delivers the same notification-only intno=26 at SYSCALL+4

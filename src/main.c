@@ -14,6 +14,9 @@ static void usage(const char *prog)
         "  --cmdline <string>    Kernel command line passed via $a1\n"
         "  --trace               Print each executed instruction to stderr\n"
         "  --log-mmio            Log all MMIO register reads/writes\n"
+        "  --sfb-5bit-green      Use 5-bit green expansion for 2.6 sfb.c (non-standard\n"
+        "                        R5X1G5B5 layout); default is pass-through (true RGB565,\n"
+        "                        correct for Linux 2.4 kernels)\n"
         "  --ram <file>          Preload a raw RAM image at PA 0x00000000\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  -h, --help            Show this help\n"
@@ -29,13 +32,14 @@ int main(int argc, char *argv[])
     setvbuf(stderr, NULL, _IONBF, 0);
 
     machine_config_t cfg = {
-        .trace       = false,
-        .log_mmio    = false,
-        .rom_path    = NULL,
-        .kernel_path = NULL,
-        .cmdline     = NULL,
-        .ram_path    = NULL,
-        .sdram_size  = 16u * 1024u * 1024u,
+        .trace          = false,
+        .log_mmio       = false,
+        .sfb_5bit_green = false,
+        .rom_path       = NULL,
+        .kernel_path    = NULL,
+        .cmdline        = NULL,
+        .ram_path       = NULL,
+        .sdram_size     = 16u * 1024u * 1024u,
     };
 
     for (int i = 1; i < argc; i++) {
@@ -47,6 +51,8 @@ int main(int argc, char *argv[])
             cfg.trace = true;
         } else if (strcmp(argv[i], "--log-mmio") == 0) {
             cfg.log_mmio = true;
+        } else if (strcmp(argv[i], "--sfb-5bit-green") == 0) {
+            cfg.sfb_5bit_green = true;
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
             cfg.ram_path = argv[++i];
         } else if (strcmp(argv[i], "--sdram") == 0 && i + 1 < argc) {
