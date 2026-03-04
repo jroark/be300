@@ -379,6 +379,37 @@ static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *ins
     return false;
 }
 
+static bool insn_has_delay_slot(uint32_t insn)
+{
+    uint32_t op = insn >> 26;
+    if (op == 0x02u || op == 0x03u)  /* j / jal */
+        return true;
+    if (op == 0x00u) {
+        uint32_t funct = insn & 0x3Fu;
+        if (funct == 0x08u || funct == 0x09u)  /* jr / jalr */
+            return true;
+    }
+    if (op == 0x01u ||  /* regimm branches */
+        op == 0x04u || op == 0x05u || op == 0x06u || op == 0x07u || /* beq/bne/blez/bgtz */
+        op == 0x14u || op == 0x15u || op == 0x16u || op == 0x17u)   /* likely branches */
+        return true;
+    if (op == 0x10u && ((insn >> 21) & 0x1Fu) == 0x08u) /* bc0* */
+        return true;
+    if (op == 0x11u && ((insn >> 21) & 0x1Fu) == 0x08u) /* bc1* */
+        return true;
+    return false;
+}
+
+static bool pc_is_delay_slot(uc_engine *uc, uint64_t pc)
+{
+    if ((uint32_t)pc < 4u)
+        return false;
+    uint32_t prev = 0;
+    if (!read_insn_best_effort(uc, pc - 4u, &prev))
+        return false;
+    return insn_has_delay_slot(prev);
+}
+
 static int read_guest_string(uc_engine *uc, uint64_t va, char *buf, int bufsz);
 
 static bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out)
@@ -872,7 +903,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      */
     if (m->execve_watch_active) {
         uint32_t pc32 = (uint32_t)address;
-        if (execve_pc_in_do_execve(pc32))
+        if (execve_pc_in_do_execve(pc32) && !pc_is_delay_slot(uc, address))
             snapshot_execve_gpr_context(m, uc, address);
     }
 
@@ -3935,44 +3966,76 @@ void machine_run(machine_t *m)
             uc_reg_read(m->uc, UC_MIPS_REG_PC, &bad_pc);
             if (err == UC_ERR_WRITE_UNMAPPED) {
                 /*
-                 * Fallback recovery for UC_ERR_WRITE_UNMAPPED.
-                 * Normally the user-space pre-map in machine_create() covers
-                 * all kuseg writes; this path handles any gaps (e.g., kernel
-                 * data writes above kseg0 that miss our static maps).
-                 * No limit — each unique block is only mapped once.
+                 * Recovery for write faults mirrors the read-fault strategy:
+                 * consult last fault VA + broad register candidates and map
+                 * either kuseg aliases or kseg mirrors, then retry.
                  */
-                uint64_t v0 = 0, a0 = 0, t2 = 0, sp = 0;
+                uint64_t badv = 0, at = 0, v0 = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+                uint64_t k0 = 0, k1 = 0, t2 = 0, sp = 0;
+                uc_mem_type fault_type = (uc_mem_type)0;
+                if (m->last_unmapped_valid) {
+                    badv = m->last_unmapped_addr;
+                    fault_type = m->last_unmapped_type;
+                } else if (m->shadow_cp0_badvaddr != 0) {
+                    badv = m->shadow_cp0_badvaddr;
+                }
+                m->last_unmapped_valid = false;
+                uc_reg_read(m->uc, UC_MIPS_REG_AT, &at);
                 uc_reg_read(m->uc, UC_MIPS_REG_V0, &v0);
                 uc_reg_read(m->uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(m->uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(m->uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(m->uc, UC_MIPS_REG_A3, &a3);
+                uc_reg_read(m->uc, UC_MIPS_REG_K0, &k0);
+                uc_reg_read(m->uc, UC_MIPS_REG_K1, &k1);
                 uc_reg_read(m->uc, UC_MIPS_REG_T2, &t2);
                 uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
-                uint64_t candidates[4] = { v0, a0, t2, sp };
-                const char *names[4] = { "v0", "a0", "t2", "sp" };
+                uint64_t candidates[12] = { bad_pc, badv, at, v0, a0, a1, a2, a3, k0, k1, t2, sp };
+                const char *names[12] = { "pc", "badv", "at", "v0", "a0", "a1", "a2", "a3", "k0", "k1", "t2", "sp" };
                 bool mapped_any = false;
 
-                for (int i = 0; i < 4; i++) {
+                for (int i = 0; i < 12; i++) {
                     uint64_t va = candidates[i];
-                    /* Only attempt kuseg (user-space) addresses */
-                    if (va < 0x1000u || va >= 0x80000000u)
+                    uint32_t va32 = (uint32_t)va;
+                    if (va32 < 0x1000u)
                         continue;
                     uint64_t block = va & ~((uint64_t)0xFFFFF);
-                    uc_err me = uc_mem_map(m->uc, block, 0x100000,
-                                           UC_PROT_READ | UC_PROT_WRITE);
-                    if (me == UC_ERR_OK) {
-                        /* Fresh mapping — log it */
+                    uint64_t block32 = (uint64_t)(va32 & ~0xFFFFFu);
+                    bool mapped = false;
+
+                    if (va32 >= 0x80000000u && va32 <= 0xBFFFFFFFu) {
+                        mapped = map_kseg_mirror_block(m, block);
+                    } else if (va32 < 0x80000000u) {
+                        uc_err me32 = uc_mem_map(m->uc, block32, 0x100000,
+                                                 UC_PROT_READ | UC_PROT_WRITE);
+                        if (me32 == UC_ERR_OK || me32 == UC_ERR_MAP)
+                            mapped = true;
+
+                        if (block != block32) {
+                            uc_err meraw = uc_mem_map(m->uc, block, 0x100000,
+                                                      UC_PROT_READ | UC_PROT_WRITE);
+                            if (meraw == UC_ERR_OK || meraw == UC_ERR_MAP)
+                                mapped = true;
+                        }
+                    }
+
+                    if (mapped) {
                         if (!mapped_any) {
+                            uint32_t bad_insn = 0xFFFFFFFFu;
+                            read_insn_best_effort(m->uc, bad_pc, &bad_insn);
                             fprintf(stderr,
-                                    "[MACHINE] write-unmapped recovery #%d at PC=0x%08" PRIX64 "\n",
+                                    "[MACHINE] write-unmapped recovery #%d at PC=0x%08" PRIX64
+                                    " badv=0x%08" PRIX64 " type=%d insn=0x%08X\n",
                                     write_unmapped_recoveries + 1,
-                                    (uint64_t)(uint32_t)bad_pc);
+                                    (uint64_t)(uint32_t)bad_pc,
+                                    (uint64_t)(uint32_t)badv,
+                                    (int)fault_type,
+                                    bad_insn);
                         }
                         fprintf(stderr,
                                 "[MACHINE]   mapped block 0x%08" PRIX64 " via $%s=0x%08" PRIX64 "\n",
-                                (uint64_t)(uint32_t)block, names[i],
+                                (uint64_t)(uint32_t)block32, names[i],
                                 (uint64_t)(uint32_t)va);
-                        mapped_any = true;
-                    } else if (me == UC_ERR_MAP) {
-                        /* Already mapped — still count as handled */
                         mapped_any = true;
                     }
                 }
