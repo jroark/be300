@@ -1069,37 +1069,12 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     if ((uint32_t)address == 0x8004A9D0u || (uint32_t)address == 0x80080CB0u) {
         uint64_t ra = 0, a0 = 0, a1 = 0, a2 = 0, sp = 0;
         char path[128] = "<unreadable>";
-        static uint32_t syscall_handoff_clear_log = 0;
         uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
         uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
         uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
         uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
         uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
         read_guest_string(uc, a0, path, sizeof(path));
-
-        /*
-         * Once we are inside do_execve(), the synthetic syscall metadata has
-         * served its purpose (Cause/EPC injection at exception entry). Keeping
-         * pending_excode=8 active here causes stale intno=26/27 replays at
-         * SYSCALL+4 to repeatedly re-enter do_execve mid-flight.
-         */
-        if (m->pending_excode == MIPS_EXCCODE_SYS &&
-            m->pending_syscall_nr == 4011u) {
-            if (syscall_handoff_clear_log < 64) {
-                fprintf(stderr,
-                        "[SYSCALL_HANDOFF_CLEAR] pc=0x%08" PRIX64
-                        " syscall_epc=0x%08" PRIX64
-                        " pending_epc=0x%08" PRIX64
-                        " path=\"%s\"\n",
-                        (uint64_t)(uint32_t)address,
-                        (uint64_t)(uint32_t)m->pending_syscall_epc,
-                        (uint64_t)(uint32_t)m->pending_epc,
-                        path);
-                syscall_handoff_clear_log++;
-            }
-            clear_synthetic_syscall_state(m, false);
-            m->has_saved_exception = false;
-        }
 
         if (m->execve_watch_active && do_execve_enter_log < 128) {
             fprintf(stderr,
@@ -1861,58 +1836,6 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         status, m->pending_excode);
                 tlb_badvaddr_log++;
             }
-
-            /*
-             * After SYSCALL_HANDOFF_CLEAR, stale intno=26/27 notifications can
-             * still arrive at init's SYSCALL+4 sites while do_execve remains
-             * active.  Without pending_excode=8, the generic path would fall
-             * through and let run_init continue with garbage return registers.
-             * Resume the in-flight do_execve context instead.
-             */
-            if (m->execve_watch_active &&
-                m->pending_excode == 0 &&
-                is_init_execve_epc((uint32_t)pc - 4u)) {
-                static uint32_t stale_execve_resume_log = 0;
-                static uint32_t stale_execve_abort_log = 0;
-                bool last_pc_valid = execve_pc_in_do_execve(m->execve_last_pc);
-                uint64_t resume_pc = last_pc_valid ? m->execve_last_pc : m->execve_entry_pc;
-                m->tlb_defer_count++;
-                if (m->tlb_defer_count > TLB_DEFER_RETRY_LIMIT) {
-                    if (stale_execve_abort_log < 32) {
-                        fprintf(stderr,
-                                "[EXECVE_STALE_INTR_ABORT] intno=%u PC=0x%08" PRIX64
-                                " retry=%u limit=%u entry=0x%08" PRIX64
-                                " last=0x%08" PRIX64 "\n",
-                                intno, (uint64_t)(uint32_t)pc,
-                                m->tlb_defer_count, TLB_DEFER_RETRY_LIMIT,
-                                (uint64_t)(uint32_t)m->execve_entry_pc,
-                                (uint64_t)(uint32_t)m->execve_last_pc);
-                        stale_execve_abort_log++;
-                    }
-                    m->execve_watch_active = false;
-                    m->execve_entry_pc = 0;
-                    m->execve_last_pc = 0;
-                    m->execve_last_ctx_valid = false;
-                    m->tlb_defer_count = 0;
-                    return;
-                }
-                if (resume_pc != 0) {
-                    if (stale_execve_resume_log < 64) {
-                        fprintf(stderr,
-                                "[EXECVE_STALE_INTR_RESUME] intno=%u PC=0x%08" PRIX64
-                                " retry=%u -> resume=0x%08" PRIX64 " mode=%s\n",
-                                intno, (uint64_t)(uint32_t)pc,
-                                m->tlb_defer_count,
-                                (uint64_t)(uint32_t)resume_pc,
-                                (resume_pc == m->execve_entry_pc) ? "entry" : "last_pc");
-                        stale_execve_resume_log++;
-                    }
-                    restore_execve_gpr_context(m, uc);
-                    uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
-                    return;
-                }
-            }
-
             /*
              * NULL function-pointer recovery.
              *
