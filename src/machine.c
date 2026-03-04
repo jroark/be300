@@ -1692,9 +1692,6 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                     m->execve_open_exec_ran = false;
                 }
                 uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
-                /* Re-arm one-shot Cause/EPC injection only when rewinding entry. */
-                m->pending_cause_served = false;
-                m->pending_epc_served   = false;
                 return;
             }
 
@@ -2162,6 +2159,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         m->execve_watch_active &&
                         m->tlb_defer_owner_epc == syscall_epc) {
                         static uint32_t tlb_defer_drop_log = 0;
+                        static uint32_t tlb_defer_resume_log = 0;
                         if (tlb_defer_drop_log < 64) {
                             uint64_t v0 = 0, a3 = 0;
                             uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
@@ -2175,6 +2173,34 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                     (uint64_t)(uint32_t)v0,
                                     (uint64_t)(uint32_t)a3);
                             tlb_defer_drop_log++;
+                        }
+                        /*
+                         * This intno=26/27 is a stale re-notification for the same
+                         * SYSCALL+4 owner_epc while do_execve is still active.
+                         * If we simply return, Unicorn may continue at the stale
+                         * PC (run_init's post-syscall branch), skipping in-flight
+                         * do_execve and corrupting init's execve bookkeeping.
+                         *
+                         * Resume from the last sampled PC/GPR snapshot inside
+                         * do_execve instead.
+                         */
+                        if (m->execve_last_ctx_valid &&
+                            execve_pc_in_do_execve(m->execve_last_pc)) {
+                            uint64_t resume_pc = m->execve_last_pc;
+                            uint64_t exl_clear = status & ~(uint64_t)0x2u;
+                            restore_execve_gpr_context(m, uc);
+                            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exl_clear);
+                            uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
+                            if (tlb_defer_resume_log < 64) {
+                                fprintf(stderr,
+                                        "[TLB_DEFER_RESUME] intno=%u stale_pc=0x%08" PRIX64
+                                        " -> do_execve_pc=0x%08" PRIX64
+                                        " owner_epc=0x%08X retry=%u\n",
+                                        intno, (uint64_t)(uint32_t)pc,
+                                        (uint64_t)(uint32_t)resume_pc,
+                                        m->tlb_defer_owner_epc, m->tlb_defer_count);
+                                tlb_defer_resume_log++;
+                            }
                         }
                         return;
                     }
