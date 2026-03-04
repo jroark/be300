@@ -75,10 +75,31 @@ static inline bool tlb_trace_window_active(const machine_t *m)
     return m->tlb_trace_window;
 }
 
-#define RUN_INIT_SYSCALL_EPC      0x800015B0u
-#define RUN_INIT_SYSCALL_RET_PC   0x800015B4u
+/*
+ * vmlinux-pgui-demo (2.4.18) init() execve("/linuxrc") site:
+ *   0x8000181c syscall
+ *   0x80001820 branch on a3 (post-syscall return check)
+ */
+#define RUN_INIT_SYSCALL_EPC      0x8000181Cu
+#define RUN_INIT_SYSCALL_RET_PC   0x80001820u
+#define INIT_ARGV_KPTR            0x80171244u
+#define INIT_ENVP_KPTR            0x8017126Cu
 #define TLB_DEFER_RETRY_LIMIT     32u
 #define TLB_EXL_DROP_DEFER_LIMIT  64u
+
+static inline bool is_init_execve_epc(uint32_t epc)
+{
+    switch (epc) {
+    case 0x8000181Cu: /* /linuxrc from cmdline */
+    case 0x8000184Cu: /* /sbin/init */
+    case 0x8000186Cu: /* /etc/init */
+    case 0x8000188Cu: /* /bin/init */
+    case 0x800018ACu: /* /bin/sh */
+        return true;
+    default:
+        return false;
+    }
+}
 
 static void reset_tlb_defer_state(machine_t *m)
 {
@@ -467,6 +488,34 @@ static bool prepare_execve_user_ptrs_defaults(uc_engine *uc,
 
     *new_a1 = argv_base;
     *new_a2 = envp_base;
+    return true;
+}
+
+static bool guest_ptr_looks_like_string(uc_engine *uc, uint32_t p)
+{
+    if (p < 0x1000u)
+        return false;
+    char s[8];
+    return read_guest_string(uc, p, s, sizeof(s)) > 0;
+}
+
+static bool execve_vectors_look_valid(uc_engine *uc, uint32_t argv, uint32_t envp)
+{
+    uint32_t p0 = 0, p1 = 0, e0 = 0;
+    if (argv == 0u)
+        return false;
+    if (!read_guest_u32(uc, argv, &p0) || !guest_ptr_looks_like_string(uc, p0))
+        return false;
+    if (!read_guest_u32(uc, argv + 4u, &p1))
+        return false;
+    if (p1 != 0u && !guest_ptr_looks_like_string(uc, p1))
+        return false;
+    if (envp != 0u) {
+        if (!read_guest_u32(uc, envp, &e0))
+            return false;
+        if (e0 != 0u && !guest_ptr_looks_like_string(uc, e0))
+            return false;
+    }
     return true;
 }
 
@@ -1958,8 +2007,6 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         static uint32_t tlb_nested_keep_nowatch_log = 0;
                         bool old_cause_served = m->pending_cause_served;
                         bool old_epc_served = m->pending_epc_served;
-                        m->pending_cause_served = false;
-                        m->pending_epc_served = false;
                         if (tlb_nested_keep_nowatch_log < 64) {
                             uint64_t v0 = 0, a3 = 0;
                             uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
@@ -1969,14 +2016,14 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                     " STATUS=0x%08" PRIX64
                                     " syscall_epc=0x%08" PRIX64 " pending_epc=0x%08" PRIX64
                                     " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
-                                    " served_cause:%u->%u served_epc:%u->%u\n",
+                                    " served_cause=%u served_epc=%u\n",
                                     intno, (uint64_t)(uint32_t)pc, status,
                                     (uint64_t)(uint32_t)m->pending_syscall_epc,
                                     (uint64_t)(uint32_t)m->pending_epc,
                                     (uint64_t)(uint32_t)v0,
                                     (uint64_t)(uint32_t)a3,
-                                    old_cause_served ? 1u : 0u, m->pending_cause_served ? 1u : 0u,
-                                    old_epc_served ? 1u : 0u, m->pending_epc_served ? 1u : 0u);
+                                    old_cause_served ? 1u : 0u,
+                                    old_epc_served ? 1u : 0u);
                             tlb_nested_keep_nowatch_log++;
                         }
                         return;
@@ -2257,12 +2304,22 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     if (m->pending_excode != 0 && (status & 0x2u) == 0u) {
         static uint32_t syscall_entry_stale_clear_log = 0;
         if (syscall_entry_stale_clear_log < 64) {
+            uint64_t v0 = 0, a3 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
             fprintf(stderr,
                     "[SYSCALL_ENTRY_STALE_CLEAR] intno=%u PC=0x%08" PRIX64
                     " STATUS=0x%08" PRIX64
-                    " old_excode=%u old_epc=0x%08" PRIX64 "\n",
+                    " old_excode=%u old_epc=0x%08" PRIX64
+                    " old_nr=%u old_a0=0x%08" PRIX64 " \"%s\""
+                    " v0=0x%08" PRIX64 " a3=0x%08" PRIX64 "\n",
                     intno, (uint64_t)(uint32_t)pc, status,
-                    m->pending_excode, (uint64_t)(uint32_t)m->pending_epc);
+                    m->pending_excode, (uint64_t)(uint32_t)m->pending_epc,
+                    m->pending_syscall_nr,
+                    (uint64_t)(uint32_t)m->pending_syscall_a0,
+                    m->pending_syscall_a0_str,
+                    (uint64_t)(uint32_t)v0,
+                    (uint64_t)(uint32_t)a3);
             syscall_entry_stale_clear_log++;
         }
         clear_synthetic_syscall_state(m, true);
@@ -2293,23 +2350,39 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             uint32_t a0_32 = (uint32_t)a0;
             uint32_t a1_32 = (uint32_t)a1;
             uint32_t a2_32 = (uint32_t)a2;
+            uint32_t epc32 = (uint32_t)epc;
             /*
              * Do not rewrite valid kernel argv/envp vectors (kseg addresses):
              * run_init_process() in this 2.4 kernel intentionally passes
              * kernel-space init_argv/init_envp pointers.
              *
-             * Only apply shim for obviously clobbered tiny pointers.
+             * For fallback init paths we can arrive with clobbered argv/envp
+             * (e.g., argv pointing at filename bytes). Detect invalid vector
+             * layouts and force stable defaults in that case.
              */
             bool needs_execve_defaults =
                 ((a1_32 != 0u && a1_32 < 0x1000u) ||
-                 (a2_32 != 0u && a2_32 < 0x1000u));
+                 (a2_32 != 0u && a2_32 <= 0x1000u) ||
+                 !execve_vectors_look_valid(uc, a1_32, a2_32));
             bool needs_execve_filename_shim = (!needs_execve_defaults &&
                                                a0_32 >= 0x80000000u);
             uint32_t sh_a0 = 0, sh_a1 = 0, sh_a2 = 0;
+            bool init_kptr_override = false;
             bool used_defaults = false;
             bool filename_only = false;
             bool have_shim_ptrs = false;
-            if (needs_execve_defaults) {
+            if (is_init_execve_epc(epc32) && (needs_execve_defaults || a1_32 < 0x80000000u)) {
+                /*
+                 * init() fallback paths in this kernel expect the canonical
+                 * kernel init_argv/init_envp vectors; forcing user-space
+                 * scratch vectors here traps in do_execve/copy_strings.
+                 */
+                init_kptr_override = true;
+                have_shim_ptrs = true;
+                sh_a0 = a0_32;
+                sh_a1 = INIT_ARGV_KPTR;
+                sh_a2 = INIT_ENVP_KPTR;
+            } else if (needs_execve_defaults) {
                 used_defaults = true;
                 have_shim_ptrs = prepare_execve_user_ptrs_defaults(uc, a0, &sh_a0, &sh_a1, &sh_a2);
             } else if (needs_execve_filename_shim) {
@@ -2337,8 +2410,9 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                             "[EXECVE_SHIM_%s] a0:0x%08" PRIX64 "->0x%08" PRIX64
                             " a1:0x%08" PRIX64 "->0x%08" PRIX64
                             " a2:0x%08" PRIX64 "->0x%08" PRIX64 "\n",
-                            used_defaults ? "DEFAULTS" :
-                            (filename_only ? "FILENAME" : "COPY"),
+                            init_kptr_override ? "INIT_KPTRS" :
+                            (used_defaults ? "DEFAULTS" :
+                            (filename_only ? "FILENAME" : "COPY")),
                             (uint64_t)(uint32_t)old_a0, (uint64_t)(uint32_t)a0,
                             (uint64_t)(uint32_t)old_a1, (uint64_t)(uint32_t)a1,
                             (uint64_t)(uint32_t)old_a2, (uint64_t)(uint32_t)a2);
