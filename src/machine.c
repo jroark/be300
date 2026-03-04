@@ -1713,7 +1713,28 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         m->has_saved_exception ? 1u : 0u);
                 eret_native_log++;
             }
-            if (m->pending_excode == MIPS_EXCCODE_SYS)
+            bool keep_deferred_syscall =
+                (m->pending_excode == MIPS_EXCCODE_SYS &&
+                 m->tlb_defer_active &&
+                 m->tlb_defer_owner_epc != 0u &&
+                 m->tlb_defer_owner_epc == (uint32_t)m->pending_syscall_epc);
+            if (keep_deferred_syscall) {
+                static uint32_t eret_native_keep_log = 0;
+                m->pending_cause_served = false;
+                m->pending_epc_served = false;
+                if (eret_native_keep_log < 64) {
+                    fprintf(stderr,
+                            "[ERET_NATIVE_KEEP] pending_excode=%u owner_epc=0x%08X"
+                            " pending_epc=0x%08" PRIX64 " PC=0x%08" PRIX64
+                            " STATUS=0x%08" PRIX64 " defer_count=%u\n",
+                            m->pending_excode, m->tlb_defer_owner_epc,
+                            (uint64_t)(uint32_t)m->pending_epc,
+                            (uint64_t)(uint32_t)address, status_snapshot,
+                            m->tlb_defer_count);
+                    eret_native_keep_log++;
+                }
+                return;
+            } else if (m->pending_excode == MIPS_EXCCODE_SYS)
                 clear_synthetic_syscall_state(m, true);
             else {
                 m->pending_epc          = 0;
@@ -2108,7 +2129,8 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         return;
                     }
                     if (syscall_is_execve && at_ret_site &&
-                        !m->execve_watch_active && !stale_post_mtc0) {
+                        !m->execve_watch_active && !stale_post_mtc0 &&
+                        m->tlb_defer_count > 0) {
                         static uint32_t tlb_nested_reenter_log = 0;
                         uint64_t exl_status = status | 0x2u;   /* set EXL=1 */
                         uint64_t vec = mips_sext(0x80000180u);
@@ -2159,50 +2181,46 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         m->execve_watch_active &&
                         m->tlb_defer_owner_epc == syscall_epc) {
                         static uint32_t tlb_defer_drop_log = 0;
-                        static uint32_t tlb_defer_resume_log = 0;
-                        if (tlb_defer_drop_log < 64) {
+                        static uint32_t tlb_defer_retry_log = 0;
+                        /*
+                         * Repeated intno=26 notifications at the same owner_epc are
+                         * usually stale duplicates after we already forced one refill
+                         * entry; dropping those avoids SYSCALL+4 livelock.
+                         *
+                         * Keep intno=27 (store-side) on the retry path so the kernel
+                         * still gets a chance to establish writable mappings.
+                         */
+                        if (intno == 26u) {
+                            if (tlb_defer_drop_log < 64) {
+                                uint64_t v0 = 0, a3 = 0;
+                                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                                fprintf(stderr,
+                                        "[TLB_DEFER_DROP] intno=%u PC=0x%08" PRIX64
+                                        " owner_epc=0x%08X retry=%u"
+                                        " v0=0x%08" PRIX64 " a3=0x%08" PRIX64 "\n",
+                                        intno, (uint64_t)(uint32_t)pc,
+                                        m->tlb_defer_owner_epc, m->tlb_defer_count,
+                                        (uint64_t)(uint32_t)v0,
+                                        (uint64_t)(uint32_t)a3);
+                                tlb_defer_drop_log++;
+                            }
+                            return;
+                        }
+                        if (tlb_defer_retry_log < 64) {
                             uint64_t v0 = 0, a3 = 0;
                             uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
                             uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
                             fprintf(stderr,
-                                    "[TLB_DEFER_DROP] intno=%u PC=0x%08" PRIX64
+                                    "[TLB_DEFER_RETRY] intno=%u PC=0x%08" PRIX64
                                     " owner_epc=0x%08X retry=%u"
                                     " v0=0x%08" PRIX64 " a3=0x%08" PRIX64 "\n",
                                     intno, (uint64_t)(uint32_t)pc,
                                     m->tlb_defer_owner_epc, m->tlb_defer_count,
                                     (uint64_t)(uint32_t)v0,
                                     (uint64_t)(uint32_t)a3);
-                            tlb_defer_drop_log++;
+                            tlb_defer_retry_log++;
                         }
-                        /*
-                         * This intno=26/27 is a stale re-notification for the same
-                         * SYSCALL+4 owner_epc while do_execve is still active.
-                         * If we simply return, Unicorn may continue at the stale
-                         * PC (run_init's post-syscall branch), skipping in-flight
-                         * do_execve and corrupting init's execve bookkeeping.
-                         *
-                         * Resume from the last sampled PC/GPR snapshot inside
-                         * do_execve instead.
-                         */
-                        if (m->execve_last_ctx_valid &&
-                            execve_pc_in_do_execve(m->execve_last_pc)) {
-                            uint64_t resume_pc = m->execve_last_pc;
-                            uint64_t exl_clear = status & ~(uint64_t)0x2u;
-                            restore_execve_gpr_context(m, uc);
-                            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exl_clear);
-                            uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
-                            if (tlb_defer_resume_log < 64) {
-                                fprintf(stderr,
-                                        "[TLB_DEFER_RESUME] intno=%u stale_pc=0x%08" PRIX64
-                                        " -> do_execve_pc=0x%08" PRIX64
-                                        " owner_epc=0x%08X retry=%u\n",
-                                        intno, (uint64_t)(uint32_t)pc,
-                                        (uint64_t)(uint32_t)resume_pc,
-                                        m->tlb_defer_owner_epc, m->tlb_defer_count);
-                                tlb_defer_resume_log++;
-                            }
-                        }
-                        return;
                     }
 
                     if (tlb_nested_defer_log < 64) {
@@ -2475,7 +2493,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                  * Filename-only mode: keep kernel argv/envp vectors intact and
                  * just re-home filename into user scratch for getname().
                  */
-                uint64_t na0 = filename_only ? sh_a0 : old_a0;
+                uint64_t na0 = sh_a0;
                 uint64_t na1 = sh_a1, na2 = sh_a2;
                 uc_reg_write(uc, UC_MIPS_REG_A0, &na0);
                 uc_reg_write(uc, UC_MIPS_REG_A1, &na1);
