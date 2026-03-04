@@ -2002,32 +2002,6 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         m->has_saved_exception  = false;
                         return;
                     }
-                    if (syscall_is_execve && at_ret_site &&
-                        !m->execve_watch_active && !stale_post_mtc0) {
-                        static uint32_t tlb_nested_keep_nowatch_log = 0;
-                        bool old_cause_served = m->pending_cause_served;
-                        bool old_epc_served = m->pending_epc_served;
-                        if (tlb_nested_keep_nowatch_log < 64) {
-                            uint64_t v0 = 0, a3 = 0;
-                            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-                            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
-                            fprintf(stderr,
-                                    "[TLB_NESTED_KEEP_NOWATCH] intno=%u PC=0x%08" PRIX64
-                                    " STATUS=0x%08" PRIX64
-                                    " syscall_epc=0x%08" PRIX64 " pending_epc=0x%08" PRIX64
-                                    " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
-                                    " served_cause=%u served_epc=%u\n",
-                                    intno, (uint64_t)(uint32_t)pc, status,
-                                    (uint64_t)(uint32_t)m->pending_syscall_epc,
-                                    (uint64_t)(uint32_t)m->pending_epc,
-                                    (uint64_t)(uint32_t)v0,
-                                    (uint64_t)(uint32_t)a3,
-                                    old_cause_served ? 1u : 0u,
-                                    old_epc_served ? 1u : 0u);
-                            tlb_nested_keep_nowatch_log++;
-                        }
-                        return;
-                    }
                     uint32_t syscall_epc = (uint32_t)pc - 4u;
                     if (!m->tlb_defer_active || m->tlb_defer_owner_epc != syscall_epc) {
                         static uint32_t defer_owner_reset_log = 0;
