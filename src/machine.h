@@ -82,6 +82,8 @@ struct machine_s {
     uint64_t execve_saved_sp;       /* $sp saved at do_execve entry (restored on DEFER_SKIP) */
     uint64_t execve_entry_pc;       /* VA of do_execve entry (for stale-TLB retry)*/
     uint64_t execve_last_pc;        /* most recent in-flight do_execve PC         */
+    uint64_t execve_last_gpr[32];   /* GPR snapshot at execve_last_pc              */
+    bool     execve_last_ctx_valid; /* true when execve_last_gpr contains snapshot */
     char     execve_watch_path[128];/* do_execve filename snapshot                 */
     bool     has_saved_exception;   /* nested real exception (e.g., TLBS) saved            */
     uint64_t saved_pending_epc;

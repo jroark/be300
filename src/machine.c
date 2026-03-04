@@ -84,8 +84,18 @@ static inline bool tlb_trace_window_active(const machine_t *m)
 #define RUN_INIT_SYSCALL_RET_PC   0x80001820u
 #define INIT_ARGV_KPTR            0x80171244u
 #define INIT_ENVP_KPTR            0x8017126Cu
+#define EXECVE_SCRATCH_BASE       0x01020000u
+#define EXECVE_SCRATCH_END        0x01021000u
+#define DO_EXECVE_START_PC        0x8004A9D0u
+#define DO_EXECVE_END_PC          0x8004ACA4u
 #define TLB_DEFER_RETRY_LIMIT     32u
 #define TLB_EXL_DROP_DEFER_LIMIT  64u
+
+static inline bool execve_pc_in_do_execve(uint64_t pc)
+{
+    uint32_t p = (uint32_t)pc;
+    return (p >= DO_EXECVE_START_PC && p < DO_EXECVE_END_PC);
+}
 
 static inline bool is_init_execve_epc(uint32_t epc)
 {
@@ -126,6 +136,28 @@ static void clear_synthetic_syscall_state(machine_t *m, bool clear_execve_watch)
         m->execve_watch_active = false;
         m->execve_entry_pc = 0;
         m->execve_last_pc = 0;
+        m->execve_last_ctx_valid = false;
+    }
+}
+
+static void snapshot_execve_gpr_context(machine_t *m, uc_engine *uc, uint64_t pc)
+{
+    m->execve_last_pc = pc;
+    for (int i = 0; i < 32; i++) {
+        uint64_t v = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + i, &v);
+        m->execve_last_gpr[i] = v;
+    }
+    m->execve_last_ctx_valid = true;
+}
+
+static void restore_execve_gpr_context(const machine_t *m, uc_engine *uc)
+{
+    if (!m->execve_last_ctx_valid)
+        return;
+    for (int i = 1; i < 32; i++) {
+        uint64_t v = m->execve_last_gpr[i];
+        uc_reg_write(uc, UC_MIPS_REG_0 + i, &v);
     }
 }
 
@@ -834,16 +866,14 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     }
 
     /*
-     * Track most-recent do_execve PC while an execve syscall is in flight.
-     * Skip SYSCALL+4 notification addresses so DEFER retries can resume useful
-     * in-flight progress instead of rewinding to the syscall site.
+     * Track most-recent PC inside do_execve while an execve syscall is in
+     * flight. If we let unrelated caller PCs overwrite this, DEFER retries
+     * fall back to entry rewind and replay the prologue forever.
      */
     if (m->execve_watch_active) {
         uint32_t pc32 = (uint32_t)address;
-        uint32_t notify_pc = (uint32_t)m->pending_syscall_epc + 4u;
-        bool is_exception_vector = (pc32 >= 0x80000000u && pc32 < 0x80000200u);
-        if (pc32 != notify_pc && !is_exception_vector)
-            m->execve_last_pc = address;
+        if (execve_pc_in_do_execve(pc32))
+            snapshot_execve_gpr_context(m, uc, address);
     }
 
     /* Precise do_execve return probe: capture at function entry, log at caller PC. */
@@ -1029,12 +1059,12 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         m->execve_watch_active    = true;
         m->execve_watch_ret_pc    = ra;
         m->execve_entry_pc        = address;  /* saved for stale-TLB retry redirect */
-        m->execve_last_pc         = address;
         m->execve_watch_a0        = a0;
         m->execve_saved_a1        = a1;       /* argv — restored on stale-TLB retry */
         m->execve_saved_a2        = a2;       /* envp — restored on stale-TLB retry */
         m->execve_saved_sp        = sp;       /* $sp  — restored on stale-TLB retry (prevents frame drift) */
         m->execve_open_exec_ran   = false;    /* reset fd-leak flag for this invocation */
+        snapshot_execve_gpr_context(m, uc, address);
         strncpy(m->execve_watch_path, path, sizeof(m->execve_watch_path) - 1);
         m->execve_watch_path[sizeof(m->execve_watch_path) - 1] = '\0';
 
@@ -1106,6 +1136,37 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     if (op == 0x10u && rs == 4u) {
         uint64_t val = 0;
         uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &val);
+        /*
+         * Execve scratch TLB rescue:
+         * refill handlers can occasionally compute EntryLo0/1 == 0 for the
+         * synthetic argv/envp scratch page (0x01020000), which traps us in a
+         * refill loop and never lets sys_execve retire.  When that happens
+         * during an in-flight execve syscall, synthesize a concrete RWV+G PTE
+         * for the scratch page pair.
+         */
+        if (sel == 0u &&
+            (rd == 2u || rd == 3u) &&
+            (uint32_t)val == 0u &&
+            m->pending_excode == MIPS_EXCCODE_SYS &&
+            m->pending_syscall_nr == 4011u) {
+            uint32_t badv = (uint32_t)m->shadow_cp0_badvaddr;
+            if (badv >= EXECVE_SCRATCH_BASE && badv < EXECVE_SCRATCH_END) {
+                uint32_t even_va = badv & ~0x1FFFu;
+                uint32_t pa = even_va + ((rd == 3u) ? 0x1000u : 0u);
+                uint64_t synth_lo = (((uint64_t)(pa >> 12) & 0xFFFFFu) << 6) | 0x1Fu;
+                uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &synth_lo);
+                val = synth_lo;
+                static uint32_t execve_tlb_synth_log = 0;
+                if (execve_tlb_synth_log < 64) {
+                    fprintf(stderr,
+                            "[EXECVE_TLB_SYNTH] rd=%s rt=$%u badv=0x%08X"
+                            " lo=0x%08" PRIX64 " pa=0x%08X\n",
+                            cp0_reg_name(rd, sel), rt, badv,
+                            (uint64_t)(uint32_t)val, pa);
+                    execve_tlb_synth_log++;
+                }
+            }
+        }
         cp0_shadow_write(m, rd, sel, val);
         const char *name = cp0_reg_name(rd, sel);
         if (name != NULL &&
@@ -1528,10 +1589,14 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 m->execve_watch_active &&
                 m->execve_entry_pc != 0) {
                 static uint32_t eret_execve_retry_log = 0;
-                uint64_t resume_pc = m->execve_last_pc != 0 ?
-                                     m->execve_last_pc : m->execve_entry_pc;
-                bool resume_entry =
-                    ((uint32_t)resume_pc == (uint32_t)m->execve_entry_pc);
+                /*
+                 * Resume in-flight do_execve when possible; rewinding to entry on
+                 * every retry can repeatedly reopen the same binary and never
+                 * advance through copy/count paths.
+                 */
+                bool last_pc_valid = execve_pc_in_do_execve(m->execve_last_pc);
+                uint64_t resume_pc = last_pc_valid ? m->execve_last_pc : m->execve_entry_pc;
+                bool resume_entry = (resume_pc == m->execve_entry_pc);
                 uint64_t ra_v  = m->execve_watch_ret_pc;
                 uint64_t a0_v  = m->execve_watch_a0;
                 uint64_t a1_v  = m->execve_saved_a1;
@@ -1581,6 +1646,13 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         }
                         m->execve_open_exec_ran = false;
                     }
+                } else {
+                    /*
+                     * last_pc resume must restore the matching in-flight register
+                     * frame; otherwise we jump into do_execve mid-body carrying the
+                     * caller's register set and corrupt stack/pointers.
+                     */
+                    restore_execve_gpr_context(m, uc);
                 }
                 uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
                 /* Re-arm one-shot Cause/EPC injection only when rewinding entry. */
@@ -2076,9 +2148,10 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                             m->has_saved_exception = false;
                             return;
                         }
-                        uint64_t resume_pc = m->execve_last_pc != 0 ?
-                                             m->execve_last_pc : m->execve_entry_pc;
-                        bool resume_entry = ((uint32_t)resume_pc == (uint32_t)m->execve_entry_pc);
+                        /* Prefer in-flight resume over entry rewind to avoid replay loops. */
+                        bool last_pc_valid = execve_pc_in_do_execve(m->execve_last_pc);
+                        uint64_t resume_pc = last_pc_valid ? m->execve_last_pc : m->execve_entry_pc;
+                        bool resume_entry = (resume_pc == m->execve_entry_pc);
                         if (defer_skip_log < 32) {
                             fprintf(stderr,
                                     "[TLB_DEFER_SKIP] owner_epc=0x%08X retry=%u"
@@ -2117,6 +2190,8 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                 }
                                 m->execve_open_exec_ran = false;
                             }
+                        } else {
+                            restore_execve_gpr_context(m, uc);
                         }
                         /* Resume the best known in-flight do_execve PC. */
                         uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
@@ -2367,21 +2442,18 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             bool needs_execve_filename_shim = (!needs_execve_defaults &&
                                                a0_32 >= 0x80000000u);
             uint32_t sh_a0 = 0, sh_a1 = 0, sh_a2 = 0;
-            bool init_kptr_override = false;
             bool used_defaults = false;
             bool filename_only = false;
             bool have_shim_ptrs = false;
-            if (is_init_execve_epc(epc32) && (needs_execve_defaults || a1_32 < 0x80000000u)) {
+            if (is_init_execve_epc(epc32)) {
                 /*
-                 * init() fallback paths in this kernel expect the canonical
-                 * kernel init_argv/init_envp vectors; forcing user-space
-                 * scratch vectors here traps in do_execve/copy_strings.
+                 * init() probes (/linuxrc, /sbin/init, ...) can reach sys_execve
+                 * with kernel argv/envp pointers and then fail in copy_strings with
+                 * -EFAULT for real binaries. Normalize all init-site execves to the
+                 * stable scratch argv/envp defaults so the syscall can retire.
                  */
-                init_kptr_override = true;
-                have_shim_ptrs = true;
-                sh_a0 = a0_32;
-                sh_a1 = INIT_ARGV_KPTR;
-                sh_a2 = INIT_ENVP_KPTR;
+                used_defaults = true;
+                have_shim_ptrs = prepare_execve_user_ptrs_defaults(uc, a0, &sh_a0, &sh_a1, &sh_a2);
             } else if (needs_execve_defaults) {
                 used_defaults = true;
                 have_shim_ptrs = prepare_execve_user_ptrs_defaults(uc, a0, &sh_a0, &sh_a1, &sh_a2);
@@ -2410,7 +2482,6 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                             "[EXECVE_SHIM_%s] a0:0x%08" PRIX64 "->0x%08" PRIX64
                             " a1:0x%08" PRIX64 "->0x%08" PRIX64
                             " a2:0x%08" PRIX64 "->0x%08" PRIX64 "\n",
-                            init_kptr_override ? "INIT_KPTRS" :
                             (used_defaults ? "DEFAULTS" :
                             (filename_only ? "FILENAME" : "COPY")),
                             (uint64_t)(uint32_t)old_a0, (uint64_t)(uint32_t)a0,
