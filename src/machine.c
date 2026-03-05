@@ -1442,10 +1442,18 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      */
     if ((insn & 0xFFE0FFFFu) == 0x40006800u) {
         if (mfc0_cause_seen_log < 256) {
+            uint64_t raw_status = 0;
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &raw_status);
             fprintf(stderr,
-                    "[CAUSE_MFC0] seen PC=0x%08" PRIX64 " pending_excode=%u served=%u cause=0x%08X\n",
+                    "[CAUSE_MFC0] seen PC=0x%08" PRIX64
+                    " pending_excode=%u served=%u cause=0x%08X"
+                    " shadow_epc=0x%08" PRIX64 " shadow_badv=0x%08" PRIX64
+                    " raw_status=0x%08" PRIX64 "\n",
                     (uint64_t)(uint32_t)address, m->pending_excode,
-                    m->pending_cause_served ? 1u : 0u, m->pending_cause);
+                    m->pending_cause_served ? 1u : 0u, m->pending_cause,
+                    (uint64_t)(uint32_t)m->shadow_cp0_epc,
+                    (uint64_t)(uint32_t)m->shadow_cp0_badvaddr,
+                    (uint64_t)(uint32_t)raw_status);
             mfc0_cause_seen_log++;
         }
     }
@@ -1501,9 +1509,13 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     if ((insn & 0xFFE0FFFFu) == 0x40007000u) {
         if (mfc0_epc_seen_log < 256) {
             fprintf(stderr,
-                    "[EPC_MFC0] seen PC=0x%08" PRIX64 " pending_excode=%u served=%u epc=0x%08" PRIX64 "\n",
+                    "[EPC_MFC0] seen PC=0x%08" PRIX64
+                    " pending_excode=%u served=%u epc=0x%08" PRIX64
+                    " shadow_epc=0x%08" PRIX64 "\n",
                     (uint64_t)(uint32_t)address, m->pending_excode,
-                    m->pending_epc_served ? 1u : 0u, (uint64_t)(uint32_t)m->pending_epc);
+                    m->pending_epc_served ? 1u : 0u,
+                    (uint64_t)(uint32_t)m->pending_epc,
+                    (uint64_t)(uint32_t)m->shadow_cp0_epc);
             mfc0_epc_seen_log++;
         }
     }
@@ -2175,29 +2187,43 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     }
                     if (syscall_is_execve && at_ret_site &&
                         !m->execve_watch_active && !stale_post_mtc0) {
-                        static uint32_t tlb_nested_reenter_log = 0;
+                        static uint32_t tlb_nested_suspend_reenter_log = 0;
                         uint64_t exl_status = status | 0x2u;   /* set EXL=1 */
                         uint64_t vec = mips_sext(0x80000180u);
+
+                        /*
+                         * Treat this as a nested native TLB event, not a second
+                         * synthetic syscall exception.  Preserve syscall context,
+                         * clear synthetic state for the nested handler, then
+                         * restore on the first nested ERET (see ERET hook).
+                         */
+                        save_pending_exception(m);
+                        m->pending_epc          = 0;
+                        m->pending_excode       = 0;
+                        m->pending_cause        = 0;
+                        m->epc_was_written      = false;
+                        m->pending_cause_served = false;
+                        m->pending_epc_served   = false;
+
                         uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exl_status);
                         uc_reg_write(uc, UC_MIPS_REG_PC, &vec);
-                        m->pending_cause_served = false;
-                        m->pending_epc_served = false;
-                        if (tlb_nested_reenter_log < 64) {
+
+                        if (tlb_nested_suspend_reenter_log < 64) {
                             uint64_t v0 = 0, a3 = 0;
                             uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
                             uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
                             fprintf(stderr,
-                                    "[TLB_NESTED_REENTER] intno=%u PC=0x%08" PRIX64
+                                    "[TLB_NESTED_SUSPEND_REENTER] intno=%u PC=0x%08" PRIX64
                                     " STATUS=0x%08" PRIX64
-                                    " syscall_epc=0x%08" PRIX64 " pending_epc=0x%08" PRIX64
+                                    " saved_excode=%u saved_epc=0x%08" PRIX64
                                     " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
                                     " -> EXL=1 PC=0x80000180\n",
                                     intno, (uint64_t)(uint32_t)pc, status,
-                                    (uint64_t)(uint32_t)m->pending_syscall_epc,
-                                    (uint64_t)(uint32_t)m->pending_epc,
+                                    m->saved_pending_excode,
+                                    (uint64_t)(uint32_t)m->saved_pending_epc,
                                     (uint64_t)(uint32_t)v0,
                                     (uint64_t)(uint32_t)a3);
-                            tlb_nested_reenter_log++;
+                            tlb_nested_suspend_reenter_log++;
                         }
                         return;
                     }
