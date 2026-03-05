@@ -1023,6 +1023,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * sys_execve path probes (2.4 kernel):
      *   0x800073b4: jal getname (a0 already loaded from stack arg area)
      *   0x800073bc: getname return in v0 (before move s0,v0)
+     *   0x800073cc: sltiu classify getname result (ERR_PTR check)
+     *   0x800073d4: beqz branch to do_execve/error-return
      *   0x800073dc: error fast-return path (getname failed)
      *   0x800073f4: call do_execve path (getname succeeded)
      *   0x80007400: do_execve return consumed into kmem_cache_free
@@ -1056,6 +1058,37 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         (uint64_t)(uint32_t)v0, arg72, arg76, arg80);
             }
             sys_execve_getname_log++;
+        }
+    }
+    if ((uint32_t)address == 0x800073CCu || (uint32_t)address == 0x800073D4u) {
+        static uint32_t sys_execve_gate_log = 0;
+        if (sys_execve_gate_log < 128) {
+            uint64_t v0 = 0, s0 = 0, s1 = 0, a0 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+            uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            if ((uint32_t)address == 0x800073CCu) {
+                fprintf(stderr,
+                        "[SYS_EXECVE_GATE] pre_sltiu PC=0x%08" PRIX64
+                        " s0=0x%08" PRIX64 " v0=0x%08" PRIX64
+                        " a0=0x%08" PRIX64 "\n",
+                        (uint64_t)(uint32_t)address,
+                        (uint64_t)(uint32_t)s0,
+                        (uint64_t)(uint32_t)v0,
+                        (uint64_t)(uint32_t)a0);
+            } else {
+                fprintf(stderr,
+                        "[SYS_EXECVE_GATE] pre_beqz PC=0x%08" PRIX64
+                        " v0=0x%08" PRIX64 " s0=0x%08" PRIX64
+                        " s1=0x%08" PRIX64 " a0=0x%08" PRIX64 "\n",
+                        (uint64_t)(uint32_t)address,
+                        (uint64_t)(uint32_t)v0,
+                        (uint64_t)(uint32_t)s0,
+                        (uint64_t)(uint32_t)s1,
+                        (uint64_t)(uint32_t)a0);
+            }
+            sys_execve_gate_log++;
         }
     }
     if ((uint32_t)address == 0x800073DCu ||
@@ -2141,8 +2174,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         return;
                     }
                     if (syscall_is_execve && at_ret_site &&
-                        !m->execve_watch_active && !stale_post_mtc0 &&
-                        m->tlb_defer_count > 0) {
+                        !m->execve_watch_active && !stale_post_mtc0) {
                         static uint32_t tlb_nested_reenter_log = 0;
                         uint64_t exl_status = status | 0x2u;   /* set EXL=1 */
                         uint64_t vec = mips_sext(0x80000180u);
