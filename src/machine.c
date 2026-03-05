@@ -1021,10 +1021,43 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 
     /*
      * sys_execve path probes (2.4 kernel):
+     *   0x800073b4: jal getname (a0 already loaded from stack arg area)
+     *   0x800073bc: getname return in v0 (before move s0,v0)
      *   0x800073dc: error fast-return path (getname failed)
      *   0x800073f4: call do_execve path (getname succeeded)
      *   0x80007400: do_execve return consumed into kmem_cache_free
      */
+    if ((uint32_t)address == 0x800073B4u || (uint32_t)address == 0x800073BCu) {
+        static uint32_t sys_execve_getname_log = 0;
+        if (sys_execve_getname_log < 128) {
+            uint64_t sp = 0, a0 = 0, v0 = 0;
+            uint32_t arg72 = 0, arg76 = 0, arg80 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            (void)read_guest_u32(uc, (uint32_t)sp + 72u, &arg72);
+            (void)read_guest_u32(uc, (uint32_t)sp + 76u, &arg76);
+            (void)read_guest_u32(uc, (uint32_t)sp + 80u, &arg80);
+            if ((uint32_t)address == 0x800073B4u) {
+                char a0s[128] = "<unreadable>";
+                read_guest_string(uc, a0, a0s, sizeof(a0s));
+                fprintf(stderr,
+                        "[SYS_EXECVE_GETNAME_IN] PC=0x%08" PRIX64
+                        " sp=0x%08" PRIX64 " a0=0x%08" PRIX64 " \"%s\""
+                        " stk72=0x%08X stk76=0x%08X stk80=0x%08X\n",
+                        (uint64_t)(uint32_t)address, (uint64_t)(uint32_t)sp,
+                        (uint64_t)(uint32_t)a0, a0s, arg72, arg76, arg80);
+            } else {
+                fprintf(stderr,
+                        "[SYS_EXECVE_GETNAME_RET] PC=0x%08" PRIX64
+                        " sp=0x%08" PRIX64 " v0=0x%08" PRIX64
+                        " stk72=0x%08X stk76=0x%08X stk80=0x%08X\n",
+                        (uint64_t)(uint32_t)address, (uint64_t)(uint32_t)sp,
+                        (uint64_t)(uint32_t)v0, arg72, arg76, arg80);
+            }
+            sys_execve_getname_log++;
+        }
+    }
     if ((uint32_t)address == 0x800073DCu ||
         (uint32_t)address == 0x800073F4u ||
         (uint32_t)address == 0x80007400u) {
@@ -1713,28 +1746,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         m->has_saved_exception ? 1u : 0u);
                 eret_native_log++;
             }
-            bool keep_deferred_syscall =
-                (m->pending_excode == MIPS_EXCCODE_SYS &&
-                 m->tlb_defer_active &&
-                 m->tlb_defer_owner_epc != 0u &&
-                 m->tlb_defer_owner_epc == (uint32_t)m->pending_syscall_epc);
-            if (keep_deferred_syscall) {
-                static uint32_t eret_native_keep_log = 0;
-                m->pending_cause_served = false;
-                m->pending_epc_served = false;
-                if (eret_native_keep_log < 64) {
-                    fprintf(stderr,
-                            "[ERET_NATIVE_KEEP] pending_excode=%u owner_epc=0x%08X"
-                            " pending_epc=0x%08" PRIX64 " PC=0x%08" PRIX64
-                            " STATUS=0x%08" PRIX64 " defer_count=%u\n",
-                            m->pending_excode, m->tlb_defer_owner_epc,
-                            (uint64_t)(uint32_t)m->pending_epc,
-                            (uint64_t)(uint32_t)address, status_snapshot,
-                            m->tlb_defer_count);
-                    eret_native_keep_log++;
-                }
-                return;
-            } else if (m->pending_excode == MIPS_EXCCODE_SYS)
+            if (m->pending_excode == MIPS_EXCCODE_SYS)
                 clear_synthetic_syscall_state(m, true);
             else {
                 m->pending_epc          = 0;
