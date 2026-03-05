@@ -111,6 +111,13 @@ static inline bool is_init_execve_epc(uint32_t epc)
     }
 }
 
+static inline bool in_init_execve_syscall_window(const machine_t *m)
+{
+    return (m->pending_excode == 8u &&
+            m->pending_syscall_nr == 4011u &&
+            is_init_execve_epc((uint32_t)m->pending_syscall_epc));
+}
+
 static void reset_tlb_defer_state(machine_t *m)
 {
     m->tlb_defer_count = 0;
@@ -1441,12 +1448,17 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * correct ExcCode in bits[6:2].
      */
     if ((insn & 0xFFE0FFFFu) == 0x40006800u) {
-        if (mfc0_cause_seen_log < 256) {
+        if (mfc0_cause_seen_log < 256 || in_init_execve_syscall_window(m)) {
             fprintf(stderr,
-                    "[CAUSE_MFC0] seen PC=0x%08" PRIX64 " pending_excode=%u served=%u cause=0x%08X\n",
+                    "[CAUSE_MFC0] seen PC=0x%08" PRIX64
+                    " pending_excode=%u served=%u cause=0x%08X"
+                    " epc_written=%u sys_nr=%u syscall_epc=0x%08" PRIX64 "\n",
                     (uint64_t)(uint32_t)address, m->pending_excode,
-                    m->pending_cause_served ? 1u : 0u, m->pending_cause);
-            mfc0_cause_seen_log++;
+                    m->pending_cause_served ? 1u : 0u, m->pending_cause,
+                    m->epc_was_written ? 1u : 0u, m->pending_syscall_nr,
+                    (uint64_t)(uint32_t)m->pending_syscall_epc);
+            if (mfc0_cause_seen_log < 256)
+                mfc0_cause_seen_log++;
         }
     }
     bool should_inject_cause = false;
@@ -1475,15 +1487,34 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         if (m->pending_excode != 1u) {
             m->pending_cause_served = true;
         }
-        if (mfc0_cause_inject_log < 256) {
+        if (mfc0_cause_inject_log < 256 || in_init_execve_syscall_window(m)) {
             fprintf(stderr,
-                    "[CAUSE_MFC0] inject PC=0x%08" PRIX64 " cause=0x%08" PRIX64 " rt=%u\n",
-                    (uint64_t)(uint32_t)address, (uint64_t)(uint32_t)cause, rt);
-            mfc0_cause_inject_log++;
+                    "[CAUSE_MFC0] inject PC=0x%08" PRIX64
+                    " cause=0x%08" PRIX64 " rt=%u"
+                    " sys_nr=%u syscall_epc=0x%08" PRIX64 "\n",
+                    (uint64_t)(uint32_t)address, (uint64_t)(uint32_t)cause, rt,
+                    m->pending_syscall_nr,
+                    (uint64_t)(uint32_t)m->pending_syscall_epc);
+            if (mfc0_cause_inject_log < 256)
+                mfc0_cause_inject_log++;
         }
         uint64_t next_pc = address + 4;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
         return;
+    }
+    if ((insn & 0xFFE0FFFFu) == 0x40006800u &&
+        in_init_execve_syscall_window(m)) {
+        static uint32_t mfc0_cause_skip_log = 0;
+        if (mfc0_cause_skip_log < 128) {
+            fprintf(stderr,
+                    "[CAUSE_MFC0] skip PC=0x%08" PRIX64
+                    " served=%u pending_excode=%u sys_nr=%u syscall_epc=0x%08" PRIX64 "\n",
+                    (uint64_t)(uint32_t)address,
+                    m->pending_cause_served ? 1u : 0u,
+                    m->pending_excode, m->pending_syscall_nr,
+                    (uint64_t)(uint32_t)m->pending_syscall_epc);
+            mfc0_cause_skip_log++;
+        }
     }
 
     /*
@@ -1499,12 +1530,17 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * (pending_excode != 0).
      */
     if ((insn & 0xFFE0FFFFu) == 0x40007000u) {
-        if (mfc0_epc_seen_log < 256) {
+        if (mfc0_epc_seen_log < 256 || in_init_execve_syscall_window(m)) {
             fprintf(stderr,
-                    "[EPC_MFC0] seen PC=0x%08" PRIX64 " pending_excode=%u served=%u epc=0x%08" PRIX64 "\n",
+                    "[EPC_MFC0] seen PC=0x%08" PRIX64
+                    " pending_excode=%u served=%u epc=0x%08" PRIX64
+                    " syscall_epc=0x%08" PRIX64 " sys_nr=%u\n",
                     (uint64_t)(uint32_t)address, m->pending_excode,
-                    m->pending_epc_served ? 1u : 0u, (uint64_t)(uint32_t)m->pending_epc);
-            mfc0_epc_seen_log++;
+                    m->pending_epc_served ? 1u : 0u, (uint64_t)(uint32_t)m->pending_epc,
+                    (uint64_t)(uint32_t)m->pending_syscall_epc,
+                    m->pending_syscall_nr);
+            if (mfc0_epc_seen_log < 256)
+                mfc0_epc_seen_log++;
         }
     }
     if ((insn & 0xFFE0FFFFu) == 0x40007000u &&
@@ -1516,11 +1552,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint64_t epc = m->pending_epc;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &epc);
         m->pending_epc_served = true;
-        if (mfc0_epc_inject_log < 256) {
+        if (mfc0_epc_inject_log < 256 || in_init_execve_syscall_window(m)) {
             fprintf(stderr,
-                    "[EPC_MFC0] inject PC=0x%08" PRIX64 " epc=0x%08" PRIX64 " rt=%u\n",
-                    (uint64_t)(uint32_t)address, (uint64_t)(uint32_t)epc, rt);
-            mfc0_epc_inject_log++;
+                    "[EPC_MFC0] inject PC=0x%08" PRIX64 " epc=0x%08" PRIX64
+                    " rt=%u sys_nr=%u syscall_epc=0x%08" PRIX64 "\n",
+                    (uint64_t)(uint32_t)address, (uint64_t)(uint32_t)epc, rt,
+                    m->pending_syscall_nr,
+                    (uint64_t)(uint32_t)m->pending_syscall_epc);
+            if (mfc0_epc_inject_log < 256)
+                mfc0_epc_inject_log++;
         }
         uint64_t next_pc = address + 4;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
@@ -1544,7 +1584,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint64_t val = 0;
         uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &val);
         if (m->pending_excode == MIPS_EXCCODE_SYS &&
-            mtc0_epc_sys_log < 96) {
+            (mtc0_epc_sys_log < 96 || in_init_execve_syscall_window(m))) {
             uint64_t sp = 0, ra = 0, status_now = 0;
             uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
             uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
@@ -1555,13 +1595,17 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                     "[MTC0_EPC] pending_excode=%u old_epc=0x%08" PRIX64
                     " new_epc=0x%08" PRIX64 " (%s) PC=0x%08" PRIX64
                     " STATUS=0x%08" PRIX64 " sp=0x%08" PRIX64
-                    " ra=0x%08" PRIX64 " served_epc=%u epc_written=%u\n",
+                    " ra=0x%08" PRIX64 " served_epc=%u epc_written=%u"
+                    " sys_nr=%u syscall_epc=0x%08" PRIX64 "\n",
                     m->pending_excode, (uint64_t)(uint32_t)m->pending_epc,
                     (uint64_t)(uint32_t)val, mode,
                     (uint64_t)(uint32_t)address, status_now,
                     sp, ra, m->pending_epc_served ? 1u : 0u,
-                    m->epc_was_written ? 1u : 0u);
-            mtc0_epc_sys_log++;
+                    m->epc_was_written ? 1u : 0u,
+                    m->pending_syscall_nr,
+                    (uint64_t)(uint32_t)m->pending_syscall_epc);
+            if (mtc0_epc_sys_log < 96)
+                mtc0_epc_sys_log++;
         }
         m->pending_epc      = val;   /* capture return address written by exit path */
         m->epc_was_written  = true;  /* arm the ERET intercept for the next ERET    */
@@ -1603,8 +1647,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             uint64_t status_snapshot = 0;
             uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status_snapshot);
             if (m->pending_excode == MIPS_EXCCODE_SYS &&
-                m->epc_was_written &&
-                syscall_ret_log < 128) {
+                (m->epc_was_written || in_init_execve_syscall_window(m)) &&
+                syscall_ret_log < 256) {
                 uint64_t v0 = 0, a3 = 0;
                 uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
                 uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
@@ -1612,14 +1656,17 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         "[SYSCALL_RET] EPC=0x%08" PRIX64 " nr=%u"
                         " a0=0x%08" PRIX64 " \"%s\""
                         " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
-                        " status=0x%08" PRIX64 "\n",
+                        " status=0x%08" PRIX64
+                        " epc_written=%u syscall_epc=0x%08" PRIX64 "\n",
                         (uint64_t)(uint32_t)m->pending_epc,
                         m->pending_syscall_nr,
                         (uint64_t)(uint32_t)m->pending_syscall_a0,
                         m->pending_syscall_a0_str,
                         (uint64_t)(uint32_t)v0,
                         (uint64_t)(uint32_t)a3,
-                        status_snapshot);
+                        status_snapshot,
+                        m->epc_was_written ? 1u : 0u,
+                        (uint64_t)(uint32_t)m->pending_syscall_epc);
                 syscall_ret_log++;
             }
             if (eret_pending_log < 96) {
@@ -2175,6 +2222,34 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     }
                     if (syscall_is_execve && at_ret_site &&
                         !m->execve_watch_active && !stale_post_mtc0) {
+                        /*
+                         * On Unicorn, intno=26 at SYSCALL+4 in this state is
+                         * often a stale notification while sys_execve is still
+                         * progressing in kernel context. Re-entering the
+                         * syscall vector here causes premature ENOSYS returns.
+                         * Drop this notification and let execution continue.
+                         */
+                        if (intno == 26u) {
+                            static uint32_t tlb_nested_drop26_log = 0;
+                            if (tlb_nested_drop26_log < 128) {
+                                uint64_t v0 = 0, a3 = 0;
+                                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                                fprintf(stderr,
+                                        "[TLB_NESTED_DROP26] PC=0x%08" PRIX64
+                                        " STATUS=0x%08" PRIX64
+                                        " syscall_epc=0x%08" PRIX64
+                                        " pending_epc=0x%08" PRIX64
+                                        " v0=0x%08" PRIX64 " a3=0x%08" PRIX64 "\n",
+                                        (uint64_t)(uint32_t)pc, status,
+                                        (uint64_t)(uint32_t)m->pending_syscall_epc,
+                                        (uint64_t)(uint32_t)m->pending_epc,
+                                        (uint64_t)(uint32_t)v0,
+                                        (uint64_t)(uint32_t)a3);
+                                tlb_nested_drop26_log++;
+                            }
+                            return;
+                        }
                         static uint32_t tlb_nested_reenter_log = 0;
                         uint64_t exl_status = status | 0x2u;   /* set EXL=1 */
                         uint64_t vec = mips_sext(0x80000180u);
@@ -2494,7 +2569,6 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             uint32_t a0_32 = (uint32_t)a0;
             uint32_t a1_32 = (uint32_t)a1;
             uint32_t a2_32 = (uint32_t)a2;
-            uint32_t epc32 = (uint32_t)epc;
             /*
              * Do not rewrite valid kernel argv/envp vectors (kseg addresses):
              * run_init_process() in this 2.4 kernel intentionally passes
@@ -2514,16 +2588,12 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             bool used_defaults = false;
             bool filename_only = false;
             bool have_shim_ptrs = false;
-            if (is_init_execve_epc(epc32)) {
-                /*
-                 * init() probes (/linuxrc, /sbin/init, ...) can reach sys_execve
-                 * with kernel argv/envp pointers and then fail in copy_strings with
-                 * -EFAULT for real binaries. Normalize all init-site execves to the
-                 * stable scratch argv/envp defaults so the syscall can retire.
-                 */
-                used_defaults = true;
-                have_shim_ptrs = prepare_execve_user_ptrs_defaults(uc, a0, &sh_a0, &sh_a1, &sh_a2);
-            } else if (needs_execve_defaults) {
+            /*
+             * Keep valid kernel argv/envp vectors intact (init_argv/init_envp on
+             * kseg addresses). Only force scratch defaults when vectors are
+             * genuinely invalid/clobbered.
+             */
+            if (needs_execve_defaults) {
                 used_defaults = true;
                 have_shim_ptrs = prepare_execve_user_ptrs_defaults(uc, a0, &sh_a0, &sh_a1, &sh_a2);
             } else if (needs_execve_filename_shim) {
