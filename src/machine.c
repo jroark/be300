@@ -2236,7 +2236,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                 uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
                                 uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
                                 fprintf(stderr,
-                                        "[TLB_NESTED_DROP26_REFILL] PC=0x%08" PRIX64
+                                        "[TLB_NESTED_DROP26_CLEAR] PC=0x%08" PRIX64
                                         " STATUS=0x%08" PRIX64
                                         " syscall_epc=0x%08" PRIX64
                                         " pending_epc=0x%08" PRIX64
@@ -2249,18 +2249,13 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                 tlb_nested_drop26_log++;
                             }
                             /*
-                             * Hand control to the native TLB refill path with synthetic
-                             * SYSCALL state suspended; otherwise we can bounce back to
-                             * SYSCALL+4 and skip real fault handling.
+                             * Treat this as a stale post-return notification for the
+                             * in-flight synthetic syscall. If we leave pending_excode=SYS
+                             * set, it leaks into subsequent syscall entries and pollutes
+                             * init's execve probe sequence.
                              */
                             clear_synthetic_syscall_state(m, true);
                             m->has_saved_exception = false;
-                            {
-                                uint64_t exl_status = status | 0x2u;   /* EXL=1 */
-                                uint64_t tlb_vec = mips_sext(0x80000000u);
-                                uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exl_status);
-                                uc_reg_write(uc, UC_MIPS_REG_PC, &tlb_vec);
-                            }
                             return;
                         }
                         static uint32_t tlb_nested_reenter_log = 0;
