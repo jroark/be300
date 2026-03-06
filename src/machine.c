@@ -164,13 +164,17 @@ static bool mem_unmapped_hook(uc_engine *uc, uc_mem_type type,
     return false;
 }
 
-static bool map_kseg_alias_block(machine_t *m, uint64_t map_base, uint64_t pa_base)
+static bool map_kseg_alias_block(machine_t *m, uint64_t map_base, uint64_t pa_base, bool *new_map_out)
 {
+    if (new_map_out)
+        *new_map_out = false;
     uc_err me = uc_mem_map(m->uc, map_base, 0x100000, UC_PROT_ALL);
     if (me != UC_ERR_OK && me != UC_ERR_MAP)
         return false;
 
     if (me == UC_ERR_OK) {
+        if (new_map_out)
+            *new_map_out = true;
         uint8_t buf[4096];
         for (uint64_t off = 0; off < 0x100000; off += sizeof(buf)) {
             if (uc_mem_read(m->uc, pa_base + off, buf, sizeof(buf)) != UC_ERR_OK)
@@ -182,8 +186,10 @@ static bool map_kseg_alias_block(machine_t *m, uint64_t map_base, uint64_t pa_ba
     return true;
 }
 
-static bool map_kseg_mirror_block(machine_t *m, uint64_t va_block)
+static bool map_kseg_mirror_block(machine_t *m, uint64_t va_block, bool *new_map_out)
 {
+    if (new_map_out)
+        *new_map_out = false;
     uint32_t va32 = (uint32_t)va_block;
     if (va32 < 0x80000000u || va32 > 0xBFFFFFFFu)
         return false;
@@ -193,18 +199,112 @@ static bool map_kseg_mirror_block(machine_t *m, uint64_t va_block)
     uint64_t pa_base = (uint64_t)(va32 & 0x1FFFFFFFu);
     bool mapped_any = false;
 
-    if (map_kseg_alias_block(m, map_base, pa_base))
+    bool new_map = false;
+    if (map_kseg_alias_block(m, map_base, pa_base, &new_map)) {
         mapped_any = true;
+        if (new_map_out && new_map)
+            *new_map_out = true;
+    }
 
     /*
      * Some Unicorn paths surface zero-extended 0x8000xxxx VAs in MIPS64 mode.
      * Mirror both aliases so exception-vector fetches can resolve either form.
      */
-    if (map_base_zero != map_base && map_kseg_alias_block(m, map_base_zero, pa_base))
+    new_map = false;
+    if (map_base_zero != map_base && map_kseg_alias_block(m, map_base_zero, pa_base, &new_map)) {
         mapped_any = true;
+        if (new_map_out && new_map)
+            *new_map_out = true;
+    }
 
     if (!mapped_any)
         return false;
+    return true;
+}
+
+static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *insn);
+
+static const char *store_op_name(uint32_t op)
+{
+    switch (op) {
+    case 0x28u: return "sb";
+    case 0x29u: return "sh";
+    case 0x2Au: return "swl";
+    case 0x2Bu: return "sw";
+    case 0x2Cu: return "sdl";
+    case 0x2Du: return "sdr";
+    case 0x2Eu: return "swr";
+    case 0x38u: return "sc";
+    case 0x3Fu: return "sd";
+    default:    return NULL;
+    }
+}
+
+static bool decode_store_effaddr(uc_engine *uc, uint64_t pc,
+                                 uint64_t *ea_out, uint32_t *insn_out,
+                                 uint32_t *op_out, uint32_t *base_out,
+                                 uint64_t *base_val_out, int16_t *imm_out)
+{
+    uint32_t insn = 0;
+    if (!read_insn_best_effort(uc, pc, &insn))
+        return false;
+
+    uint32_t op = (insn >> 26) & 0x3Fu;
+    if (store_op_name(op) == NULL)
+        return false;
+
+    uint32_t base = (insn >> 21) & 0x1Fu;
+    int16_t imm = (int16_t)(insn & 0xFFFFu);
+    uint64_t base_val = 0;
+    uc_reg_read(uc, UC_MIPS_REG_0 + (int)base, &base_val);
+
+    uint64_t ea = base_val + (int64_t)imm;
+    if (ea_out) *ea_out = ea;
+    if (insn_out) *insn_out = insn;
+    if (op_out) *op_out = op;
+    if (base_out) *base_out = base;
+    if (base_val_out) *base_val_out = base_val;
+    if (imm_out) *imm_out = imm;
+    return true;
+}
+
+static bool ensure_va_block_mapped(machine_t *m, uint64_t va, bool *new_map_out)
+{
+    if (new_map_out)
+        *new_map_out = false;
+
+    uint32_t va32 = (uint32_t)va;
+    if (va32 < 0x1000u)
+        return false;
+    uint64_t block = (uint64_t)(va32 & 0xFFF00000u);
+
+    if (va32 >= 0x80000000u && va32 <= 0xBFFFFFFFu) {
+        bool new_map = false;
+        if (!map_kseg_mirror_block(m, block, &new_map))
+            return false;
+        if (new_map_out && new_map)
+            *new_map_out = true;
+
+        /* Keep aliases writable even if the region pre-existed. */
+        {
+            uint64_t sx = mips_sext((uint32_t)block);
+            uint64_t zx = (uint64_t)(uint32_t)block;
+            (void)uc_mem_protect(m->uc, sx, 0x100000, UC_PROT_ALL);
+            if (zx != sx)
+                (void)uc_mem_protect(m->uc, zx, 0x100000, UC_PROT_ALL);
+        }
+        return true;
+    }
+
+    {
+        uc_err me = uc_mem_map(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+        if (me != UC_ERR_OK && me != UC_ERR_MAP)
+            return false;
+        if (new_map_out && me == UC_ERR_OK)
+            *new_map_out = true;
+        if (me == UC_ERR_MAP)
+            (void)uc_mem_protect(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+    }
     return true;
 }
 
@@ -452,6 +552,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 {
     (void)size;
     machine_t *m = user_data;
+    m->last_code_pc = address;
     static uint32_t mfc0_cause_seen_log = 0;
     static uint32_t mfc0_epc_seen_log = 0;
     static uint32_t mfc0_cause_inject_log = 0;
@@ -649,36 +750,10 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     if (insn == 0x42000002u || insn == 0x42000006u ||
         insn == 0x42000008u || insn == 0x42000001u) {
         /*
-         * Work around suspected Unicorn tlbwi(index with P-bit) behavior by
-         * rewriting this single instruction to tlbwr for one execution.
+         * Leave guest tlbwi behavior untouched while debugging 2.6 execve
+         * refill loops. Rewriting tlbwi->tlbwr here can hide index/path bugs.
          */
-        if (insn == 0x42000002u &&
-            tlb_trace_window_active(m) &&
-            !m->tlbwi_patch_pending) {
-            uint32_t replacement = 0x42000006u; /* tlbwr */
-            uc_err patch_err = write_mem_best_effort(uc, address, &replacement, 4);
-            if (patch_err == UC_ERR_OK) {
-                m->tlbwi_patch_pending = true;
-                m->tlbwi_patch_addr = address;
-                m->tlbwi_patch_orig = insn;
-                if (tlbwi_patch_log < 64) {
-                    fprintf(stderr,
-                            "[TLBWI_PATCH] PC=0x%08" PRIX64
-                            " idx=0x%08" PRIX64 " -> tlbwr\n",
-                            (uint64_t)(uint32_t)address,
-                            (uint64_t)(uint32_t)m->shadow_cp0_index);
-                    tlbwi_patch_log++;
-                }
-            } else if (tlbwi_patch_log < 64) {
-                fprintf(stderr,
-                        "[TLBWI_PATCH_FAIL] PC=0x%08" PRIX64 " idx=0x%08" PRIX64
-                        " err=%s\n",
-                        (uint64_t)(uint32_t)address,
-                        (uint64_t)(uint32_t)m->shadow_cp0_index,
-                        uc_strerror(patch_err));
-                tlbwi_patch_log++;
-            }
-        }
+        (void)tlbwi_patch_log;
         if (tlb_trace_window_active(m) && tlbop_log < 512) {
             const char *opname = (insn == 0x42000002u) ? "tlbwi" :
                                  (insn == 0x42000006u) ? "tlbwr" :
@@ -928,15 +1003,11 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         m->pending_cause_served ? 1u : 0u);
                 eret_pending_log++;
             }
-            if (m->epc_was_written || m->pending_excode == MIPS_EXCCODE_SYS) {
+            if (m->epc_was_written) {
                 uint64_t status = status_snapshot & ~(uint64_t)0x2u;   /* clear EXL */
                 uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
                 uint64_t epc = m->pending_epc;
-                /* If it's a syscall and the kernel didn't write EPC, return to PC+4 */
-                if (!m->epc_was_written && m->pending_excode == MIPS_EXCCODE_SYS) {
-                    epc += 4;
-                }
                 uc_reg_write(uc, UC_MIPS_REG_PC, &epc);
 
                 if (eret_pending_log < 96) {
@@ -951,6 +1022,31 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 m->pending_cause_served = false;
                 m->pending_epc_served   = false;
                 restore_pending_exception(m);
+                return;
+            }
+
+            /*
+             * SYSCALL with no observed MTC0 EPC write is usually an in-flight
+             * nested ERET (e.g., TLB/refill path). Let Unicorn execute it
+             * natively and keep synthetic syscall state armed.
+             */
+            if (m->pending_excode == MIPS_EXCCODE_SYS) {
+                static uint32_t eret_sys_defer_log = 0;
+                if (eret_sys_defer_log < 128) {
+                    fprintf(stderr,
+                            "[ERET_SYS_DEFER] PC=0x%08" PRIX64
+                            " pending_epc=0x%08" PRIX64
+                            " syscall_epc=0x%08" PRIX64
+                            " STATUS=0x%08" PRIX64
+                            " served_epc=%u served_cause=%u\n",
+                            (uint64_t)(uint32_t)address,
+                            (uint64_t)(uint32_t)m->pending_epc,
+                            (uint64_t)(uint32_t)m->pending_syscall_epc,
+                            status_snapshot,
+                            m->pending_epc_served ? 1u : 0u,
+                            m->pending_cause_served ? 1u : 0u);
+                    eret_sys_defer_log++;
+                }
                 return;
             }
 
@@ -1077,11 +1173,13 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 uc_reg_read(uc, UC_MIPS_REG_K1, &k1);
                 fprintf(stderr,
                         "[TLB_FAULT] intno=%u PC=0x%08" PRIX64
+                        " last_code_pc=0x%08" PRIX64
                         " shadow_badvaddr=0x%08" PRIX64 " last_unmapped=0x%08" PRIX64
                         " shadow_entryhi=0x%08" PRIX64
                         " k0=0x%08" PRIX64 " k1=0x%08" PRIX64
                         " STATUS=0x%08" PRIX64 " pending_excode=%u\n",
                         intno, (uint64_t)(uint32_t)pc,
+                        (uint64_t)(uint32_t)m->last_code_pc,
                         (uint64_t)(uint32_t)m->shadow_cp0_badvaddr,
                         m->last_unmapped_valid ? (uint64_t)(uint32_t)m->last_unmapped_addr : 0xDEADu,
                         (uint64_t)(uint32_t)m->shadow_cp0_entryhi,
@@ -1103,25 +1201,46 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             static uint32_t tlb_nested_defer_log = 0;
             if (at_syscall_site && m->pending_excode == MIPS_EXCCODE_SYS) {
                 /*
+                 * 2.6.8.1 run_init_process can take a nested TLB fault at
+                 * SYSCALL+4 before MTC0 EPC is observed. Keeping synthetic
+                 * SYSCALL state active there causes repeated re-entry with
+                 * pending_excode=8 and blocks native TLB progression.
+                 * Drop synthetic state and let native TLB handling continue.
+                 */
+                if ((uint32_t)m->kernel_entry == 0x80272018u &&
+                    (intno == 26u || intno == 27u) &&
+                    !m->epc_was_written) {
+                    static uint32_t tlb_sys_site_drop_log = 0;
+                    if (tlb_sys_site_drop_log < 64) {
+                        fprintf(stderr,
+                                "[TLB_SYS_SITE_DROP] intno=%u PC=0x%08" PRIX64
+                                " STATUS=0x%08" PRIX64
+                                " syscall_epc=0x%08" PRIX64 " pending_epc=0x%08" PRIX64 "\n",
+                                intno, (uint64_t)(uint32_t)pc, status,
+                                (uint64_t)(uint32_t)m->pending_syscall_epc,
+                                (uint64_t)(uint32_t)m->pending_epc);
+                        tlb_sys_site_drop_log++;
+                    }
+                    m->pending_epc          = 0;
+                    m->pending_syscall_epc  = 0;
+                    m->pending_excode       = 0;
+                    m->pending_cause        = 0;
+                    m->epc_was_written      = false;
+                    m->pending_cause_served = false;
+                    m->pending_epc_served   = false;
+                    m->has_saved_exception  = false;
+                    return;
+                }
+                /*
                  * Some Unicorn builds surface intno=26/27 at SYSCALL+4 with EXL=0.
                  * This can fire during do_execve (the beqz-a3 at SYSCALL+4 is a TLB
                  * notification target) or after the syscall has truly returned.
                  *
-                 * Retire if EITHER of the following holds:
-                 *  (a) pc == pending_epc+4   — pending_epc tracks the syscall EPC and
-                 *      is mutated to the kuseg user entry by MTC0 EPC (start_thread).
-                 *      Before MTC0: pending_epc == SYSCALL VA, so pending_epc+4 matches
-                 *      SYSCALL+4 exactly — correct retirement.
-                 *      After MTC0:  pending_epc == kuseg entry, so pending_epc+4 is a
-                 *      kuseg address that won't match the kseg SYSCALL+4 PC — DEFER
-                 *      stays active until the real ERET fires.
-                 *  (b) epc_was_written==true  — start_thread() wrote the user entry via
-                 *      MTC0 EPC; any EXL=0 SYSCALL+4 event at that point means the
-                 *      syscall body has completed.  (pending_epc is kuseg here so (a)
-                 *      would be false; this is belt-and-suspenders for corner cases.)
-                 *
-                 * Do NOT use pending_syscall_epc+4 here: that would fire prematurely
-                 * while do_execve is still running (in-flight TLB miss at SYSCALL+4).
+                 * IMPORTANT: do not retire solely on pc==syscall+4. During execve we
+                 * can legitimately revisit SYSCALL+4 while the syscall body is still
+                 * in flight, and clearing synthetic state there breaks return-path
+                 * bookkeeping. Only retire once we observed MTC0 EPC (epc_was_written),
+                 * which indicates the kernel has committed an exception return target.
                  */
                 if ((status & 0x2u) == 0u) {
                     /*
@@ -1141,15 +1260,9 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                      * the beqz-a3 at SYSCALL+4 catches an in-progress TLB notification).
                      */
                     bool at_ret_site = ((uint32_t)pc == (uint32_t)m->pending_epc + 4u);
-                    /*
-                     * stale_post_mtc0: kernel has called start_thread() (wrote user
-                     * entry via MTC0 EPC) so any EXL=0 SYSCALL+4 event is definitively
-                     * after the syscall completed.  Belt-and-suspenders: pending_epc is
-                     * already a kuseg address at this point so at_ret_site would be false
-                     * anyway; this catches corner cases where the two addresses coincide.
-                     */
+                    /* Kernel wrote EPC via MTC0; syscall return path is now committed. */
                     bool stale_post_mtc0 = m->epc_was_written;
-                    if (at_ret_site || stale_post_mtc0) {
+                    if (stale_post_mtc0) {
                         static uint32_t tlb_nested_retire_log = 0;
                         static uint32_t syscall_ret_fallback_log = 0;
                         uint64_t v0 = 0, a3 = 0;
@@ -1370,12 +1483,38 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         if ((uint32_t)v0 == 4011u) {
             uint32_t a1_32 = (uint32_t)a1;
             uint32_t a2_32 = (uint32_t)a2;
+            uint32_t epc32 = (uint32_t)epc;
+            /*
+             * Execve arg/env shim is only needed for the known 2.4 init
+             * fallback syscall stubs. The 2.6 kernel uses kernel_execve()
+             * wrappers (e.g. run_init_process at 0x800015B0) that pass
+             * kernel pointers under KERNEL_DS; rewriting them to synthetic
+             * user buffers corrupts the return path.
+             */
+            bool allow_execve_shim_site =
+                (epc32 == 0x8000181Cu || epc32 == 0x8000184Cu ||
+                 epc32 == 0x8000186Cu || epc32 == 0x8000188Cu ||
+                 epc32 == 0x800018ACu);
             bool needs_execve_shim =
+                allow_execve_shim_site &&
                 ((a1_32 != 0u && a1_32 >= 0x80000000u) ||
                  (a2_32 != 0u && a2_32 >= 0x80000000u));
             uint32_t sh_a0 = 0, sh_a1 = 0, sh_a2 = 0;
             bool used_defaults = false;
             bool have_shim_ptrs = false;
+            if (!allow_execve_shim_site) {
+                static uint32_t execve_shim_skip_log = 0;
+                if (execve_shim_skip_log < 64) {
+                    char old_a0s[128] = "<unreadable>";
+                    read_guest_string(uc, old_a0, old_a0s, sizeof(old_a0s));
+                    fprintf(stderr,
+                            "[EXECVE_SHIM_SKIP] EPC=0x%08X keep kernel argv/envp"
+                            " a0=0x%08" PRIX64 " \"%s\" a1=0x%08X a2=0x%08X\n",
+                            epc32,
+                            (uint64_t)(uint32_t)old_a0, old_a0s, a1_32, a2_32);
+                    execve_shim_skip_log++;
+                }
+            }
             if (needs_execve_shim) {
                 have_shim_ptrs = prepare_execve_user_ptrs(uc, a0, a1, a2, &sh_a0, &sh_a1, &sh_a2);
                 if (!have_shim_ptrs) {
@@ -1570,14 +1709,16 @@ static void inject_hw_irq_if_pending(machine_t *m)
                 uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
                 uint32_t ret_site = (uint32_t)m->pending_epc + 4u;
                 bool at_ret_site = ((uint32_t)pc == ret_site);
-                if (!at_ret_site) {
+                bool have_epc_write = m->epc_was_written;
+                if (!at_ret_site || !have_epc_write) {
                     if (log_syscall_exl_drop < 64) {
                         fprintf(stderr,
                                 "[IRQ_GATE] syscall_exl_drop_defer pending_excode=%u"
                                 " PC=0x%08" PRIX64 " STATUS=0x%08X pending_epc=0x%08" PRIX64
-                                " ret_site=0x%08X epc_written=%u served_epc=%u served_cause=%u\n",
+                                " ret_site=0x%08X at_ret=%u epc_written=%u served_epc=%u served_cause=%u\n",
                                 m->pending_excode, (uint64_t)(uint32_t)pc, status,
                                 (uint64_t)(uint32_t)m->pending_epc, ret_site,
+                                at_ret_site ? 1u : 0u,
                                 m->epc_was_written ? 1u : 0u,
                                 m->pending_epc_served ? 1u : 0u,
                                 m->pending_cause_served ? 1u : 0u);
@@ -2105,6 +2246,328 @@ static void irq_probe_hook(uc_engine *uc, uint64_t address,
             (uint64_t)(uint32_t)a0);
 }
 
+/* 2.6 early-initcall dispatch probe (do_earlyinitcalls jalr loop). */
+static void earlyinit_dispatch_probe_hook(uc_engine *uc, uint64_t address,
+                                          uint32_t size, void *user_data)
+{
+    (void)size;
+    machine_t *m = user_data;
+    uint32_t pc = (uint32_t)address;
+    if (pc != 0x80277268u && pc != 0x80277270u)
+        return;
+
+    static uint32_t dispatch_logs = 0;
+    if (dispatch_logs >= 64u)
+        return;
+    dispatch_logs++;
+
+    uint64_t v0 = 0, s0 = 0, s1 = 0, s3 = 0, ra = 0, status = 0;
+    uint64_t sp = 0;
+    uint32_t insn = 0;
+    uint32_t ra_slot = 0;
+    bool ra_slot_ok = false;
+    uint64_t ra_slot_va = 0;
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    uc_reg_read(uc, UC_MIPS_REG_S3, &s3);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+    read_insn_best_effort(uc, address, &insn);
+    ra_slot_va = sp + 48u;
+    ra_slot_ok = read_guest_u32(uc, ra_slot_va, &ra_slot);
+    fprintf(stderr,
+            "[EARLYINIT_DISPATCH] PC=0x%08X v0=0x%08" PRIX64
+            " s0=0x%08" PRIX64 " s1=0x%08" PRIX64 " s3=0x%08" PRIX64
+            " ra=0x%08" PRIX64 " sp=0x%08" PRIX64
+            " insn=0x%08X stack_ra@0x%08" PRIX64 "=0x%08X ok=%u"
+            " STATUS=0x%08" PRIX64 " pending_excode=%u\n",
+            pc,
+            (uint64_t)(uint32_t)v0,
+            (uint64_t)(uint32_t)s0,
+            (uint64_t)(uint32_t)s1,
+            (uint64_t)(uint32_t)s3,
+            (uint64_t)(uint32_t)ra,
+            (uint64_t)(uint32_t)sp,
+            insn,
+            (uint64_t)(uint32_t)ra_slot_va,
+            ra_slot,
+            ra_slot_ok ? 1u : 0u,
+            status,
+            m->pending_excode);
+}
+
+/* 2.6 do_earlyinitcalls frame/epilogue probe. */
+static void earlyinit_frame_probe_hook(uc_engine *uc, uint64_t address,
+                                       uint32_t size, void *user_data)
+{
+    (void)size;
+    machine_t *m = user_data;
+    uint32_t pc = (uint32_t)address;
+    if (pc != 0x80277234u && pc != 0x8027727Cu && pc != 0x80277290u &&
+        pc != 0x80277294u && pc != 0x80277318u)
+        return;
+
+    static uint32_t frame_logs = 0;
+    if (frame_logs >= 32u)
+        return;
+    frame_logs++;
+
+    uint64_t v0 = 0, s0 = 0, s1 = 0, s3 = 0, ra = 0, status = 0, sp = 0;
+    uint32_t insn = 0, ra_slot = 0;
+    uint64_t ra_slot_va = 0;
+    bool ra_slot_ok = false;
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    uc_reg_read(uc, UC_MIPS_REG_S3, &s3);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+    read_insn_best_effort(uc, address, &insn);
+    ra_slot_va = sp + 48u;
+    ra_slot_ok = read_guest_u32(uc, ra_slot_va, &ra_slot);
+
+    fprintf(stderr,
+            "[EARLYINIT_FRAME] PC=0x%08X v0=0x%08" PRIX64
+            " s0=0x%08" PRIX64 " s1=0x%08" PRIX64 " s3=0x%08" PRIX64
+            " ra=0x%08" PRIX64 " sp=0x%08" PRIX64
+            " ra64=0x%016" PRIX64 " sp64=0x%016" PRIX64
+            " insn=0x%08X stack_ra@0x%08" PRIX64 "=0x%08X ok=%u"
+            " STATUS=0x%08" PRIX64 " pending_excode=%u\n",
+            pc,
+            (uint64_t)(uint32_t)v0,
+            (uint64_t)(uint32_t)s0,
+            (uint64_t)(uint32_t)s1,
+            (uint64_t)(uint32_t)s3,
+            (uint64_t)(uint32_t)ra,
+            (uint64_t)(uint32_t)sp,
+            ra,
+            sp,
+            insn,
+            (uint64_t)(uint32_t)ra_slot_va,
+            ra_slot,
+            ra_slot_ok ? 1u : 0u,
+            status,
+            m->pending_excode);
+}
+
+/* 2.6 do_early_param probe near faulting lbu at 0x802724A8. */
+static void early_param_probe_hook(uc_engine *uc, uint64_t address,
+                                   uint32_t size, void *user_data)
+{
+    (void)size;
+    machine_t *m = user_data;
+    uint32_t pc = (uint32_t)address;
+    if (pc != 0x80272494u && pc != 0x80272498u &&
+        pc != 0x802724A0u && pc != 0x802724A8u)
+        return;
+
+    static uint32_t early_param_logs = 0;
+    if (early_param_logs >= 64u)
+        return;
+    early_param_logs++;
+
+    uint64_t s1 = 0, v0 = 0, a0 = 0, a1 = 0, s4 = 0, status = 0;
+    uint32_t insn = 0, e0 = 0, e1 = 0, e2 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_S4, &s4);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+    read_insn_best_effort(uc, address, &insn);
+    (void)read_guest_u32(uc, s1 + 0u, &e0);
+    (void)read_guest_u32(uc, s1 + 4u, &e1);
+    (void)read_guest_u32(uc, s1 + 8u, &e2);
+
+    fprintf(stderr,
+            "[EARLY_PARAM] PC=0x%08X insn=0x%08X s1=0x%08" PRIX64
+            " v0=0x%08" PRIX64 " a0=0x%08" PRIX64 " a1=0x%08" PRIX64
+            " s4=0x%08" PRIX64 " ent={0x%08X,0x%08X,0x%08X}"
+            " STATUS=0x%08" PRIX64 " pending_excode=%u\n",
+            pc, insn,
+            (uint64_t)(uint32_t)s1,
+            (uint64_t)(uint32_t)v0,
+            (uint64_t)(uint32_t)a0,
+            (uint64_t)(uint32_t)a1,
+            (uint64_t)(uint32_t)s4,
+            e0, e1, e2,
+            status, m->pending_excode);
+}
+
+/* 2.6 do_early_param stride fixup: table entries are 16-byte spaced in this image. */
+static void early_param_stride_fix_hook(uc_engine *uc, uint64_t address,
+                                        uint32_t size, void *user_data)
+{
+    (void)address;
+    (void)size;
+    machine_t *m = user_data;
+    if ((uint32_t)m->kernel_entry != 0x80272018u)
+        return;
+
+    uint64_t s1 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    s1 += 4u; /* upcoming addiu s1,s1,12 => effective +16 stride */
+    uc_reg_write(uc, UC_MIPS_REG_S1, &s1);
+
+    static uint32_t stride_fix_logs = 0;
+    if (stride_fix_logs < 32u) {
+        fprintf(stderr,
+                "[EARLY_PARAM_STRIDE_FIX] PC=0x802724F0 adjusted_s1=0x%08" PRIX64 "\n",
+                (uint64_t)(uint32_t)s1);
+        stride_fix_logs++;
+    }
+}
+
+/* parse_one parameter-table probe/fix for linux4be20040908 (24-byte rows). */
+static void parse_one_param_probe_hook(uc_engine *uc, uint64_t address,
+                                       uint32_t size, void *user_data)
+{
+    (void)size;
+    machine_t *m = user_data;
+    uint32_t pc = (uint32_t)address;
+    if (pc != 0x80042F10u && pc != 0x80042F40u)
+        return;
+    if ((uint32_t)m->kernel_entry != 0x80272018u)
+        return;
+
+    static uint32_t parse_logs = 0;
+    if (parse_logs >= 80u)
+        return;
+    parse_logs++;
+
+    uint64_t a1 = 0, t1 = 0, t2 = 0, a3 = 0, status = 0;
+    uint32_t insn = 0;
+    uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0, w4 = 0, w5 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_T1, &t1);
+    uc_reg_read(uc, UC_MIPS_REG_T2, &t2);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+    read_insn_best_effort(uc, address, &insn);
+    (void)read_guest_u32(uc, a1 + 0u, &w0);
+    (void)read_guest_u32(uc, a1 + 4u, &w1);
+    (void)read_guest_u32(uc, a1 + 8u, &w2);
+    (void)read_guest_u32(uc, a1 + 12u, &w3);
+    (void)read_guest_u32(uc, a1 + 16u, &w4);
+    (void)read_guest_u32(uc, a1 + 20u, &w5);
+
+    fprintf(stderr,
+            "[PARSE_ONE_PARAM] PC=0x%08X insn=0x%08X a1=0x%08" PRIX64
+            " t1=0x%08" PRIX64 " t2=%" PRIu64 " a3=%" PRIu64
+            " row={%08X,%08X,%08X,%08X,%08X,%08X}"
+            " STATUS=0x%08" PRIX64 " pending_excode=%u\n",
+            pc, insn,
+            (uint64_t)(uint32_t)a1,
+            (uint64_t)(uint32_t)t1,
+            (uint64_t)(uint32_t)t2,
+            (uint64_t)(uint32_t)a3,
+            w0, w1, w2, w3, w4, w5,
+            status, m->pending_excode);
+}
+
+static void parse_args_param_count_fix_hook(uc_engine *uc, uint64_t address,
+                                            uint32_t size, void *user_data)
+{
+    (void)address;
+    (void)size;
+    machine_t *m = user_data;
+    if ((uint32_t)m->kernel_entry != 0x80272018u)
+        return;
+
+    uint64_t a2 = 0, a3 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+
+    if ((uint32_t)a2 != 0x8028C630u)
+        return;
+    if ((uint32_t)a3 <= 4096u)
+        return;
+
+    {
+        uint64_t fixed = 1u; /* (__stop___param - __start___param) / 24 */
+        uc_reg_write(uc, UC_MIPS_REG_A3, &fixed);
+
+        static uint32_t fix_logs = 0;
+        if (fix_logs < 8u) {
+            fprintf(stderr,
+                    "[PARSE_ARGS_COUNT_FIX] PC=0x80272630 a2=0x%08" PRIX64
+                    " old_a3=%" PRIu64 " new_a3=1\n",
+                    (uint64_t)(uint32_t)a2,
+                    (uint64_t)(uint32_t)a3);
+            fix_logs++;
+        }
+    }
+}
+
+static void strlen_null_probe_hook(uc_engine *uc, uint64_t address,
+                                   uint32_t size, void *user_data)
+{
+    (void)address;
+    (void)size;
+    machine_t *m = user_data;
+    if ((uint32_t)m->kernel_entry != 0x80272018u)
+        return;
+
+    uint64_t a0 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    if ((uint32_t)a0 != 0u)
+        return;
+
+    static uint32_t strlen_null_logs = 0;
+    if (strlen_null_logs >= 16u)
+        return;
+    strlen_null_logs++;
+
+    uint64_t ra = 0, sp = 0, a1 = 0, a2 = 0, a3 = 0, status = 0;
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+    fprintf(stderr,
+            "[STRLEN_NULL] PC=0x800D8EF0 ra=0x%08" PRIX64 " sp=0x%08" PRIX64
+            " a0=0x%08" PRIX64 " a1=0x%08" PRIX64 " a2=0x%08" PRIX64
+            " a3=0x%08" PRIX64 " STATUS=0x%08" PRIX64 " pending_excode=%u\n",
+            (uint64_t)(uint32_t)ra,
+            (uint64_t)(uint32_t)sp,
+            (uint64_t)(uint32_t)a0,
+            (uint64_t)(uint32_t)a1,
+            (uint64_t)(uint32_t)a2,
+            (uint64_t)(uint32_t)a3,
+            status,
+            m->pending_excode);
+}
+
+static void obsolete_setup_stride_fix_hook(uc_engine *uc, uint64_t address,
+                                           uint32_t size, void *user_data)
+{
+    (void)address;
+    (void)size;
+    machine_t *m = user_data;
+    if ((uint32_t)m->kernel_entry != 0x80272018u)
+        return;
+
+    uint64_t s1 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    s1 += 4u; /* upcoming addiu s1,s1,12 => effective +16 stride */
+    uc_reg_write(uc, UC_MIPS_REG_S1, &s1);
+
+    static uint32_t fix_logs = 0;
+    if (fix_logs < 24u) {
+        fprintf(stderr,
+                "[OBSOLETE_SETUP_STRIDE_FIX] PC=0x%08" PRIX64
+                " adjusted_s1=0x%08" PRIX64 "\n",
+                (uint64_t)(uint32_t)address,
+                (uint64_t)(uint32_t)s1);
+        fix_logs++;
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Exception vector probes                                            */
 /* ------------------------------------------------------------------ */
@@ -2219,10 +2682,29 @@ static bool icu_etime_fixup_fired = false;
 static void icu_etime_fixup_hook(uc_engine *uc, uint64_t address,
                                   uint32_t size, void *user_data)
 {
-    (void)uc; (void)address; (void)size;
+    (void)address; (void)size;
     if (icu_etime_fixup_fired) return;
     icu_etime_fixup_fired = true;
     machine_t *m = user_data;
+    uint64_t ra = 0, sp = 0, status = 0;
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+    fprintf(stderr,
+            "[ICU_FIXUP_CTX] RA=0x%08" PRIX64 " SP=0x%08" PRIX64 " STATUS=0x%08" PRIX64 "\n",
+            (uint64_t)(uint32_t)ra, (uint64_t)(uint32_t)sp, status);
+    /*
+     * linux4be20040908 (2.6.8.1) uses the CP0 counter timer path
+     * (board_timer_setup -> vr41xx_timer_setup -> MIPS_COUNTER_IRQ).
+     * Forcing ETIME in MSYSINT1 here is unnecessary and can surface
+     * interrupts before the vector path is fully initialized.
+     */
+    if ((uint32_t)m->kernel_entry == 0x80272018u) {
+        fprintf(stderr,
+                "[ICU_FIXUP] skipped ETIME force for 2.6 kernel entry=0x%08" PRIX64 "\n",
+                (uint64_t)(uint32_t)m->kernel_entry);
+        return;
+    }
     m->icu.msysint1 |= ICU_SRC1_ETIME;
     fprintf(stderr,
             "[ICU_FIXUP] vr41xx_icu_init returning; forced ETIME in MSYSINT1=0x%04X\n",
@@ -2388,6 +2870,77 @@ machine_t *machine_create(const machine_config_t *cfg)
         uint64_t jalr_va = mips_sext(0x80272874u);
         uc_hook_add(m->uc, &hk, UC_HOOK_CODE, initcall_trace_hook, NULL,
                     jalr_va, jalr_va);
+    }
+    {
+        uint64_t va_call = mips_sext(0x80277268u); /* jalr v0 */
+        uint64_t va_ret  = mips_sext(0x80277270u); /* after return */
+        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, earlyinit_dispatch_probe_hook, m,
+                    va_call, va_call);
+        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, earlyinit_dispatch_probe_hook, m,
+                    va_ret, va_ret);
+        {
+            static const uint32_t frame_sites[] = {
+                0x80277234u, /* just after sd ra,48(sp) */
+                0x8027727Cu, /* epilogue: ld ra,48(sp)  */
+                0x80277290u, /* jr ra                    */
+                0x80277294u, /* jr delay slot            */
+                0x80277318u, /* caller continuation      */
+            };
+            for (int i = 0; i < 5; i++) {
+                uint64_t va = mips_sext(frame_sites[i]);
+                uc_hook_add(m->uc, &hk, UC_HOOK_CODE, earlyinit_frame_probe_hook, m,
+                            va, va);
+            }
+        }
+    }
+    {
+        static const uint32_t early_param_sites[] = {
+            0x80272494u,
+            0x80272498u,
+            0x802724A0u,
+            0x802724A8u,
+        };
+        for (int i = 0; i < 4; i++) {
+            uint64_t va = mips_sext(early_param_sites[i]);
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, early_param_probe_hook, m, va, va);
+        }
+        {
+            uint64_t va_stride = mips_sext(0x802724F0u); /* addiu s1,s1,12 */
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, early_param_stride_fix_hook, m,
+                        va_stride, va_stride);
+        }
+    }
+    {
+        static const uint32_t parse_sites[] = {
+            0x80042F10u, /* lw t1,0(a1) */
+            0x80042F40u, /* lb v0,0(t1) */
+        };
+        for (int i = 0; i < 2; i++) {
+            uint64_t va = mips_sext(parse_sites[i]);
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, parse_one_param_probe_hook, m, va, va);
+        }
+        {
+            uint64_t va_fix = mips_sext(0x80272630u); /* jal parse_args in start_kernel */
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, parse_args_param_count_fix_hook, m,
+                        va_fix, va_fix);
+        }
+        {
+            uint64_t va_strlen = mips_sext(0x800D8EF0u); /* strlen entry */
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, strlen_null_probe_hook, m,
+                        va_strlen, va_strlen);
+        }
+        {
+            static const uint32_t obsolete_stride_sites[] = {
+                0x80272148u, /* addiu s1,s1,12 (branch-likely delay slot) */
+                0x80272170u, /* addiu s1,s1,12 (branch-likely delay slot) */
+                0x802721B0u, /* addiu s1,s1,12 (branch-likely delay slot) */
+            };
+            for (int i = 0; i < 3; i++) {
+                uint64_t va = mips_sext(obsolete_stride_sites[i]);
+                uc_hook_add(m->uc, &hk, UC_HOOK_CODE, obsolete_setup_stride_fix_hook, m,
+                            va, va);
+            }
+        }
     }
 
     /* RCU / wait_for_completion diagnostic probes (multi-fire, up to 8 each) */
@@ -2677,24 +3230,89 @@ void machine_run(machine_t *m)
                  * data writes above kseg0 that miss our static maps).
                  * No limit — each unique block is only mapped once.
                  */
-                uint64_t v0 = 0, a0 = 0, t2 = 0, sp = 0;
+                bool mapped_from_store = false;
+                bool new_from_store = false;
+                bool store_logged = false;
+                uint64_t store_probe_pcs[2] = {
+                    (uint64_t)(uint32_t)bad_pc,
+                    (uint64_t)(uint32_t)m->last_code_pc
+                };
+                for (int spi = 0; spi < 2; spi++) {
+                    uint64_t probe_pc = store_probe_pcs[spi];
+                    uint64_t ea = 0, base_val = 0;
+                    uint32_t insn = 0, op = 0, base = 0;
+                    int16_t imm = 0;
+                    if (!decode_store_effaddr(m->uc, probe_pc, &ea, &insn, &op, &base, &base_val, &imm))
+                        continue;
+                    if (!store_logged) {
+                        fprintf(stderr,
+                                "[MACHINE] write-unmapped store probe bad_pc=0x%08" PRIX64
+                                " last_code_pc=0x%08" PRIX64 "\n",
+                                (uint64_t)(uint32_t)bad_pc,
+                                (uint64_t)(uint32_t)m->last_code_pc);
+                        store_logged = true;
+                    }
+                    fprintf(stderr,
+                            "[MACHINE]   store@PC=0x%08" PRIX64 " insn=0x%08X (%s)"
+                            " base=$%u=0x%08" PRIX64 " imm=%d -> ea=0x%08" PRIX64 "\n",
+                            (uint64_t)(uint32_t)probe_pc, insn, store_op_name(op),
+                            base, (uint64_t)(uint32_t)base_val, (int)imm,
+                            (uint64_t)(uint32_t)ea);
+                    bool new_map = false;
+                    if (ensure_va_block_mapped(m, ea, &new_map)) {
+                        mapped_from_store = true;
+                        if (new_map)
+                            new_from_store = true;
+                        {
+                            uint32_t probe = 0;
+                            uc_err pe = uc_mem_read(m->uc, ea, &probe, sizeof(probe));
+                            fprintf(stderr,
+                                    "[MACHINE]   store-ea probe read addr=0x%08" PRIX64
+                                    " rc=%s\n",
+                                    (uint64_t)(uint32_t)ea,
+                                    uc_strerror(pe));
+                        }
+                    }
+                }
+
+                if (mapped_from_store && new_from_store) {
+                    write_unmapped_recoveries++;
+                    continue;
+                }
+
+                uint64_t v0 = 0, a0 = 0, t2 = 0, sp = 0, k0 = 0, k1 = 0, gp = 0;
                 uc_reg_read(m->uc, UC_MIPS_REG_V0, &v0);
                 uc_reg_read(m->uc, UC_MIPS_REG_A0, &a0);
                 uc_reg_read(m->uc, UC_MIPS_REG_T2, &t2);
                 uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
-                uint64_t candidates[4] = { v0, a0, t2, sp };
-                const char *names[4] = { "v0", "a0", "t2", "sp" };
+                uc_reg_read(m->uc, UC_MIPS_REG_K0, &k0);
+                uc_reg_read(m->uc, UC_MIPS_REG_K1, &k1);
+                uc_reg_read(m->uc, UC_MIPS_REG_GP, &gp);
+                uint64_t candidates[7] = { v0, a0, t2, sp, k0, k1, gp };
+                const char *names[7] = { "v0", "a0", "t2", "sp", "k0", "k1", "gp" };
                 bool mapped_any = false;
+                bool new_map_any = false;
 
-                for (int i = 0; i < 4; i++) {
+                for (int i = 0; i < 7; i++) {
                     uint64_t va = candidates[i];
-                    /* Only attempt kuseg (user-space) addresses */
-                    if (va < 0x1000u || va >= 0x80000000u)
+                    uint32_t va32 = (uint32_t)va;
+                    if (va32 < 0x1000u)
                         continue;
-                    uint64_t block = va & ~((uint64_t)0xFFFFF);
-                    uc_err me = uc_mem_map(m->uc, block, 0x100000,
-                                           UC_PROT_READ | UC_PROT_WRITE);
-                    if (me == UC_ERR_OK) {
+                    uint64_t block = (uint64_t)(va32 & 0xFFF00000u);
+                    bool mapped = false;
+                    if (va32 >= 0x80000000u && va32 <= 0xBFFFFFFFu) {
+                        bool new_map = false;
+                        mapped = map_kseg_mirror_block(m, block, &new_map);
+                        if (new_map)
+                            new_map_any = true;
+                    } else if (va32 < 0x80000000u) {
+                        uc_err me = uc_mem_map(m->uc, block, 0x100000,
+                                               UC_PROT_READ | UC_PROT_WRITE);
+                        mapped = (me == UC_ERR_OK || me == UC_ERR_MAP);
+                        if (me == UC_ERR_OK)
+                            new_map_any = true;
+                    }
+                    if (mapped) {
                         /* Fresh mapping — log it */
                         if (!mapped_any) {
                             fprintf(stderr,
@@ -2707,15 +3325,21 @@ void machine_run(machine_t *m)
                                 (uint64_t)(uint32_t)block, names[i],
                                 (uint64_t)(uint32_t)va);
                         mapped_any = true;
-                    } else if (me == UC_ERR_MAP) {
-                        /* Already mapped — still count as handled */
-                        mapped_any = true;
                     }
                 }
 
-                if (mapped_any) {
+                if (mapped_any && new_map_any) {
                     write_unmapped_recoveries++;
                     continue;
+                }
+                if (mapped_any && !new_map_any) {
+                    fprintf(stderr,
+                            "[MACHINE] write-unmapped no-new-map at PC=0x%08" PRIX64
+                            " (candidates already mapped; bad_pc=0x%08" PRIX64
+                            " last_code_pc=0x%08" PRIX64 ")\n",
+                            (uint64_t)(uint32_t)bad_pc,
+                            (uint64_t)(uint32_t)bad_pc,
+                            (uint64_t)(uint32_t)m->last_code_pc);
                 }
             }
             if (err == UC_ERR_READ_UNMAPPED) {
@@ -2724,7 +3348,9 @@ void machine_run(machine_t *m)
                  * exception vector path. Try mapping likely candidate blocks
                  * derived from registers and retry execution.
                  */
-                uint64_t badv = 0, at = 0, a0 = 0, a1 = 0, a2 = 0, k0 = 0, k1 = 0, t2 = 0, sp = 0;
+                uint64_t badv = 0, at = 0, v0 = 0, v1 = 0;
+                uint64_t a0 = 0, a1 = 0, a2 = 0;
+                uint64_t k0 = 0, k1 = 0, t2 = 0, sp = 0;
                 uc_mem_type fault_type = (uc_mem_type)0;
                 if (m->last_unmapped_valid) {
                     badv = m->last_unmapped_addr;
@@ -2734,6 +3360,8 @@ void machine_run(machine_t *m)
                 }
                 m->last_unmapped_valid = false;
                 uc_reg_read(m->uc, UC_MIPS_REG_AT, &at);
+                uc_reg_read(m->uc, UC_MIPS_REG_V0, &v0);
+                uc_reg_read(m->uc, UC_MIPS_REG_V1, &v1);
                 uc_reg_read(m->uc, UC_MIPS_REG_A0, &a0);
                 uc_reg_read(m->uc, UC_MIPS_REG_A1, &a1);
                 uc_reg_read(m->uc, UC_MIPS_REG_A2, &a2);
@@ -2741,20 +3369,24 @@ void machine_run(machine_t *m)
                 uc_reg_read(m->uc, UC_MIPS_REG_K1, &k1);
                 uc_reg_read(m->uc, UC_MIPS_REG_T2, &t2);
                 uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
-                uint64_t candidates[10] = { bad_pc, badv, at, a0, a1, a2, k0, k1, t2, sp };
-                const char *names[10] = { "pc", "badv", "at", "a0", "a1", "a2", "k0", "k1", "t2", "sp" };
+                uint64_t candidates[12] = {
+                    bad_pc, badv, at, v0, v1, a0, a1, a2, k0, k1, t2, sp
+                };
+                const char *names[12] = {
+                    "pc", "badv", "at", "v0", "v1", "a0", "a1", "a2", "k0", "k1", "t2", "sp"
+                };
                 bool mapped_any = false;
 
-                for (int i = 0; i < 10; i++) {
+                for (int i = 0; i < 12; i++) {
                     uint64_t va = candidates[i];
                     uint32_t va32 = (uint32_t)va;
                     if (va32 < 0x1000u)
                         continue;
-                    uint64_t block = va & ~((uint64_t)0xFFFFF);
+                    uint64_t block = (uint64_t)(va32 & 0xFFF00000u);
                     bool mapped = false;
 
                     if (va32 >= 0x80000000u && va32 <= 0xBFFFFFFFu) {
-                        mapped = map_kseg_mirror_block(m, block);
+                        mapped = map_kseg_mirror_block(m, block, NULL);
                     } else if (va32 < 0x80000000u) {
                         uc_err me = uc_mem_map(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
                         mapped = (me == UC_ERR_OK || me == UC_ERR_MAP);
