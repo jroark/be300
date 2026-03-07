@@ -147,6 +147,7 @@ class MainActivity : AppCompatActivity() {
         val canvas = Canvas(composited)
         canvas.drawBitmap(frameBitmap, null, Rect(0, 0, width, height), null)
         frameBitmap.recycle()
+        clearNearWhiteEdgeRegion(composited)
 
         val left = (width * SCREEN_LEFT_FRAC).roundToInt().toFloat()
         val top = (height * SCREEN_TOP_FRAC).roundToInt().toFloat()
@@ -159,6 +160,57 @@ class MainActivity : AppCompatActivity() {
         canvas.drawRect(left, top, right, bottom, clearPaint)
 
         overlay.setImageBitmap(composited)
+    }
+
+    private fun clearNearWhiteEdgeRegion(bitmap: Bitmap) {
+        val w = bitmap.width
+        val h = bitmap.height
+        if (w <= 0 || h <= 0) return
+
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        val visited = BooleanArray(pixels.size)
+        val queue = IntArray(pixels.size)
+        var head = 0
+        var tail = 0
+
+        fun isNearWhite(color: Int): Boolean {
+            val a = (color ushr 24) and 0xFF
+            if (a < 16) return true
+            val r = (color ushr 16) and 0xFF
+            val g = (color ushr 8) and 0xFF
+            val b = color and 0xFF
+            return r >= 245 && g >= 245 && b >= 245
+        }
+
+        fun enqueue(index: Int) {
+            if (!visited[index] && isNearWhite(pixels[index])) {
+                visited[index] = true
+                queue[tail++] = index
+            }
+        }
+
+        for (x in 0 until w) {
+            enqueue(x)
+            enqueue((h - 1) * w + x)
+        }
+        for (y in 0 until h) {
+            enqueue(y * w)
+            enqueue(y * w + (w - 1))
+        }
+
+        while (head < tail) {
+            val index = queue[head++]
+            pixels[index] = 0
+            val x = index % w
+            val y = index / w
+            if (x > 0) enqueue(index - 1)
+            if (x + 1 < w) enqueue(index + 1)
+            if (y > 0) enqueue(index - w)
+            if (y + 1 < h) enqueue(index + w)
+        }
+
+        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
     }
 
     companion object {
