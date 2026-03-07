@@ -40,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private var ignoreKernelSelectionEvents = false
     private var isFullscreenFramebuffer = false
     private var screenMask: ScreenMask? = null
+    private var frameAspectRatio: String = FRAME_ASPECT_RATIO_FALLBACK
     private lateinit var doubleTapDetector: GestureDetector
 
     private data class KernelBundle(
@@ -64,6 +65,7 @@ class MainActivity : AppCompatActivity() {
         val mask: BooleanArray,
         val width: Int,
         val height: Int,
+        val isAlphaHole: Boolean,
         val leftFrac: Float,
         val topFrac: Float,
         val widthFrac: Float,
@@ -103,6 +105,9 @@ class MainActivity : AppCompatActivity() {
         setupDoubleTapToggle()
         frameContainer.post {
             val frameBitmap = BitmapFactory.decodeResource(resources, R.drawable.be300_frame)
+            if (frameBitmap.width > 0 && frameBitmap.height > 0) {
+                frameAspectRatio = "${frameBitmap.width}:${frameBitmap.height}"
+            }
             screenMask = detectScreenMask(frameBitmap)
             placeFramebufferViewport(frameContainer, framebufferView, screenMask)
             applyFrameOverlayCutout(frameContainer, frameOverlayView, frameBitmap, screenMask)
@@ -173,13 +178,13 @@ class MainActivity : AppCompatActivity() {
         } else {
             lp.width = 0
             lp.height = 0
-            lp.setMargins(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(8))
+            lp.setMargins(0, 0, 0, 0)
             lp.startToStart = ConstraintLayout.LayoutParams.PARENT_ID
             lp.endToEnd = ConstraintLayout.LayoutParams.PARENT_ID
             lp.topToTop = ConstraintLayout.LayoutParams.PARENT_ID
             lp.bottomToTop = R.id.kernelSpinner
             lp.bottomToBottom = ConstraintLayout.LayoutParams.UNSET
-            lp.dimensionRatio = "1024:1536"
+            lp.dimensionRatio = frameAspectRatio
 
             frameOverlayView.visibility = View.VISIBLE
             kernelSpinner.visibility = View.VISIBLE
@@ -223,10 +228,6 @@ class MainActivity : AppCompatActivity() {
         lp.leftMargin = ((containerW - width) / 2f).roundToInt()
         lp.topMargin = ((containerH - height) / 2f).roundToInt()
         target.layoutParams = lp
-    }
-
-    private fun dpToPx(dp: Int): Int {
-        return (dp * resources.displayMetrics.density).roundToInt()
     }
 
     private fun setupKernelSelector() {
@@ -408,6 +409,11 @@ class MainActivity : AppCompatActivity() {
         val composited = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(composited)
         canvas.drawBitmap(frameBitmap, null, Rect(0, 0, width, height), null)
+        if (screenMask?.isAlphaHole == true) {
+            overlay.setImageBitmap(composited)
+            return
+        }
+
         clearNearWhiteEdgeRegion(composited)
 
         if (screenMask != null) {
@@ -473,6 +479,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun detectScreenMask(frameBitmap: Bitmap): ScreenMask? {
+        detectScreenMask(frameBitmap, alphaHoleMask = true)?.let { return it }
+        return detectScreenMask(frameBitmap, alphaHoleMask = false)
+    }
+
+    private fun detectScreenMask(frameBitmap: Bitmap, alphaHoleMask: Boolean): ScreenMask? {
         val w = frameBitmap.width
         val h = frameBitmap.height
         if (w <= 0 || h <= 0) return null
@@ -484,8 +495,11 @@ class MainActivity : AppCompatActivity() {
         val component = IntArray(pixels.size)
         val bestIndices = IntArray(pixels.size)
 
-        fun isNearWhite(color: Int): Boolean {
+        fun isScreenCandidate(color: Int): Boolean {
             val a = (color ushr 24) and 0xFF
+            if (alphaHoleMask) {
+                return a < 16
+            }
             if (a < 16) return false
             val r = (color ushr 16) and 0xFF
             val g = (color ushr 8) and 0xFF
@@ -508,28 +522,28 @@ class MainActivity : AppCompatActivity() {
                 val y = idx / w
                 if (x > 0) {
                     val n = idx - 1
-                    if (!visited[n] && isNearWhite(pixels[n])) {
+                    if (!visited[n] && isScreenCandidate(pixels[n])) {
                         visited[n] = true
                         queue[tail++] = n
                     }
                 }
                 if (x + 1 < w) {
                     val n = idx + 1
-                    if (!visited[n] && isNearWhite(pixels[n])) {
+                    if (!visited[n] && isScreenCandidate(pixels[n])) {
                         visited[n] = true
                         queue[tail++] = n
                     }
                 }
                 if (y > 0) {
                     val n = idx - w
-                    if (!visited[n] && isNearWhite(pixels[n])) {
+                    if (!visited[n] && isScreenCandidate(pixels[n])) {
                         visited[n] = true
                         queue[tail++] = n
                     }
                 }
                 if (y + 1 < h) {
                     val n = idx + w
-                    if (!visited[n] && isNearWhite(pixels[n])) {
+                    if (!visited[n] && isScreenCandidate(pixels[n])) {
                         visited[n] = true
                         queue[tail++] = n
                     }
@@ -540,21 +554,21 @@ class MainActivity : AppCompatActivity() {
 
         for (x in 0 until w) {
             val top = x
-            if (!visited[top] && isNearWhite(pixels[top])) {
+            if (!visited[top] && isScreenCandidate(pixels[top])) {
                 floodFrom(top, true)
             }
             val bottom = (h - 1) * w + x
-            if (!visited[bottom] && isNearWhite(pixels[bottom])) {
+            if (!visited[bottom] && isScreenCandidate(pixels[bottom])) {
                 floodFrom(bottom, true)
             }
         }
         for (y in 0 until h) {
             val left = y * w
-            if (!visited[left] && isNearWhite(pixels[left])) {
+            if (!visited[left] && isScreenCandidate(pixels[left])) {
                 floodFrom(left, true)
             }
             val right = y * w + (w - 1)
-            if (!visited[right] && isNearWhite(pixels[right])) {
+            if (!visited[right] && isScreenCandidate(pixels[right])) {
                 floodFrom(right, true)
             }
         }
@@ -566,7 +580,7 @@ class MainActivity : AppCompatActivity() {
         var bestMaxY = 0
 
         for (idx in pixels.indices) {
-            if (visited[idx] || !isNearWhite(pixels[idx])) continue
+            if (visited[idx] || !isScreenCandidate(pixels[idx])) continue
             val count = floodFrom(idx, false)
             if (count <= 0) continue
 
@@ -605,6 +619,7 @@ class MainActivity : AppCompatActivity() {
             mask = mask,
             width = w,
             height = h,
+            isAlphaHole = alphaHoleMask,
             leftFrac = bestMinX.toFloat() / w.toFloat(),
             topFrac = bestMinY.toFloat() / h.toFloat(),
             widthFrac = (bestMaxX - bestMinX + 1).toFloat() / w.toFloat(),
@@ -718,5 +733,6 @@ class MainActivity : AppCompatActivity() {
         private const val SCREEN_TOP_FRAC = 0.1000f
         private const val SCREEN_WIDTH_FRAC = 0.7450f
         private const val SCREEN_HEIGHT_FRAC = 0.6320f
+        private const val FRAME_ASPECT_RATIO_FALLBACK = "1024:1536"
     }
 }
