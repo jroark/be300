@@ -467,6 +467,40 @@ static bool emulate_store_on_write_unmapped(machine_t *m, uint64_t pc)
     return true;
 }
 
+/*
+ * Unicorn sometimes reports UC_ERR_WRITE_UNMAPPED at a nearby non-store PC
+ * (e.g. branch/jr around a failing store). Probe a small window around the
+ * fault PC and emulate the first decodable store we find.
+ */
+static bool emulate_store_nearby_on_write_unmapped(machine_t *m, uint64_t bad_pc)
+{
+    uint64_t probes[4];
+    int n = 0;
+    probes[n++] = bad_pc;
+    if ((uint32_t)bad_pc >= 4u)
+        probes[n++] = bad_pc - 4u;
+    if ((uint32_t)bad_pc >= 8u)
+        probes[n++] = bad_pc - 8u;
+    probes[n++] = bad_pc + 4u;
+
+    for (int i = 0; i < n; i++) {
+        uint64_t pc = probes[i];
+        if (emulate_store_on_write_unmapped(m, pc)) {
+            static uint32_t near_log = 0;
+            if (near_log < 256) {
+                fprintf(stderr,
+                        "[STORE_EMU_NEAR] bad_pc=0x%08" PRIX64
+                        " emu_pc=0x%08" PRIX64 "\n",
+                        (uint64_t)(uint32_t)bad_pc,
+                        (uint64_t)(uint32_t)pc);
+                near_log++;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool insn_has_delay_slot(uint32_t insn)
 {
     uint32_t op = insn >> 26;
@@ -4277,7 +4311,7 @@ void machine_run(machine_t *m)
                  * the same store without completing it even after mapping.
                  * Decode/commit simple stores directly to break the livelock.
                  */
-                if (emulate_store_on_write_unmapped(m, bad_pc)) {
+                if (emulate_store_nearby_on_write_unmapped(m, bad_pc)) {
                     write_unmapped_recoveries++;
                     continue;
                 }
