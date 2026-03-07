@@ -1,5 +1,11 @@
 package com.jroark.be300android
 
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.Rect
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.Handler
@@ -17,6 +23,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var frameContainer: FrameLayout
     private lateinit var framebufferView: ImageView
+    private lateinit var frameOverlayView: ImageView
     private lateinit var statusText: TextView
 
     private lateinit var framebufferBitmap: Bitmap
@@ -41,6 +48,7 @@ class MainActivity : AppCompatActivity() {
 
         frameContainer = findViewById(R.id.deviceFrameContainer)
         framebufferView = findViewById(R.id.framebufferView)
+        frameOverlayView = findViewById(R.id.frameOverlayView)
         statusText = findViewById(R.id.statusText)
 
         framebufferBitmap = Bitmap.createBitmap(FB_WIDTH, FB_HEIGHT, Bitmap.Config.ARGB_8888)
@@ -48,6 +56,7 @@ class MainActivity : AppCompatActivity() {
 
         frameContainer.post {
             placeFramebufferViewport(frameContainer, framebufferView)
+            applyFrameOverlayCutout(frameContainer, frameOverlayView)
         }
 
         val kernelPath = resolveKernelPath()
@@ -114,6 +123,30 @@ class MainActivity : AppCompatActivity() {
         target.layoutParams = lp
     }
 
+    private fun applyFrameOverlayCutout(container: FrameLayout, overlay: ImageView) {
+        val width = container.width
+        val height = container.height
+        if (width <= 0 || height <= 0) return
+
+        val frameBitmap = BitmapFactory.decodeResource(resources, R.drawable.be300_frame)
+        val composited = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(composited)
+        canvas.drawBitmap(frameBitmap, null, Rect(0, 0, width, height), null)
+        frameBitmap.recycle()
+
+        val left = (width * SCREEN_LEFT_FRAC).roundToInt().toFloat()
+        val top = (height * SCREEN_TOP_FRAC).roundToInt().toFloat()
+        val right = left + (width * SCREEN_WIDTH_FRAC).roundToInt()
+        val bottom = top + (height * SCREEN_HEIGHT_FRAC).roundToInt()
+
+        val clearPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+        }
+        canvas.drawRect(left, top, right, bottom, clearPaint)
+
+        overlay.setImageBitmap(composited)
+    }
+
     companion object {
         private const val FB_WIDTH = 240
         private const val FB_HEIGHT = 320
@@ -123,6 +156,7 @@ class MainActivity : AppCompatActivity() {
         private const val SCREEN_LEFT_FRAC = 0.2148f
         private const val SCREEN_TOP_FRAC = 0.1990f
         private const val SCREEN_WIDTH_FRAC = 0.5703f
-        private const val SCREEN_HEIGHT_FRAC = 0.7422f
+        // Keep viewport at 240x320 (3:4) within the 1024x1536 frame.
+        private const val SCREEN_HEIGHT_FRAC = 0.5067f
     }
 }
