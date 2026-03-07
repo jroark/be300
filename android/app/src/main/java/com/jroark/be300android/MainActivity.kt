@@ -7,6 +7,9 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.FrameLayout
@@ -14,6 +17,7 @@ import android.widget.ImageView
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.constraintlayout.widget.ConstraintLayout
 import java.io.File
 import java.io.IOException
 import kotlin.math.roundToInt
@@ -34,6 +38,9 @@ class MainActivity : AppCompatActivity() {
     private var selectedKernelId: String? = null
     private var currentKernelLabel: String = ""
     private var ignoreKernelSelectionEvents = false
+    private var isFullscreenFramebuffer = false
+    private var screenMask: ScreenMask? = null
+    private lateinit var doubleTapDetector: GestureDetector
 
     private data class KernelBundle(
         val id: String,
@@ -93,9 +100,10 @@ class MainActivity : AppCompatActivity() {
         framebufferBitmap = Bitmap.createBitmap(FB_WIDTH, FB_HEIGHT, Bitmap.Config.ARGB_8888)
         framebufferView.setImageBitmap(framebufferBitmap)
 
+        setupDoubleTapToggle()
         frameContainer.post {
             val frameBitmap = BitmapFactory.decodeResource(resources, R.drawable.be300_frame)
-            val screenMask = detectScreenMask(frameBitmap)
+            screenMask = detectScreenMask(frameBitmap)
             placeFramebufferViewport(frameContainer, framebufferView, screenMask)
             applyFrameOverlayCutout(frameContainer, frameOverlayView, frameBitmap, screenMask)
             frameBitmap.recycle()
@@ -128,6 +136,97 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         stopEmulator()
         super.onDestroy()
+    }
+
+    private fun setupDoubleTapToggle() {
+        doubleTapDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                isFullscreenFramebuffer = !isFullscreenFramebuffer
+                applyDisplayMode()
+                return true
+            }
+        })
+
+        frameContainer.setOnTouchListener { _, event ->
+            doubleTapDetector.onTouchEvent(event)
+        }
+    }
+
+    private fun applyDisplayMode() {
+        val lp = frameContainer.layoutParams as ConstraintLayout.LayoutParams
+        if (isFullscreenFramebuffer) {
+            lp.width = 0
+            lp.height = 0
+            lp.setMargins(0, 0, 0, 0)
+            lp.startToStart = ConstraintLayout.LayoutParams.PARENT_ID
+            lp.endToEnd = ConstraintLayout.LayoutParams.PARENT_ID
+            lp.topToTop = ConstraintLayout.LayoutParams.PARENT_ID
+            lp.bottomToBottom = ConstraintLayout.LayoutParams.PARENT_ID
+            lp.bottomToTop = ConstraintLayout.LayoutParams.UNSET
+            lp.dimensionRatio = null
+
+            frameOverlayView.visibility = View.GONE
+            kernelSpinner.visibility = View.GONE
+            statusText.visibility = View.GONE
+        } else {
+            lp.width = 0
+            lp.height = 0
+            lp.setMargins(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(8))
+            lp.startToStart = ConstraintLayout.LayoutParams.PARENT_ID
+            lp.endToEnd = ConstraintLayout.LayoutParams.PARENT_ID
+            lp.topToTop = ConstraintLayout.LayoutParams.PARENT_ID
+            lp.bottomToTop = R.id.kernelSpinner
+            lp.bottomToBottom = ConstraintLayout.LayoutParams.UNSET
+            lp.dimensionRatio = "1024:1536"
+
+            frameOverlayView.visibility = View.VISIBLE
+            kernelSpinner.visibility = View.VISIBLE
+            statusText.visibility = View.VISIBLE
+        }
+        frameContainer.layoutParams = lp
+
+        frameContainer.post {
+            if (isFullscreenFramebuffer) {
+                placeFullscreenFramebuffer(frameContainer, framebufferView)
+            } else {
+                placeFramebufferViewport(frameContainer, framebufferView, screenMask)
+                val frameBitmap = BitmapFactory.decodeResource(resources, R.drawable.be300_frame)
+                applyFrameOverlayCutout(frameContainer, frameOverlayView, frameBitmap, screenMask)
+                frameBitmap.recycle()
+            }
+        }
+    }
+
+    private fun placeFullscreenFramebuffer(container: FrameLayout, target: ImageView) {
+        val containerW = container.width
+        val containerH = container.height
+        if (containerW <= 0 || containerH <= 0) return
+
+        val targetAspect = FB_WIDTH.toFloat() / FB_HEIGHT.toFloat()
+        val containerAspect = containerW.toFloat() / containerH.toFloat()
+
+        val width: Int
+        val height: Int
+        if (containerAspect > targetAspect) {
+            height = containerH
+            width = (containerH * targetAspect).roundToInt()
+        } else {
+            width = containerW
+            height = (containerW / targetAspect).roundToInt()
+        }
+
+        val lp = target.layoutParams as FrameLayout.LayoutParams
+        lp.width = width
+        lp.height = height
+        lp.leftMargin = ((containerW - width) / 2f).roundToInt()
+        lp.topMargin = ((containerH - height) / 2f).roundToInt()
+        target.layoutParams = lp
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        return (dp * resources.displayMetrics.density).roundToInt()
     }
 
     private fun setupKernelSelector() {
