@@ -159,6 +159,36 @@ static void clear_synthetic_syscall_state(machine_t *m, bool clear_execve_watch)
     }
 }
 
+static void commit_execve_user_handoff(machine_t *m, uc_engine *uc, uint64_t status,
+                                       uint64_t user_pc, uint64_t user_sp,
+                                       const char *tag, uint64_t source_pc,
+                                       uint32_t intno)
+{
+    uint64_t upc = (uint64_t)(uint32_t)user_pc;
+    uint64_t usp = (uint64_t)(uint32_t)user_sp;
+    /* Enter user mode (KSU=10), clear EXL/ERL, keep IE as-is. */
+    uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
+    uc_reg_write(uc, UC_MIPS_REG_PC, &upc);
+    uc_reg_write(uc, UC_MIPS_REG_SP, &usp);
+    uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
+    m->execve_user_handoff_active = true;
+    m->execve_user_handoff_pc = upc;
+    m->execve_user_handoff_sp = usp;
+    clear_synthetic_syscall_state(m, true);
+    m->has_saved_exception = false;
+    static uint32_t execve_user_handoff_log = 0;
+    if (execve_user_handoff_log < 64) {
+        fprintf(stderr,
+                "[EXECVE_USER_HANDOFF] src=%s intno=%u from_pc=0x%08" PRIX64
+                " -> user_pc=0x%08" PRIX64 " user_sp=0x%08" PRIX64
+                " status=0x%08" PRIX64 "\n",
+                tag, intno, (uint64_t)(uint32_t)source_pc,
+                (uint64_t)(uint32_t)upc, (uint64_t)(uint32_t)usp,
+                (uint64_t)(uint32_t)user_status);
+        execve_user_handoff_log++;
+    }
+}
+
 static void snapshot_execve_gpr_context(machine_t *m, uc_engine *uc, uint64_t pc)
 {
     m->execve_last_pc = pc;
@@ -2417,32 +2447,29 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         uint64_t v0 = 0, a3 = 0;
                         uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
                         uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
-                        bool execve_handoff_ready =
+                        bool execve_handoff_ctx =
                             ((uint32_t)v0 >= 0x70000000u && (uint32_t)v0 < 0x80000000u &&
                              (uint32_t)a3 >= 0x00010000u && (uint32_t)a3 < 0x80000000u);
-
-                        if (intno == 27u && execve_handoff_ready) {
-                            static uint32_t execve_ctx_seen_log = 0;
-                            if (execve_ctx_seen_log < 64) {
+                        if ((intno == 26u || intno == 27u) && execve_handoff_ctx) {
+                            static uint32_t execve_ctx_defer_log = 0;
+                            if (execve_ctx_defer_log < 64) {
                                 fprintf(stderr,
                                         "[EXECVE_CTX_AT_RET] intno=%u pc=0x%08" PRIX64
                                         " syscall_epc=0x%08" PRIX64
                                         " pending_epc=0x%08" PRIX64
                                         " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
-                                        " action=clear_synthetic_only\n",
+                                        " action=user_handoff\n",
                                         intno, (uint64_t)(uint32_t)pc,
                                         (uint64_t)(uint32_t)m->pending_syscall_epc,
                                         (uint64_t)(uint32_t)m->pending_epc,
                                         (uint64_t)(uint32_t)v0,
                                         (uint64_t)(uint32_t)a3);
-                                execve_ctx_seen_log++;
+                                execve_ctx_defer_log++;
                             }
-                            clear_synthetic_syscall_state(m, true);
-                            m->has_saved_exception = false;
+                            commit_execve_user_handoff(m, uc, status, a3, v0,
+                                                       "intr_ret_ctx", pc, intno);
                             return;
-                        }
-
-                        if (intno == 26u || intno == 27u) {
+                        } else if (intno == 26u || intno == 27u) {
                             static uint32_t tlb_nested_drop_stale_log = 0;
                             if (tlb_nested_drop_stale_log < 128) {
                                 fprintf(stderr,
@@ -2450,12 +2477,14 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                         " STATUS=0x%08" PRIX64
                                         " syscall_epc=0x%08" PRIX64
                                         " pending_epc=0x%08" PRIX64
-                                        " v0=0x%08" PRIX64 " a3=0x%08" PRIX64 "\n",
+                                        " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
+                                        " epc_written=%u\n",
                                         intno, (uint64_t)(uint32_t)pc, status,
                                         (uint64_t)(uint32_t)m->pending_syscall_epc,
                                         (uint64_t)(uint32_t)m->pending_epc,
                                         (uint64_t)(uint32_t)v0,
-                                        (uint64_t)(uint32_t)a3);
+                                        (uint64_t)(uint32_t)a3,
+                                        m->epc_was_written ? 1u : 0u);
                                 tlb_nested_drop_stale_log++;
                             }
                             return;
@@ -3060,6 +3089,9 @@ static void inject_hw_irq_if_pending(machine_t *m)
                                     (uint64_t)(uint32_t)a3);
                             execve_ctx_seen_irq_log++;
                         }
+                        commit_execve_user_handoff(m, m->uc, status, a3, v0,
+                                                   "irq_gate_ret_ctx", pc, 0u);
+                        return;
                     }
                     fprintf(stderr,
                             "[SYSCALL_RET_FALLBACK] pending_epc=0x%08" PRIX64
