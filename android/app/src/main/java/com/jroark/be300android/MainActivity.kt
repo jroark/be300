@@ -15,6 +15,7 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
+import java.util.LinkedHashSet
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
@@ -59,22 +60,29 @@ class MainActivity : AppCompatActivity() {
             applyFrameOverlayCutout(frameContainer, frameOverlayView)
         }
 
-        val kernelPath = resolveKernelPath()
-        val kernelFile = File(kernelPath)
-        if (!kernelFile.exists()) {
-            statusText.text = "Kernel not found at $kernelPath"
+        val kernelCandidates = resolveKernelCandidates()
+        if (kernelCandidates.isEmpty()) {
+            statusText.text = "Kernel not found. Push $DEFAULT_KERNEL_NAME to ${File(filesDir, DEFAULT_KERNEL_NAME).absolutePath}"
             return
         }
 
-        emulatorHandle = native.nativeCreate(
-            kernelPath = kernelPath,
-            cmdline = "console=ttyS0,9600 root=/dev/ram init=/linuxrc",
-            sfb5bitGreen = false,
-            sdramMb = 16
-        )
+        val cmdline = "console=tty0 console=ttyS0,9600 root=/dev/ram init=/linuxrc"
+        var selectedKernel: String? = null
+        for (candidate in kernelCandidates) {
+            emulatorHandle = native.nativeCreate(
+                kernelPath = candidate,
+                cmdline = cmdline,
+                sfb5bitGreen = false,
+                sdramMb = 16
+            )
+            if (emulatorHandle != 0L) {
+                selectedKernel = candidate
+                break
+            }
+        }
 
         if (emulatorHandle == 0L) {
-            statusText.text = "Failed to create emulator"
+            statusText.text = "Failed to create emulator (tried ${kernelCandidates.joinToString()})"
             return
         }
 
@@ -85,7 +93,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        statusText.text = "Booting kernel from $kernelPath"
+        statusText.text = "Booting kernel from $selectedKernel"
         uiHandler.post(framePump)
     }
 
@@ -98,12 +106,18 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    private fun resolveKernelPath(): String {
+    private fun resolveKernelCandidates(): List<String> {
+        val candidates = LinkedHashSet<String>()
         val fromIntent = intent.getStringExtra("kernel_path")
         if (!fromIntent.isNullOrBlank()) {
-            return fromIntent
+            candidates.add(fromIntent)
         }
-        return "/sdcard/Download/vmlinux-pgui-demo"
+        candidates.add(File(filesDir, DEFAULT_KERNEL_NAME).absolutePath)
+        candidates.add("/sdcard/Download/$DEFAULT_KERNEL_NAME")
+        return candidates.filter { path ->
+            val file = File(path)
+            file.exists() && file.canRead()
+        }
     }
 
     private fun placeFramebufferViewport(container: FrameLayout, target: ImageView) {
@@ -151,12 +165,12 @@ class MainActivity : AppCompatActivity() {
         private const val FB_WIDTH = 240
         private const val FB_HEIGHT = 320
         private const val FRAME_INTERVAL_MS = 16L
+        private const val DEFAULT_KERNEL_NAME = "vmlinux-pgui-demo"
 
         // Screen viewport inside be300_frame.png (normalized to frame image size).
-        private const val SCREEN_LEFT_FRAC = 0.2148f
-        private const val SCREEN_TOP_FRAC = 0.1990f
-        private const val SCREEN_WIDTH_FRAC = 0.5703f
-        // Keep viewport at 240x320 (3:4) within the 1024x1536 frame.
-        private const val SCREEN_HEIGHT_FRAC = 0.5067f
+        private const val SCREEN_LEFT_FRAC = 0.1100f
+        private const val SCREEN_TOP_FRAC = 0.1000f
+        private const val SCREEN_WIDTH_FRAC = 0.7450f
+        private const val SCREEN_HEIGHT_FRAC = 0.6320f
     }
 }

@@ -65,19 +65,6 @@ static void android_frame_cb(const uint16_t *pixels,
     pthread_mutex_unlock(&emu->frame_lock);
 }
 
-static inline uint32_t rgb565_to_rgba8888(uint16_t p)
-{
-    uint32_t r5 = (p >> 11) & 0x1Fu;
-    uint32_t g6 = (p >> 5) & 0x3Fu;
-    uint32_t b5 = p & 0x1Fu;
-
-    uint32_t r8 = (r5 << 3) | (r5 >> 2);
-    uint32_t g8 = (g6 << 2) | (g6 >> 4);
-    uint32_t b8 = (b5 << 3) | (b5 >> 2);
-
-    return 0xFF000000u | (r8 << 16) | (g8 << 8) | b8;
-}
-
 static void *emulator_thread_main(void *arg)
 {
     android_emulator_t *emu = (android_emulator_t *)arg;
@@ -223,11 +210,22 @@ Java_com_jroark_be300android_Be300Native_nativeCopyFrameToBitmap(
 
     for (uint32_t y = 0; y < out_h; y++) {
         uint32_t src_y = (uint32_t)(((uint64_t)y * src_h) / out_h);
-        uint32_t *row = (uint32_t *)(dst + (size_t)y * info.stride);
+        uint8_t *row = dst + (size_t)y * info.stride;
         for (uint32_t x = 0; x < out_w; x++) {
             uint32_t src_x = (uint32_t)(((uint64_t)x * src_w) / out_w);
             uint16_t p = emu->latest_frame[src_y * src_w + src_x];
-            row[x] = rgb565_to_rgba8888(p);
+            uint32_t r5 = (p >> 11) & 0x1Fu;
+            uint32_t g6 = (p >> 5) & 0x3Fu;
+            uint32_t b5 = p & 0x1Fu;
+            uint8_t r8 = (uint8_t)((r5 << 3) | (r5 >> 2));
+            uint8_t g8 = (uint8_t)((g6 << 2) | (g6 >> 4));
+            uint8_t b8 = (uint8_t)((b5 << 3) | (b5 >> 2));
+
+            size_t o = (size_t)x * 4u;
+            row[o + 0] = b8;
+            row[o + 1] = g8;
+            row[o + 2] = r8;
+            row[o + 3] = 0xFFu;
         }
     }
 
