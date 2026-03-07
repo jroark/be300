@@ -1880,12 +1880,9 @@ static void prid_hook(uc_engine *uc, uint64_t address,
              * Keep pending_excode=8 and all other syscall tracking active —
              * the execve syscall is still in progress.
              */
-            bool skip_init_execve_retry =
-                is_init_execve_epc((uint32_t)m->pending_syscall_epc);
             if (m->pending_excode == MIPS_EXCCODE_SYS &&
                 m->execve_watch_active &&
-                m->execve_entry_pc != 0 &&
-                !skip_init_execve_retry) {
+                m->execve_entry_pc != 0) {
                 static uint32_t eret_execve_retry_log = 0;
                 uint64_t resume_pc = m->execve_entry_pc;
                 bool resume_entry = true;
@@ -1939,18 +1936,6 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 }
                 uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
                 return;
-            }
-            if (skip_init_execve_retry) {
-                static uint32_t eret_execve_retry_skip_log = 0;
-                if (eret_execve_retry_skip_log < 32) {
-                    fprintf(stderr,
-                            "[ERET_EXECVE_RETRY_SKIP] init_execve syscall_epc=0x%08" PRIX64
-                            " pending_epc=0x%08" PRIX64 " PC=0x%08" PRIX64 "\n",
-                            (uint64_t)(uint32_t)m->pending_syscall_epc,
-                            (uint64_t)(uint32_t)m->pending_epc,
-                            (uint64_t)(uint32_t)address);
-                    eret_execve_retry_skip_log++;
-                }
             }
 
             /*
@@ -2336,6 +2321,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                      * the beqz-a3 at SYSCALL+4 catches an in-progress TLB notification).
                      */
                     bool at_ret_site = ((uint32_t)pc == (uint32_t)m->pending_epc + 4u);
+                    bool syscall_is_execve = (m->pending_syscall_nr == 4011u);
                     /*
                      * stale_post_mtc0: kernel has called start_thread() (wrote user
                      * entry via MTC0 EPC) so any EXL=0 SYSCALL+4 event is definitively
@@ -2368,7 +2354,6 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                      *   - stale_post_mtc0 still fires correctly once start_thread or
                      *     restore_all writes EPC via MTC0.
                      */
-                    bool syscall_is_execve = (m->pending_syscall_nr == 4011u);
                     bool retire_at_ret_site =
                         (at_ret_site && !m->execve_watch_active && !syscall_is_execve);
                     if (retire_at_ret_site || stale_post_mtc0) {
