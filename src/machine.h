@@ -144,19 +144,21 @@ struct machine_s {
 
     /* TLB notification de-duplication for execve DEFER.
      * Unicorn re-delivers the same notification-only intno=26 at SYSCALL+4
-     * after ERET_EXECVE_RETRY redirects to do_execve (before any instruction
-     * there executes). After the first DEFER, subsequent notifications at
-     * SYSCALL+4 while execve_watch_active are spurious: just restore PC to
-     * do_execve and return so execution can continue. */
+     * after ERET_TLB_PASSTHROUGH returns to the faulting instruction (before
+     * any instruction there executes). After the first DEFER, subsequent
+     * notifications at SYSCALL+4 while execve_watch_active are spurious:
+     * just restore PC and return so execution can continue. */
     uint32_t tlb_defer_count;
     bool     tlb_defer_active;       /* true after first DEFER for current syscall */
     uint32_t tlb_defer_owner_epc;    /* syscall EPC that owns current DEFER state  */
+    uint64_t tlb_defer_fault_pc;     /* real fault PC saved at DEFER entry for ERET return */
+    uint64_t last_exec_pc;           /* last PC seen by prid_hook (code hook) */
     uint32_t tlb_exl_drop_defer_count; /* IRQ gate deferrals while EXL unexpectedly cleared */
 
     /* open_exec fd-leak compensation.
      * open_exec (JAL at 0x8004A9F8) allocates a struct file (nr_files++) and
      * returns a file pointer in $v0.  When do_execve is restarted by
-     * ERET_EXECVE_RETRY or TLB_DEFER_SKIP the allocated struct file is
+     * ERET_TLB_PASSTHROUGH or TLB_DEFER_SKIP the allocated struct file is
      * abandoned without calling fput(), leaking the nr_files count.  After
      * enough restarts nr_files >= max_files → ENFILE.
      *

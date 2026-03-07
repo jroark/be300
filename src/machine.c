@@ -792,6 +792,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 {
     (void)size;
     machine_t *m = user_data;
+    m->last_exec_pc = address;
     static uint32_t mfc0_cause_seen_log = 0;
     static uint32_t mfc0_epc_seen_log = 0;
     static uint32_t mfc0_cause_inject_log = 0;
@@ -828,7 +829,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * JAL open_exec is at 0x8004A9F8; MIPS sets ra = JAL+8 = 0x8004AA00.
      * When execution reaches 0x8004AA00, $v0 holds the struct file* returned
      * by open_exec (positive = success, negative = error code).
-     * Mark execve_open_exec_ran so ERET_EXECVE_RETRY / TLB_DEFER_SKIP know
+     * Mark execve_open_exec_ran so ERET_TLB_PASSTHROUGH / TLB_DEFER_SKIP know
      * to compensate for the leaked nr_files increment before restarting.
      */
     if ((uint32_t)address == 0x8004AA00u) {
@@ -1864,77 +1865,45 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 return;
             }
 
-            /*
-             * Stale-TLB ERET: do_execve is in flight and a spurious TLB miss
-             * at SYSCALL+4 was deferred (see TLB_NESTED_DEFER above).  The
-             * kernel's TLB refill handler has now filled the TLB entry for
-             * the fault address.  MIPS TLB handlers only clobber $k0/$k1, so
-             * all user-visible registers (a0/a1/a2/ra/sp) still hold the
-             * values they had when do_execve was first called.
+            /* ERET_TLB_PASSTHROUGH: transparent nested-exception return
+             * during do_execve.
              *
-             * Redirect to do_execve's entry point instead of the fault PC
-             * (run_init's 0x800015B4 / SYSCALL+4).  This restarts do_execve
-             * from the beginning with correct arguments, and this time the
-             * TLB entry is present so the stale miss will not repeat.
+             * On real MIPS: TLB miss -> handler fills TLB -> ERET ->
+             * faulting insn retries and succeeds.  The handler only
+             * clobbers $k0/$k1.
              *
-             * Keep pending_excode=8 and all other syscall tracking active —
-             * the execve syscall is still in progress.
+             * We replicate this: read QEMU's native CP0 EPC (set to the
+             * faulting insn address at TLB miss time), clear EXL, jump
+             * there.  All synthetic SYSCALL state is preserved so the
+             * eventual syscall return ERET (with epc_was_written=true)
+             * still works correctly.
+             *
+             * Previous approach (ERET_EXECVE_RETRY) restarted do_execve
+             * from its entry point, which corrupted kernel state:
+             * search_binary_handler() calls set_fs(USER_DS) during
+             * partial execution, and the restart could not undo that —
+             * causing all kseg0 pointer accesses to fail access_ok()
+             * with EFAULT.
              */
             if (m->pending_excode == MIPS_EXCCODE_SYS &&
                 m->execve_watch_active &&
-                m->execve_entry_pc != 0) {
-                static uint32_t eret_execve_retry_log = 0;
-                uint64_t resume_pc = m->execve_entry_pc;
-                bool resume_entry = true;
-                uint64_t ra_v  = m->execve_watch_ret_pc;
-                uint64_t a0_v  = m->execve_watch_a0;
-                uint64_t a1_v  = m->execve_saved_a1;
-                uint64_t a2_v  = m->execve_saved_a2;
-                uint64_t sp_v  = m->execve_saved_sp;
-                if (eret_execve_retry_log < 16) {
-                    fprintf(stderr,
-                            "[ERET_EXECVE_RETRY] TLB entry filled;"
-                            " redirecting ERET 0x%08" PRIX64 " -> 0x%08" PRIX64
-                            " mode=%s"
-                            " pending_epc=0x%08" PRIX64
-                            " a0=0x%08" PRIX64 " a1=0x%08" PRIX64
-                            " a2=0x%08" PRIX64 " sp=0x%08" PRIX64
-                            " ra=0x%08" PRIX64 "\n",
-                            (uint64_t)(uint32_t)address,
-                            (uint64_t)(uint32_t)resume_pc,
-                            resume_entry ? "entry" : "last_pc",
-                            (uint64_t)(uint32_t)m->pending_epc,
-                            (uint64_t)(uint32_t)a0_v,
-                            (uint64_t)(uint32_t)a1_v,
-                            (uint64_t)(uint32_t)a2_v,
-                            (uint64_t)(uint32_t)sp_v,
-                            (uint64_t)(uint32_t)ra_v);
-                    eret_execve_retry_log++;
-                }
+                !m->epc_was_written) {
+                uint64_t fault_pc = m->tlb_defer_fault_pc;
                 uint64_t status = status_snapshot & ~(uint64_t)0x2u;  /* clear EXL */
                 uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
-                restore_execve_gpr_context(m, uc);
-                uc_reg_write(uc, UC_MIPS_REG_RA, &ra_v);
-                uc_reg_write(uc, UC_MIPS_REG_A0, &a0_v);
-                uc_reg_write(uc, UC_MIPS_REG_A1, &a1_v);
-                uc_reg_write(uc, UC_MIPS_REG_A2, &a2_v);
-                uc_reg_write(uc, UC_MIPS_REG_SP, &sp_v);
-                /*
-                 * fd-leak compensation when we rewind to do_execve() entry.
-                 */
-                if (resume_entry && m->execve_open_exec_ran) {
-                    uint32_t nr_files = 0;
-                    if (uc_mem_read(m->uc, 0x80178104u, &nr_files, sizeof(nr_files)) == UC_ERR_OK
-                        && nr_files > 0) {
-                        nr_files--;
-                        uc_mem_write(m->uc, 0x80178104u, &nr_files, sizeof(nr_files));
-                        fprintf(stderr,
-                                "[ENFILE_FIX] ERET_RETRY: closed orphaned open_exec fd;"
-                                " nr_files now %u\n", nr_files);
-                    }
-                    m->execve_open_exec_ran = false;
+                uc_reg_write(uc, UC_MIPS_REG_PC, &fault_pc);
+                /* Do NOT re-arm pending_cause_served / pending_epc_served.
+                 * TLB refill handlers don't read Cause/EPC. */
+                static uint32_t eret_tlb_pass_log = 0;
+                if (eret_tlb_pass_log < 64) {
+                    fprintf(stderr,
+                            "[ERET_TLB_PASSTHROUGH] fault_pc=0x%08" PRIX64
+                            " pending_epc=0x%08" PRIX64 " nr=%u\n",
+                            (uint64_t)(uint32_t)fault_pc,
+                            (uint64_t)(uint32_t)m->pending_epc,
+                            m->pending_syscall_nr);
+                    eret_tlb_pass_log++;
                 }
-                uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
                 return;
             }
 
@@ -2542,49 +2511,32 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         tlb_nested_defer_log++;
                     }
                     /*
-                     * Unicorn fires this intno=26 as a notification-only event
-                     * (EXL=0, PC still at fault address) without automatically
-                     * redirecting to the TLB refill handler.  We must perform the
-                     * MIPS exception entry ourselves so the kernel's TLB handler at
-                     * 0x80000000 can fill the TLB entry for the fault page.
+                     * Unicorn fires intno=26/27 as a notification-only event
+                     * (EXL=0, PC set to SYSCALL+4) while execution is actually
+                     * deep inside do_execve.  The notification PC is in kseg0
+                     * (which never uses TLB), so there is no real TLB miss to
+                     * handle.  Running the TLB refill handler would fill a
+                     * garbage entry (wrong BadVAddr) and loop forever.
                      *
-                     * After the handler runs and executes ERET, prid_hook's
-                     * ERET_EXECVE_RETRY intercept will redirect to do_execve's
-                     * entry point with EXL=0 and the original SYSCALL state intact.
-                     *
-                     * Unicorn's MIPS CPU model already updated CP0_BADVADDR and
-                     * CP0_CONTEXT (VPN2 from the fault address) before firing this
-                     * hook, so the kernel TLB handler has the correct context even
-                     * though we are setting EXL and redirecting manually here.
+                     * Fix: restore PC to the last instruction actually executed
+                     * (tracked by prid_hook) and let execution continue.  The
+                     * synthetic SYSCALL state is preserved.
                      */
                     m->tlb_defer_count++;
-                    if (m->tlb_defer_count > TLB_DEFER_RETRY_LIMIT) {
-                        static uint32_t defer_entry_abort_log = 0;
-                        if (defer_entry_abort_log < 32) {
-                            fprintf(stderr,
-                                    "[TLB_DEFER_ABORT] owner_epc=0x%08X pc=0x%08" PRIX64
-                                    " retries=%u limit=%u action=clear_syscall\n",
-                                    m->tlb_defer_owner_epc,
-                                    (uint64_t)(uint32_t)pc,
-                                    m->tlb_defer_count,
-                                    TLB_DEFER_RETRY_LIMIT);
-                            defer_entry_abort_log++;
-                        }
-                        clear_synthetic_syscall_state(m, true);
-                        m->has_saved_exception = false;
-                        return;
-                    }
                     {
-                        uint64_t exl_status = status | 0x2u;   /* set EXL=1 */
-                        uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exl_status);
-                        uint64_t tlb_vec = mips_sext(0x80000000u);
-                        uc_reg_write(uc, UC_MIPS_REG_PC, &tlb_vec);
-                        fprintf(stderr,
-                                "[TLB_DEFER_ENTRY] intno=%u fault_pc=0x%08" PRIX64
-                                " owner_epc=0x%08X retry=%u"
-                                " -> EXL=1 PC=0x80000000 (TLB refill handler)\n",
-                                intno, (uint64_t)(uint32_t)pc,
-                                m->tlb_defer_owner_epc, m->tlb_defer_count);
+                        uint64_t real_pc = m->last_exec_pc;
+                        uc_reg_write(uc, UC_MIPS_REG_PC, &real_pc);
+                        static uint32_t tlb_defer_skip_log = 0;
+                        if (tlb_defer_skip_log < 64) {
+                            fprintf(stderr,
+                                    "[TLB_DEFER_SKIP] intno=%u notif_pc=0x%08" PRIX64
+                                    " real_pc=0x%08" PRIX64
+                                    " owner_epc=0x%08X count=%u\n",
+                                    intno, (uint64_t)(uint32_t)pc,
+                                    (uint64_t)(uint32_t)real_pc,
+                                    m->tlb_defer_owner_epc, m->tlb_defer_count);
+                            tlb_defer_skip_log++;
+                        }
                     }
                     return;
                 }
@@ -3000,7 +2952,13 @@ static void inject_hw_irq_if_pending(machine_t *m)
                                 m->pending_cause_served ? 1u : 0u);
                         log_syscall_exl_drop++;
                     }
-                    if (m->tlb_exl_drop_defer_count > TLB_EXL_DROP_DEFER_LIMIT) {
+                    if (m->tlb_exl_drop_defer_count > TLB_EXL_DROP_DEFER_LIMIT &&
+                        !m->execve_watch_active) {
+                        /* Abort stale syscall state, but NOT during active
+                         * execve: do_execve can generate thousands of kuseg
+                         * stores (__bzero/memset), each triggering a spurious
+                         * TLB notification + IRQ gate deferral.  The syscall
+                         * is still actively progressing. */
                         if (log_syscall_exl_drop_abort < 32) {
                             fprintf(stderr,
                                     "[IRQ_GATE] syscall_exl_drop_abort PC=0x%08" PRIX64
