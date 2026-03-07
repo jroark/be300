@@ -2388,24 +2388,21 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                              (uint32_t)a3 >= 0x00010000u && (uint32_t)a3 < 0x80000000u);
 
                         if (intno == 27u && execve_handoff_ready) {
-                            uint64_t user_sp = mips_sext((uint32_t)v0);
-                            uint64_t user_pc = mips_sext((uint32_t)a3);
-                            uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
-                            m->execve_user_handoff_active = true;
-                            m->execve_user_handoff_pc = user_pc;
-                            m->execve_user_handoff_sp = user_sp;
-                            uc_reg_write(uc, UC_MIPS_REG_SP, &user_sp);
-                            uc_reg_write(uc, UC_MIPS_REG_PC, &user_pc);
-                            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
-                            fprintf(stderr,
-                                    "[EXECVE_USER_HANDOFF_TLB] intno=%u pc=0x%08" PRIX64
-                                    " sp=0x%08" PRIX64 " status=0x%08" PRIX64
-                                    " syscall_epc=0x%08" PRIX64 "\n",
-                                    intno,
-                                    (uint64_t)(uint32_t)user_pc,
-                                    (uint64_t)(uint32_t)user_sp,
-                                    (uint64_t)(uint32_t)user_status,
-                                    (uint64_t)(uint32_t)m->pending_epc);
+                            static uint32_t execve_ctx_seen_log = 0;
+                            if (execve_ctx_seen_log < 64) {
+                                fprintf(stderr,
+                                        "[EXECVE_CTX_AT_RET] intno=%u pc=0x%08" PRIX64
+                                        " syscall_epc=0x%08" PRIX64
+                                        " pending_epc=0x%08" PRIX64
+                                        " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
+                                        " action=clear_synthetic_only\n",
+                                        intno, (uint64_t)(uint32_t)pc,
+                                        (uint64_t)(uint32_t)m->pending_syscall_epc,
+                                        (uint64_t)(uint32_t)m->pending_epc,
+                                        (uint64_t)(uint32_t)v0,
+                                        (uint64_t)(uint32_t)a3);
+                                execve_ctx_seen_log++;
+                            }
                             clear_synthetic_syscall_state(m, true);
                             m->has_saved_exception = false;
                             return;
@@ -3013,31 +3010,22 @@ static void inject_hw_irq_if_pending(machine_t *m)
                      * In that case, transition to user entry directly instead
                      * of treating this as a plain syscall fallback.
                      */
-                    bool execve_handoff_ready =
-                        (m->pending_syscall_nr == 4011u &&
-                         (uint32_t)v0 >= 0x70000000u && (uint32_t)v0 < 0x80000000u &&
-                         (uint32_t)a3 >= 0x00010000u && (uint32_t)a3 < 0x80000000u);
-                    if (execve_handoff_ready) {
-                        uint64_t user_sp = mips_sext((uint32_t)v0);
-                        uint64_t user_pc = mips_sext((uint32_t)a3);
-                        uint64_t new_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
-                        m->execve_user_handoff_active = true;
-                        m->execve_user_handoff_pc = user_pc;
-                        m->execve_user_handoff_sp = user_sp;
-                        uc_reg_write(m->uc, UC_MIPS_REG_SP, &user_sp);
-                        uc_reg_write(m->uc, UC_MIPS_REG_PC, &user_pc);
-                        uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &new_status);
-                        fprintf(stderr,
-                                "[EXECVE_USER_HANDOFF] pc=0x%08" PRIX64
-                                " sp=0x%08" PRIX64 " status=0x%08" PRIX64
-                                " syscall_epc=0x%08" PRIX64 "\n",
-                                (uint64_t)(uint32_t)user_pc,
-                                (uint64_t)(uint32_t)user_sp,
-                                (uint64_t)(uint32_t)new_status,
-                                (uint64_t)(uint32_t)m->pending_epc);
-                        clear_synthetic_syscall_state(m, true);
-                        m->has_saved_exception = false;
-                        return;
+                    if (m->pending_syscall_nr == 4011u &&
+                        (uint32_t)v0 >= 0x70000000u && (uint32_t)v0 < 0x80000000u &&
+                        (uint32_t)a3 >= 0x00010000u && (uint32_t)a3 < 0x80000000u) {
+                        static uint32_t execve_ctx_seen_irq_log = 0;
+                        if (execve_ctx_seen_irq_log < 64) {
+                            fprintf(stderr,
+                                    "[EXECVE_CTX_IRQ_GATE] pending_epc=0x%08" PRIX64
+                                    " pc=0x%08" PRIX64
+                                    " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
+                                    " action=clear_synthetic_only\n",
+                                    (uint64_t)(uint32_t)m->pending_epc,
+                                    (uint64_t)(uint32_t)pc,
+                                    (uint64_t)(uint32_t)v0,
+                                    (uint64_t)(uint32_t)a3);
+                            execve_ctx_seen_irq_log++;
+                        }
                     }
                     fprintf(stderr,
                             "[SYSCALL_RET_FALLBACK] pending_epc=0x%08" PRIX64
@@ -4273,6 +4261,8 @@ void machine_run(machine_t *m)
                  */
                 uint64_t badv = 0, at = 0, v0 = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
                 uint64_t k0 = 0, k1 = 0, t2 = 0, sp = 0;
+                uint64_t s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
+                uint64_t gp = 0, fp = 0, ra = 0;
                 uc_mem_type fault_type = (uc_mem_type)0;
                 if (m->last_unmapped_valid) {
                     badv = m->last_unmapped_addr;
@@ -4302,11 +4292,28 @@ void machine_run(machine_t *m)
                 uc_reg_read(m->uc, UC_MIPS_REG_K1, &k1);
                 uc_reg_read(m->uc, UC_MIPS_REG_T2, &t2);
                 uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
-                uint64_t candidates[12] = { bad_pc, badv, at, v0, a0, a1, a2, a3, k0, k1, t2, sp };
-                const char *names[12] = { "pc", "badv", "at", "v0", "a0", "a1", "a2", "a3", "k0", "k1", "t2", "sp" };
+                uc_reg_read(m->uc, UC_MIPS_REG_S0, &s0);
+                uc_reg_read(m->uc, UC_MIPS_REG_S1, &s1);
+                uc_reg_read(m->uc, UC_MIPS_REG_S2, &s2);
+                uc_reg_read(m->uc, UC_MIPS_REG_S3, &s3);
+                uc_reg_read(m->uc, UC_MIPS_REG_S4, &s4);
+                uc_reg_read(m->uc, UC_MIPS_REG_S5, &s5);
+                uc_reg_read(m->uc, UC_MIPS_REG_S6, &s6);
+                uc_reg_read(m->uc, UC_MIPS_REG_S7, &s7);
+                uc_reg_read(m->uc, UC_MIPS_REG_GP, &gp);
+                uc_reg_read(m->uc, UC_MIPS_REG_FP, &fp);
+                uc_reg_read(m->uc, UC_MIPS_REG_RA, &ra);
+                uint64_t candidates[] = {
+                    bad_pc, badv, at, v0, a0, a1, a2, a3, k0, k1, t2, sp,
+                    s0, s1, s2, s3, s4, s5, s6, s7, gp, fp, ra
+                };
+                const char *names[] = {
+                    "pc", "badv", "at", "v0", "a0", "a1", "a2", "a3", "k0", "k1", "t2", "sp",
+                    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "gp", "fp", "ra"
+                };
                 bool mapped_any = false;
 
-                for (int i = 0; i < 12; i++) {
+                for (int i = 0; i < (int)(sizeof(candidates) / sizeof(candidates[0])); i++) {
                     uint64_t va = candidates[i];
                     uint32_t va32 = (uint32_t)va;
                     if (va32 < 0x1000u)
@@ -4364,6 +4371,8 @@ void machine_run(machine_t *m)
                  * derived from registers and retry execution.
                  */
                 uint64_t badv = 0, at = 0, a0 = 0, a1 = 0, a2 = 0, k0 = 0, k1 = 0, t2 = 0, sp = 0;
+                uint64_t s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
+                uint64_t gp = 0, fp = 0, ra = 0;
                 uc_mem_type fault_type = (uc_mem_type)0;
                 if (m->last_unmapped_valid) {
                     badv = m->last_unmapped_addr;
@@ -4380,11 +4389,28 @@ void machine_run(machine_t *m)
                 uc_reg_read(m->uc, UC_MIPS_REG_K1, &k1);
                 uc_reg_read(m->uc, UC_MIPS_REG_T2, &t2);
                 uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
-                uint64_t candidates[10] = { bad_pc, badv, at, a0, a1, a2, k0, k1, t2, sp };
-                const char *names[10] = { "pc", "badv", "at", "a0", "a1", "a2", "k0", "k1", "t2", "sp" };
+                uc_reg_read(m->uc, UC_MIPS_REG_S0, &s0);
+                uc_reg_read(m->uc, UC_MIPS_REG_S1, &s1);
+                uc_reg_read(m->uc, UC_MIPS_REG_S2, &s2);
+                uc_reg_read(m->uc, UC_MIPS_REG_S3, &s3);
+                uc_reg_read(m->uc, UC_MIPS_REG_S4, &s4);
+                uc_reg_read(m->uc, UC_MIPS_REG_S5, &s5);
+                uc_reg_read(m->uc, UC_MIPS_REG_S6, &s6);
+                uc_reg_read(m->uc, UC_MIPS_REG_S7, &s7);
+                uc_reg_read(m->uc, UC_MIPS_REG_GP, &gp);
+                uc_reg_read(m->uc, UC_MIPS_REG_FP, &fp);
+                uc_reg_read(m->uc, UC_MIPS_REG_RA, &ra);
+                uint64_t candidates[] = {
+                    bad_pc, badv, at, a0, a1, a2, k0, k1, t2, sp,
+                    s0, s1, s2, s3, s4, s5, s6, s7, gp, fp, ra
+                };
+                const char *names[] = {
+                    "pc", "badv", "at", "a0", "a1", "a2", "k0", "k1", "t2", "sp",
+                    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "gp", "fp", "ra"
+                };
                 bool mapped_any = false;
 
-                for (int i = 0; i < 10; i++) {
+                for (int i = 0; i < (int)(sizeof(candidates) / sizeof(candidates[0])); i++) {
                     uint64_t va = candidates[i];
                     uint32_t va32 = (uint32_t)va;
                     if (va32 < 0x1000u)
