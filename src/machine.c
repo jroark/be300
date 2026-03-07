@@ -4315,14 +4315,15 @@ void machine_run(machine_t *m)
             m->insn_count += step_count;
     }
 
+    ui_destroy(m);
     fprintf(stderr, "[MACHINE] Stopped after %" PRIu64 " instructions\n",
             m->insn_count);
 }
 
 void machine_stop(machine_t *m)
 {
+    if (!m)
+        return;
     m->running = false;
-
-    ui_destroy(m);
     uc_emu_stop(m->uc);
 }

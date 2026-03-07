@@ -4,6 +4,8 @@ test_basic
 
 # Build artifacts
 build/
+build-docker/
+build-host/
 *.o
 *.log
 boot_stdout*.txt
@@ -19,3 +21,9 @@ Makefile
 linux4be/
 linux4be20040908/
 .DS_Store
+
+# Android project artifacts
+android/.gradle/
+android/.idea/
+android/local.properties
+android/**/build/
