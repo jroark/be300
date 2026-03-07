@@ -1,0 +1,1 @@
+cmd_drivers/media/dvb/built-in.o :=  mipsel-linux-ld  --oformat elf32-tradlittlemips  -r -o drivers/media/dvb/built-in.o drivers/media/dvb/dvb-core/built-in.o drivers/media/dvb/frontends/built-in.o drivers/media/dvb/ttpci/built-in.o drivers/media/dvb/ttusb-dec/built-in.o drivers/media/dvb/ttusb-budget/built-in.o drivers/media/dvb/b2c2/built-in.o drivers/media/dvb/bt8xx/built-in.o
