@@ -49,12 +49,7 @@ Push with: `git push -u origin <current branch>`
 - `kernels/src/linux-2.6` - approximate kernel source of `kernels/vmlinux-2.6`
 - `kernels/src/linux-2.4.18` - approximate kernel source of 2.4.18 kernels
 
-**Kernel Changes for BE-300**
-- `kernels/linux-2.6` - Patch set and overlay for the 2.6 kernel from Dec 21st 2003
-
 **WinCE ELF loader**
-- `linux4be20040908/loader.exe` - CyaCE compiled binary
-- `linux4be20040908/cyacecfg.txt` - CyaCE config
 - `ce/cyace` - source code for CyaCE loader
 
 **Things to note**
@@ -93,14 +88,3 @@ Push with: `git push -u origin <current branch>`
 
 2. **Logs & artifacts:**
    - Always capture both stdout and stderr from emulator runs (`docker_*.log`).
-   - RCU/TLBS instrumentation prints to stderr; grep for `CHECKPOINT`, `TLB_INJECT`,
-     `MTC0_EPC`, etc.
-
-3. **Kernel sources:**
-   - `kernels/kernel-2.6/` holds the patched BE-300 kernel tree used to produce
-     `linux4be20040908/vmlinux`. Consult it when symbol hunting or adjusting
-     platform-specific code (`arch/mips/vr41xx/...`).
-
-4. **Commit etiquette:** every investigation (successful or not) gets its own
-   commit summarizing what happened, what was learned, and next steps, then
-   push to `claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`.
