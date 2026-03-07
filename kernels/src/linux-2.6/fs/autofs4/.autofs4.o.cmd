@@ -1,0 +1,1 @@
+cmd_fs/autofs4/autofs4.o := mipsel-linux-ld  --oformat elf32-tradlittlemips  -r -o fs/autofs4/autofs4.o fs/autofs4/init.o fs/autofs4/inode.o fs/autofs4/root.o fs/autofs4/symlink.o fs/autofs4/waitq.o fs/autofs4/expire.o

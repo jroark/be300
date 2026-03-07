@@ -1,0 +1,1 @@
+#define CONFIG_FB_SIMPLE_MEMSIZE 0x0

@@ -1,0 +1,39 @@
+/.cvsignore/1.6/Wed Aug 11 01:17:02 2004/-ko/D2004.08.13.07.00.00
+/Lindent/1.3/Thu Feb 19 03:06:37 2004/-ko/D2004.08.13.07.00.00
+/Makefile/1.28/Fri Aug  6 00:33:33 2004/-ko/D2004.08.13.07.00.00
+/Makefile.build/1.18/Mon Apr 12 20:23:42 2004/-ko/D2004.08.13.07.00.00
+/Makefile.clean/1.6/Tue Sep 30 14:27:32 2003/-ko/D2004.08.13.07.00.00
+/Makefile.lib/1.12/Mon Apr 12 20:23:42 2004/-ko/D2004.08.13.07.00.00
+/Makefile.modinst/1.8/Tue Jul 20 20:21:28 2004/-ko/D2004.08.13.07.00.00
+/Makefile.modpost/1.11/Fri Aug  6 00:33:33 2004/-ko/D2004.08.13.07.00.00
+/README.Menuconfig/1.4/Wed Jun  4 18:14:34 2003/-ko/D2004.08.13.07.00.00
+/bin2c.c/1.2/Thu Oct  9 13:09:38 2003/-ko/D2004.08.13.07.00.00
+/binoffset.c/1.1/Fri Aug 15 15:14:41 2003/-ko/D2004.08.13.07.00.00
+/checkconfig.pl/1.4/Thu Jun 14 04:24:32 2001/-ko/D2004.08.13.07.00.00
+/checkincludes.pl/1.1/Wed Apr 19 04:00:25 2000/-ko/D2004.08.13.07.00.00
+/checkstack.pl/1.4/Wed Jun 30 17:26:51 2004/-ko/D2004.08.13.07.00.00
+/checkversion.pl/1.1/Tue Sep  9 16:41:09 2003/-ko/D2004.08.13.07.00.00
+/conmakehash.c/1.1/Thu Oct 31 16:35:53 2002/-ko/D2004.08.13.07.00.00
+/extract-ikconfig/1.3/Sat Jun 26 15:15:28 2004/-ko/D2004.08.13.07.00.00
+/gcc-version.sh/1.1/Thu Mar 11 16:47:01 2004/-ko/D2004.08.13.07.00.00
+/kallsyms.c/1.8/Tue Jul 20 20:21:28 2004/-ko/D2004.08.13.07.00.00
+/kernel-doc/1.16/Tue Jul 20 20:21:28 2004/-ko/D2004.08.13.07.00.00
+/makelst/1.4/Fri Aug 15 15:14:41 2003/-ko/D2004.08.13.07.00.00
+/makeman/1.3/Sun Oct 19 00:50:12 2003/-ko/D2004.08.13.07.00.00
+/mkcompile_h/1.10/Tue Sep 30 14:27:32 2003/-ko/D2004.08.13.07.00.00
+/mkmakefile/1.1/Fri Aug  6 00:33:33 2004/-ko/D2004.08.13.07.00.00
+/mkuboot.sh/1.1/Tue Sep 30 14:27:32 2003/-ko/D2004.08.13.07.00.00
+/mkversion/1.1/Fri Oct 19 01:25:10 2001/-ko/D2004.08.13.07.00.00
+/patch-kernel/1.6/Tue Oct 29 05:07:16 2002/-ko/D2004.08.13.07.00.00
+/pnmtologo.c/1.3/Thu Oct  9 13:09:38 2003/-ko/D2004.08.13.07.00.00
+/reference_discarded.pl/1.2/Wed Jun  9 14:12:16 2004/-ko/D2004.08.13.07.00.00
+/reference_init.pl/1.1/Wed Jun  9 14:12:16 2004/-ko/D2004.08.13.07.00.00
+/split-man/1.4/Sun Oct 19 00:50:12 2003/-ko/D2004.08.13.07.00.00
+/ver_linux/1.18/Fri Apr 23 15:54:24 2004/-ko/D2004.08.13.07.00.00
+D/basic////
+D/genksyms////
+D/kconfig////
+D/ksymoops////
+D/lxdialog////
+D/mod////
+D/package////
