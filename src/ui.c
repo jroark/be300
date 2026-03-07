@@ -240,7 +240,6 @@ static bool ui_capture_framebuffer(machine_t *m)
         /*
          * Expand non-standard 2.6 layout:
          *   - Green is 5-bit at [9:5], expanded to G6 by MSB replication.
-         *   - Red/Blue channels are swapped relative to expected RGB565.
          */
         for (uint32_t y = 0; y < m->fb_height; y++) {
             for (uint32_t x = 0; x < m->fb_width; x++) {
@@ -250,7 +249,7 @@ static bool ui_capture_framebuffer(machine_t *m)
                 uint16_t b5 = p & 0x1Fu;
                 uint16_t g6 = (uint16_t)((g5 << 1) | (g5 >> 4));
                 g_linear_fb[y * m->fb_width + x] =
-                    (uint16_t)((b5 << 11) | (g6 << 5) | r5);
+                    (uint16_t)((r5 << 11) | (g6 << 5) | b5);
             }
         }
     } else {

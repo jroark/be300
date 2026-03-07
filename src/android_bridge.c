@@ -211,6 +211,7 @@ Java_com_jroark_be300android_Be300Native_nativeCopyFrameToBitmap(
     for (uint32_t y = 0; y < out_h; y++) {
         uint32_t src_y = (uint32_t)(((uint64_t)y * src_h) / out_h);
         uint8_t *row = dst + (size_t)y * info.stride;
+        uint32_t *row32 = (uint32_t *)row;
         for (uint32_t x = 0; x < out_w; x++) {
             uint32_t src_x = (uint32_t)(((uint64_t)x * src_w) / out_w);
             uint16_t p = emu->latest_frame[src_y * src_w + src_x];
@@ -221,12 +222,7 @@ Java_com_jroark_be300android_Be300Native_nativeCopyFrameToBitmap(
             uint8_t g8 = (uint8_t)((g6 << 2) | (g6 >> 4));
             uint8_t b8 = (uint8_t)((b5 << 3) | (b5 >> 2));
 
-            size_t o = (size_t)x * 4u;
-            /* ANDROID_BITMAP_FORMAT_RGBA_8888 is little-endian in memory (BGRA byte order). */
-            row[o + 0] = b8;
-            row[o + 1] = g8;
-            row[o + 2] = r8;
-            row[o + 3] = 0xFFu;
+            row32[x] = 0xFF000000u | ((uint32_t)r8 << 16) | ((uint32_t)g8 << 8) | (uint32_t)b8;
         }
     }
 
