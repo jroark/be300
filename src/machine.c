@@ -159,29 +159,6 @@ static void clear_synthetic_syscall_state(machine_t *m, bool clear_execve_watch)
     }
 }
 
-static void arm_execve_user_handoff(machine_t *m, uint64_t user_pc, uint64_t user_sp,
-                                    const char *tag, uint64_t source_pc,
-                                    uint32_t intno)
-{
-    uint64_t upc = (uint64_t)(uint32_t)user_pc;
-    uint64_t usp = (uint64_t)(uint32_t)user_sp;
-    m->execve_user_handoff_active = true;
-    m->execve_user_handoff_pc = upc;
-    m->execve_user_handoff_sp = usp;
-    clear_synthetic_syscall_state(m, true);
-    m->has_saved_exception = false;
-    static uint32_t execve_user_handoff_log = 0;
-    if (execve_user_handoff_log < 64) {
-        fprintf(stderr,
-                "[EXECVE_USER_HANDOFF_ARM] src=%s intno=%u from_pc=0x%08" PRIX64
-                " -> user_pc=0x%08" PRIX64 " user_sp=0x%08" PRIX64
-                " action=arm_only\n",
-                tag, intno, (uint64_t)(uint32_t)source_pc,
-                (uint64_t)(uint32_t)upc, (uint64_t)(uint32_t)usp);
-        execve_user_handoff_log++;
-    }
-}
-
 static void snapshot_execve_gpr_context(machine_t *m, uc_engine *uc, uint64_t pc)
 {
     m->execve_last_pc = pc;
@@ -1903,9 +1880,12 @@ static void prid_hook(uc_engine *uc, uint64_t address,
              * Keep pending_excode=8 and all other syscall tracking active —
              * the execve syscall is still in progress.
              */
+            bool skip_init_execve_retry =
+                is_init_execve_epc((uint32_t)m->pending_syscall_epc);
             if (m->pending_excode == MIPS_EXCCODE_SYS &&
                 m->execve_watch_active &&
-                m->execve_entry_pc != 0) {
+                m->execve_entry_pc != 0 &&
+                !skip_init_execve_retry) {
                 static uint32_t eret_execve_retry_log = 0;
                 uint64_t resume_pc = m->execve_entry_pc;
                 bool resume_entry = true;
@@ -1959,6 +1939,18 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 }
                 uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
                 return;
+            }
+            if (skip_init_execve_retry) {
+                static uint32_t eret_execve_retry_skip_log = 0;
+                if (eret_execve_retry_skip_log < 32) {
+                    fprintf(stderr,
+                            "[ERET_EXECVE_RETRY_SKIP] init_execve syscall_epc=0x%08" PRIX64
+                            " pending_epc=0x%08" PRIX64 " PC=0x%08" PRIX64 "\n",
+                            (uint64_t)(uint32_t)m->pending_syscall_epc,
+                            (uint64_t)(uint32_t)m->pending_epc,
+                            (uint64_t)(uint32_t)address);
+                    eret_execve_retry_skip_log++;
+                }
             }
 
             /*
@@ -2443,7 +2435,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         bool execve_handoff_ctx =
                             ((uint32_t)v0 >= 0x70000000u && (uint32_t)v0 < 0x80000000u &&
                              (uint32_t)a3 >= 0x00010000u && (uint32_t)a3 < 0x80000000u);
-                        if ((intno == 26u || intno == 27u) && execve_handoff_ctx) {
+                        if (intno == 27u && execve_handoff_ctx) {
                             static uint32_t execve_ctx_defer_log = 0;
                             if (execve_ctx_defer_log < 64) {
                                 fprintf(stderr,
@@ -2451,7 +2443,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                         " syscall_epc=0x%08" PRIX64
                                         " pending_epc=0x%08" PRIX64
                                         " v0=0x%08" PRIX64 " a3=0x%08" PRIX64
-                                        " action=user_handoff\n",
+                                        " action=defer_tlb_entry\n",
                                         intno, (uint64_t)(uint32_t)pc,
                                         (uint64_t)(uint32_t)m->pending_syscall_epc,
                                         (uint64_t)(uint32_t)m->pending_epc,
@@ -2459,9 +2451,6 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                         (uint64_t)(uint32_t)a3);
                                 execve_ctx_defer_log++;
                             }
-                            arm_execve_user_handoff(m, a3, v0,
-                                                    "intr_ret_ctx", pc, intno);
-                            return;
                         } else if (intno == 26u || intno == 27u) {
                             static uint32_t tlb_nested_drop_stale_log = 0;
                             if (tlb_nested_drop_stale_log < 128) {
@@ -3082,9 +3071,6 @@ static void inject_hw_irq_if_pending(machine_t *m)
                                     (uint64_t)(uint32_t)a3);
                             execve_ctx_seen_irq_log++;
                         }
-                        arm_execve_user_handoff(m, a3, v0,
-                                                "irq_gate_ret_ctx", pc, 0u);
-                        return;
                     }
                     fprintf(stderr,
                             "[SYSCALL_RET_FALLBACK] pending_epc=0x%08" PRIX64
