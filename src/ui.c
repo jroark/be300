@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
 
 #include "ui.h"
 #include "bus.h"
@@ -61,6 +62,7 @@ static bool ui_capture_framebuffer(machine_t *m)
      */
     static int fb_probe_frame = 0;
     static bool fb_probe_resolved = false;
+    static uint64_t fb_source_addr = PA_FRAMEBUFFER_BASE;
     if (!fb_probe_resolved && (fb_probe_frame++ % 60) == 0) {
         static const struct {
             uint64_t addr;
@@ -84,13 +86,26 @@ static bool ui_capture_framebuffer(machine_t *m)
                         sample[0], sample[1], sample[2], sample[3],
                         nonzero ? " <-- DATA HERE" : "");
             }
-            if (nonzero && pi == 0)
+            if (nonzero) {
                 fb_probe_resolved = true;
+                fb_source_addr = probes[pi].addr;
+            }
+        }
+        if (fb_probe_resolved) {
+            fprintf(stderr, "[FB_PROBE] selected source addr=0x%08" PRIX64 "\n",
+                    (uint64_t)(uint32_t)fb_source_addr);
         }
     }
 
-    if (uc_mem_read(m->uc, PA_FRAMEBUFFER_BASE, g_guest_fb, PA_FRAMEBUFFER_SIZE) != UC_ERR_OK)
-        return false;
+    uc_err fb_read_err = uc_mem_read(m->uc, fb_source_addr, g_guest_fb, PA_FRAMEBUFFER_SIZE);
+    if (fb_read_err != UC_ERR_OK) {
+        if (fb_source_addr != PA_FRAMEBUFFER_BASE) {
+            fb_read_err = uc_mem_read(m->uc, PA_FRAMEBUFFER_BASE, g_guest_fb, PA_FRAMEBUFFER_SIZE);
+            fb_source_addr = PA_FRAMEBUFFER_BASE;
+        }
+        if (fb_read_err != UC_ERR_OK)
+            return false;
+    }
 
     if (m->cfg.sfb_5bit_green) {
         /*
