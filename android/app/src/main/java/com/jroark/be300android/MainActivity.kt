@@ -7,13 +7,15 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 import java.io.IOException
-import java.util.LinkedHashSet
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
@@ -23,10 +25,29 @@ class MainActivity : AppCompatActivity() {
     private lateinit var frameContainer: FrameLayout
     private lateinit var framebufferView: ImageView
     private lateinit var frameOverlayView: ImageView
+    private lateinit var kernelSpinner: Spinner
     private lateinit var statusText: TextView
 
     private lateinit var framebufferBitmap: Bitmap
     private var emulatorHandle: Long = 0
+    private var kernelChoices: List<KernelChoice> = emptyList()
+    private var selectedKernelId: String? = null
+    private var currentKernelLabel: String = ""
+    private var ignoreKernelSelectionEvents = false
+
+    private data class KernelBundle(
+        val id: String,
+        val label: String,
+        val assetPath: String,
+        val outputName: String
+    )
+
+    private data class KernelChoice(
+        val id: String,
+        val label: String,
+        val path: String
+    )
+
     private data class ScreenMask(
         val mask: BooleanArray,
         val width: Int,
@@ -43,7 +64,11 @@ class MainActivity : AppCompatActivity() {
                 val hasFrame = native.nativeCopyFrameToBitmap(emulatorHandle, framebufferBitmap)
                 if (hasFrame) {
                     framebufferView.invalidate()
-                    statusText.text = "Running"
+                    statusText.text = if (currentKernelLabel.isBlank()) {
+                        "Running"
+                    } else {
+                        "Running: $currentKernelLabel"
+                    }
                 }
             }
             uiHandler.postDelayed(this, FRAME_INTERVAL_MS)
@@ -57,6 +82,7 @@ class MainActivity : AppCompatActivity() {
         frameContainer = findViewById(R.id.deviceFrameContainer)
         framebufferView = findViewById(R.id.framebufferView)
         frameOverlayView = findViewById(R.id.frameOverlayView)
+        kernelSpinner = findViewById(R.id.kernelSpinner)
         statusText = findViewById(R.id.statusText)
 
         framebufferBitmap = Bitmap.createBitmap(FB_WIDTH, FB_HEIGHT, Bitmap.Config.ARGB_8888)
@@ -70,86 +96,164 @@ class MainActivity : AppCompatActivity() {
             frameBitmap.recycle()
         }
 
-        val bundledKernelPath = ensureBundledKernelInAppStorage()
-        val kernelCandidates = resolveKernelCandidates()
-        if (kernelCandidates.isEmpty()) {
-            if (bundledKernelPath == null) {
-                statusText.text = "Kernel not found; bundled kernel missing. Push $DEFAULT_KERNEL_NAME to ${File(filesDir, DEFAULT_KERNEL_NAME).absolutePath}"
-            } else {
-                statusText.text = "Kernel not found at expected locations"
+        kernelChoices = prepareBundledKernels()
+
+        val intentKernelPath = intent.getStringExtra("kernel_path")
+        if (!intentKernelPath.isNullOrBlank()) {
+            val intentFile = File(intentKernelPath)
+            if (intentFile.exists() && intentFile.canRead()) {
+                kernelChoices = listOf(
+                    KernelChoice(
+                        id = INTENT_KERNEL_ID,
+                        label = "Intent override (${intentFile.name})",
+                        path = intentFile.absolutePath
+                    )
+                ) + kernelChoices.filterNot { it.path == intentFile.absolutePath }
             }
+        }
+
+        if (kernelChoices.isEmpty()) {
+            statusText.text = "Kernel bundle missing in app assets"
             return
         }
 
-        val cmdline = "console=tty0 console=ttyS0,9600 root=/dev/ram init=/linuxrc"
-        var selectedKernel: String? = null
-        for (candidate in kernelCandidates) {
-            emulatorHandle = native.nativeCreate(
-                kernelPath = candidate,
-                cmdline = cmdline,
-                sfb5bitGreen = false,
-                sdramMb = 16
-            )
-            if (emulatorHandle != 0L) {
-                selectedKernel = candidate
-                break
+        setupKernelSelector()
+    }
+
+    override fun onDestroy() {
+        stopEmulator()
+        super.onDestroy()
+    }
+
+    private fun setupKernelSelector() {
+        val labels = kernelChoices.map { it.label }
+        val adapter = ArrayAdapter(
+            this,
+            R.layout.item_kernel_selected,
+            android.R.id.text1,
+            labels
+        )
+        adapter.setDropDownViewResource(R.layout.item_kernel_dropdown)
+        kernelSpinner.adapter = adapter
+        kernelSpinner.prompt = getString(R.string.kernel_select_prompt)
+
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val preferredKernelId = if (kernelChoices.firstOrNull()?.id == INTENT_KERNEL_ID) {
+            INTENT_KERNEL_ID
+        } else {
+            prefs.getString(PREF_LAST_KERNEL_ID, DEFAULT_KERNEL_ID)
+        }
+        val initialIndex = kernelChoices.indexOfFirst { it.id == preferredKernelId }
+            .takeIf { it >= 0 }
+            ?: kernelChoices.indexOfFirst { it.id == DEFAULT_KERNEL_ID }.takeIf { it >= 0 }
+            ?: 0
+
+        ignoreKernelSelectionEvents = true
+        kernelSpinner.setSelection(initialIndex, false)
+        ignoreKernelSelectionEvents = false
+
+        kernelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                if (ignoreKernelSelectionEvents) return
+                startKernel(position, fromUserSelection = true)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                // no-op
             }
         }
 
+        startKernel(initialIndex, fromUserSelection = false)
+    }
+
+    private fun startKernel(index: Int, fromUserSelection: Boolean) {
+        if (index !in kernelChoices.indices) return
+        val choice = kernelChoices[index]
+        if (!fromUserSelection && emulatorHandle != 0L && selectedKernelId == choice.id) {
+            return
+        }
+
+        stopEmulator()
+
+        val cmdline = "console=tty0 console=ttyS0,9600 root=/dev/ram init=/linuxrc"
+        emulatorHandle = native.nativeCreate(
+            kernelPath = choice.path,
+            cmdline = cmdline,
+            sfb5bitGreen = false,
+            sdramMb = 16
+        )
         if (emulatorHandle == 0L) {
-            statusText.text = "Failed to create emulator (tried ${kernelCandidates.joinToString()})"
+            statusText.text = "Failed to create emulator for ${choice.label}"
             return
         }
 
         if (!native.nativeStart(emulatorHandle)) {
-            statusText.text = "Failed to start emulator"
+            statusText.text = "Failed to start emulator for ${choice.label}"
             native.nativeDestroy(emulatorHandle)
             emulatorHandle = 0
             return
         }
 
-        statusText.text = "Booting kernel from $selectedKernel"
+        selectedKernelId = choice.id
+        currentKernelLabel = choice.label
+        statusText.text = "Booting kernel: ${choice.label}"
         uiHandler.post(framePump)
+
+        if (choice.id != INTENT_KERNEL_ID) {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putString(PREF_LAST_KERNEL_ID, choice.id)
+                .apply()
+        }
     }
 
-    override fun onDestroy() {
+    private fun stopEmulator() {
         uiHandler.removeCallbacks(framePump)
         if (emulatorHandle != 0L) {
             native.nativeDestroy(emulatorHandle)
             emulatorHandle = 0
         }
-        super.onDestroy()
+        currentKernelLabel = ""
     }
 
-    private fun resolveKernelCandidates(): List<String> {
-        val candidates = LinkedHashSet<String>()
-        val fromIntent = intent.getStringExtra("kernel_path")
-        if (!fromIntent.isNullOrBlank()) {
-            candidates.add(fromIntent)
+    private fun prepareBundledKernels(): List<KernelChoice> {
+        val outputDir = File(filesDir, KERNEL_DIR_NAME)
+        if (!outputDir.exists() && !outputDir.mkdirs()) {
+            return emptyList()
         }
-        candidates.add(File(filesDir, DEFAULT_KERNEL_NAME).absolutePath)
-        candidates.add("/sdcard/Download/$DEFAULT_KERNEL_NAME")
-        return candidates.filter { path ->
-            val file = File(path)
-            file.exists() && file.canRead()
+
+        val choices = mutableListOf<KernelChoice>()
+        for (bundle in BUNDLED_KERNELS) {
+            val outFile = File(outputDir, bundle.outputName)
+            if (!copyAssetIfMissing(bundle.assetPath, outFile)) {
+                continue
+            }
+            if (outFile.exists() && outFile.length() > 0L && outFile.canRead()) {
+                choices.add(
+                    KernelChoice(
+                        id = bundle.id,
+                        label = bundle.label,
+                        path = outFile.absolutePath
+                    )
+                )
+            }
         }
+        return choices
     }
 
-    private fun ensureBundledKernelInAppStorage(): String? {
-        val outFile = File(filesDir, DEFAULT_KERNEL_NAME)
+    private fun copyAssetIfMissing(assetPath: String, outFile: File): Boolean {
         if (outFile.exists() && outFile.length() > 0L && outFile.canRead()) {
-            return outFile.absolutePath
+            return true
         }
-
         return try {
-            assets.open(DEFAULT_KERNEL_NAME).use { input ->
+            assets.open(assetPath).use { input ->
                 outFile.outputStream().use { output ->
                     input.copyTo(output)
                 }
             }
-            outFile.absolutePath
+            true
         } catch (e: IOException) {
-            null
+            false
         }
     }
 
@@ -446,7 +550,50 @@ class MainActivity : AppCompatActivity() {
         private const val FB_WIDTH = 240
         private const val FB_HEIGHT = 320
         private const val FRAME_INTERVAL_MS = 16L
-        private const val DEFAULT_KERNEL_NAME = "vmlinux-pgui-demo"
+        private const val PREFS_NAME = "be300_prefs"
+        private const val PREF_LAST_KERNEL_ID = "last_kernel_id"
+        private const val DEFAULT_KERNEL_ID = "vmlinux-pgui-demo"
+        private const val INTENT_KERNEL_ID = "__intent_kernel_path__"
+        private const val KERNEL_DIR_NAME = "kernels"
+
+        private val BUNDLED_KERNELS = listOf(
+            KernelBundle(
+                id = "linux4be20040908-vmlinux",
+                label = "linux4be20040908/vmlinux (2.6.8.1)",
+                assetPath = "kernels/linux4be20040908-vmlinux",
+                outputName = "linux4be20040908-vmlinux"
+            ),
+            KernelBundle(
+                id = "vmlinux",
+                label = "kernels/vmlinux",
+                assetPath = "kernels/vmlinux",
+                outputName = "vmlinux"
+            ),
+            KernelBundle(
+                id = "vmlinux_sdlregtest",
+                label = "kernels/vmlinux_sdlregtest",
+                assetPath = "kernels/vmlinux_sdlregtest",
+                outputName = "vmlinux_sdlregtest"
+            ),
+            KernelBundle(
+                id = "vmlinux-mw",
+                label = "kernels/vmlinux-mw",
+                assetPath = "kernels/vmlinux-mw",
+                outputName = "vmlinux-mw"
+            ),
+            KernelBundle(
+                id = "vmlinux-pgui-demo",
+                label = "kernels/vmlinux-pgui-demo",
+                assetPath = "kernels/vmlinux-pgui-demo",
+                outputName = "vmlinux-pgui-demo"
+            ),
+            KernelBundle(
+                id = "vmlinux-pgui-test1",
+                label = "kernels/vmlinux-pgui-test1",
+                assetPath = "kernels/vmlinux-pgui-test1",
+                outputName = "vmlinux-pgui-test1"
+            )
+        )
 
         // Screen viewport inside be300_frame.png (normalized to frame image size).
         private const val SCREEN_LEFT_FRAC = 0.1100f
