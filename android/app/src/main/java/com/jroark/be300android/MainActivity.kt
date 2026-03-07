@@ -12,6 +12,7 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
+import java.io.IOException
 import java.util.LinkedHashSet
 import kotlin.math.roundToInt
 
@@ -69,9 +70,14 @@ class MainActivity : AppCompatActivity() {
             frameBitmap.recycle()
         }
 
+        val bundledKernelPath = ensureBundledKernelInAppStorage()
         val kernelCandidates = resolveKernelCandidates()
         if (kernelCandidates.isEmpty()) {
-            statusText.text = "Kernel not found. Push $DEFAULT_KERNEL_NAME to ${File(filesDir, DEFAULT_KERNEL_NAME).absolutePath}"
+            if (bundledKernelPath == null) {
+                statusText.text = "Kernel not found; bundled kernel missing. Push $DEFAULT_KERNEL_NAME to ${File(filesDir, DEFAULT_KERNEL_NAME).absolutePath}"
+            } else {
+                statusText.text = "Kernel not found at expected locations"
+            }
             return
         }
 
@@ -126,6 +132,24 @@ class MainActivity : AppCompatActivity() {
         return candidates.filter { path ->
             val file = File(path)
             file.exists() && file.canRead()
+        }
+    }
+
+    private fun ensureBundledKernelInAppStorage(): String? {
+        val outFile = File(filesDir, DEFAULT_KERNEL_NAME)
+        if (outFile.exists() && outFile.length() > 0L && outFile.canRead()) {
+            return outFile.absolutePath
+        }
+
+        return try {
+            assets.open(DEFAULT_KERNEL_NAME).use { input ->
+                outFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            outFile.absolutePath
+        } catch (e: IOException) {
+            null
         }
     }
 
