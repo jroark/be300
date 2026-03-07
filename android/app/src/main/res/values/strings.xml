@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">BE-300 Emulator</string>
     <string name="status_waiting">Waiting for first frame...</string>
+    <string name="kernel_select_prompt">Select kernel</string>
 </resources>
