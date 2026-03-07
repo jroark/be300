@@ -11,10 +11,9 @@
 This applies to: code changes, diagnostic instrumentation, failed experiments, documentation updates, and analysis results.
 
 ## Branch
+Stay on the current branch, don't create PRs.
 
-All work goes on: `claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
-
-Push with: `git push -u origin claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
+Push with: `git push -u origin <current branch>`
 
 ## Execution Environment Policy
 
@@ -35,22 +34,18 @@ Push with: `git push -u origin claude/explain-codebase-mm1561dhacl5ikyh-zdk3b`
 **Kernels**
 - `linux4be20040908/vmlinux`   — ELF32 MIPS LE, 2.6.8.1, built 2004-09-08.
 - `kernels/vmlinux`            - ELF 32-bit LSB executable, MIPS, MIPS-II version 1 (SYSV), statically linked, not stripped, too many notes (256)
+  - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
 - `kernels/vmlinux_sdlregtest` - ELF32 MIPS LE, Linux version 2.4.18-mips (mouse@mouse.office.altlinux.ru) (gcc version 3.0.4) #325   20 14:06:02 MSK 2003
+  - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
 - `kernels/vmlinux-mw`         - ELF32 MIPS LE, Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
-- `kernels/vmlinux-pgui-demo`  - ELF32 MIPS LE, Linux version
-  2.4.18-mips known good kernel and ramdisk (booted to userspace on real
-hardware)
-- `kernels/vmlinux-pgui-test1` - ELF32
+  - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
+- `kernels/vmlinux-pgui-demo`  - ELF32 MIPS LE, Linux version 2.4.18-mips known good kernel and ramdisk (booted to userspace on real hardware)
+  - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
+- `kernels/vmlinux-pgui-test1` - ELF32 MIPS LE, Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
+  - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
 
 **Kernel Changes for BE-300**
-- `kernels/linux-2.6`
-
-**Cross-dev Docker image:** `git@github.com:jroark/mipsel-cross-image.git`
-- Provides `mipsel-linux-gnu-gcc` toolchain for building userspace / initramfs.
-- Scripts: `build_tcl_kernel.sh`, `build_busybox.sh`, `create_initramfs.sh`.
-
-**WinCE flash image**
-- `BACKUP.bin` - restore image from Casio CDROM
+- `kernels/linux-2.6` - Patch set and overlay for the 2.6 kernel from Dec 21st 2003
 
 **WinCE ELF loader**
 - `linux4be20040908/loader.exe` - CyaCE compiled binary
@@ -62,78 +57,7 @@ hardware)
 - None of the test kernels had full hw support
 
 **References**
-- GXemul - git@github.com:bitedits/gxe.git - implements various NEC
-  vr41xx CPUs
-
----
-
-## Current Boot Status (as of 2026-02-26)
-
-### Last confirmed stdout output
-```
-Linux version 2.6.8.1 ...
-Calibrating delay loop... 99.84 BogoMIPS
-fb0: Casio BE-x00 frame buffer device
-RAMDISK / PPP / NFTL init
-NET: Registered protocol family 2
-IP: routing cache hash table of 512 buckets, 4Kbytes
-TCP: Hash tables configured (established 512 bind 512)
-RAMDISK: Compressed image found at block 0
-VFS: Mounted root (ext2 filesystem) readonly.
-Freeing unused kernel memory: 112k freed          ← last line
-```
-
-### Checkpoint evidence (from latest run)
-```
-[CHECKPOINT] rest_init
-[CHECKPOINT] init (kernel thread)
-[CHECKPOINT] do_pre_smp_initcalls
-[CHECKPOINT] do_basic_setup
-[CHECKPOINT] do_initcalls
-[INITCALL] #01–#60  (packet_init = #60 = 0x802864d8)
-[CHECKPOINT] prepare_namespace
-[CHECKPOINT] run_init_process (entry)   a0="/sbin/init"
-[CHECKPOINT] create_elf_tables (entry)
-[EXC_SUSPEND] reason=tlb_store PC=0x800015B4
-[INTR27] STATUS=0x1000FF01 PC=0x800015B4 pending_excode=0 pending_epc=0x00000000
-← STUCK: endless intno=27 (TLB store refill) storms at PC=0x800015B4 while the
-         syscall never retires and no page-fault handler ever fires.
-```
-
-`af_unix_init`, `packet_init`, `prepare_namespace`, and `run_init_process` all
-fire. The remaining blocker occurs after `create_elf_tables()` when the execve
-syscall never returns to user space and execution keeps re-entering the syscall
-site at 0x800015B0. The new instrumentation shows that each intno=27 arrives
-with `pending_excode=0`, so the kernel is looping entirely inside the TLB
-refill handler without ever escalating to `do_page_fault`.
-
----
-
-## Confirmed Root Cause of Current Blocker (2026‑02‑26)
-
-The RCU/timer issue is fixed; initcalls complete and `/sbin/init` is located.
-`run_init_process` successfully invokes `create_elf_tables`, but the execve
-syscall never reaches user mode. With the new exception plumbing:
-
-- Manual TLBS reinjection has been removed. intno=27 now arrives with
-  `pending_excode=0`, so refills execute entirely inside the kernel’s TLB miss
-  handler.
-- `[PF_PROBE]` never fires and even the checkpoint hook on `do_page_fault`
-  remains silent, proving that the kernel never escalates the fault to the
-  high-level C handler. The fast refill path keeps trying (and failing) to fill
-  the entry.
-- `[MTC0_EPC]` still only records kernel EPC values (0x8000AE64,
-  0x800405C4, …). No kuseg EPC write is observed before the refill storm, so
-  `start_thread()` is never given a chance to install the user entry point.
-- The init thread loops forever at PC=0x800015B4 while intno=27 fires millions
-  of times and `pending_epc` remains zero, confirming we’re stuck in the refill
-  hardware path rather than the software page-fault path.
-
-**Most likely cause:** the refill handler is walking the page tables but never
-managing to produce a writable TLB entry (e.g., the PTE’s dirty bit never gets
-set or the emulator isn’t honoring the guest’s TLB writes). Until the refill
-completes, `/sbin/init` can’t be mapped and the syscall continues to hammer the
-same address.
+- GXemul - git@github.com:bitedits/gxe.git - implements various NEC vr41xx CPUs
 
 ---
 
@@ -163,24 +87,6 @@ same address.
 | `jiffies` (PA)           | 0x001cd9e0 |
 | `af_unix_init`           | 0x80286440 |
 | `packet_init`            | 0x802864d8 |
-
----
-
-## Next Steps (Priority Order)
-
-1. **Instrument the TLB refill handler:** add hooks on the exception vectors
-   (0x80000000, 0x80000080, 0x80000180) to log BadVAddr/EntryHi/EntryLo writes.
-   We need to see whether the kernel is attempting to write dirty/writable PTEs
-   and whether `tlbwi` is executing.
-2. **Trace guest TLB writes:** add hooks in `machine.c` that watch for mtc0 to
-   CP0 registers 0/2 and for the `tlbwi` instruction. Dump the values being
-   written so we can confirm the emulator sees valid PTEs and ASIDs.
-3. **Verify emulator TLB state:** use Unicorn’s `uc_ctl` APIs (or temporary
-   instrumentation) to query whether tlbwi actually updates internal mappings.
-   If not, we may need to patch Unicorn or emulate the refill by directly
-   mapping the physical page when the kernel writes a TLB entry.
-4. **Initramfs follow-up:** once `/sbin/init` finally runs, we’ll still need a
-   proper mipsel initramfs (build via the Docker cross-dev image scripts).
 
 ---
 
