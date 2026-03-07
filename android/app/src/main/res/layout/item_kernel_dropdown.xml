@@ -3,6 +3,7 @@
     android:id="@android:id/text1"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
+    android:background="@color/be300_panel"
     android:ellipsize="end"
     android:gravity="center_vertical"
     android:maxLines="1"
@@ -10,5 +11,5 @@
     android:paddingTop="10dp"
     android:paddingEnd="12dp"
     android:paddingBottom="10dp"
-    android:textColor="#101112"
+    android:textColor="@color/be300_status"
     android:textSize="14sp" />
