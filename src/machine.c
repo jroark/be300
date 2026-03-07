@@ -82,6 +82,8 @@ static inline bool tlb_trace_window_active(const machine_t *m)
  */
 #define RUN_INIT_SYSCALL_EPC      0x8000181Cu
 #define RUN_INIT_SYSCALL_RET_PC   0x80001820u
+#define RUN_INIT_SYSCALL_EPC_26   0x800015B0u
+#define RUN_INIT_SYSCALL_RET_PC_26 0x800015B4u
 #define INIT_ARGV_KPTR            0x80171244u
 #define INIT_ENVP_KPTR            0x8017126Cu
 #define EXECVE_SCRATCH_BASE       0x01020000u
@@ -109,6 +111,16 @@ static inline bool is_init_execve_epc(uint32_t epc)
     default:
         return false;
     }
+}
+
+static inline bool is_run_init_syscall_epc(uint32_t pc)
+{
+    return (pc == RUN_INIT_SYSCALL_EPC || pc == RUN_INIT_SYSCALL_EPC_26);
+}
+
+static inline bool is_run_init_syscall_ret_pc(uint32_t pc)
+{
+    return (pc == RUN_INIT_SYSCALL_RET_PC || pc == RUN_INIT_SYSCALL_RET_PC_26);
 }
 
 static inline bool in_init_execve_syscall_window(const machine_t *m)
@@ -384,6 +396,75 @@ static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *ins
         return true;
 
     return false;
+}
+
+/*
+ * Fallback for UC_ERR_WRITE_UNMAPPED in late execve/user-copy paths:
+ * decode simple MIPS store ops and commit the write directly, then advance PC.
+ * This avoids livelock when Unicorn repeatedly reports write-unmapped without
+ * completing the guest store after we map candidate blocks.
+ */
+static bool emulate_store_on_write_unmapped(machine_t *m, uint64_t pc)
+{
+    uint32_t insn = 0;
+    if (!read_insn_best_effort(m->uc, pc, &insn))
+        return false;
+
+    uint32_t op = insn >> 26;
+    if (!(op == 0x28u || op == 0x29u || op == 0x2Bu || op == 0x3Fu))
+        return false; /* sb, sh, sw, sd */
+
+    uint32_t rs = (insn >> 21) & 0x1Fu;
+    uint32_t rt = (insn >> 16) & 0x1Fu;
+    int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+
+    uint64_t base = 0, src = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_0 + (int)rs, &base);
+    uc_reg_read(m->uc, UC_MIPS_REG_0 + (int)rt, &src);
+
+    uint32_t addr32 = (uint32_t)((uint32_t)base + (uint32_t)imm);
+    uint64_t addr64 = (uint64_t)addr32;
+    uint64_t block32 = (uint64_t)(addr32 & ~0xFFFFFu);
+    uint64_t block = addr64 & ~(uint64_t)0xFFFFF;
+
+    if (addr32 >= 0x80000000u && addr32 <= 0xBFFFFFFFu) {
+        map_kseg_mirror_block(m, block);
+    } else {
+        uc_mem_map(m->uc, block32, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+        if (block != block32)
+            uc_mem_map(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+    }
+
+    uc_err we = UC_ERR_OK;
+    if (op == 0x28u) { /* sb */
+        uint8_t v = (uint8_t)(src & 0xFFu);
+        we = uc_mem_write(m->uc, addr64, &v, sizeof(v));
+    } else if (op == 0x29u) { /* sh */
+        uint16_t v = (uint16_t)(src & 0xFFFFu);
+        we = uc_mem_write(m->uc, addr64, &v, sizeof(v));
+    } else if (op == 0x2Bu) { /* sw */
+        uint32_t v = (uint32_t)src;
+        we = uc_mem_write(m->uc, addr64, &v, sizeof(v));
+    } else if (op == 0x3Fu) { /* sd */
+        uint64_t v = src;
+        we = uc_mem_write(m->uc, addr64, &v, sizeof(v));
+    }
+    if (we != UC_ERR_OK)
+        return false;
+
+    uint64_t next_pc = pc + 4u;
+    uc_reg_write(m->uc, UC_MIPS_REG_PC, &next_pc);
+
+    static uint32_t store_emu_log = 0;
+    if (store_emu_log < 256) {
+        fprintf(stderr,
+                "[STORE_EMU] op=0x%02X pc=0x%08" PRIX64
+                " addr=0x%08X rt=$%u val=0x%08" PRIX64 "\n",
+                op, (uint64_t)(uint32_t)pc, addr32, rt,
+                (uint64_t)(uint32_t)src);
+        store_emu_log++;
+    }
+    return true;
 }
 
 static bool insn_has_delay_slot(uint32_t insn)
@@ -1825,8 +1906,14 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 
             /*
              * If no explicit MTC0 EPC was observed, let Unicorn execute the
-             * native ERET, but still clear synthetic exception bookkeeping so
-             * we don't permanently block future injected interrupts.
+             * native ERET.
+             *
+             * Execve + deferred TLB miss corner case (2.6 run_init path):
+             * when we forced one TLB refill entry from SYSCALL+4, the nested
+             * refill handler ERET must return to guest code while preserving
+             * pending syscall bookkeeping. Clearing pending_excode here causes
+             * intno=26/27 floods at SYSCALL+4 to lose syscall context and
+             * livelock in unmapped-recovery loops.
              */
             static uint32_t eret_native_log = 0;
             if (tlb_trace_window_active(m) && eret_native_log < 128) {
@@ -1841,9 +1928,26 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         m->has_saved_exception ? 1u : 0u);
                 eret_native_log++;
             }
-            if (m->pending_excode == MIPS_EXCCODE_SYS)
+            bool keep_syscall_state =
+                (m->pending_excode == MIPS_EXCCODE_SYS &&
+                 m->pending_syscall_nr == 4011u &&
+                 !m->epc_was_written &&
+                 m->tlb_defer_active);
+            if (keep_syscall_state) {
+                static uint32_t eret_native_keep_log = 0;
+                if (eret_native_keep_log < 64) {
+                    fprintf(stderr,
+                            "[ERET_NATIVE_KEEP_SYS] nr=%u pending_epc=0x%08" PRIX64
+                            " owner_epc=0x%08X defer_count=%u\n",
+                            m->pending_syscall_nr,
+                            (uint64_t)(uint32_t)m->pending_epc,
+                            m->tlb_defer_owner_epc,
+                            m->tlb_defer_count);
+                    eret_native_keep_log++;
+                }
+            } else if (m->pending_excode == MIPS_EXCCODE_SYS) {
                 clear_synthetic_syscall_state(m, true);
-            else {
+            } else {
                 m->pending_epc          = 0;
                 m->pending_excode       = 0;
                 m->pending_cause        = 0;
@@ -1892,6 +1996,35 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
     /*
+     * After a synthetic execve->userspace handoff, Unicorn can still emit
+     * stale TLB/aux notifications pinned to run_init_process+4. Redirect
+     * those back to the handed-off user context.
+     */
+    if (m->execve_user_handoff_active &&
+        is_run_init_syscall_ret_pc((uint32_t)pc) &&
+        (intno == 12u || intno == 26u || intno == 27u)) {
+        uint64_t restore_pc = m->execve_user_handoff_pc;
+        uint64_t restore_sp = m->execve_user_handoff_sp;
+        uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &restore_pc);
+        uc_reg_write(uc, UC_MIPS_REG_SP, &restore_sp);
+        uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
+        static uint32_t handoff_stale_log = 0;
+        if (handoff_stale_log < 128) {
+            fprintf(stderr,
+                    "[EXECVE_USER_HANDOFF_KEEP] intno=%u stale_pc=0x%08" PRIX64
+                    " -> user_pc=0x%08" PRIX64 " user_sp=0x%08" PRIX64
+                    " status=0x%08" PRIX64 "\n",
+                    intno, (uint64_t)(uint32_t)pc,
+                    (uint64_t)(uint32_t)restore_pc,
+                    (uint64_t)(uint32_t)restore_sp,
+                    (uint64_t)(uint32_t)user_status);
+            handoff_stale_log++;
+        }
+        return;
+    }
+
+    /*
      * Unicorn 2.1.4 MIPS fires intno=17 for the SYSCALL instruction.
      * When the hook fires, Unicorn has already advanced PC to SYSCALL+4;
      * the real EPC (address of the syscall instruction) is PC-4.
@@ -1918,7 +2051,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 fprintf(stderr, "[INTR] intno=%u further logs suppressed\n", intno);
         }
         if (intno == 27u && intr_log_count_27_detail < 32u) {
-            if (!m->tlb_trace_window && (uint32_t)pc == RUN_INIT_SYSCALL_RET_PC) {
+            if (!m->tlb_trace_window && is_run_init_syscall_ret_pc((uint32_t)pc)) {
                 m->tlb_trace_window = true;
                 fprintf(stderr,
                         "[TLB_TRACE] activated by first TLBS at PC=0x%08" PRIX64 "\n",
@@ -1943,7 +2076,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
              */
             static uint32_t tlb_badvaddr_log = 0;
             bool focus_fault =
-                ((uint32_t)pc == RUN_INIT_SYSCALL_RET_PC) ||
+                is_run_init_syscall_ret_pc((uint32_t)pc) ||
                 ((uint32_t)pc == 0x80000000u) ||
                 ((uint32_t)pc == 0x80000180u);
             if (focus_fault && tlb_badvaddr_log < 96u) {
@@ -2238,7 +2371,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     if (syscall_is_execve && at_ret_site &&
                         !m->execve_watch_active && !stale_post_mtc0) {
                         /*
-                         * Post-do_execve intno=26 at SYSCALL+4 is typically a
+                         * Post-do_execve intno=26/27 at SYSCALL+4 is typically a
                          * stale notification. Re-entering 0x80000180 here
                          * re-runs the syscall decoder with garbage v0 and
                          * corrupts init() fallback registers (a1/a2).
@@ -2247,24 +2380,52 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                          * synthetic syscall bookkeeping intact so the real
                          * return path can retire normally.
                          */
-                        if (intno == 26u) {
-                            static uint32_t tlb_nested_drop26_log = 0;
-                            if (tlb_nested_drop26_log < 128) {
-                                uint64_t v0 = 0, a3 = 0;
-                                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-                                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                        uint64_t v0 = 0, a3 = 0;
+                        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                        uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                        bool execve_handoff_ready =
+                            ((uint32_t)v0 >= 0x70000000u && (uint32_t)v0 < 0x80000000u &&
+                             (uint32_t)a3 >= 0x00010000u && (uint32_t)a3 < 0x80000000u);
+
+                        if (intno == 27u && execve_handoff_ready) {
+                            uint64_t user_sp = mips_sext((uint32_t)v0);
+                            uint64_t user_pc = mips_sext((uint32_t)a3);
+                            uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
+                            m->execve_user_handoff_active = true;
+                            m->execve_user_handoff_pc = user_pc;
+                            m->execve_user_handoff_sp = user_sp;
+                            uc_reg_write(uc, UC_MIPS_REG_SP, &user_sp);
+                            uc_reg_write(uc, UC_MIPS_REG_PC, &user_pc);
+                            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
+                            fprintf(stderr,
+                                    "[EXECVE_USER_HANDOFF_TLB] intno=%u pc=0x%08" PRIX64
+                                    " sp=0x%08" PRIX64 " status=0x%08" PRIX64
+                                    " syscall_epc=0x%08" PRIX64 "\n",
+                                    intno,
+                                    (uint64_t)(uint32_t)user_pc,
+                                    (uint64_t)(uint32_t)user_sp,
+                                    (uint64_t)(uint32_t)user_status,
+                                    (uint64_t)(uint32_t)m->pending_epc);
+                            clear_synthetic_syscall_state(m, true);
+                            m->has_saved_exception = false;
+                            return;
+                        }
+
+                        if (intno == 26u || intno == 27u) {
+                            static uint32_t tlb_nested_drop_stale_log = 0;
+                            if (tlb_nested_drop_stale_log < 128) {
                                 fprintf(stderr,
-                                        "[TLB_NESTED_DROP26_KEEP] PC=0x%08" PRIX64
+                                        "[TLB_NESTED_DROP_KEEP] intno=%u PC=0x%08" PRIX64
                                         " STATUS=0x%08" PRIX64
                                         " syscall_epc=0x%08" PRIX64
                                         " pending_epc=0x%08" PRIX64
                                         " v0=0x%08" PRIX64 " a3=0x%08" PRIX64 "\n",
-                                        (uint64_t)(uint32_t)pc, status,
+                                        intno, (uint64_t)(uint32_t)pc, status,
                                         (uint64_t)(uint32_t)m->pending_syscall_epc,
                                         (uint64_t)(uint32_t)m->pending_epc,
                                         (uint64_t)(uint32_t)v0,
                                         (uint64_t)(uint32_t)a3);
-                                tlb_nested_drop26_log++;
+                                tlb_nested_drop_stale_log++;
                             }
                             return;
                         }
@@ -2548,6 +2709,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     m->pending_epc_served   = false;
     m->has_saved_exception  = false;  /* stale nested state must not leak across syscalls */
     reset_tlb_defer_state(m);         /* reset DEFER retry/ownership for this syscall */
+    m->execve_user_handoff_active = false;
 
     {
         uint64_t v0 = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
@@ -2748,7 +2910,7 @@ static void inject_hw_irq_if_pending(machine_t *m)
 
     if (!m->tlb_trace_window &&
         m->pending_excode == MIPS_EXCCODE_SYS &&
-        (uint32_t)m->pending_epc == RUN_INIT_SYSCALL_EPC) {
+        is_run_init_syscall_epc((uint32_t)m->pending_epc)) {
         m->tlb_trace_window = true;
         fprintf(stderr,
                 "[TLB_TRACE] armed near run_init_process pending_epc=0x%08" PRIX64 "\n",
@@ -2844,6 +3006,39 @@ static void inject_hw_irq_if_pending(machine_t *m)
                     uint64_t v0 = 0, a3 = 0;
                     uc_reg_read(m->uc, UC_MIPS_REG_V0, &v0);
                     uc_reg_read(m->uc, UC_MIPS_REG_A3, &a3);
+                    /*
+                     * Successful execve handoff can reach the post-SYSCALL site
+                     * with user context already staged in regs:
+                     *   v0 ~= user stack pointer, a3 ~= user entry PC.
+                     * In that case, transition to user entry directly instead
+                     * of treating this as a plain syscall fallback.
+                     */
+                    bool execve_handoff_ready =
+                        (m->pending_syscall_nr == 4011u &&
+                         (uint32_t)v0 >= 0x70000000u && (uint32_t)v0 < 0x80000000u &&
+                         (uint32_t)a3 >= 0x00010000u && (uint32_t)a3 < 0x80000000u);
+                    if (execve_handoff_ready) {
+                        uint64_t user_sp = mips_sext((uint32_t)v0);
+                        uint64_t user_pc = mips_sext((uint32_t)a3);
+                        uint64_t new_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
+                        m->execve_user_handoff_active = true;
+                        m->execve_user_handoff_pc = user_pc;
+                        m->execve_user_handoff_sp = user_sp;
+                        uc_reg_write(m->uc, UC_MIPS_REG_SP, &user_sp);
+                        uc_reg_write(m->uc, UC_MIPS_REG_PC, &user_pc);
+                        uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &new_status);
+                        fprintf(stderr,
+                                "[EXECVE_USER_HANDOFF] pc=0x%08" PRIX64
+                                " sp=0x%08" PRIX64 " status=0x%08" PRIX64
+                                " syscall_epc=0x%08" PRIX64 "\n",
+                                (uint64_t)(uint32_t)user_pc,
+                                (uint64_t)(uint32_t)user_sp,
+                                (uint64_t)(uint32_t)new_status,
+                                (uint64_t)(uint32_t)m->pending_epc);
+                        clear_synthetic_syscall_state(m, true);
+                        m->has_saved_exception = false;
+                        return;
+                    }
                     fprintf(stderr,
                             "[SYSCALL_RET_FALLBACK] pending_epc=0x%08" PRIX64
                             " pc=0x%08" PRIX64 " nr=%u"
@@ -4086,6 +4281,17 @@ void machine_run(machine_t *m)
                     badv = m->shadow_cp0_badvaddr;
                 }
                 m->last_unmapped_valid = false;
+
+                /*
+                 * Some Unicorn builds repeatedly report WRITE_UNMAPPED on
+                 * the same store without completing it even after mapping.
+                 * Decode/commit simple stores directly to break the livelock.
+                 */
+                if (emulate_store_on_write_unmapped(m, bad_pc)) {
+                    write_unmapped_recoveries++;
+                    continue;
+                }
+
                 uc_reg_read(m->uc, UC_MIPS_REG_AT, &at);
                 uc_reg_read(m->uc, UC_MIPS_REG_V0, &v0);
                 uc_reg_read(m->uc, UC_MIPS_REG_A0, &a0);

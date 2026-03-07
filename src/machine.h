@@ -74,6 +74,9 @@ struct machine_s {
     uint64_t pending_syscall_a0;    /* syscall arg0 captured at SYSCALL inject   */
     char     pending_syscall_a0_str[128]; /* best-effort arg0 string (if pointer) */
     uint64_t pending_syscall_epc;   /* ORIGINAL syscall VA; not overwritten by MTC0 EPC */
+    bool     execve_user_handoff_active; /* redirected to userspace entry from execve */
+    uint64_t execve_user_handoff_pc;     /* last user entry PC for stale trap redirect */
+    uint64_t execve_user_handoff_sp;     /* last user stack for stale trap redirect     */
     bool     execve_watch_active;   /* waiting to log do_execve return value      */
     uint64_t execve_watch_ret_pc;   /* caller PC to observe on do_execve return   */
     uint64_t execve_watch_a0;       /* do_execve filename pointer (entry arg0)    */
