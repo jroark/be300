@@ -222,9 +222,10 @@ Java_com_jroark_be300android_Be300Native_nativeCopyFrameToBitmap(
             uint8_t b8 = (uint8_t)((b5 << 3) | (b5 >> 2));
 
             size_t o = (size_t)x * 4u;
-            row[o + 0] = r8;
+            /* ANDROID_BITMAP_FORMAT_RGBA_8888 is little-endian in memory (BGRA byte order). */
+            row[o + 0] = b8;
             row[o + 1] = g8;
-            row[o + 2] = b8;
+            row[o + 2] = r8;
             row[o + 3] = 0xFFu;
         }
     }

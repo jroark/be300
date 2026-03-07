@@ -50,8 +50,11 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
                 size * 8, offset, value);
 
     if (offset == VRC4173_UART_THR) {
-        putchar((int)(value & 0xFF));
+#ifndef __ANDROID__
+        int ch = (int)(value & 0xFF);
+        putchar(ch);
         fflush(stdout);
+#endif
     }
 }
 

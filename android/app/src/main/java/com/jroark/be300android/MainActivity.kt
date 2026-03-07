@@ -48,6 +48,11 @@ class MainActivity : AppCompatActivity() {
         val path: String
     )
 
+    private data class KernelBootOptions(
+        val cmdline: String,
+        val sfb5bitGreen: Boolean
+    )
+
     private data class ScreenMask(
         val mask: BooleanArray,
         val width: Int,
@@ -175,11 +180,11 @@ class MainActivity : AppCompatActivity() {
 
         stopEmulator()
 
-        val cmdline = "console=tty0 console=ttyS0,9600 root=/dev/ram init=/linuxrc"
+        val bootOptions = bootOptionsFor(choice)
         emulatorHandle = native.nativeCreate(
             kernelPath = choice.path,
-            cmdline = cmdline,
-            sfb5bitGreen = false,
+            cmdline = bootOptions.cmdline,
+            sfb5bitGreen = bootOptions.sfb5bitGreen,
             sdramMb = 16
         )
         if (emulatorHandle == 0L) {
@@ -204,6 +209,19 @@ class MainActivity : AppCompatActivity() {
                 .edit()
                 .putString(PREF_LAST_KERNEL_ID, choice.id)
                 .apply()
+        }
+    }
+
+    private fun bootOptionsFor(choice: KernelChoice): KernelBootOptions {
+        return when (choice.id) {
+            "linux4be20040908-vmlinux" -> KernelBootOptions(
+                cmdline = "",
+                sfb5bitGreen = true
+            )
+            else -> KernelBootOptions(
+                cmdline = DEFAULT_CMDLINE,
+                sfb5bitGreen = false
+            )
         }
     }
 
@@ -553,6 +571,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_NAME = "be300_prefs"
         private const val PREF_LAST_KERNEL_ID = "last_kernel_id"
         private const val DEFAULT_KERNEL_ID = "vmlinux-pgui-demo"
+        private const val DEFAULT_CMDLINE = "console=tty0 console=ttyS0,9600 root=/dev/ram init=/linuxrc"
         private const val INTENT_KERNEL_ID = "__intent_kernel_path__"
         private const val KERNEL_DIR_NAME = "kernels"
 
