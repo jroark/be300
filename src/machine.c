@@ -2615,16 +2615,15 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
              *   intno=26/27 -> forced vector -> UC_ERR_READ_UNMAPPED @ 0x80000000.
              *
              * If a synthetic exception (notably SYSCALL) is currently pending,
-             * drop it before native TLB handling so MFC0 Cause/EPC reads see
+             * save it before native TLB handling so MFC0 Cause/EPC reads see
              * native CP0 values (ExcCode 2/3), not synthetic syscall state.
-             *
-             * We intentionally do NOT save/restore synthetic state here:
-             * intno=26/27 delivery timing can occur before we reliably observe
-             * a matching nested ERET, and stale saved state can poison later
-             * exception returns.
+             * The saved state is restored on the TLB handler's ERET (in
+             * prid_hook).  Both EXL=1 and EXL=0 paths use save/restore so
+             * that SYSCALL tracking (execve_watch_active, pending_syscall_nr,
+             * etc.) survives across transparent TLB refills.
              */
             static uint32_t tlb_passthrough_log_count = 0;
-            static uint32_t tlb_nested_drop_log = 0;
+            static uint32_t tlb_nested_suspend_exl0_log = 0;
             static uint32_t tlb_nested_suspend_log = 0;
             if (m->pending_excode != 0) {
                 if ((status & 0x2u) != 0u) {
@@ -2645,23 +2644,24 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     }
                     return;
                 }
-                if (m->pending_excode == MIPS_EXCCODE_SYS)
-                    clear_synthetic_syscall_state(m, true);
-                else {
-                    m->pending_epc          = 0;
-                    m->pending_excode       = 0;
-                    m->pending_cause        = 0;
-                    m->epc_was_written      = false;
-                    m->pending_cause_served = false;
-                    m->pending_epc_served   = false;
-                    reset_tlb_defer_state(m);
-                }
-                m->has_saved_exception  = false;
-                if (tlb_nested_drop_log < 64) {
+                /* EXL=0: same save/restore as EXL=1 path above.
+                 * Do NOT call clear_synthetic_syscall_state — it destroys
+                 * execve tracking and syscall metadata that must survive
+                 * across TLB refill.  Do NOT set has_saved_exception=false. */
+                save_pending_exception(m);
+                m->pending_epc          = 0;
+                m->pending_excode       = 0;
+                m->pending_cause        = 0;
+                m->epc_was_written      = false;
+                m->pending_cause_served = false;
+                m->pending_epc_served   = false;
+                if (tlb_nested_suspend_exl0_log < 64) {
                     fprintf(stderr,
-                            "[TLB_NESTED_DROP] cleared synthetic excode for intno=%u at PC=0x%08" PRIX64 "\n",
-                            intno, (uint64_t)(uint32_t)pc);
-                    tlb_nested_drop_log++;
+                            "[TLB_NESTED_SUSPEND_EXL0] intno=%u PC=0x%08" PRIX64
+                            " STATUS=0x%08" PRIX64 " saved_excode=%u saved_epc=0x%08" PRIX64 "\n",
+                            intno, (uint64_t)(uint32_t)pc, status,
+                            m->saved_pending_excode, (uint64_t)(uint32_t)m->saved_pending_epc);
+                    tlb_nested_suspend_exl0_log++;
                 }
             }
             if (tlb_trace_window_active(m) && tlb_passthrough_log_count < 96) {
