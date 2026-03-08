@@ -1643,16 +1643,23 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         read_guest_u32(uc, m->do_no_page_watch_pte_ptr, &pte);
         uint32_t pa_page = pte & 0xFFFFF000u;
         uint8_t pa_bytes[16] = {0};
+        uint8_t kseg_bytes[16] = {0};
         uint8_t va_bytes[16] = {0};
         uc_err pa_err = UC_ERR_READ_UNMAPPED;
+        uc_err kseg_err = UC_ERR_READ_UNMAPPED;
         uc_err va_err = uc_mem_read(uc, (uint64_t)m->do_no_page_watch_addr,
                                     va_bytes, sizeof(va_bytes));
-        if (have_pte && pa_page != 0u)
+        if (have_pte && pa_page != 0u) {
             pa_err = uc_mem_read(uc, (uint64_t)pa_page, pa_bytes, sizeof(pa_bytes));
+            kseg_err = uc_mem_read(uc, mips_sext(0x80000000u | pa_page),
+                                   kseg_bytes, sizeof(kseg_bytes));
+        }
 
         char pa_hex[16 * 3 + 1];
+        char kseg_hex[16 * 3 + 1];
         char va_hex[16 * 3 + 1];
         format_hex_bytes(pa_bytes, sizeof(pa_bytes), pa_hex, sizeof(pa_hex));
+        format_hex_bytes(kseg_bytes, sizeof(kseg_bytes), kseg_hex, sizeof(kseg_hex));
         format_hex_bytes(va_bytes, sizeof(va_bytes), va_hex, sizeof(va_hex));
         static uint32_t do_no_page_ret_log = 0;
         if (do_no_page_ret_log < 128) {
@@ -1660,7 +1667,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                     "[HANDOFF_DO_NO_PAGE_RET] pc=0x%08" PRIX64
                     " ra=0x%08" PRIX64 " fault_addr=0x%08X v0=0x%08" PRIX64
                     " a3=0x%08" PRIX64 " pte_ptr=0x%08" PRIX64 " pte=0x%08X pa_page=0x%08X"
-                    " pa_err=%d va_err=%d pa=[%s] va=[%s]\n",
+                    " pa_err=%d kseg_err=%d va_err=%d pa=[%s] kseg=[%s] va=[%s]\n",
                     (uint64_t)(uint32_t)address,
                     (uint64_t)(uint32_t)m->do_no_page_watch_ra,
                     m->do_no_page_watch_addr,
@@ -1669,8 +1676,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                     (uint64_t)(uint32_t)m->do_no_page_watch_pte_ptr,
                     have_pte ? pte : 0u,
                     pa_page,
-                    pa_err, va_err,
-                    pa_hex, va_hex);
+                    pa_err, kseg_err, va_err,
+                    pa_hex, kseg_hex, va_hex);
             do_no_page_ret_log++;
         }
         m->do_no_page_watch_active = false;
