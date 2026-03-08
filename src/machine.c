@@ -486,17 +486,31 @@ static void tlb_map_kuseg_page(machine_t *m, uint64_t kuseg_va, uint64_t pa,
         return;
     }
 
-    /* Populate exactly the translated TLB window. */
+    /* Populate exactly the translated TLB window.
+     * Read from kseg0 alias (0x80000000 + PA) first, because kernel writes
+     * (ramdisk load, page cache I/O) go to kseg0 alias regions which are
+     * separate Unicorn memory from the PA region at 0x00000000.
+     * Fall back to raw PA if the kseg0 alias block isn't mapped yet. */
     uint8_t buf[4096];
     for (uint64_t off = 0; off < page_bytes; off += sizeof(buf)) {
         uint64_t pa_off = pa_pg + off;
-        if (pa_off < (uint64_t)m->cfg.sdram_size &&
-            uc_mem_read(m->uc, pa_off, buf, sizeof(buf)) == UC_ERR_OK) {
-            uc_mem_write(m->uc, va_pg + off, buf, sizeof(buf));
-        } else {
-            memset(buf, 0, sizeof(buf));
-            uc_mem_write(m->uc, va_pg + off, buf, sizeof(buf));
+        bool got_data = false;
+
+        /* Try kseg0 alias first (has kernel runtime writes) */
+        if (pa_off < (uint64_t)m->cfg.sdram_size) {
+            uint64_t kseg0_addr = 0x80000000u + pa_off;
+            if (uc_mem_read(m->uc, kseg0_addr, buf, sizeof(buf)) == UC_ERR_OK)
+                got_data = true;
         }
+        /* Fallback to raw PA (has ELF loader content) */
+        if (!got_data && pa_off < (uint64_t)m->cfg.sdram_size) {
+            if (uc_mem_read(m->uc, pa_off, buf, sizeof(buf)) == UC_ERR_OK)
+                got_data = true;
+        }
+        if (!got_data)
+            memset(buf, 0, sizeof(buf));
+
+        uc_mem_write(m->uc, va_pg + off, buf, sizeof(buf));
     }
 
     static uint32_t map_log = 0;
@@ -504,7 +518,7 @@ static void tlb_map_kuseg_page(machine_t *m, uint64_t kuseg_va, uint64_t pa,
         fprintf(stderr,
                 "[TLB_MAP] kuseg VA=0x%08" PRIX64
                 " <- SDRAM PA=0x%08" PRIX64
-                " bytes=0x%08" PRIX64 " premap=%u\n",
+                " bytes=0x%08" PRIX64 " premap=%u (via kseg0)\n",
                 va_pg, pa_pg, page_bytes, premap ? 1u : 0u);
 
     if (m->cfg.trace_user_handoff &&
