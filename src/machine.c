@@ -1932,6 +1932,29 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                     fprintf(stderr, "[ERET_MANUAL] returning to EPC=0x%08" PRIX64 "\n", epc);
                 }
 
+                /* Prevent QEMU's native ERET from overriding our kuseg PC.
+                 * Our MTC0 EPC intercept skipped the real MTC0, so QEMU's internal
+                 * CP0_EPC is stale.  uc_emu_stop() terminates the batch;
+                 * machine_run()'s loop reads PC afresh and resumes at our target. */
+                if ((uint32_t)epc < 0x80000000u) {
+                    m->execve_user_handoff_active = true;
+                    m->execve_user_handoff_pc = epc;
+                    uint64_t sp_val = 0;
+                    uc_reg_read(uc, UC_MIPS_REG_SP, &sp_val);
+                    m->execve_user_handoff_sp = sp_val;
+
+                    /* Probe: verify user-space code is present at target VA */
+                    uint32_t probe = 0;
+                    uc_err re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
+                    fprintf(stderr,
+                            "[ERET_MANUAL_KUSEG] target=0x%08X sp=0x%08" PRIX64
+                            " status=0x%08" PRIX64
+                            " insn@target=0x%08X read_err=%d\n",
+                            (uint32_t)epc, sp_val, status, probe, re);
+
+                    uc_emu_stop(uc);
+                }
+
                 if (m->pending_excode == MIPS_EXCCODE_SYS)
                     clear_synthetic_syscall_state(m, true);
                 else {
@@ -2085,7 +2108,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
      * those back to the handed-off user context.
      */
     if (m->execve_user_handoff_active &&
-        is_run_init_syscall_ret_pc((uint32_t)pc) &&
+        (uint32_t)pc >= 0x80000000u &&    /* stale kseg0 PC after kuseg handoff */
         (intno == 12u || intno == 26u || intno == 27u)) {
         uint64_t restore_pc = m->execve_user_handoff_pc;
         uint64_t restore_sp = m->execve_user_handoff_sp;
@@ -2105,6 +2128,36 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     (uint64_t)(uint32_t)user_status);
             handoff_stale_log++;
         }
+        return;
+    }
+
+    /*
+     * User-space exception at a kuseg PC: route to kernel exception handler.
+     * intno=12 can be RI (Reserved Instruction) or CpU (Coprocessor Unusable).
+     * Set EPC = current PC, EXL = 1, redirect to general exception vector.
+     */
+    if ((uint32_t)pc < 0x80000000u && intno == 12u) {
+        uint64_t user_epc = pc;
+        uint64_t exc_status = status | 0x2u;  /* set EXL */
+        uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exc_status);
+        /* Store EPC for the kernel handler */
+        uint64_t exc_vec = 0x80000180u;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &exc_vec);
+        static uint32_t user_exc_log = 0;
+        if (user_exc_log < 64) {
+            fprintf(stderr,
+                    "[USER_EXCEPTION] intno=%u pc=0x%08" PRIX64
+                    " -> exception vector 0x80000180\n",
+                    intno, (uint64_t)(uint32_t)pc);
+            user_exc_log++;
+        }
+        /* Set synthetic exception state so the kernel can read EPC/Cause */
+        m->pending_epc = user_epc;
+        m->pending_excode = 10u;  /* RI (Reserved Instruction) — approximate */
+        m->pending_cause = (uint32_t)(10u << 2);
+        m->epc_was_written = false;
+        m->pending_cause_served = false;
+        m->pending_epc_served = false;
         return;
     }
 
@@ -4342,6 +4395,38 @@ void machine_run(machine_t *m)
 
         uint32_t step_count = m->post_init_trace_window ? POST_INIT_BATCH_SIZE : BATCH_SIZE;
         uc_err err = uc_emu_start(m->uc, pc, 0, 0, step_count);
+
+        /* Belt-and-suspenders: after uc_emu_stop() from ERET_MANUAL_KUSEG,
+         * verify that native ERET didn't override our kuseg PC. */
+        if (m->execve_user_handoff_active) {
+            uint64_t post_pc = 0;
+            uc_reg_read(m->uc, UC_MIPS_REG_PC, &post_pc);
+            if ((uint32_t)post_pc >= 0x80000000u) {
+                uint64_t fix_pc = m->execve_user_handoff_pc;
+                uint64_t fix_sp = m->execve_user_handoff_sp;
+                uc_reg_write(m->uc, UC_MIPS_REG_PC, &fix_pc);
+                uc_reg_write(m->uc, UC_MIPS_REG_SP, &fix_sp);
+                /* Clear EXL so user code runs in user mode */
+                uint64_t fix_status = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &fix_status);
+                fix_status = (fix_status & ~(uint64_t)0x1Au) | 0x10u; /* clear EXL/KSU, set UM */
+                uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &fix_status);
+                static uint32_t handoff_fix_log = 0;
+                if (handoff_fix_log < 32) {
+                    fprintf(stderr,
+                            "[EXECVE_HANDOFF_FIX] stale_pc=0x%08" PRIX64
+                            " -> kuseg_pc=0x%08" PRIX64
+                            " sp=0x%08" PRIX64
+                            " status=0x%08" PRIX64 "\n",
+                            (uint64_t)(uint32_t)post_pc,
+                            (uint64_t)(uint32_t)fix_pc,
+                            (uint64_t)(uint32_t)fix_sp,
+                            (uint64_t)(uint32_t)fix_status);
+                    handoff_fix_log++;
+                }
+                continue;  /* re-enter loop with corrected PC */
+            }
+        }
 
         if (err != UC_ERR_OK) {
             uint64_t bad_pc = 0;
