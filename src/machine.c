@@ -105,6 +105,24 @@ static inline bool tlb_trace_window_active(const machine_t *m)
 #define K24_HANDLE_TLBS           0x80013560u
 #define K24_DO_NO_PAGE            0x800283A4u
 #define K24_FILEMAP_NOPAGE        0x8002DAB8u
+#define K24_FILEMAP_FIND_GET_PAGE_RET   0x8002DBB4u
+#define K24_FILEMAP_PAGE_CACHE_READ_RET 0x8002DBECu
+#define K24_FILEMAP_READ_CLUSTER_RET    0x8002DC40u
+#define K24_FILEMAP_UPTODATE_CHECK      0x8002DC48u
+#define K24_FILEMAP_UPTODATE_BRANCH     0x8002DC54u
+#define K24_FILEMAP_READPAGE_RET        0x8002DC94u
+#define K24_FILEMAP_LOCKPAGE_CALL       0x8002DC5Cu
+#define K24_FILEMAP_MAPPING_CHECK       0x8002DC64u
+#define K24_FILEMAP_UPTODATE_RECHECK    0x8002DC7Cu
+#define K24_FILEMAP_READPAGE_CALL       0x8002DC8Cu
+#define K24_FILEMAP_SKIP_READPAGE       0x8002DCC4u
+#define K24_BLOCK_READ_SUBMIT_BH_CALL   0x80042ED8u
+#define K24_BLOCK_READ_SUBMIT_BH_RET    0x80042EE0u
+#define K24_BLOCK_READ_GET_BLOCK_CALL   0x80042FB0u
+#define K24_BLOCK_READ_GET_BLOCK_RET    0x80042FB8u
+#define K24_BLOCK_READ_MEMSET_HOLE      0x80042FE8u
+#define K24_BLOCK_READ_RET              0x80042EECu
+#define K24_EXT2_GET_BLOCK_RET          0x8006E730u
 
 static inline bool execve_pc_in_do_execve(uint64_t pc)
 {
@@ -659,7 +677,8 @@ static tlb_lookup_result_t shadow_tlb_lookup(machine_t *m, uint32_t va)
         r.reason = "asid_unchecked";
 
     uint64_t pfn = (uint64_t)((lo >> 6) & 0xFFFFFu);
-    uint64_t pa = (pfn << 12) & ~(r.page_bytes - 1u);
+    /* VR41xx software PTE encoding keeps PFN shifted by +2 bits. */
+    uint64_t pa = (pfn << 10) & ~(r.page_bytes - 1u);
     if (pa >= (uint64_t)m->cfg.sdram_size) {
         r.reason = "pa_out_of_range";
         return r;
@@ -675,7 +694,7 @@ static tlb_lookup_result_t shadow_tlb_lookup(machine_t *m, uint32_t va)
     uint32_t pair_lo = odd_page ? r.lo0 : r.lo1;
     if ((pair_lo & 0x2u) != 0u) {
         uint64_t pair_pfn = (uint64_t)((pair_lo >> 6) & 0xFFFFFu);
-        uint64_t pair_pa = (pair_pfn << 12) & ~(r.page_bytes - 1u);
+        uint64_t pair_pa = (pair_pfn << 10) & ~(r.page_bytes - 1u);
         if (pair_pa < (uint64_t)m->cfg.sdram_size) {
             r.pair_valid = true;
             r.pair_va_page = odd_page ? (r.va_page - r.page_bytes) :
@@ -1113,6 +1132,37 @@ static bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out)
     if (uc_mem_read(uc, va, out, sizeof(*out)) == UC_ERR_OK)
         return true;
     return false;
+}
+
+static bool page_struct_ptr_to_pa(uc_engine *uc, uint32_t page_ptr,
+                                  uint32_t *mem_map_out,
+                                  uint32_t *pfn_out,
+                                  uint32_t *pa_out)
+{
+    uint32_t mem_map = 0;
+    if (!read_guest_u32(uc, 0x8024108Cu, &mem_map))
+        return false;
+    if (mem_map_out)
+        *mem_map_out = mem_map;
+    if (mem_map == 0u || page_ptr < mem_map)
+        return false;
+
+    /*
+     * Replicate the kernel's inlined do_no_page page->pfn conversion exactly
+     * (see do_no_page at 0x8002846c). This avoids guessing struct page layout.
+     */
+    const uint32_t delta = page_ptr - mem_map;
+    uint32_t v1 = (uint32_t)((int32_t)delta >> 2);
+    uint32_t v0 = (v1 << 4) + v1;
+    v0 += (v0 << 8);
+    v0 += (v0 << 16);
+    v0 = (uint32_t)(0u - v0);
+    v0 <<= 14;
+
+    uint32_t pa_page = (v0 & 0xFFFFF000u) >> 2;
+    if (pfn_out) *pfn_out = pa_page >> 12;
+    if (pa_out)  *pa_out = pa_page;
+    return true;
 }
 
 /*
@@ -1641,33 +1691,41 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint32_t pte = 0;
         bool have_pte = (m->do_no_page_watch_pte_ptr != 0u) &&
                         read_guest_u32(uc, m->do_no_page_watch_pte_ptr, &pte);
-        uint32_t pa_page = pte & 0xFFFFF000u;
+        uint32_t pa_page = (pte & 0xFFFFF000u) >> 2;
         uint8_t pa_bytes[16] = {0};
         uint8_t kseg_bytes[16] = {0};
         uint8_t va_bytes[16] = {0};
+        uint8_t pa_off_bytes[16] = {0};
         uc_err pa_err = UC_ERR_READ_UNMAPPED;
         uc_err kseg_err = UC_ERR_READ_UNMAPPED;
+        uc_err pa_off_err = UC_ERR_READ_UNMAPPED;
+        uint32_t entry_off = m->do_no_page_watch_addr & 0xFFFu;
         uc_err va_err = uc_mem_read(uc, (uint64_t)m->do_no_page_watch_addr,
                                     va_bytes, sizeof(va_bytes));
         if (have_pte && pa_page != 0u) {
             pa_err = uc_mem_read(uc, (uint64_t)pa_page, pa_bytes, sizeof(pa_bytes));
             kseg_err = uc_mem_read(uc, mips_sext(0x80000000u | pa_page),
                                    kseg_bytes, sizeof(kseg_bytes));
+            pa_off_err = uc_mem_read(uc, (uint64_t)pa_page + entry_off,
+                                     pa_off_bytes, sizeof(pa_off_bytes));
         }
 
         char pa_hex[16 * 3 + 1];
         char kseg_hex[16 * 3 + 1];
         char va_hex[16 * 3 + 1];
+        char pa_off_hex[16 * 3 + 1];
         format_hex_bytes(pa_bytes, sizeof(pa_bytes), pa_hex, sizeof(pa_hex));
         format_hex_bytes(kseg_bytes, sizeof(kseg_bytes), kseg_hex, sizeof(kseg_hex));
         format_hex_bytes(va_bytes, sizeof(va_bytes), va_hex, sizeof(va_hex));
+        format_hex_bytes(pa_off_bytes, sizeof(pa_off_bytes), pa_off_hex, sizeof(pa_off_hex));
         static uint32_t do_no_page_ret_log = 0;
         if (do_no_page_ret_log < 128) {
             fprintf(stderr,
                     "[HANDOFF_DO_NO_PAGE_RET] pc=0x%08" PRIX64
                     " ra=0x%08" PRIX64 " fault_addr=0x%08X v0=0x%08" PRIX64
                     " a3=0x%08" PRIX64 " pte_ptr=0x%08" PRIX64 " pte=0x%08X pa_page=0x%08X"
-                    " pa_err=%d kseg_err=%d va_err=%d pa=[%s] kseg=[%s] va=[%s]\n",
+                    " pa_err=%d kseg_err=%d va_err=%d pa=[%s] kseg=[%s] va=[%s]"
+                    " off=0x%03X pa_off_err=%d pa_off=[%s]\n",
                     (uint64_t)(uint32_t)address,
                     (uint64_t)(uint32_t)m->do_no_page_watch_ra,
                     m->do_no_page_watch_addr,
@@ -1677,7 +1735,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                     have_pte ? pte : 0u,
                     pa_page,
                     pa_err, kseg_err, va_err,
-                    pa_hex, kseg_hex, va_hex);
+                    pa_hex, kseg_hex, va_hex,
+                    entry_off, pa_off_err, pa_off_hex);
             do_no_page_ret_log++;
         }
         m->do_no_page_watch_active = false;
@@ -1691,20 +1750,54 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint64_t v0 = 0;
         uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
         uint32_t page_flags = 0;
+        uint32_t page_ptr52 = 0;
+        uint32_t page_ptr56 = 0;
+        uint32_t page_ptr60 = 0;
         bool have_page_flags = ((uint32_t)v0 >= 0x80000000u) &&
                                read_guest_u32(uc, v0 + 24u, &page_flags);
+        bool have_page_ptr52 = ((uint32_t)v0 >= 0x80000000u) &&
+                               read_guest_u32(uc, v0 + 52u, &page_ptr52);
+        bool have_page_ptr56 = ((uint32_t)v0 >= 0x80000000u) &&
+                               read_guest_u32(uc, v0 + 56u, &page_ptr56);
+        bool have_page_ptr60 = ((uint32_t)v0 >= 0x80000000u) &&
+                               read_guest_u32(uc, v0 + 60u, &page_ptr60);
+        uint32_t mem_map = 0, pfn = 0, pa_page = 0;
+        bool have_pa = ((uint32_t)v0 >= 0x80000000u) &&
+                       page_struct_ptr_to_pa(uc, (uint32_t)v0, &mem_map, &pfn, &pa_page);
+        uint8_t pa_bytes[16] = {0};
+        uint8_t pa_a00_bytes[16] = {0};
+        uc_err pa_err = UC_ERR_READ_UNMAPPED;
+        uc_err pa_a00_err = UC_ERR_READ_UNMAPPED;
+        if (have_pa)
+            pa_err = uc_mem_read(uc, (uint64_t)pa_page, pa_bytes, sizeof(pa_bytes));
+        if (have_pa)
+            pa_a00_err = uc_mem_read(uc, (uint64_t)pa_page + 0xA00u,
+                                     pa_a00_bytes, sizeof(pa_a00_bytes));
+        char pa_hex[16 * 3 + 1];
+        char pa_a00_hex[16 * 3 + 1];
+        format_hex_bytes(pa_bytes, sizeof(pa_bytes), pa_hex, sizeof(pa_hex));
+        format_hex_bytes(pa_a00_bytes, sizeof(pa_a00_bytes), pa_a00_hex, sizeof(pa_a00_hex));
         static uint32_t filemap_ret_log = 0;
         if (filemap_ret_log < 128) {
             fprintf(stderr,
                     "[HANDOFF_FILEMAP_NOPAGE_RET] pc=0x%08" PRIX64
                     " ra=0x%08" PRIX64 " fault_addr=0x%08X page=0x%08" PRIX64
-                    " page_flags=%s0x%08X\n",
+                    " page_flags=%s0x%08X mem_map=%s0x%08X pfn=%s0x%X pa=%s0x%08X"
+                    " page+52=%s0x%08X page+56=%s0x%08X page+60=%s0x%08X"
+                    " pa_err=%d pa=[%s] pa@a00_err=%d pa@a00=[%s]\n",
                     (uint64_t)(uint32_t)address,
                     (uint64_t)(uint32_t)m->filemap_nopage_watch_ra,
                     m->filemap_nopage_watch_addr,
                     (uint64_t)(uint32_t)v0,
                     have_page_flags ? "" : "?",
-                    page_flags);
+                    page_flags,
+                    have_pa ? "" : "?", mem_map,
+                    have_pa ? "" : "?", pfn,
+                    have_pa ? "" : "?", pa_page,
+                    have_page_ptr52 ? "" : "?", page_ptr52,
+                    have_page_ptr56 ? "" : "?", page_ptr56,
+                    have_page_ptr60 ? "" : "?", page_ptr60,
+                    pa_err, pa_hex, pa_a00_err, pa_a00_hex);
             filemap_ret_log++;
         }
         m->filemap_nopage_watch_active = false;
@@ -1712,7 +1805,11 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         m->filemap_nopage_watch_addr = 0;
     }
 
-    if (trace_user_handoff_fault_path_active(m)) {
+    bool trace_handoff_fault_path = trace_user_handoff_fault_path_active(m);
+    bool trace_execve_filemap = m->cfg.trace_user_handoff &&
+                                m->execve_watch_active &&
+                                m->pending_syscall_nr == 4011u;
+    if (trace_handoff_fault_path || trace_execve_filemap) {
         uint32_t pc32 = (uint32_t)address;
         uint32_t badv = (uint32_t)m->shadow_cp0_badvaddr;
 
@@ -1753,6 +1850,525 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         have_pte ? "" : "?",
                         pte);
                 handoff_tlbl_pte_log++;
+            }
+        }
+
+        if (pc32 == K24_FILEMAP_FIND_GET_PAGE_RET) {
+            uint64_t v0 = 0, s1 = 0, s2 = 0, s5 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+            uc_reg_read(uc, UC_MIPS_REG_S2, &s2);
+            uc_reg_read(uc, UC_MIPS_REG_S5, &s5);
+            uint32_t mem_map = 0, pfn = 0, pa_page = 0;
+            bool have_pa = ((uint32_t)v0 >= 0x80000000u) &&
+                           page_struct_ptr_to_pa(uc, (uint32_t)v0, &mem_map, &pfn, &pa_page);
+            uint32_t page_mapping = 0, page_index = 0, page_flags = 0;
+            uint32_t page_ptr52 = 0, page_ptr56 = 0, page_ptr60 = 0;
+            bool have_page_mapping = ((uint32_t)v0 >= 0x80000000u) &&
+                                     read_guest_u32(uc, v0 + 8u, &page_mapping);
+            bool have_page_index = ((uint32_t)v0 >= 0x80000000u) &&
+                                   read_guest_u32(uc, v0 + 12u, &page_index);
+            bool have_page_flags = ((uint32_t)v0 >= 0x80000000u) &&
+                                   read_guest_u32(uc, v0 + 24u, &page_flags);
+            bool have_page_ptr52 = ((uint32_t)v0 >= 0x80000000u) &&
+                                   read_guest_u32(uc, v0 + 52u, &page_ptr52);
+            bool have_page_ptr56 = ((uint32_t)v0 >= 0x80000000u) &&
+                                   read_guest_u32(uc, v0 + 56u, &page_ptr56);
+            bool have_page_ptr60 = ((uint32_t)v0 >= 0x80000000u) &&
+                                   read_guest_u32(uc, v0 + 60u, &page_ptr60);
+            uint32_t bh_blocknr = 0, bh_state = 0, bh_data = 0, bh_page = 0, bh_size_word = 0;
+            bool have_bh_blocknr = (page_ptr52 >= 0x80000000u) &&
+                                   read_guest_u32(uc, page_ptr52 + 4u, &bh_blocknr);
+            bool have_bh_state = (page_ptr52 >= 0x80000000u) &&
+                                 read_guest_u32(uc, page_ptr52 + 24u, &bh_state);
+            bool have_bh_data = (page_ptr52 >= 0x80000000u) &&
+                                read_guest_u32(uc, page_ptr52 + 52u, &bh_data);
+            bool have_bh_page = (page_ptr52 >= 0x80000000u) &&
+                                read_guest_u32(uc, page_ptr52 + 56u, &bh_page);
+            bool have_bh_size = (page_ptr52 >= 0x80000000u) &&
+                                read_guest_u32(uc, page_ptr52 + 8u, &bh_size_word);
+            uint8_t bh_data_bytes[16] = {0};
+            uc_err bh_data_err = UC_ERR_READ_UNMAPPED;
+            if (have_bh_data && bh_data >= 0x80000000u)
+                bh_data_err = uc_mem_read(uc, (uint64_t)bh_data, bh_data_bytes, sizeof(bh_data_bytes));
+            uint8_t pa_bytes[16] = {0};
+            uint8_t pa_400[16] = {0}, pa_800[16] = {0}, pa_a00[16] = {0};
+            uc_err pa_err = UC_ERR_READ_UNMAPPED;
+            uc_err pa_400_err = UC_ERR_READ_UNMAPPED;
+            uc_err pa_800_err = UC_ERR_READ_UNMAPPED;
+            uc_err pa_a00_err = UC_ERR_READ_UNMAPPED;
+            if (have_pa)
+                pa_err = uc_mem_read(uc, (uint64_t)pa_page, pa_bytes, sizeof(pa_bytes));
+            if (have_pa)
+                pa_400_err = uc_mem_read(uc, (uint64_t)pa_page + 0x400u, pa_400, sizeof(pa_400));
+            if (have_pa)
+                pa_800_err = uc_mem_read(uc, (uint64_t)pa_page + 0x800u, pa_800, sizeof(pa_800));
+            if (have_pa)
+                pa_a00_err = uc_mem_read(uc, (uint64_t)pa_page + 0xA00u, pa_a00, sizeof(pa_a00));
+            char pa_hex[16 * 3 + 1];
+            char pa_400_hex[16 * 3 + 1];
+            char pa_800_hex[16 * 3 + 1];
+            char pa_a00_hex[16 * 3 + 1];
+            char bh_data_hex[16 * 3 + 1];
+            format_hex_bytes(pa_bytes, sizeof(pa_bytes), pa_hex, sizeof(pa_hex));
+            format_hex_bytes(pa_400, sizeof(pa_400), pa_400_hex, sizeof(pa_400_hex));
+            format_hex_bytes(pa_800, sizeof(pa_800), pa_800_hex, sizeof(pa_800_hex));
+            format_hex_bytes(pa_a00, sizeof(pa_a00), pa_a00_hex, sizeof(pa_a00_hex));
+            format_hex_bytes(bh_data_bytes, sizeof(bh_data_bytes), bh_data_hex, sizeof(bh_data_hex));
+            static uint32_t handoff_find_page_log = 0;
+            if (handoff_find_page_log < 128) {
+                fprintf(stderr,
+                        "[HANDOFF_FIND_GET_PAGE_RET] pc=0x%08X badv=0x%08X"
+                        " page=%s0x%08" PRIX64
+                        " idx=0x%08" PRIX64 " end=0x%08" PRIX64 " map_arg=0x%08" PRIX64
+                        " page.map=%s0x%08X page.idx=%s0x%08X page.flags=%s0x%08X"
+                        " page+52=%s0x%08X page+56=%s0x%08X page+60=%s0x%08X"
+                        " bh.block=%s0x%08X bh.size=%s0x%X bh.state=%s0x%08X"
+                        " bh.data=%s0x%08X bh.page=%s0x%08X bh_data_err=%d bh_data=[%s]"
+                        " mem_map=%s0x%08X pfn=%s0x%X pa=%s0x%08X pa_err=%d pa=[%s]"
+                        " pa400_err=%d pa400=[%s] pa800_err=%d pa800=[%s]"
+                        " paa00_err=%d paa00=[%s]\n",
+                        pc32, badv,
+                        ((uint32_t)v0 >= 0x80000000u) ? "" : "?",
+                        (uint64_t)(uint32_t)v0,
+                        (uint64_t)(uint32_t)s1,
+                        (uint64_t)(uint32_t)s2,
+                        (uint64_t)(uint32_t)s5,
+                        have_page_mapping ? "" : "?", page_mapping,
+                        have_page_index ? "" : "?", page_index,
+                        have_page_flags ? "" : "?", page_flags,
+                        have_page_ptr52 ? "" : "?", page_ptr52,
+                        have_page_ptr56 ? "" : "?", page_ptr56,
+                        have_page_ptr60 ? "" : "?", page_ptr60,
+                        have_bh_blocknr ? "" : "?", bh_blocknr,
+                        have_bh_size ? "" : "?", (bh_size_word & 0xFFFFu),
+                        have_bh_state ? "" : "?", bh_state,
+                        have_bh_data ? "" : "?", bh_data,
+                        have_bh_page ? "" : "?", bh_page,
+                        bh_data_err, bh_data_hex,
+                        have_pa ? "" : "?", mem_map,
+                        have_pa ? "" : "?", pfn,
+                        have_pa ? "" : "?", pa_page,
+                        pa_err, pa_hex,
+                        pa_400_err, pa_400_hex,
+                        pa_800_err, pa_800_hex,
+                        pa_a00_err, pa_a00_hex);
+                handoff_find_page_log++;
+            }
+        }
+
+        if (pc32 == K24_FILEMAP_UPTODATE_CHECK &&
+            m->filemap_nopage_watch_active &&
+            m->filemap_nopage_watch_addr == 0x2AAA8000u) {
+            uint64_t s0 = 0, s1 = 0, s5 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_S0, &s0); /* struct page* */
+            uc_reg_read(uc, UC_MIPS_REG_S1, &s1); /* page index */
+            uc_reg_read(uc, UC_MIPS_REG_S5, &s5); /* mapping */
+            if ((uint32_t)s0 >= 0x80000000u) {
+                uint32_t flags = 0;
+                uint32_t mem_map = 0, pfn = 0, pa_page = 0;
+                bool have_flags = read_guest_u32(uc, s0 + 24u, &flags);
+                bool have_pa = page_struct_ptr_to_pa(uc, (uint32_t)s0,
+                                                     &mem_map, &pfn, &pa_page);
+                uint8_t pa0[16] = {0}, paa00[16] = {0};
+                uc_err pa0_err = UC_ERR_READ_UNMAPPED;
+                uc_err paa00_err = UC_ERR_READ_UNMAPPED;
+                if (have_pa) {
+                    pa0_err = uc_mem_read(uc, (uint64_t)pa_page, pa0, sizeof(pa0));
+                    paa00_err = uc_mem_read(uc, (uint64_t)pa_page + 0xA00u,
+                                            paa00, sizeof(paa00));
+                }
+                bool zero0 = true, zeroa00 = true;
+                for (size_t i = 0; i < sizeof(pa0); i++) {
+                    if (pa0[i] != 0u) {
+                        zero0 = false;
+                        break;
+                    }
+                }
+                for (size_t i = 0; i < sizeof(paa00); i++) {
+                    if (paa00[i] != 0u) {
+                        zeroa00 = false;
+                        break;
+                    }
+                }
+                static uint32_t handoff_uptodate_fix_log = 0;
+                if (have_flags && have_pa &&
+                    (flags & (1u << 3)) != 0u &&
+                    pa0_err == UC_ERR_OK && paa00_err == UC_ERR_OK &&
+                    zero0 && zeroa00) {
+                    uint32_t new_flags = flags & ~(1u << 3); /* clear PG_uptodate */
+                    uc_err werr = write_mem_best_effort(uc, s0 + 24u,
+                                                        &new_flags, sizeof(new_flags));
+                    if (handoff_uptodate_fix_log < 64) {
+                        fprintf(stderr,
+                                "[HANDOFF_UPTODATE_CLEAR] pc=0x%08X page=0x%08X"
+                                " map=0x%08X idx=0x%08X mem_map=0x%08X pfn=0x%X pa=0x%08X"
+                                " flags=0x%08X->0x%08X werr=%d\n",
+                                pc32, (uint32_t)s0, (uint32_t)s5, (uint32_t)s1,
+                                mem_map, pfn, pa_page, flags, new_flags, werr);
+                        handoff_uptodate_fix_log++;
+                    }
+                }
+            }
+        }
+
+        if (pc32 == K24_FILEMAP_UPTODATE_BRANCH &&
+            m->filemap_nopage_watch_active &&
+            m->filemap_nopage_watch_addr == 0x2AAA8000u) {
+            uint64_t s0 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+            uint32_t mem_map = 0, pfn = 0, pa_page = 0;
+            bool have_pa = ((uint32_t)s0 >= 0x80000000u) &&
+                           page_struct_ptr_to_pa(uc, (uint32_t)s0,
+                                                 &mem_map, &pfn, &pa_page);
+            uint8_t pa0[16] = {0}, paa00[16] = {0};
+            uc_err pa0_err = UC_ERR_READ_UNMAPPED;
+            uc_err paa00_err = UC_ERR_READ_UNMAPPED;
+            if (have_pa) {
+                pa0_err = uc_mem_read(uc, (uint64_t)pa_page, pa0, sizeof(pa0));
+                paa00_err = uc_mem_read(uc, (uint64_t)pa_page + 0xA00u,
+                                        paa00, sizeof(paa00));
+            }
+            bool zero0 = true, zeroa00 = true;
+            for (size_t i = 0; i < sizeof(pa0); i++) {
+                if (pa0[i] != 0u) { zero0 = false; break; }
+            }
+            for (size_t i = 0; i < sizeof(paa00); i++) {
+                if (paa00[i] != 0u) { zeroa00 = false; break; }
+            }
+            if (have_pa && pa0_err == UC_ERR_OK && paa00_err == UC_ERR_OK &&
+                zero0 && zeroa00) {
+                uint64_t force_not_uptodate = 0;
+                uc_reg_write(uc, UC_MIPS_REG_V0, &force_not_uptodate);
+                static uint32_t handoff_uptodate_branch_force_log = 0;
+                if (handoff_uptodate_branch_force_log < 64) {
+                    fprintf(stderr,
+                            "[HANDOFF_UPTODATE_BRANCH_FORCE] pc=0x%08X page=0x%08X"
+                            " pfn=0x%X pa=0x%08X v0->0\n",
+                            pc32, (uint32_t)s0, pfn, pa_page);
+                    handoff_uptodate_branch_force_log++;
+                }
+            }
+        }
+
+        if (pc32 == K24_FILEMAP_UPTODATE_RECHECK &&
+            m->filemap_nopage_watch_active &&
+            m->filemap_nopage_watch_addr == 0x2AAA8000u) {
+            uint64_t s0 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+            uint32_t mem_map = 0, pfn = 0, pa_page = 0;
+            bool have_pa = ((uint32_t)s0 >= 0x80000000u) &&
+                           page_struct_ptr_to_pa(uc, (uint32_t)s0,
+                                                 &mem_map, &pfn, &pa_page);
+            uint8_t pa0[16] = {0}, paa00[16] = {0};
+            uc_err pa0_err = UC_ERR_READ_UNMAPPED;
+            uc_err paa00_err = UC_ERR_READ_UNMAPPED;
+            if (have_pa) {
+                pa0_err = uc_mem_read(uc, (uint64_t)pa_page, pa0, sizeof(pa0));
+                paa00_err = uc_mem_read(uc, (uint64_t)pa_page + 0xA00u,
+                                        paa00, sizeof(paa00));
+            }
+            bool zero0 = true, zeroa00 = true;
+            for (size_t i = 0; i < sizeof(pa0); i++) {
+                if (pa0[i] != 0u) { zero0 = false; break; }
+            }
+            for (size_t i = 0; i < sizeof(paa00); i++) {
+                if (paa00[i] != 0u) { zeroa00 = false; break; }
+            }
+            if (have_pa && pa0_err == UC_ERR_OK && paa00_err == UC_ERR_OK &&
+                zero0 && zeroa00) {
+                uint32_t flags = 0;
+                if (read_guest_u32(uc, s0 + 24u, &flags)) {
+                    uint32_t new_flags = flags & ~(1u << 3);
+                    (void)write_mem_best_effort(uc, s0 + 24u,
+                                                &new_flags, sizeof(new_flags));
+                }
+                uint64_t force_not_uptodate = 0;
+                uc_reg_write(uc, UC_MIPS_REG_V0, &force_not_uptodate);
+                static uint32_t handoff_uptodate_recheck_force_log = 0;
+                if (handoff_uptodate_recheck_force_log < 64) {
+                    fprintf(stderr,
+                            "[HANDOFF_UPTODATE_RECHECK_FORCE] pc=0x%08X page=0x%08X"
+                            " pfn=0x%X pa=0x%08X v0->0\n",
+                            pc32, (uint32_t)s0, pfn, pa_page);
+                    handoff_uptodate_recheck_force_log++;
+                }
+            }
+        }
+
+        if (pc32 == K24_FILEMAP_READPAGE_RET &&
+            m->filemap_nopage_watch_active &&
+            m->filemap_nopage_watch_addr == 0x2AAA8000u) {
+            uint64_t v0 = 0, s0 = 0, s1 = 0, s5 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0); /* readpage() return */
+            uc_reg_read(uc, UC_MIPS_REG_S0, &s0); /* struct page* */
+            uc_reg_read(uc, UC_MIPS_REG_S1, &s1); /* idx */
+            uc_reg_read(uc, UC_MIPS_REG_S5, &s5); /* mapping */
+            uint32_t flags = 0;
+            bool have_flags = ((uint32_t)s0 >= 0x80000000u) &&
+                              read_guest_u32(uc, s0 + 24u, &flags);
+            uint32_t mem_map = 0, pfn = 0, pa_page = 0;
+            bool have_pa = ((uint32_t)s0 >= 0x80000000u) &&
+                           page_struct_ptr_to_pa(uc, (uint32_t)s0,
+                                                 &mem_map, &pfn, &pa_page);
+            uint8_t pa0[16] = {0}, paa00[16] = {0};
+            uc_err pa0_err = UC_ERR_READ_UNMAPPED;
+            uc_err paa00_err = UC_ERR_READ_UNMAPPED;
+            if (have_pa) {
+                pa0_err = uc_mem_read(uc, (uint64_t)pa_page, pa0, sizeof(pa0));
+                paa00_err = uc_mem_read(uc, (uint64_t)pa_page + 0xA00u,
+                                        paa00, sizeof(paa00));
+            }
+            char pa0_hex[16 * 3 + 1];
+            char paa00_hex[16 * 3 + 1];
+            format_hex_bytes(pa0, sizeof(pa0), pa0_hex, sizeof(pa0_hex));
+            format_hex_bytes(paa00, sizeof(paa00), paa00_hex, sizeof(paa00_hex));
+            static uint32_t handoff_readpage_ret_log = 0;
+            if (handoff_readpage_ret_log < 64) {
+                fprintf(stderr,
+                        "[HANDOFF_READPAGE_RET] pc=0x%08X ret=%d page=0x%08X"
+                        " map=0x%08X idx=0x%08X flags=%s0x%08X"
+                        " mem_map=%s0x%08X pfn=%s0x%X pa=%s0x%08X"
+                        " pa0_err=%d pa0=[%s] paa00_err=%d paa00=[%s]\n",
+                        pc32, (int32_t)(uint32_t)v0, (uint32_t)s0,
+                        (uint32_t)s5, (uint32_t)s1,
+                        have_flags ? "" : "?", flags,
+                        have_pa ? "" : "?", mem_map,
+                        have_pa ? "" : "?", pfn,
+                        have_pa ? "" : "?", pa_page,
+                        pa0_err, pa0_hex, paa00_err, paa00_hex);
+                handoff_readpage_ret_log++;
+            }
+        }
+
+        if ((pc32 == K24_FILEMAP_LOCKPAGE_CALL ||
+             pc32 == K24_FILEMAP_MAPPING_CHECK ||
+             pc32 == K24_FILEMAP_UPTODATE_RECHECK ||
+             pc32 == K24_FILEMAP_READPAGE_CALL ||
+             pc32 == K24_FILEMAP_SKIP_READPAGE) &&
+            m->filemap_nopage_watch_active &&
+            m->filemap_nopage_watch_addr == 0x2AAA8000u) {
+            uint64_t s0 = 0, s1 = 0, s5 = 0, v0 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+            uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+            uc_reg_read(uc, UC_MIPS_REG_S5, &s5);
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uint32_t page_flags = 0, page_mapping = 0;
+            bool have_flags = ((uint32_t)s0 >= 0x80000000u) &&
+                              read_guest_u32(uc, s0 + 24u, &page_flags);
+            bool have_mapping = ((uint32_t)s0 >= 0x80000000u) &&
+                                read_guest_u32(uc, s0 + 8u, &page_mapping);
+            static uint32_t handoff_readpage_path_log = 0;
+            if (handoff_readpage_path_log < 128) {
+                fprintf(stderr,
+                        "[HANDOFF_READPAGE_PATH] pc=0x%08X page=0x%08X map=0x%08X idx=0x%08X"
+                        " v0=0x%08X page.map=%s0x%08X page.flags=%s0x%08X\n",
+                        pc32, (uint32_t)s0, (uint32_t)s5, (uint32_t)s1,
+                        (uint32_t)v0,
+                        have_mapping ? "" : "?", page_mapping,
+                        have_flags ? "" : "?", page_flags);
+                handoff_readpage_path_log++;
+            }
+        }
+
+        if (pc32 == K24_FILEMAP_PAGE_CACHE_READ_RET ||
+            pc32 == K24_FILEMAP_READ_CLUSTER_RET) {
+            uint64_t v0 = 0, s1 = 0, s2 = 0, s5 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+            uc_reg_read(uc, UC_MIPS_REG_S2, &s2);
+            uc_reg_read(uc, UC_MIPS_REG_S5, &s5);
+            const char *tag = (pc32 == K24_FILEMAP_PAGE_CACHE_READ_RET)
+                            ? "HANDOFF_PAGE_CACHE_READ_RET"
+                            : "HANDOFF_READ_CLUSTER_RET";
+            static uint32_t handoff_cache_read_log = 0;
+            if (handoff_cache_read_log < 128) {
+                fprintf(stderr,
+                        "[%s] pc=0x%08X badv=0x%08X ret=0x%08" PRIX64
+                        " idx=0x%08" PRIX64 " end=0x%08" PRIX64
+                        " mapping=0x%08" PRIX64 "\n",
+                        tag, pc32, badv, (uint64_t)(uint32_t)v0,
+                        (uint64_t)(uint32_t)s1,
+                        (uint64_t)(uint32_t)s2,
+                        (uint64_t)(uint32_t)s5);
+                handoff_cache_read_log++;
+            }
+        }
+
+        if ((pc32 == K24_BLOCK_READ_SUBMIT_BH_CALL ||
+             pc32 == K24_BLOCK_READ_SUBMIT_BH_RET ||
+             pc32 == K24_BLOCK_READ_GET_BLOCK_CALL ||
+             pc32 == K24_BLOCK_READ_GET_BLOCK_RET ||
+             pc32 == K24_BLOCK_READ_MEMSET_HOLE ||
+             pc32 == K24_BLOCK_READ_RET) &&
+            m->filemap_nopage_watch_active &&
+            m->filemap_nopage_watch_addr == 0x2AAA8000u) {
+            uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, v1 = 0;
+            uint64_t s0 = 0, s1 = 0, s3 = 0, s5 = 0, s8 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+            uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+            uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+            uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+            uc_reg_read(uc, UC_MIPS_REG_S3, &s3);
+            uc_reg_read(uc, UC_MIPS_REG_S5, &s5);
+            uc_reg_read(uc, UC_MIPS_REG_S8, &s8);
+
+            uint32_t bh_ptr = 0;
+            if (pc32 == K24_BLOCK_READ_SUBMIT_BH_CALL ||
+                pc32 == K24_BLOCK_READ_SUBMIT_BH_RET) {
+                bh_ptr = (uint32_t)a1;
+            } else {
+                bh_ptr = (uint32_t)s0;
+            }
+
+            uint32_t bh_blocknr = 0, bh_state = 0, bh_data = 0;
+            uint32_t bh_page = 0, bh_size_word = 0, bh_endio = 0;
+            bool have_bh_blocknr = (bh_ptr >= 0x80000000u) &&
+                                   read_guest_u32(uc, (uint64_t)bh_ptr + 4u, &bh_blocknr);
+            bool have_bh_size = (bh_ptr >= 0x80000000u) &&
+                                read_guest_u32(uc, (uint64_t)bh_ptr + 8u, &bh_size_word);
+            bool have_bh_state = (bh_ptr >= 0x80000000u) &&
+                                 read_guest_u32(uc, (uint64_t)bh_ptr + 24u, &bh_state);
+            bool have_bh_data = (bh_ptr >= 0x80000000u) &&
+                                read_guest_u32(uc, (uint64_t)bh_ptr + 52u, &bh_data);
+            bool have_bh_page = (bh_ptr >= 0x80000000u) &&
+                                read_guest_u32(uc, (uint64_t)bh_ptr + 56u, &bh_page);
+            bool have_bh_endio = (bh_ptr >= 0x80000000u) &&
+                                 read_guest_u32(uc, (uint64_t)bh_ptr + 60u, &bh_endio);
+
+            uint8_t bh_data_bytes[16] = {0};
+            uc_err bh_data_err = UC_ERR_READ_UNMAPPED;
+            if (have_bh_data && bh_data >= 0x80000000u)
+                bh_data_err = uc_mem_read(uc, (uint64_t)bh_data, bh_data_bytes, sizeof(bh_data_bytes));
+
+            uint32_t mem_map = 0, pfn = 0, pa_page = 0;
+            bool have_pa = ((uint32_t)s3 >= 0x80000000u) &&
+                           page_struct_ptr_to_pa(uc, (uint32_t)s3, &mem_map, &pfn, &pa_page);
+            uint8_t pa0[16] = {0}, paa00[16] = {0};
+            uc_err pa0_err = UC_ERR_READ_UNMAPPED;
+            uc_err paa00_err = UC_ERR_READ_UNMAPPED;
+            if (have_pa) {
+                pa0_err = uc_mem_read(uc, (uint64_t)pa_page, pa0, sizeof(pa0));
+                paa00_err = uc_mem_read(uc, (uint64_t)pa_page + 0xA00u,
+                                        paa00, sizeof(paa00));
+            }
+
+            char bh_data_hex[16 * 3 + 1];
+            char pa0_hex[16 * 3 + 1];
+            char paa00_hex[16 * 3 + 1];
+            format_hex_bytes(bh_data_bytes, sizeof(bh_data_bytes), bh_data_hex, sizeof(bh_data_hex));
+            format_hex_bytes(pa0, sizeof(pa0), pa0_hex, sizeof(pa0_hex));
+            format_hex_bytes(paa00, sizeof(paa00), paa00_hex, sizeof(paa00_hex));
+
+            const char *tag = "HANDOFF_BLOCK_READ";
+            if (pc32 == K24_BLOCK_READ_SUBMIT_BH_CALL)
+                tag = "HANDOFF_SUBMIT_BH_CALL";
+            else if (pc32 == K24_BLOCK_READ_SUBMIT_BH_RET)
+                tag = "HANDOFF_SUBMIT_BH_RET";
+            else if (pc32 == K24_BLOCK_READ_GET_BLOCK_CALL)
+                tag = "HANDOFF_GET_BLOCK_CALL";
+            else if (pc32 == K24_BLOCK_READ_GET_BLOCK_RET)
+                tag = "HANDOFF_GET_BLOCK_RET";
+            else if (pc32 == K24_BLOCK_READ_MEMSET_HOLE)
+                tag = "HANDOFF_BLOCK_HOLE_ZERO";
+            else if (pc32 == K24_BLOCK_READ_RET)
+                tag = "HANDOFF_BLOCK_READ_RET";
+
+            static uint32_t handoff_block_io_log = 0;
+            if (handoff_block_io_log < 256) {
+                fprintf(stderr,
+                        "[%s] pc=0x%08X page=0x%08X idx=0x%08X map=0x%08X"
+                        " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X v0=0x%08X v1=0x%08X"
+                        " s8=0x%08X bh=%s0x%08X"
+                        " bh.block=%s0x%08X bh.size=%s0x%X bh.state=%s0x%08X"
+                        " bh.data=%s0x%08X bh.page=%s0x%08X bh.endio=%s0x%08X"
+                        " bh_data_err=%d bh_data=[%s]"
+                        " mem_map=%s0x%08X pfn=%s0x%X pa=%s0x%08X"
+                        " pa0_err=%d pa0=[%s] paa00_err=%d paa00=[%s]\n",
+                        tag, pc32,
+                        (uint32_t)s3, (uint32_t)s1, (uint32_t)s5,
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+                        (uint32_t)v0, (uint32_t)v1, (uint32_t)s8,
+                        (bh_ptr >= 0x80000000u) ? "" : "?",
+                        bh_ptr,
+                        have_bh_blocknr ? "" : "?", bh_blocknr,
+                        have_bh_size ? "" : "?", (bh_size_word & 0xFFFFu),
+                        have_bh_state ? "" : "?", bh_state,
+                        have_bh_data ? "" : "?", bh_data,
+                        have_bh_page ? "" : "?", bh_page,
+                        have_bh_endio ? "" : "?", bh_endio,
+                        bh_data_err, bh_data_hex,
+                        have_pa ? "" : "?", mem_map,
+                        have_pa ? "" : "?", pfn,
+                        have_pa ? "" : "?", pa_page,
+                        pa0_err, pa0_hex, paa00_err, paa00_hex);
+                handoff_block_io_log++;
+            }
+        }
+
+        if (pc32 == K24_EXT2_GET_BLOCK_RET &&
+            m->filemap_nopage_watch_active &&
+            m->filemap_nopage_watch_addr == 0x2AAA8000u) {
+            uint64_t sp = 0, s4 = 0, s6 = 0, s8 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_S4, &s4); /* inode */
+            uc_reg_read(uc, UC_MIPS_REG_S6, &s6); /* depth */
+            uc_reg_read(uc, UC_MIPS_REG_S8, &s8); /* iblock */
+
+            uint32_t ret_slot = 0, bh_ptr = 0, create = 0;
+            bool have_ret_slot = read_guest_u32(uc, sp + 88u, &ret_slot);
+            bool have_bh_ptr = read_guest_u32(uc, sp + 144u, &bh_ptr);
+            bool have_create = read_guest_u32(uc, sp + 148u, &create);
+
+            uint32_t bh_blocknr = 0, bh_state = 0, bh_data = 0, bh_page = 0;
+            uint32_t bh_size_word = 0, bh_endio = 0;
+            bool have_bh_blocknr = (bh_ptr >= 0x80000000u) &&
+                                   read_guest_u32(uc, (uint64_t)bh_ptr + 4u, &bh_blocknr);
+            bool have_bh_size = (bh_ptr >= 0x80000000u) &&
+                                read_guest_u32(uc, (uint64_t)bh_ptr + 8u, &bh_size_word);
+            bool have_bh_state = (bh_ptr >= 0x80000000u) &&
+                                 read_guest_u32(uc, (uint64_t)bh_ptr + 24u, &bh_state);
+            bool have_bh_data = (bh_ptr >= 0x80000000u) &&
+                                read_guest_u32(uc, (uint64_t)bh_ptr + 52u, &bh_data);
+            bool have_bh_page = (bh_ptr >= 0x80000000u) &&
+                                read_guest_u32(uc, (uint64_t)bh_ptr + 56u, &bh_page);
+            bool have_bh_endio = (bh_ptr >= 0x80000000u) &&
+                                 read_guest_u32(uc, (uint64_t)bh_ptr + 60u, &bh_endio);
+
+            uint8_t bh_data_bytes[16] = {0};
+            uc_err bh_data_err = UC_ERR_READ_UNMAPPED;
+            if (have_bh_data && bh_data >= 0x80000000u)
+                bh_data_err = uc_mem_read(uc, (uint64_t)bh_data, bh_data_bytes, sizeof(bh_data_bytes));
+            char bh_data_hex[16 * 3 + 1];
+            format_hex_bytes(bh_data_bytes, sizeof(bh_data_bytes), bh_data_hex, sizeof(bh_data_hex));
+
+            static uint32_t handoff_ext2_get_block_log = 0;
+            if (handoff_ext2_get_block_log < 192) {
+                fprintf(stderr,
+                        "[HANDOFF_EXT2_GET_BLOCK_RET] pc=0x%08X inode=%s0x%08X"
+                        " iblock=0x%08X depth=%u ret=%s%d create=%s%u bh=%s0x%08X"
+                        " bh.block=%s0x%08X bh.size=%s0x%X bh.state=%s0x%08X"
+                        " bh.data=%s0x%08X bh.page=%s0x%08X bh.endio=%s0x%08X"
+                        " bh_data_err=%d bh_data=[%s]\n",
+                        pc32,
+                        ((uint32_t)s4 >= 0x80000000u) ? "" : "?",
+                        (uint32_t)s4,
+                        (uint32_t)s8, (uint32_t)s6,
+                        have_ret_slot ? "" : "?", (int32_t)ret_slot,
+                        have_create ? "" : "?", create,
+                        have_bh_ptr ? "" : "?", bh_ptr,
+                        have_bh_blocknr ? "" : "?", bh_blocknr,
+                        have_bh_size ? "" : "?", (bh_size_word & 0xFFFFu),
+                        have_bh_state ? "" : "?", bh_state,
+                        have_bh_data ? "" : "?", bh_data,
+                        have_bh_page ? "" : "?", bh_page,
+                        have_bh_endio ? "" : "?", bh_endio,
+                        bh_data_err, bh_data_hex);
+                handoff_ext2_get_block_log++;
             }
         }
 
@@ -1881,27 +2497,39 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t sel =  insn        & 0x07u;
 
     if (m->execve_user_handoff_active &&
-        m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED &&
+        (m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED ||
+         m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN) &&
         (uint32_t)address < 0x80000000u) {
-        m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_USER_FETCH_SEEN;
+        bool first_fetch = (m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED);
+        const char *next_state =
+            first_fetch ? "USER_FETCH_SEEN" :
+            ((insn != 0u) ? "DONE" : "USER_FETCH_SEEN");
         if (m->cfg.trace_user_handoff) {
             fprintf(stderr,
                     "[EXECVE_HANDOFF_FETCH] pc=0x%08" PRIX64
-                    " insn=0x%08X%s -> DONE\n",
+                    " insn=0x%08X%s -> %s\n",
                     (uint64_t)(uint32_t)address, insn,
-                    (insn == 0u) ? " (zero)" : "");
+                    (insn == 0u) ? " (zero)" : "",
+                    next_state);
         }
-        /* User fetch observed: stale exception redelivery from the completed
-         * syscall must no longer be visible in the handoff fast-path. */
-        m->pending_epc = 0;
-        m->pending_excode = 0;
-        m->pending_cause = 0;
-        m->epc_was_written = false;
-        m->pending_cause_served = false;
-        m->pending_epc_served = false;
-        m->has_saved_exception = false;
-        m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
-        m->execve_user_handoff_active = false;
+        if (insn != 0u) {
+            /* User fetch observed: stale exception redelivery from the completed
+             * syscall must no longer be visible in the handoff fast-path. */
+            m->pending_epc = 0;
+            m->pending_excode = 0;
+            m->pending_cause = 0;
+            m->epc_was_written = false;
+            m->pending_cause_served = false;
+            m->pending_epc_served = false;
+            m->has_saved_exception = false;
+            m->execve_user_handoff_pc = (uint32_t)address;
+            if (first_fetch) {
+                m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_USER_FETCH_SEEN;
+            } else {
+                m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
+                m->execve_user_handoff_active = false;
+            }
+        }
     }
 
     /*
@@ -2168,7 +2796,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             if (badv >= EXECVE_SCRATCH_BASE && badv < EXECVE_SCRATCH_END) {
                 uint32_t even_va = badv & ~0x1FFFu;
                 uint32_t pa = even_va + ((rd == 3u) ? 0x1000u : 0u);
-                uint64_t synth_lo = (((uint64_t)(pa >> 12) & 0xFFFFFu) << 6) | 0x1Fu;
+                uint64_t synth_lo = (((uint64_t)(pa >> 10) & 0xFFFFFu) << 6) | 0x1Fu;
                 uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &synth_lo);
                 val = synth_lo;
                 static uint32_t execve_tlb_synth_log = 0;
@@ -2901,40 +3529,103 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
     /*
-     * After a synthetic execve->userspace handoff, Unicorn can still emit
-     * stale TLB/aux notifications pinned to run_init_process+4. Redirect
-     * those back to the handed-off user context.
+     * After execve handoff, Unicorn can emit stale notifications pinned to
+     * run_init_process+4. While handoff is in flight, jump to the armed user
+     * context. After the first user fetch, resume at the last user PC.
      */
-    if ((m->execve_user_handoff_active || m->execve_user_handoff_pc != 0u) &&
+    bool stale_handoff_irq =
         ((uint32_t)pc == 0x80001850u) &&
-        (intno == 12u || intno == 26u || intno == 27u)) {
-        uint64_t restore_pc = m->execve_user_handoff_pc;
-        uint64_t restore_sp = m->execve_user_handoff_sp;
-        uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
-        uc_reg_write(uc, UC_MIPS_REG_PC, &restore_pc);
-        uc_reg_write(uc, UC_MIPS_REG_SP, &restore_sp);
-        uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
-        m->pending_epc = 0;
-        m->pending_excode = 0;
-        m->pending_cause = 0;
-        m->epc_was_written = false;
-        m->pending_cause_served = false;
-        m->pending_epc_served = false;
-        m->has_saved_exception = false;
-        static uint32_t handoff_stale_log = 0;
-        if (handoff_stale_log < 128) {
-            fprintf(stderr,
-                    "[EXECVE_USER_HANDOFF_KEEP] intno=%u stale_pc=0x%08" PRIX64
-                    " -> user_pc=0x%08" PRIX64 " user_sp=0x%08" PRIX64
-                    " status=0x%08" PRIX64 " state=%u\n",
-                    intno, (uint64_t)(uint32_t)pc,
-                    (uint64_t)(uint32_t)restore_pc,
-                    (uint64_t)(uint32_t)restore_sp,
-                    (uint64_t)(uint32_t)user_status,
-                    (unsigned)m->execve_user_handoff_state);
-            handoff_stale_log++;
+        (intno == 12u || intno == 26u || intno == 27u);
+    bool handoff_stale_clearable =
+        (m->pending_excode == 0u ||
+         m->pending_excode == MIPS_EXCCODE_SYS ||
+         m->pending_excode == 1u);
+    if (stale_handoff_irq &&
+        m->execve_user_handoff_pc != 0u &&
+        handoff_stale_clearable &&
+        (m->execve_user_handoff_active ||
+         m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_DONE)) {
+        uint8_t handoff_state = m->execve_user_handoff_state;
+        if (handoff_state == EXECVE_HANDOFF_STATE_DONE) {
+            /* Once handoff is DONE, consume one stale callback by resuming at
+             * the next user instruction, then disarm to avoid repeated loops. */
+            uint64_t resume_pc = ((uint32_t)m->execve_user_handoff_pc + 4u) & 0xFFFFFFFFu;
+            uint64_t resume_sp = m->execve_user_handoff_sp;
+            uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
+            if ((uint32_t)resume_pc < 0x80000000u) {
+                uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
+                if ((uint32_t)resume_sp != 0u)
+                    uc_reg_write(uc, UC_MIPS_REG_SP, &resume_sp);
+                uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
+            }
+            m->execve_user_handoff_pc = 0;
+            m->execve_user_handoff_sp = 0;
+            if (m->pending_excode == MIPS_EXCCODE_SYS ||
+                m->pending_excode == 1u) {
+                m->pending_epc = 0;
+                m->pending_excode = 0;
+                m->pending_cause = 0;
+                m->epc_was_written = false;
+                m->pending_cause_served = false;
+                m->pending_epc_served = false;
+                m->has_saved_exception = false;
+            }
+            static uint32_t handoff_drop_disarm_log = 0;
+            if (handoff_drop_disarm_log < 96) {
+                fprintf(stderr,
+                        "[EXECVE_USER_HANDOFF_DROP_DISARM] intno=%u stale_pc=0x%08" PRIX64
+                        " -> resume_pc=0x%08" PRIX64 " resume_sp=0x%08" PRIX64
+                        " status=0x%08" PRIX64 " excode=%u last_pc=0x%08" PRIX64 "\n",
+                        intno, (uint64_t)(uint32_t)pc,
+                        (uint64_t)(uint32_t)resume_pc,
+                        (uint64_t)(uint32_t)resume_sp,
+                        (uint64_t)(uint32_t)user_status, m->pending_excode,
+                        (uint64_t)(uint32_t)m->last_exec_pc);
+                handoff_drop_disarm_log++;
+            }
+            return;
         }
-        return;
+        uint64_t restore_pc = m->execve_user_handoff_pc;
+        if ((uint32_t)restore_pc < 0x80000000u) {
+            uint64_t restore_sp = m->execve_user_handoff_sp;
+            uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
+            uc_reg_write(uc, UC_MIPS_REG_PC, &restore_pc);
+            if ((uint32_t)restore_sp != 0u)
+                uc_reg_write(uc, UC_MIPS_REG_SP, &restore_sp);
+            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
+            m->pending_epc = 0;
+            m->pending_excode = 0;
+            m->pending_cause = 0;
+            m->epc_was_written = false;
+            m->pending_cause_served = false;
+            m->pending_epc_served = false;
+            m->has_saved_exception = false;
+            if (handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN) {
+                m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
+                m->execve_user_handoff_active = false;
+            }
+            static uint32_t handoff_stale_log = 0;
+            if (handoff_stale_log < 160) {
+                const char *tag = "KEEP";
+                if (handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN)
+                    tag = "QUARANTINE";
+                fprintf(stderr,
+                        "[EXECVE_USER_HANDOFF_%s] intno=%u stale_pc=0x%08" PRIX64
+                        " -> user_pc=0x%08" PRIX64 " user_sp=0x%08" PRIX64
+                        " status=0x%08" PRIX64 " state=%u last_pc=0x%08" PRIX64
+                        " excode=%u\n",
+                        tag,
+                        intno, (uint64_t)(uint32_t)pc,
+                        (uint64_t)(uint32_t)restore_pc,
+                        (uint64_t)(uint32_t)restore_sp,
+                        (uint64_t)(uint32_t)user_status,
+                        (unsigned)handoff_state,
+                        (uint64_t)(uint32_t)m->last_exec_pc,
+                        m->pending_excode);
+                handoff_stale_log++;
+            }
+            return;
+        }
     }
 
     /*
