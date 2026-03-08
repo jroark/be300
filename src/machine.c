@@ -907,6 +907,30 @@ static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *ins
     return false;
 }
 
+/* Best-effort VA inference for load/store ops at PC when BadVAddr is stale. */
+static bool infer_mem_access_va_from_pc(machine_t *m, uint64_t pc, uint32_t *va_out)
+{
+    uint32_t insn = 0;
+    if (!va_out || !read_insn_best_effort(m->uc, pc, &insn))
+        return false;
+
+    uint32_t op = insn >> 26;
+    bool is_mem =
+        (op == 0x20u || op == 0x21u || op == 0x22u || op == 0x23u || op == 0x24u ||
+         op == 0x25u || op == 0x26u || op == 0x28u || op == 0x29u || op == 0x2Au ||
+         op == 0x2Bu || op == 0x30u || op == 0x34u || op == 0x37u || op == 0x38u ||
+         op == 0x39u || op == 0x3Fu);
+    if (!is_mem)
+        return false;
+
+    uint32_t rs = (insn >> 21) & 0x1Fu;
+    int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+    uint64_t base = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_0 + (int)rs, &base);
+    *va_out = (uint32_t)((uint32_t)base + (uint32_t)imm);
+    return true;
+}
+
 /*
  * Fallback for TLB load-miss notifications (intno=26) during do_execve:
  * decode simple MIPS load ops, read from guest memory, write to destination
@@ -2563,6 +2587,14 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             }
         }
     }
+    if (!m->execve_user_handoff_active &&
+        m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_DONE &&
+        m->execve_user_handoff_pc != 0u &&
+        (uint32_t)address < 0x80000000u &&
+        insn != 0u) {
+        /* Keep a moving resume point while stale run_init callbacks are quarantined. */
+        m->execve_user_handoff_pc = (uint32_t)address;
+    }
 
     /*
      * sys_execve path probes (2.4 kernel):
@@ -3381,58 +3413,64 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                  * CP0_EPC is stale.  uc_emu_stop() terminates the batch;
                  * machine_run()'s loop reads PC afresh and resumes at our target. */
                 if ((uint32_t)epc < 0x80000000u) {
-                    uint64_t sp_val = 0;
-                    uc_reg_read(uc, UC_MIPS_REG_SP, &sp_val);
-                    arm_execve_user_handoff(m, epc, sp_val);
+                    bool execve_handoff_ctx =
+                        (m->pending_excode == MIPS_EXCCODE_SYS &&
+                         m->pending_syscall_nr == 4011u &&
+                         is_init_execve_epc((uint32_t)m->pending_syscall_epc));
+                    if (execve_handoff_ctx) {
+                        uint64_t sp_val = 0;
+                        uc_reg_read(uc, UC_MIPS_REG_SP, &sp_val);
+                        arm_execve_user_handoff(m, epc, sp_val);
 
-                    /* Probe: verify user-space code is present at target VA */
-                    uint32_t probe = 0;
-                    uc_err re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
-                    fprintf(stderr,
-                            "[ERET_MANUAL_KUSEG] target=0x%08X sp=0x%08" PRIX64
-                            " status=0x%08" PRIX64
-                            " insn@target=0x%08X read_err=%d\n",
-                            (uint32_t)epc, sp_val, status, probe, re);
-
-                    if (probe == 0u) {
-                        bool populated = shadow_tlb_populate(m, (uint32_t)epc, true,
-                                                             "ERET_MANUAL_KUSEG",
-                                                             (uint32_t)address);
-                        re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
+                        /* Probe: verify user-space code is present at target VA */
+                        uint32_t probe = 0;
+                        uc_err re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
                         fprintf(stderr,
-                                "[ERET_MANUAL_KUSEG] after populate target=0x%08X"
+                                "[ERET_MANUAL_KUSEG] target=0x%08X sp=0x%08" PRIX64
+                                " status=0x%08" PRIX64
                                 " insn@target=0x%08X read_err=%d\n",
-                                (uint32_t)epc, probe, re);
+                                (uint32_t)epc, sp_val, status, probe, re);
 
                         if (probe == 0u) {
-                            uint32_t alias_pa = (uint32_t)epc & 0x1FFFFFFFu;
-                            uint32_t alias_probe = 0;
-                            uc_err alias_re = uc_mem_read(uc, alias_pa, &alias_probe, 4);
-                            static uint32_t alias_log = 0;
-                            if (alias_log < 256) {
-                                fprintf(stderr,
-                                        "[ERET_MANUAL_KUSEG_ALIAS] target=0x%08X"
-                                        " alias_pa=0x%08X alias_insn=0x%08X alias_err=%d"
-                                        " populated=%u\n",
-                                        (uint32_t)epc, alias_pa, alias_probe, alias_re,
-                                        populated ? 1u : 0u);
-                                alias_log++;
-                            }
-                            if (alias_re == UC_ERR_OK && alias_probe != 0u) {
-                                tlb_map_kuseg_page(m, (uint32_t)epc,
-                                                   (uint64_t)alias_pa, 0x1000u);
-                                re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
-                                fprintf(stderr,
-                                        "[ERET_MANUAL_KUSEG_ALIAS] after alias map"
-                                        " target=0x%08X insn@target=0x%08X read_err=%d\n",
-                                        (uint32_t)epc, probe, re);
+                            bool populated = shadow_tlb_populate(m, (uint32_t)epc, true,
+                                                                 "ERET_MANUAL_KUSEG",
+                                                                 (uint32_t)address);
+                            re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
+                            fprintf(stderr,
+                                    "[ERET_MANUAL_KUSEG] after populate target=0x%08X"
+                                    " insn@target=0x%08X read_err=%d\n",
+                                    (uint32_t)epc, probe, re);
+
+                            if (probe == 0u) {
+                                uint32_t alias_pa = (uint32_t)epc & 0x1FFFFFFFu;
+                                uint32_t alias_probe = 0;
+                                uc_err alias_re = uc_mem_read(uc, alias_pa, &alias_probe, 4);
+                                static uint32_t alias_log = 0;
+                                if (alias_log < 256) {
+                                    fprintf(stderr,
+                                            "[ERET_MANUAL_KUSEG_ALIAS] target=0x%08X"
+                                            " alias_pa=0x%08X alias_insn=0x%08X alias_err=%d"
+                                            " populated=%u\n",
+                                            (uint32_t)epc, alias_pa, alias_probe, alias_re,
+                                            populated ? 1u : 0u);
+                                    alias_log++;
+                                }
+                                if (alias_re == UC_ERR_OK && alias_probe != 0u) {
+                                    tlb_map_kuseg_page(m, (uint32_t)epc,
+                                                       (uint64_t)alias_pa, 0x1000u);
+                                    re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
+                                    fprintf(stderr,
+                                            "[ERET_MANUAL_KUSEG_ALIAS] after alias map"
+                                            " target=0x%08X insn@target=0x%08X read_err=%d\n",
+                                            (uint32_t)epc, probe, re);
+                                }
                             }
                         }
-                    }
 
-                    /* Don't uc_emu_stop here — let the native ERET execute
-                     * and continue in the same batch so the softmmu cache
-                     * stays warm for the kuseg VA access. */
+                        /* Don't uc_emu_stop here — let the native ERET execute
+                         * and continue in the same batch so the softmmu cache
+                         * stays warm for the kuseg VA access. */
+                    }
                 }
 
                 if (m->pending_excode == MIPS_EXCCODE_SYS)
@@ -3600,46 +3638,12 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         (m->execve_user_handoff_active ||
          m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_DONE)) {
         uint8_t handoff_state = m->execve_user_handoff_state;
-        if (handoff_state == EXECVE_HANDOFF_STATE_DONE) {
-            /* Once handoff is DONE, consume one stale callback by resuming at
-             * the next user instruction, then disarm to avoid repeated loops. */
-            uint64_t resume_pc = ((uint32_t)m->execve_user_handoff_pc + 4u) & 0xFFFFFFFFu;
-            uint64_t resume_sp = m->execve_user_handoff_sp;
-            uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
-            if ((uint32_t)resume_pc < 0x80000000u) {
-                uc_reg_write(uc, UC_MIPS_REG_PC, &resume_pc);
-                if ((uint32_t)resume_sp != 0u)
-                    uc_reg_write(uc, UC_MIPS_REG_SP, &resume_sp);
-                uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
-            }
-            m->execve_user_handoff_pc = 0;
-            m->execve_user_handoff_sp = 0;
-            if (m->pending_excode == MIPS_EXCCODE_SYS ||
-                m->pending_excode == 1u) {
-                m->pending_epc = 0;
-                m->pending_excode = 0;
-                m->pending_cause = 0;
-                m->epc_was_written = false;
-                m->pending_cause_served = false;
-                m->pending_epc_served = false;
-                m->has_saved_exception = false;
-            }
-            static uint32_t handoff_drop_disarm_log = 0;
-            if (handoff_drop_disarm_log < 96) {
-                fprintf(stderr,
-                        "[EXECVE_USER_HANDOFF_DROP_DISARM] intno=%u stale_pc=0x%08" PRIX64
-                        " -> resume_pc=0x%08" PRIX64 " resume_sp=0x%08" PRIX64
-                        " status=0x%08" PRIX64 " excode=%u last_pc=0x%08" PRIX64 "\n",
-                        intno, (uint64_t)(uint32_t)pc,
-                        (uint64_t)(uint32_t)resume_pc,
-                        (uint64_t)(uint32_t)resume_sp,
-                        (uint64_t)(uint32_t)user_status, m->pending_excode,
-                        (uint64_t)(uint32_t)m->last_exec_pc);
-                handoff_drop_disarm_log++;
-            }
-            return;
-        }
         uint64_t restore_pc = m->execve_user_handoff_pc;
+        if (handoff_state == EXECVE_HANDOFF_STATE_DONE &&
+            (uint32_t)m->last_exec_pc < 0x80000000u &&
+            (uint32_t)m->last_exec_pc != 0u) {
+            restore_pc = m->last_exec_pc;
+        }
         if ((uint32_t)restore_pc < 0x80000000u) {
             uint64_t restore_sp = m->execve_user_handoff_sp;
             uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
@@ -3647,6 +3651,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             if ((uint32_t)restore_sp != 0u)
                 uc_reg_write(uc, UC_MIPS_REG_SP, &restore_sp);
             uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
+            m->execve_user_handoff_pc = (uint32_t)restore_pc;
             m->pending_epc = 0;
             m->pending_excode = 0;
             m->pending_cause = 0;
@@ -3663,6 +3668,8 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                 const char *tag = "KEEP";
                 if (handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN)
                     tag = "QUARANTINE";
+                else if (handoff_state == EXECVE_HANDOFF_STATE_DONE)
+                    tag = "DONE_KEEP";
                 fprintf(stderr,
                         "[EXECVE_USER_HANDOFF_%s] intno=%u stale_pc=0x%08" PRIX64
                         " -> user_pc=0x%08" PRIX64 " user_sp=0x%08" PRIX64
@@ -4563,6 +4570,34 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     ", routing to exception vector\n", epc); */
 }
 
+/* Suppress timer/ICU IRQ injection while execve handoff is still settling.
+ * This avoids re-entering 0x80000180 before first userspace progress. */
+static bool handoff_irq_quarantine_active(machine_t *m, uint32_t *pc32_out)
+{
+    if (m->execve_user_handoff_pc == 0u)
+        return false;
+
+    if (m->execve_user_handoff_active ||
+        m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN)
+        return true;
+
+    if (m->execve_user_handoff_state != EXECVE_HANDOFF_STATE_DONE)
+        return false;
+
+    uint64_t pc = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_PC, &pc);
+    uint32_t pc32 = (uint32_t)pc;
+    if (pc32_out)
+        *pc32_out = pc32;
+
+    uint32_t handoff_pc = (uint32_t)m->execve_user_handoff_pc;
+    uint32_t last_pc = (uint32_t)m->last_exec_pc;
+    bool loop_sig =
+        (pc32 == handoff_pc || pc32 == 0x80000180u || pc32 == 0x80001850u ||
+         last_pc == handoff_pc || last_pc == 0x80000180u || last_pc == 0x80001850u);
+    return loop_sig;
+}
+
 /*
  * Inject a hardware interrupt (ExcCode=0 / INTR) into the guest CPU when
  * the VR41xx ICU has a pending, enabled interrupt source.
@@ -4596,6 +4631,7 @@ static void inject_hw_irq_if_pending(machine_t *m)
     static uint32_t log_block_im2 = 0;
     static uint32_t log_injected = 0;
     static uint32_t log_stale_pending = 0;
+    static uint32_t log_handoff_quarantine = 0;
     bool pending = icu_pending(&m->icu);
 
     if (!m->tlb_trace_window &&
@@ -4772,6 +4808,23 @@ static void inject_hw_irq_if_pending(machine_t *m)
         }
     }
 
+    uint32_t quarantine_pc = 0;
+    if (handoff_irq_quarantine_active(m, &quarantine_pc)) {
+        if (log_handoff_quarantine < 64) {
+            fprintf(stderr,
+                    "[IRQ_GATE] handoff-quarantine PC=0x%08X handoff_pc=0x%08" PRIX64
+                    " state=%u active=%u pending=%u SYSINT1=0x%04X MSYSINT1=0x%04X RTCINT=0x%04X\n",
+                    quarantine_pc,
+                    (uint64_t)(uint32_t)m->execve_user_handoff_pc,
+                    (unsigned)m->execve_user_handoff_state,
+                    m->execve_user_handoff_active ? 1u : 0u,
+                    pending ? 1u : 0u,
+                    m->icu.sysint1, m->icu.msysint1, m->rtc.rtcint);
+            log_handoff_quarantine++;
+        }
+        return;
+    }
+
     /* Only inject when no exception is already in flight */
     if (m->pending_excode != 0) {
         if (pending && log_block_pending_excode < 16) {
@@ -4864,6 +4917,9 @@ static void inject_hw_irq_if_pending(machine_t *m)
 static void inject_fallback_timer_irq_if_needed(machine_t *m)
 {
     static uint32_t log_fallback = 0;
+
+    if (handoff_irq_quarantine_active(m, NULL))
+        return;
 
     if (m->pending_excode != 0)
         return;
@@ -6129,6 +6185,64 @@ void machine_run(machine_t *m)
                 if ((uint32_t)bad_pc < 0x80000000u &&
                     m->pending_excode == 0u) {
                     uint32_t fault_va = (uint32_t)((badv != 0u) ? badv : bad_pc);
+                    uint32_t inferred_fault_va = 0;
+                    bool inferred_fault = false;
+                    if (!m->last_unmapped_valid &&
+                        infer_mem_access_va_from_pc(m, bad_pc, &inferred_fault_va)) {
+                        fault_va = inferred_fault_va;
+                        inferred_fault = true;
+                    }
+                    if (m->cfg.trace_user_handoff &&
+                        m->execve_user_handoff_pc != 0u) {
+                        static uint32_t handoff_user_tlbl_diag_log = 0;
+                        if (handoff_user_tlbl_diag_log < 64) {
+                            uint32_t insn = 0xFFFFFFFFu;
+                            (void)read_insn_best_effort(m->uc, bad_pc, &insn);
+                            uint64_t at = 0, v0 = 0, v1 = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+                            uint64_t gp = 0, sp = 0, t9 = 0, ra = 0;
+                            uc_reg_read(m->uc, UC_MIPS_REG_AT, &at);
+                            uc_reg_read(m->uc, UC_MIPS_REG_V0, &v0);
+                            uc_reg_read(m->uc, UC_MIPS_REG_V1, &v1);
+                            uc_reg_read(m->uc, UC_MIPS_REG_A0, &a0);
+                            uc_reg_read(m->uc, UC_MIPS_REG_A1, &a1);
+                            uc_reg_read(m->uc, UC_MIPS_REG_A2, &a2);
+                            uc_reg_read(m->uc, UC_MIPS_REG_A3, &a3);
+                            uc_reg_read(m->uc, UC_MIPS_REG_GP, &gp);
+                            uc_reg_read(m->uc, UC_MIPS_REG_SP, &sp);
+                            uc_reg_read(m->uc, UC_MIPS_REG_T9, &t9);
+                            uc_reg_read(m->uc, UC_MIPS_REG_RA, &ra);
+                            fprintf(stderr,
+                                    "[USER_TLBL_DIAG] pc=0x%08" PRIX64
+                                    " insn=0x%08X badv_in=0x%08" PRIX64
+                                    " fault_va=0x%08X last_unmapped_valid=%u"
+                                    " last_unmapped=0x%08" PRIX64 " type=%d"
+                                    " inferred=%u inferred_va=0x%08X"
+                                    " handoff_pc=0x%08" PRIX64 " state=%u"
+                                    " at=0x%08" PRIX64 " v0=0x%08" PRIX64
+                                    " v1=0x%08" PRIX64 " a0=0x%08" PRIX64
+                                    " a1=0x%08" PRIX64 " a2=0x%08" PRIX64
+                                    " a3=0x%08" PRIX64 " gp=0x%08" PRIX64
+                                    " sp=0x%08" PRIX64 " t9=0x%08" PRIX64
+                                    " ra=0x%08" PRIX64 "\n",
+                                    (uint64_t)(uint32_t)bad_pc, insn,
+                                    (uint64_t)(uint32_t)badv, fault_va,
+                                    m->last_unmapped_valid ? 1u : 0u,
+                                    m->last_unmapped_valid ?
+                                    (uint64_t)(uint32_t)m->last_unmapped_addr : 0u,
+                                    (int)fault_type,
+                                    inferred_fault ? 1u : 0u,
+                                    inferred_fault_va,
+                                    (uint64_t)(uint32_t)m->execve_user_handoff_pc,
+                                    (unsigned)m->execve_user_handoff_state,
+                                    (uint64_t)(uint32_t)at, (uint64_t)(uint32_t)v0,
+                                    (uint64_t)(uint32_t)v1, (uint64_t)(uint32_t)a0,
+                                    (uint64_t)(uint32_t)a1, (uint64_t)(uint32_t)a2,
+                                    (uint64_t)(uint32_t)a3, (uint64_t)(uint32_t)gp,
+                                    (uint64_t)(uint32_t)sp, (uint64_t)(uint32_t)t9,
+                                    (uint64_t)(uint32_t)ra);
+                            handoff_user_tlbl_diag_log++;
+                        }
+                    }
                     if (m->execve_user_handoff_active &&
                         m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED) {
                         trace_user_handoff_fault_once(m, (uint32_t)bad_pc, fault_va, badv);
