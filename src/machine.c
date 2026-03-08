@@ -490,7 +490,14 @@ static void tlb_map_kuseg_page(machine_t *m, uint64_t kuseg_va, uint64_t pa,
      * Read from kseg0 alias (0x80000000 + PA) first, because kernel writes
      * (ramdisk load, page cache I/O) go to kseg0 alias regions which are
      * separate Unicorn memory from the PA region at 0x00000000.
-     * Fall back to raw PA if the kseg0 alias block isn't mapped yet. */
+     * Fall back to raw PA if the kseg0 alias block isn't mapped yet.
+     *
+     * We write to THREE destinations:
+     *   1. The kuseg VA flat region (for direct softmmu hits before TLBWI)
+     *   2. The raw PA region (for softmmu hits after TLB-translated access)
+     *   3. The kseg0 alias is already authoritative — no write needed.
+     * This ensures correct data regardless of whether the softmmu resolves
+     * via the flat VA region or through the MIPS hardware TLB to PA. */
     uint8_t buf[4096];
     for (uint64_t off = 0; off < page_bytes; off += sizeof(buf)) {
         uint64_t pa_off = pa_pg + off;
@@ -510,7 +517,12 @@ static void tlb_map_kuseg_page(machine_t *m, uint64_t kuseg_va, uint64_t pa,
         if (!got_data)
             memset(buf, 0, sizeof(buf));
 
+        /* Write to kuseg VA flat region */
         uc_mem_write(m->uc, va_pg + off, buf, sizeof(buf));
+
+        /* Also sync raw PA so TLB-translated accesses see correct data */
+        if (got_data && pa_off < (uint64_t)m->cfg.sdram_size)
+            uc_mem_write(m->uc, pa_off, buf, sizeof(buf));
     }
 
     static uint32_t map_log = 0;
@@ -2453,6 +2465,12 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * (after TLBWI has actually run and updated the hardware TLB).
      * This evicts any stale read-only (D=0) softmmu entry so the retry store
      * at the faulting PC can fill fresh from the updated hardware TLB. */
+    /* Restore GPR after PFN-corrected MTC0 executed. */
+    if (m->pending_gpr_restore) {
+        uc_reg_write(uc, m->pending_gpr_reg, &m->pending_gpr_val);
+        m->pending_gpr_restore = false;
+    }
+
     if (m->pending_tlb_flush) {
         uc_ctl_flush_tlb(uc);
         m->pending_tlb_flush = false;
@@ -2825,6 +2843,24 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             }
         }
         cp0_shadow_write(m, rd, sel, val);
+
+        /* VR41xx → MIPS32 PFN correction for EntryLo0/EntryLo1.
+         * The VR41xx kernel stores PFN so that PA = PFN << 10, but
+         * Unicorn's MIPS32 hardware TLB computes PA = PFN << 12.
+         * Shift PFN right by 2 in the GPR before the native MTC0
+         * executes, so the hardware TLB gets the correct PA.
+         * The shadow copy retains the original VR41xx value. */
+        if (sel == 0u && (rd == 2u || rd == 3u) && rt != 0u) {
+            uint32_t orig_pfn = ((uint32_t)val >> 6) & 0xFFFFFu;
+            uint32_t flags = (uint32_t)val & 0x3Fu;
+            uint64_t corrected = (uint64_t)(((orig_pfn >> 2) << 6) | flags);
+            /* Save original GPR value, write corrected, restore after MTC0 */
+            m->pending_gpr_restore = true;
+            m->pending_gpr_reg = UC_MIPS_REG_0 + (int)rt;
+            m->pending_gpr_val = val;
+            uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &corrected);
+        }
+
         const char *name = cp0_reg_name(rd, sel);
         if (name != NULL &&
             cp0_is_tlb_diag_reg(rd, sel) &&
@@ -2922,13 +2958,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
          * the actual root cause.
          */
         if (insn == 0x42000002u || insn == 0x42000006u) {
-            /* Arm the softmmu TLB flush (fix A). */
-            m->pending_tlb_flush = true;
             shadow_tlb_record_write(m, insn, (uint32_t)address);
 
             uint32_t badvaddr = (uint32_t)m->shadow_cp0_badvaddr;
             uint32_t entryhi = (uint32_t)m->shadow_cp0_entryhi;
             uint32_t entryhi_vpn2 = entryhi & 0xFFFFE000u;
+
+            /* Arm the softmmu TLB flush so the hardware TLB entry (now
+             * with corrected MIPS32 PFN from MTC0 intercept) takes effect. */
+            m->pending_tlb_flush = true;
             uint32_t kuseg_va = (entryhi_vpn2 != 0u && entryhi_vpn2 < 0x80000000u)
                               ? entryhi_vpn2 : badvaddr;
 
@@ -3392,7 +3430,9 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         }
                     }
 
-                    uc_emu_stop(uc);
+                    /* Don't uc_emu_stop here — let the native ERET execute
+                     * and continue in the same batch so the softmmu cache
+                     * stays warm for the kuseg VA access. */
                 }
 
                 if (m->pending_excode == MIPS_EXCCODE_SYS)

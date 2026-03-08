@@ -167,6 +167,12 @@ struct machine_s {
      * prevent the retry store from succeeding. */
     bool     pending_tlb_flush;
 
+    /* VR41xx→MIPS32 PFN fixup: after patching a GPR for MTC0 EntryLo,
+     * restore the original value on the next instruction. */
+    bool     pending_gpr_restore;
+    int      pending_gpr_reg;
+    uint64_t pending_gpr_val;
+
     /* TLB notification de-duplication for execve DEFER.
      * Unicorn re-delivers the same notification-only intno=26 at SYSCALL+4
      * after ERET_TLB_PASSTHROUGH returns to the faulting instruction (before
