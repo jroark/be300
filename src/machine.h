@@ -34,6 +34,7 @@ typedef struct {
     bool        log_mmio;     /* log all MMIO register accesses */
     bool        sfb_5bit_green; /* true = apply 5-bit green expansion (2.6 sfb.c non-standard)
                                  * false (default) = pass pixels through as-is (true RGB565) */
+    bool        kuseg_hotpath_populate; /* experimental: try shadow-TLB-backed kuseg population in LOAD_EMU/STORE_EMU */
     const char *rom_path;     /* path to flat ROM image, loaded at PA_RESET_VECTOR */
     const char *kernel_path;  /* path to ELF kernel (vmlinux); if set, skip ROM boot */
     const char *cmdline;      /* kernel command line (passed in $a1 as argv[0]) */
@@ -104,7 +105,21 @@ struct machine_s {
     uint64_t shadow_cp0_pagemask;
     uint64_t shadow_cp0_badvaddr;
     uint64_t shadow_cp0_entryhi;
+    uint64_t shadow_cp0_entryhi_live; /* latest MFC0 EntryHi readback (current ASID hint) */
     uint64_t shadow_cp0_epc;
+    bool     shadow_cp0_entryhi_live_valid;
+
+    /* Minimal shadow TLB cache captured from tlbwi/tlbwr instructions.
+     * Used to resolve kuseg VA->PA at ERET/handoff time when the single
+     * CP0 snapshot no longer matches the target user VA. */
+    bool     shadow_tlb_valid[64];
+    uint32_t shadow_tlb_entryhi[64];
+    uint32_t shadow_tlb_lo0[64];
+    uint32_t shadow_tlb_lo1[64];
+    uint32_t shadow_tlb_pagemask[64];
+    uint32_t shadow_tlb_seq[64];
+    uint32_t shadow_tlb_seq_next;
+    uint32_t shadow_tlb_wr_cursor;
 
     /* Framebuffer / UI */
     uint32_t fb_width;

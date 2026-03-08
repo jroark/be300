@@ -17,6 +17,10 @@ static void usage(const char *prog)
         "  --sfb-5bit-green      Use 5-bit green expansion for 2.6 sfb.c (non-standard\n"
         "                        R5X1G5B5 layout); default is pass-through (true RGB565,\n"
         "                        correct for Linux 2.4 kernels)\n"
+        "  --kuseg-hotpath-populate\n"
+        "                        Experimental: in LOAD_EMU/STORE_EMU kuseg accesses,\n"
+        "                        attempt shadow-TLB-backed VA->PA population before\n"
+        "                        falling back to empty block mapping\n"
         "  --ram <file>          Preload a raw RAM image at PA 0x00000000\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  -h, --help            Show this help\n"
@@ -35,6 +39,7 @@ int main(int argc, char *argv[])
         .trace          = false,
         .log_mmio       = false,
         .sfb_5bit_green = false,
+        .kuseg_hotpath_populate = false,
         .rom_path       = NULL,
         .kernel_path    = NULL,
         .cmdline        = NULL,
@@ -53,6 +58,8 @@ int main(int argc, char *argv[])
             cfg.log_mmio = true;
         } else if (strcmp(argv[i], "--sfb-5bit-green") == 0) {
             cfg.sfb_5bit_green = true;
+        } else if (strcmp(argv[i], "--kuseg-hotpath-populate") == 0) {
+            cfg.kuseg_hotpath_populate = true;
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
             cfg.ram_path = argv[++i];
         } else if (strcmp(argv[i], "--sdram") == 0 && i + 1 < argc) {

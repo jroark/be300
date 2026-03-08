@@ -339,35 +339,255 @@ static void tlb_map_kuseg_page(machine_t *m, uint64_t kuseg_va, uint64_t pa)
     if ((uint32_t)kuseg_va >= 0x80000000u)
         return;  /* safety: only handle user-space addresses */
 
-    uint64_t va_blk = kuseg_va & ~(uint64_t)0xFFFFF;   /* 1 MB-aligned VA */
-    uint64_t pa_blk = pa       & ~(uint64_t)0xFFFFF;   /* 1 MB-aligned PA */
+    uint64_t va_pg = kuseg_va & ~(uint64_t)0xFFFu;     /* 4 KB-aligned VA */
+    uint64_t pa_pg = pa       & ~(uint64_t)0xFFFu;     /* 4 KB-aligned PA */
 
-    uc_err me = uc_mem_map(m->uc, va_blk, 0x100000, UC_PROT_ALL);
-    if (me == UC_ERR_MAP)
-        return;  /* already present in Unicorn's region table — OK */
+    uc_err me = uc_mem_map(m->uc, va_pg, 0x1000, UC_PROT_ALL);
+    bool premap = (me == UC_ERR_MAP);
+    if (premap) {
+        /* Pre-mapped VA page: still refresh it from SDRAM PA content. */
+        me = UC_ERR_OK;
+        uc_err pe = uc_mem_protect(m->uc, va_pg, 0x1000, UC_PROT_ALL);
+        if (pe != UC_ERR_OK) {
+            static uint32_t prot_err_log = 0;
+            if (prot_err_log++ < 16)
+                fprintf(stderr, "[TLB_MAP_PROT_FAIL] VA_pg=0x%08" PRIX64 " err=%s\n",
+                        va_pg, uc_strerror(pe));
+        }
+    }
     if (me != UC_ERR_OK) {
         static uint32_t err_log = 0;
         if (err_log++ < 16)
-            fprintf(stderr, "[TLB_MAP_FAIL] VA_blk=0x%08" PRIX64 " err=%s\n",
-                    va_blk, uc_strerror(me));
+            fprintf(stderr, "[TLB_MAP_FAIL] VA_pg=0x%08" PRIX64 " err=%s\n",
+                    va_pg, uc_strerror(me));
         return;
     }
 
-    /* Populate the new VA block from the corresponding SDRAM PA block.
-     * Copy 4 KB at a time to avoid a large stack allocation. */
-    if (pa_blk < (uint64_t)m->cfg.sdram_size) {
-        uint8_t buf[4096];
-        for (uint64_t off = 0; off < 0x100000; off += sizeof(buf)) {
-            if (uc_mem_read(m->uc, pa_blk + off, buf, sizeof(buf)) != UC_ERR_OK)
-                memset(buf, 0, sizeof(buf));
-            uc_mem_write(m->uc, va_blk + off, buf, sizeof(buf));
-        }
+    /* Populate exactly one translated page; 1MB coarse copies can shift
+     * content when VA/PA offsets differ inside the 1MB region. */
+    uint8_t buf[4096];
+    if (pa_pg < (uint64_t)m->cfg.sdram_size &&
+        uc_mem_read(m->uc, pa_pg, buf, sizeof(buf)) == UC_ERR_OK) {
+        uc_mem_write(m->uc, va_pg, buf, sizeof(buf));
+    } else {
+        memset(buf, 0, sizeof(buf));
+        uc_mem_write(m->uc, va_pg, buf, sizeof(buf));
     }
 
     static uint32_t map_log = 0;
     if (map_log++ < 64)
-        fprintf(stderr, "[TLB_MAP] kuseg 1MB VA=0x%08" PRIX64
-                " <- SDRAM PA=0x%08" PRIX64 "\n", va_blk, pa_blk);
+        fprintf(stderr, "[TLB_MAP] kuseg 4KB VA=0x%08" PRIX64
+                " <- SDRAM PA=0x%08" PRIX64 " premap=%u\n",
+                va_pg, pa_pg, premap ? 1u : 0u);
+
+    /* Ensure any stale softmmu negative translation for this VA is dropped
+     * before retrying user-mode fetch/load. */
+    uc_ctl_flush_tlb(m->uc);
+}
+
+typedef struct {
+    bool hit;
+    bool confident;
+    bool pair_valid;
+    const char *reason;
+    uint32_t query_va;
+    uint32_t query_vpn2;
+    uint32_t entryhi;
+    uint32_t entryhi_vpn2;
+    uint8_t entryhi_asid;
+    uint8_t current_asid;
+    bool current_asid_valid;
+    uint32_t pagemask;
+    uint32_t lo0;
+    uint32_t lo1;
+    uint64_t va_page;
+    uint64_t pa_page;
+    uint64_t pair_va_page;
+    uint64_t pair_pa_page;
+    uint32_t source_idx;
+} tlb_lookup_result_t;
+
+static void shadow_tlb_record_write(machine_t *m, uint32_t tlb_insn, uint32_t pc)
+{
+    uint32_t idx = 0;
+    if (tlb_insn == 0x42000002u) {
+        idx = ((uint32_t)m->shadow_cp0_index) & 0x3Fu;  /* tlbwi uses Index */
+    } else if (tlb_insn == 0x42000006u) {
+        idx = m->shadow_tlb_wr_cursor++ & 0x3Fu;         /* tlbwr index unknown */
+    } else {
+        return;
+    }
+
+    m->shadow_tlb_valid[idx] = true;
+    m->shadow_tlb_entryhi[idx] = (uint32_t)m->shadow_cp0_entryhi;
+    m->shadow_tlb_lo0[idx] = (uint32_t)m->shadow_cp0_entrylo0;
+    m->shadow_tlb_lo1[idx] = (uint32_t)m->shadow_cp0_entrylo1;
+    m->shadow_tlb_pagemask[idx] = (uint32_t)m->shadow_cp0_pagemask;
+    m->shadow_tlb_seq[idx] = ++m->shadow_tlb_seq_next;
+
+    static uint32_t shadow_tlb_log = 0;
+    if (shadow_tlb_log++ < 256) {
+        fprintf(stderr,
+                "[SHADOW_TLB_WRITE] op=%s idx=%u pc=0x%08X hi=0x%08X"
+                " lo0=0x%08X lo1=0x%08X mask=0x%08X seq=%u\n",
+                (tlb_insn == 0x42000002u) ? "tlbwi" : "tlbwr",
+                idx, pc, m->shadow_tlb_entryhi[idx], m->shadow_tlb_lo0[idx],
+                m->shadow_tlb_lo1[idx], m->shadow_tlb_pagemask[idx],
+                m->shadow_tlb_seq[idx]);
+    }
+}
+
+static tlb_lookup_result_t shadow_tlb_lookup(machine_t *m, uint32_t va)
+{
+    tlb_lookup_result_t r;
+    memset(&r, 0, sizeof(r));
+    r.reason = "init";
+    r.query_va = va;
+    r.query_vpn2 = va & ~0x1FFFu;
+    r.source_idx = 0xFFFFFFFFu;
+    r.current_asid_valid = m->shadow_cp0_entryhi_live_valid;
+    r.current_asid = (uint8_t)(m->shadow_cp0_entryhi_live & 0xFFu);
+
+    if (va >= 0x80000000u) {
+        r.reason = "non_kuseg";
+        return r;
+    }
+
+    /* Search most recent matching entry in the shadow TLB table first. */
+    uint32_t best_idx = 0xFFFFFFFFu;
+    uint32_t best_seq = 0u;
+    for (uint32_t i = 0; i < 64u; i++) {
+        if (!m->shadow_tlb_valid[i])
+            continue;
+        uint32_t hi = m->shadow_tlb_entryhi[i];
+        uint32_t vpn2 = hi & 0xFFFFE000u;
+        if (vpn2 != r.query_vpn2)
+            continue;
+        if (m->shadow_tlb_seq[i] >= best_seq) {
+            best_seq = m->shadow_tlb_seq[i];
+            best_idx = i;
+        }
+    }
+
+    if (best_idx != 0xFFFFFFFFu) {
+        r.source_idx = best_idx;
+        r.entryhi = m->shadow_tlb_entryhi[best_idx];
+        r.entryhi_vpn2 = r.entryhi & 0xFFFFE000u;
+        r.entryhi_asid = (uint8_t)(r.entryhi & 0xFFu);
+        r.lo0 = m->shadow_tlb_lo0[best_idx];
+        r.lo1 = m->shadow_tlb_lo1[best_idx];
+        r.pagemask = m->shadow_tlb_pagemask[best_idx];
+    } else {
+        /* Fallback to the single live CP0 snapshot when no table match exists. */
+        r.entryhi = (uint32_t)m->shadow_cp0_entryhi;
+        r.entryhi_vpn2 = r.entryhi & 0xFFFFE000u;
+        r.entryhi_asid = (uint8_t)(r.entryhi & 0xFFu);
+        r.lo0 = (uint32_t)m->shadow_cp0_entrylo0;
+        r.lo1 = (uint32_t)m->shadow_cp0_entrylo1;
+        r.pagemask = (uint32_t)m->shadow_cp0_pagemask;
+        if (r.entryhi_vpn2 != r.query_vpn2) {
+            r.reason = "vpn2_mismatch";
+            return r;
+        }
+    }
+    r.hit = true;
+
+    if (r.pagemask != 0u) {
+        /* Some VR41xx paths keep PageMask=0x1800 while still using
+         * EntryLo PFNs compatible with our 4KB block-population strategy. */
+        if (r.pagemask == 0x00001800u) {
+            r.reason = "pagemask_0x1800_compat";
+        } else {
+            r.reason = "pagemask_nonzero";
+            return r;
+        }
+    }
+
+    bool odd_page = (va & 0x1000u) != 0u;
+    uint32_t lo = odd_page ? r.lo1 : r.lo0;
+    if ((lo & 0x2u) == 0u) {
+        r.reason = odd_page ? "lo1_invalid" : "lo0_invalid";
+        return r;
+    }
+
+    bool global_pair = ((r.lo0 & 0x1u) != 0u) && ((r.lo1 & 0x1u) != 0u);
+    bool asid_ok = global_pair || !r.current_asid_valid ||
+                   (r.entryhi_asid == r.current_asid);
+    if (!asid_ok) {
+        r.reason = "asid_mismatch";
+        return r;
+    }
+    if (!global_pair && !r.current_asid_valid)
+        r.reason = "asid_unchecked";
+
+    uint64_t pfn = (uint64_t)((lo >> 6) & 0xFFFFFu);
+    uint64_t pa = pfn << 12;
+    if (pa >= (uint64_t)m->cfg.sdram_size) {
+        r.reason = "pa_out_of_range";
+        return r;
+    }
+
+    r.va_page = (uint64_t)(va & ~0xFFFu);
+    r.pa_page = pa;
+    r.confident = true;
+    if (r.reason == NULL || strcmp(r.reason, "init") == 0)
+        r.reason = "ok";
+
+    if (r.pagemask == 0u) {
+        uint32_t pair_lo = odd_page ? r.lo0 : r.lo1;
+        if ((pair_lo & 0x2u) != 0u) {
+            uint64_t pair_pfn = (uint64_t)((pair_lo >> 6) & 0xFFFFFu);
+            uint64_t pair_pa = pair_pfn << 12;
+            if (pair_pa < (uint64_t)m->cfg.sdram_size) {
+                r.pair_valid = true;
+                r.pair_va_page = odd_page ? (uint64_t)(r.query_vpn2) :
+                                            (uint64_t)(r.query_vpn2 + 0x1000u);
+                r.pair_pa_page = pair_pa;
+            }
+        }
+    }
+
+    return r;
+}
+
+static bool shadow_tlb_populate(machine_t *m, uint32_t va, bool include_pair,
+                                const char *tag, uint32_t pc_hint)
+{
+    tlb_lookup_result_t r = shadow_tlb_lookup(m, va);
+    if (!r.hit || !r.confident) {
+        static uint32_t skip_log = 0;
+        if (skip_log++ < 256) {
+            fprintf(stderr,
+                    "[%s_SKIP] va=0x%08X pc=0x%08X hit=%u confident=%u reason=%s"
+                    " entryhi=0x%08X vpn2=0x%08X lo0=0x%08X lo1=0x%08X"
+                    " mask=0x%08X asid=0x%02X cur_asid=%s0x%02X src=%s%u\n",
+                    tag, va, pc_hint,
+                    r.hit ? 1u : 0u, r.confident ? 1u : 0u, r.reason,
+                    r.entryhi, r.entryhi_vpn2, r.lo0, r.lo1, r.pagemask,
+                    (unsigned)r.entryhi_asid,
+                    r.current_asid_valid ? "" : "?",
+                    (unsigned)r.current_asid,
+                    (r.source_idx == 0xFFFFFFFFu) ? "live:" : "tlb:",
+                    (r.source_idx == 0xFFFFFFFFu) ? 0u : r.source_idx);
+        }
+        return false;
+    }
+
+    tlb_map_kuseg_page(m, r.va_page, r.pa_page);
+    if (include_pair && r.pair_valid)
+        tlb_map_kuseg_page(m, r.pair_va_page, r.pair_pa_page);
+
+    static uint32_t ok_log = 0;
+    if (ok_log++ < 256) {
+        fprintf(stderr,
+                "[%s_POPULATE] va=0x%08X pc=0x%08X pa=0x%08" PRIX64
+                " pair=%u confident=1 src=%s%u reason=%s\n",
+                tag, va, pc_hint, r.pa_page, r.pair_valid ? 1u : 0u,
+                (r.source_idx == 0xFFFFFFFFu) ? "live:" : "tlb:",
+                (r.source_idx == 0xFFFFFFFFu) ? 0u : r.source_idx,
+                r.reason);
+    }
+    return true;
 }
 
 /* Convert kseg0/kseg1 VA to physical; return false for non-direct-mapped VA. */
@@ -432,9 +652,17 @@ static bool emulate_load_at_pc(machine_t *m, uint64_t pc)
     if (addr32 >= 0x80000000u && addr32 <= 0xBFFFFFFFu) {
         map_kseg_mirror_block(m, block);
     } else {
-        uc_mem_map(m->uc, block32, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
-        if (block != block32)
-            uc_mem_map(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+        bool mapped = false;
+        if (m->cfg.kuseg_hotpath_populate && addr32 < 0x80000000u) {
+            mapped = shadow_tlb_populate(m, addr32, false,
+                                         "LOAD_EMU_POPULATE",
+                                         (uint32_t)pc);
+        }
+        if (!mapped) {
+            uc_mem_map(m->uc, block32, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+            if (block != block32)
+                uc_mem_map(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+        }
     }
 
     uint64_t val = 0;
@@ -511,9 +739,17 @@ static bool emulate_store_on_write_unmapped(machine_t *m, uint64_t pc)
     if (addr32 >= 0x80000000u && addr32 <= 0xBFFFFFFFu) {
         map_kseg_mirror_block(m, block);
     } else {
-        uc_mem_map(m->uc, block32, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
-        if (block != block32)
-            uc_mem_map(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+        bool mapped = false;
+        if (m->cfg.kuseg_hotpath_populate && addr32 < 0x80000000u) {
+            mapped = shadow_tlb_populate(m, addr32, false,
+                                         "STORE_EMU_POPULATE",
+                                         (uint32_t)pc);
+        }
+        if (!mapped) {
+            uc_mem_map(m->uc, block32, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+            if (block != block32)
+                uc_mem_map(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+        }
     }
 
     uc_err we = UC_ERR_OK;
@@ -1191,6 +1427,10 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             uint64_t val = 0;
             uc_reg_read(uc, UC_MIPS_REG_0 + (int)m->cp0_readback_rt, &val);
             cp0_shadow_write(m, m->cp0_readback_rd, m->cp0_readback_sel, val);
+            if (m->cp0_readback_rd == 10u && m->cp0_readback_sel == 0u) {
+                m->shadow_cp0_entryhi_live = val;
+                m->shadow_cp0_entryhi_live_valid = true;
+            }
             const char *name = cp0_reg_name(m->cp0_readback_rd, m->cp0_readback_sel);
             if (name != NULL &&
                 cp0_is_tlb_diag_reg(m->cp0_readback_rd, m->cp0_readback_sel) &&
@@ -1414,6 +1654,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         m->cp0_readback_next_pc = address + 4u;
     }
 
+    /* Always capture MFC0 EntryHi to keep a current ASID hint. */
+    if (op == 0x10u && rs == 0u && rd == 10u && sel == 0u) {
+        m->cp0_readback_pending = true;
+        m->cp0_readback_rt  = (uint8_t)rt;
+        m->cp0_readback_rd  = 10u;
+        m->cp0_readback_sel = 0u;
+        m->cp0_readback_next_pc = address + 4u;
+    }
+
     /* Queue readback for other TLB diagnostic registers when the debug window
      * is active (avoid log saturation from early-boot MFC0 reads). */
     if (tlb_trace_window_active(m) && op == 0x10u && rs == 0u) {
@@ -1587,28 +1836,34 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         if (insn == 0x42000002u || insn == 0x42000006u) {
             /* Arm the softmmu TLB flush (fix A). */
             m->pending_tlb_flush = true;
+            shadow_tlb_record_write(m, insn, (uint32_t)address);
 
-            /* Direct kuseg mapping (fix B).
-             * shadow_cp0_badvaddr is populated by the MFC0 $8 readback that
-             * fires when tlb_trace_window is active (which is guaranteed
-             * before create_elf_tables by the run_init_process checkpoint). */
             uint32_t badvaddr = (uint32_t)m->shadow_cp0_badvaddr;
-            if (badvaddr != 0u && badvaddr < 0x80000000u) {
-                /* Even page: VA = VPN2 (badvaddr & ~0x1FFF), PA from EntryLo0 */
-                uint32_t even_va = badvaddr & ~0x1FFFu;
-                uint32_t lo0     = (uint32_t)m->shadow_cp0_entrylo0;
-                uint32_t lo1     = (uint32_t)m->shadow_cp0_entrylo1;
-                /* V bit (valid) = bit 1 of EntryLo */
-                if (lo0 & 0x2u) {
-                    uint64_t pfn0 = (uint64_t)((lo0 >> 6) & 0xFFFFFu);
-                    tlb_map_kuseg_page(m, (uint64_t)even_va, pfn0 << 12);
-                }
-                /* Odd page: VA = even_va + 4096, PA from EntryLo1 */
-                uint32_t odd_va = even_va + 0x1000u;
-                if (lo1 & 0x2u) {
-                    uint64_t pfn1 = (uint64_t)((lo1 >> 6) & 0xFFFFFu);
-                    tlb_map_kuseg_page(m, (uint64_t)odd_va, pfn1 << 12);
-                }
+            uint32_t entryhi = (uint32_t)m->shadow_cp0_entryhi;
+            uint32_t entryhi_vpn2 = entryhi & 0xFFFFE000u;
+            uint32_t kuseg_va = (entryhi_vpn2 != 0u && entryhi_vpn2 < 0x80000000u)
+                              ? entryhi_vpn2 : badvaddr;
+
+            static uint32_t tlbwi_diag_log = 0;
+            if (tlbwi_diag_log < 128) {
+                fprintf(stderr,
+                        "[TLBWI_DIAG] badvaddr=0x%08X lo0=0x%08" PRIX64
+                        " lo1=0x%08" PRIX64 " entryhi=0x%08X"
+                        " mask=0x%08" PRIX64 " chosen=0x%08X"
+                        " PC=0x%08" PRIX64 "\n",
+                        badvaddr,
+                        (uint64_t)(uint32_t)m->shadow_cp0_entrylo0,
+                        (uint64_t)(uint32_t)m->shadow_cp0_entrylo1,
+                        entryhi,
+                        (uint64_t)(uint32_t)m->shadow_cp0_pagemask,
+                        kuseg_va,
+                        (uint64_t)(uint32_t)address);
+                tlbwi_diag_log++;
+            }
+
+            if (kuseg_va != 0u && kuseg_va < 0x80000000u) {
+                shadow_tlb_populate(m, kuseg_va, true, "TLBWI_POPULATE",
+                                    (uint32_t)address);
             }
         }
     }
@@ -1706,6 +1961,69 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                     (uint64_t)(uint32_t)m->pending_syscall_epc);
             mfc0_cause_skip_log++;
         }
+    }
+
+    /*
+     * Synthetic user TLB refill support:
+     * when machine_run injects a user-mode TLBL/TLBS exception from
+     * UC_ERR_READ_UNMAPPED, provide BadVAddr/EntryHi values expected by
+     * Linux refill handlers that start at 0x80000000.
+     */
+    if ((insn & 0xFFE0FFFFu) == 0x40004000u &&
+        (m->pending_excode == MIPS_EXCCODE_TLBL ||
+         m->pending_excode == MIPS_EXCCODE_TLBS)) {
+        uint32_t rt = (insn >> 16) & 0x1Fu;
+        uint64_t badv = (uint64_t)(uint32_t)m->shadow_cp0_badvaddr;
+        uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &badv);
+        static uint32_t badv_inject_log = 0;
+        if (badv_inject_log < 128) {
+            fprintf(stderr,
+                    "[BADVADDR_MFC0] inject PC=0x%08" PRIX64
+                    " badv=0x%08" PRIX64 " rt=%u excode=%u\n",
+                    (uint64_t)(uint32_t)address, badv, rt, m->pending_excode);
+            badv_inject_log++;
+        }
+        uint64_t next_pc = address + 4;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
+    if ((insn & 0xFFE0FFFFu) == 0x40002000u &&
+        (m->pending_excode == MIPS_EXCCODE_TLBL ||
+         m->pending_excode == MIPS_EXCCODE_TLBS)) {
+        uint32_t rt = (insn >> 16) & 0x1Fu;
+        uint64_t ctx = (uint64_t)(uint32_t)m->shadow_cp0_context;
+        uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &ctx);
+        static uint32_t context_inject_log = 0;
+        if (context_inject_log < 128) {
+            fprintf(stderr,
+                    "[CONTEXT_MFC0] inject PC=0x%08" PRIX64
+                    " ctx=0x%08" PRIX64 " rt=%u excode=%u\n",
+                    (uint64_t)(uint32_t)address, ctx, rt, m->pending_excode);
+            context_inject_log++;
+        }
+        uint64_t next_pc = address + 4;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
+    if ((insn & 0xFFE0FFFFu) == 0x40005000u &&
+        (m->pending_excode == MIPS_EXCCODE_TLBL ||
+         m->pending_excode == MIPS_EXCCODE_TLBS)) {
+        uint32_t rt = (insn >> 16) & 0x1Fu;
+        uint64_t hi = (uint64_t)(uint32_t)m->shadow_cp0_entryhi;
+        uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &hi);
+        static uint32_t entryhi_inject_log = 0;
+        if (entryhi_inject_log < 128) {
+            fprintf(stderr,
+                    "[ENTRYHI_MFC0] inject PC=0x%08" PRIX64
+                    " entryhi=0x%08" PRIX64 " rt=%u excode=%u\n",
+                    (uint64_t)(uint32_t)address, hi, rt, m->pending_excode);
+            entryhi_inject_log++;
+        }
+        uint64_t next_pc = address + 4;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
     }
 
     /*
@@ -1952,6 +2270,41 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                             " insn@target=0x%08X read_err=%d\n",
                             (uint32_t)epc, sp_val, status, probe, re);
 
+                    if (probe == 0u) {
+                        bool populated = shadow_tlb_populate(m, (uint32_t)epc, true,
+                                                             "ERET_MANUAL_KUSEG",
+                                                             (uint32_t)address);
+                        re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
+                        fprintf(stderr,
+                                "[ERET_MANUAL_KUSEG] after populate target=0x%08X"
+                                " insn@target=0x%08X read_err=%d\n",
+                                (uint32_t)epc, probe, re);
+
+                        if (probe == 0u) {
+                            uint32_t alias_pa = (uint32_t)epc & 0x1FFFFFFFu;
+                            uint32_t alias_probe = 0;
+                            uc_err alias_re = uc_mem_read(uc, alias_pa, &alias_probe, 4);
+                            static uint32_t alias_log = 0;
+                            if (alias_log < 256) {
+                                fprintf(stderr,
+                                        "[ERET_MANUAL_KUSEG_ALIAS] target=0x%08X"
+                                        " alias_pa=0x%08X alias_insn=0x%08X alias_err=%d"
+                                        " populated=%u\n",
+                                        (uint32_t)epc, alias_pa, alias_probe, alias_re,
+                                        populated ? 1u : 0u);
+                                alias_log++;
+                            }
+                            if (alias_re == UC_ERR_OK && alias_probe != 0u) {
+                                tlb_map_kuseg_page(m, (uint32_t)epc, (uint64_t)alias_pa);
+                                re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
+                                fprintf(stderr,
+                                        "[ERET_MANUAL_KUSEG_ALIAS] after alias map"
+                                        " target=0x%08X insn@target=0x%08X read_err=%d\n",
+                                        (uint32_t)epc, probe, re);
+                            }
+                        }
+                    }
+
                     uc_emu_stop(uc);
                 }
 
@@ -2108,6 +2461,8 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
      * those back to the handed-off user context.
      */
     if (m->execve_user_handoff_active &&
+        m->pending_excode != MIPS_EXCCODE_TLBL &&
+        m->pending_excode != MIPS_EXCCODE_TLBS &&
         (uint32_t)pc >= 0x80000000u &&    /* stale kseg0 PC after kuseg handoff */
         (intno == 12u || intno == 26u || intno == 27u)) {
         uint64_t restore_pc = m->execve_user_handoff_pc;
@@ -4411,6 +4766,10 @@ void machine_run(machine_t *m)
                 uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &fix_status);
                 fix_status = (fix_status & ~(uint64_t)0x1Au) | 0x10u; /* clear EXL/KSU, set UM */
                 uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &fix_status);
+
+                shadow_tlb_populate(m, (uint32_t)fix_pc, true,
+                                    "EXECVE_HANDOFF_FIX",
+                                    (uint32_t)post_pc);
                 static uint32_t handoff_fix_log = 0;
                 if (handoff_fix_log < 32) {
                     fprintf(stderr,
@@ -4557,6 +4916,56 @@ void machine_run(machine_t *m)
                     fault_type = m->last_unmapped_type;
                 } else if (m->shadow_cp0_badvaddr != 0) {
                     badv = m->shadow_cp0_badvaddr;
+                }
+                if ((uint32_t)bad_pc < 0x80000000u &&
+                    m->pending_excode == 0u) {
+                    uint32_t fault_va = (uint32_t)((badv != 0u) ? badv : bad_pc);
+                    uint32_t asid = (uint32_t)(m->shadow_cp0_entryhi_live_valid
+                                     ? m->shadow_cp0_entryhi_live
+                                     : m->shadow_cp0_entryhi) & 0xFFu;
+                    uint32_t ctx_base = (uint32_t)m->shadow_cp0_context & 0xFF800000u;
+                    uint32_t ctx_badvpn2 = ((fault_va >> 9) & 0x007FFFF0u);
+                    m->shadow_cp0_badvaddr = (uint64_t)fault_va;
+                    m->shadow_cp0_entryhi = (uint64_t)((fault_va & 0xFFFFE000u) | asid);
+                    m->shadow_cp0_context = (uint64_t)(ctx_base | ctx_badvpn2);
+
+                    m->pending_epc          = (uint32_t)bad_pc;
+                    m->pending_excode       = MIPS_EXCCODE_TLBL;
+                    m->pending_cause        = (uint32_t)(MIPS_EXCCODE_TLBL << 2);
+                    m->epc_was_written      = false;
+                    m->pending_cause_served = false;
+                    m->pending_epc_served   = false;
+
+                    uint64_t ex_status = 0;
+                    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+                    ex_status |= 0x2u;  /* EXL=1 */
+                    uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+
+                    uint64_t vec = (ex_status & 0x00400000u) ?
+                                   mips_sext(0xBFC00380u) :
+                                   mips_sext(0x80000180u);
+                    uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
+
+                    static uint32_t user_tlbl_inject_log = 0;
+                    if (user_tlbl_inject_log < 128) {
+                        fprintf(stderr,
+                                "[USER_TLBL_INJECT] pc=0x%016" PRIX64
+                                " badv=0x%016" PRIX64
+                                " pc32=0x%08" PRIX64 " badv32=0x%08X"
+                                " entryhi=0x%08X ctx=0x%08X vec=0x%08" PRIX64
+                                " status=0x%08" PRIX64 "\n",
+                                (uint64_t)bad_pc,
+                                (uint64_t)badv,
+                                (uint64_t)(uint32_t)bad_pc,
+                                fault_va,
+                                (uint32_t)m->shadow_cp0_entryhi,
+                                (uint32_t)m->shadow_cp0_context,
+                                (uint64_t)(uint32_t)vec,
+                                (uint64_t)(uint32_t)ex_status);
+                        user_tlbl_inject_log++;
+                    }
+                    m->last_unmapped_valid = false;
+                    continue;
                 }
                 m->last_unmapped_valid = false;
                 uc_reg_read(m->uc, UC_MIPS_REG_AT, &at);
