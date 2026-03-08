@@ -96,6 +96,16 @@ static inline bool tlb_trace_window_active(const machine_t *m)
 #define EXECVE_HANDOFF_STATE_ARMED         1u
 #define EXECVE_HANDOFF_STATE_USER_FETCH_SEEN 2u
 
+/* vmlinux-pgui-demo (2.4.18) fault-path symbols (resolved with objdump). */
+#define K24_DO_PAGE_FAULT         0x8000AFA8u
+#define K24_HANDLE_TLBL           0x800133E0u
+#define K24_NOPAGE_TLBL           0x80013464u
+#define K24_HANDLE_TLBL_PTE_LOAD  0x80013410u
+#define K24_HANDLE_TLBL_PTE_STORE 0x80013430u
+#define K24_HANDLE_TLBS           0x80013560u
+#define K24_DO_NO_PAGE            0x800283A4u
+#define K24_FILEMAP_NOPAGE        0x8002DAB8u
+
 static inline bool execve_pc_in_do_execve(uint64_t pc)
 {
     uint32_t p = (uint32_t)pc;
@@ -131,6 +141,16 @@ static inline bool in_init_execve_syscall_window(const machine_t *m)
     return (m->pending_excode == 8u &&
             m->pending_syscall_nr == 4011u &&
             is_init_execve_epc((uint32_t)m->pending_syscall_epc));
+}
+
+static inline bool trace_user_handoff_fault_path_active(const machine_t *m)
+{
+    if (!m->cfg.trace_user_handoff)
+        return false;
+    if (!m->execve_user_handoff_active ||
+        m->execve_user_handoff_state != EXECVE_HANDOFF_STATE_ARMED)
+        return false;
+    return ((uint32_t)m->shadow_cp0_badvaddr < 0x80000000u);
 }
 
 static uint64_t tlb_pair_bytes_from_pagemask(uint32_t pagemask)
@@ -184,6 +204,13 @@ static void clear_synthetic_syscall_state(machine_t *m, bool clear_execve_watch)
     m->pending_syscall_nr   = 0;
     m->pending_syscall_a0   = 0;
     m->pending_syscall_a0_str[0] = '\0';
+    m->do_no_page_watch_active = false;
+    m->do_no_page_watch_ra = 0;
+    m->do_no_page_watch_addr = 0;
+    m->do_no_page_watch_pte_ptr = 0;
+    m->filemap_nopage_watch_active = false;
+    m->filemap_nopage_watch_ra = 0;
+    m->filemap_nopage_watch_addr = 0;
     reset_tlb_defer_state(m);
     if (clear_execve_watch) {
         m->execve_watch_active = false;
@@ -205,6 +232,13 @@ static void arm_execve_user_handoff(machine_t *m, uint64_t user_pc, uint64_t use
     m->pending_cause_served = false;
     m->pending_epc_served = false;
     m->last_unmapped_valid = false;
+    m->do_no_page_watch_active = false;
+    m->do_no_page_watch_ra = 0;
+    m->do_no_page_watch_addr = 0;
+    m->do_no_page_watch_pte_ptr = 0;
+    m->filemap_nopage_watch_active = false;
+    m->filemap_nopage_watch_ra = 0;
+    m->filemap_nopage_watch_addr = 0;
     reset_tlb_defer_state(m);
     m->has_saved_exception = false;
 
@@ -1063,11 +1097,20 @@ static int read_guest_string(uc_engine *uc, uint64_t va, char *buf, int bufsz);
 
 static bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out)
 {
-    if (uc_mem_read(uc, va, out, sizeof(*out)) == UC_ERR_OK)
-        return true;
+    uint32_t va32 = (uint32_t)va;
     uint64_t pa = 0;
+    /*
+     * Prefer direct-mapped kseg translation first; zero-extended kernel VAs
+     * (0x80xxxxxx in a 64-bit register) can alias unrelated low regions if
+     * read directly as VA.
+     */
     if (va_to_pa_kseg(va, &pa) &&
         uc_mem_read(uc, pa, out, sizeof(*out)) == UC_ERR_OK)
+        return true;
+    if (va32 >= 0x80000000u &&
+        uc_mem_read(uc, mips_sext(va32), out, sizeof(*out)) == UC_ERR_OK)
+        return true;
+    if (uc_mem_read(uc, va, out, sizeof(*out)) == UC_ERR_OK)
         return true;
     return false;
 }
@@ -1590,6 +1633,168 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         m->execve_watch_active = false;
     }
 
+    if (m->do_no_page_watch_active &&
+        (uint32_t)address == (uint32_t)m->do_no_page_watch_ra) {
+        uint64_t v0 = 0, a3 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+        uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+        uint32_t pte = 0;
+        bool have_pte = (m->do_no_page_watch_pte_ptr != 0u) &&
+                        read_guest_u32(uc, m->do_no_page_watch_pte_ptr, &pte);
+        uint32_t pa_page = pte & 0xFFFFF000u;
+        uint8_t pa_bytes[16] = {0};
+        uint8_t va_bytes[16] = {0};
+        uc_err pa_err = UC_ERR_READ_UNMAPPED;
+        uc_err va_err = uc_mem_read(uc, (uint64_t)m->do_no_page_watch_addr,
+                                    va_bytes, sizeof(va_bytes));
+        if (have_pte && pa_page != 0u)
+            pa_err = uc_mem_read(uc, (uint64_t)pa_page, pa_bytes, sizeof(pa_bytes));
+
+        char pa_hex[16 * 3 + 1];
+        char va_hex[16 * 3 + 1];
+        format_hex_bytes(pa_bytes, sizeof(pa_bytes), pa_hex, sizeof(pa_hex));
+        format_hex_bytes(va_bytes, sizeof(va_bytes), va_hex, sizeof(va_hex));
+        static uint32_t do_no_page_ret_log = 0;
+        if (do_no_page_ret_log < 128) {
+            fprintf(stderr,
+                    "[HANDOFF_DO_NO_PAGE_RET] pc=0x%08" PRIX64
+                    " ra=0x%08" PRIX64 " fault_addr=0x%08X v0=0x%08" PRIX64
+                    " a3=0x%08" PRIX64 " pte_ptr=0x%08" PRIX64 " pte=0x%08X pa_page=0x%08X"
+                    " pa_err=%d va_err=%d pa=[%s] va=[%s]\n",
+                    (uint64_t)(uint32_t)address,
+                    (uint64_t)(uint32_t)m->do_no_page_watch_ra,
+                    m->do_no_page_watch_addr,
+                    (uint64_t)(uint32_t)v0,
+                    (uint64_t)(uint32_t)a3,
+                    (uint64_t)(uint32_t)m->do_no_page_watch_pte_ptr,
+                    have_pte ? pte : 0u,
+                    pa_page,
+                    pa_err, va_err,
+                    pa_hex, va_hex);
+            do_no_page_ret_log++;
+        }
+        m->do_no_page_watch_active = false;
+        m->do_no_page_watch_ra = 0;
+        m->do_no_page_watch_addr = 0;
+        m->do_no_page_watch_pte_ptr = 0;
+    }
+
+    if (m->filemap_nopage_watch_active &&
+        (uint32_t)address == (uint32_t)m->filemap_nopage_watch_ra) {
+        uint64_t v0 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+        uint32_t page_flags = 0;
+        bool have_page_flags = ((uint32_t)v0 >= 0x80000000u) &&
+                               read_guest_u32(uc, v0 + 24u, &page_flags);
+        static uint32_t filemap_ret_log = 0;
+        if (filemap_ret_log < 128) {
+            fprintf(stderr,
+                    "[HANDOFF_FILEMAP_NOPAGE_RET] pc=0x%08" PRIX64
+                    " ra=0x%08" PRIX64 " fault_addr=0x%08X page=0x%08" PRIX64
+                    " page_flags=%s0x%08X\n",
+                    (uint64_t)(uint32_t)address,
+                    (uint64_t)(uint32_t)m->filemap_nopage_watch_ra,
+                    m->filemap_nopage_watch_addr,
+                    (uint64_t)(uint32_t)v0,
+                    have_page_flags ? "" : "?",
+                    page_flags);
+            filemap_ret_log++;
+        }
+        m->filemap_nopage_watch_active = false;
+        m->filemap_nopage_watch_ra = 0;
+        m->filemap_nopage_watch_addr = 0;
+    }
+
+    if (trace_user_handoff_fault_path_active(m)) {
+        uint32_t pc32 = (uint32_t)address;
+        uint32_t badv = (uint32_t)m->shadow_cp0_badvaddr;
+
+        if (pc32 == K24_HANDLE_TLBL || pc32 == K24_NOPAGE_TLBL ||
+            pc32 == K24_HANDLE_TLBS || pc32 == K24_DO_PAGE_FAULT) {
+            static uint32_t handoff_fault_path_log = 0;
+            if (handoff_fault_path_log < 192) {
+                fprintf(stderr,
+                        "[HANDOFF_FAULT_PATH] pc=0x%08X badv=0x%08X"
+                        " entryhi=0x%08" PRIX64 " lo0=0x%08" PRIX64
+                        " lo1=0x%08" PRIX64 " mask=0x%08" PRIX64 "\n",
+                        pc32, badv,
+                        (uint64_t)(uint32_t)m->shadow_cp0_entryhi,
+                        (uint64_t)(uint32_t)m->shadow_cp0_entrylo0,
+                        (uint64_t)(uint32_t)m->shadow_cp0_entrylo1,
+                        (uint64_t)(uint32_t)m->shadow_cp0_pagemask);
+                handoff_fault_path_log++;
+            }
+        }
+
+        if (pc32 == K24_HANDLE_TLBL_PTE_LOAD || pc32 == K24_HANDLE_TLBL_PTE_STORE) {
+            uint64_t k1 = 0, k0 = 0;
+            uint32_t pte = 0;
+            bool have_pte = false;
+            uc_reg_read(uc, UC_MIPS_REG_K1, &k1);
+            uc_reg_read(uc, UC_MIPS_REG_K0, &k0);
+            if ((uint32_t)k1 != 0u)
+                have_pte = read_guest_u32(uc, k1, &pte);
+            static uint32_t handoff_tlbl_pte_log = 0;
+            if (handoff_tlbl_pte_log < 192) {
+                fprintf(stderr,
+                        "[HANDOFF_TLBL_PTE] pc=0x%08X badv=0x%08X"
+                        " pte_ptr=0x%08" PRIX64 " k0=0x%08" PRIX64
+                        " mem_pte=%s0x%08X\n",
+                        pc32, badv,
+                        (uint64_t)(uint32_t)k1,
+                        (uint64_t)(uint32_t)k0,
+                        have_pte ? "" : "?",
+                        pte);
+                handoff_tlbl_pte_log++;
+            }
+        }
+
+        if (pc32 == K24_DO_NO_PAGE) {
+            uint64_t ra = 0, a2 = 0, a3 = 0, sp = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uint32_t pte_ptr = 0;
+            (void)read_guest_u32(uc, sp + 16u, &pte_ptr);
+            m->do_no_page_watch_active = true;
+            m->do_no_page_watch_ra = ra;
+            m->do_no_page_watch_addr = (uint32_t)a2;
+            m->do_no_page_watch_pte_ptr = mips_sext(pte_ptr);
+            static uint32_t do_no_page_entry_log = 0;
+            if (do_no_page_entry_log < 128) {
+                fprintf(stderr,
+                        "[HANDOFF_DO_NO_PAGE_IN] pc=0x%08X badv=0x%08X"
+                        " addr=0x%08" PRIX64 " write=%u ra=0x%08" PRIX64
+                        " sp=0x%08" PRIX64 " pte_ptr=0x%08X\n",
+                        pc32, badv,
+                        (uint64_t)(uint32_t)a2,
+                        ((uint32_t)a3 != 0u) ? 1u : 0u,
+                        (uint64_t)(uint32_t)ra,
+                        (uint64_t)(uint32_t)sp,
+                        pte_ptr);
+                do_no_page_entry_log++;
+            }
+        } else if (pc32 == K24_FILEMAP_NOPAGE) {
+            uint64_t ra = 0, a1 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+            m->filemap_nopage_watch_active = true;
+            m->filemap_nopage_watch_ra = ra;
+            m->filemap_nopage_watch_addr = (uint32_t)a1;
+            static uint32_t filemap_entry_log = 0;
+            if (filemap_entry_log < 128) {
+                fprintf(stderr,
+                        "[HANDOFF_FILEMAP_NOPAGE_IN] pc=0x%08X badv=0x%08X"
+                        " addr=0x%08" PRIX64 " ra=0x%08" PRIX64 "\n",
+                        pc32, badv,
+                        (uint64_t)(uint32_t)a1,
+                        (uint64_t)(uint32_t)ra);
+                filemap_entry_log++;
+            }
+        }
+    }
+
     /* Per-instruction exception vector probes for TLB storm debugging. */
     if (tlb_trace_window_active(m)) {
         if (((uint32_t)address & 0xFFFFFF80u) == 0x80000000u) {
@@ -1670,15 +1875,24 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 
     if (m->execve_user_handoff_active &&
         m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED &&
-        (uint32_t)address < 0x80000000u &&
-        insn != 0u) {
+        (uint32_t)address < 0x80000000u) {
         m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_USER_FETCH_SEEN;
         if (m->cfg.trace_user_handoff) {
             fprintf(stderr,
                     "[EXECVE_HANDOFF_FETCH] pc=0x%08" PRIX64
-                    " insn=0x%08X -> DONE\n",
-                    (uint64_t)(uint32_t)address, insn);
+                    " insn=0x%08X%s -> DONE\n",
+                    (uint64_t)(uint32_t)address, insn,
+                    (insn == 0u) ? " (zero)" : "");
         }
+        /* User fetch observed: stale exception redelivery from the completed
+         * syscall must no longer be visible in the handoff fast-path. */
+        m->pending_epc = 0;
+        m->pending_excode = 0;
+        m->pending_cause = 0;
+        m->epc_was_written = false;
+        m->pending_cause_served = false;
+        m->pending_epc_served = false;
+        m->has_saved_exception = false;
         m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
         m->execve_user_handoff_active = false;
     }
@@ -2684,11 +2898,8 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
      * stale TLB/aux notifications pinned to run_init_process+4. Redirect
      * those back to the handed-off user context.
      */
-    if (m->execve_user_handoff_active &&
-        m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED &&
-        m->pending_excode != MIPS_EXCCODE_TLBL &&
-        m->pending_excode != MIPS_EXCCODE_TLBS &&
-        (uint32_t)pc >= 0x80000000u &&    /* stale kseg0 PC after kuseg handoff */
+    if ((m->execve_user_handoff_active || m->execve_user_handoff_pc != 0u) &&
+        ((uint32_t)pc == 0x80001850u) &&
         (intno == 12u || intno == 26u || intno == 27u)) {
         uint64_t restore_pc = m->execve_user_handoff_pc;
         uint64_t restore_sp = m->execve_user_handoff_sp;
@@ -2696,6 +2907,13 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         uc_reg_write(uc, UC_MIPS_REG_PC, &restore_pc);
         uc_reg_write(uc, UC_MIPS_REG_SP, &restore_sp);
         uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
+        m->pending_epc = 0;
+        m->pending_excode = 0;
+        m->pending_cause = 0;
+        m->epc_was_written = false;
+        m->pending_cause_served = false;
+        m->pending_epc_served = false;
+        m->has_saved_exception = false;
         static uint32_t handoff_stale_log = 0;
         if (handoff_stale_log < 128) {
             fprintf(stderr,
@@ -4013,7 +4231,8 @@ static const struct {
     { 0x8004a774u, "search_binary_handler (2.4)",     false },
     { 0x80017a40u, "panic (2.4)",                     true  },
     { 0x80080cb0u, "do_execve (entry)",               true  },
-    { 0x80016ef0u, "do_page_fault (entry)",           false },
+    { K24_DO_PAGE_FAULT, "do_page_fault (entry, 2.4)", false },
+    { 0x80016ef0u,       "do_page_fault (entry, alt)", false },
     { 0x800a7378u, "create_elf_tables (entry)",       false },
     /* Post-inet_init initcalls (last two in table) */
     { 0x80286440u, "af_unix_init",                    false },
@@ -4427,9 +4646,13 @@ static void page_fault_probe_hook(uc_engine *uc, uint64_t address,
     uc_reg_read(uc, UC_MIPS_REG_A0, &regs);
     uc_reg_read(uc, UC_MIPS_REG_A1, &write_flag);
     uc_reg_read(uc, UC_MIPS_REG_A2, &badv_arg);
-    const char *name = ((uint32_t)address == 0x80016ef0u) ? "do_page_fault" :
-                       ((uint32_t)address == 0x8001a4e0u) ? "handle_tlbl"   :
-                       ((uint32_t)address == 0x8001a660u) ? "handle_tlbs"   :
+    const char *name = ((uint32_t)address == K24_DO_PAGE_FAULT) ? "do_page_fault_2.4" :
+                       ((uint32_t)address == 0x80016ef0u) ? "do_page_fault_alt" :
+                       ((uint32_t)address == K24_HANDLE_TLBL) ? "handle_tlbl_2.4" :
+                       ((uint32_t)address == K24_NOPAGE_TLBL) ? "nopage_tlbl_2.4" :
+                       ((uint32_t)address == K24_HANDLE_TLBS) ? "handle_tlbs_2.4" :
+                       ((uint32_t)address == 0x8001a4e0u) ? "handle_tlbl_alt"   :
+                       ((uint32_t)address == 0x8001a660u) ? "handle_tlbs_alt"   :
                        ((uint32_t)address == 0x800111a0u) ? "handle_sys"    :
                        ((uint32_t)address == 0x00000000u) ? "entry_zero"    : "unknown_fault";
     fprintf(stderr,
@@ -4754,17 +4977,22 @@ machine_t *machine_create(const machine_config_t *cfg)
         }
     }
 
-    /* Page-fault probe: log the first few do_page_fault invocations */
+    /* Page-fault probe: log the first few fault-path entries for 2.4/2.6 kernels. */
     pf_probe_count = 0;
     {
-        uint64_t va = mips_sext(0x80016ef0u);
-        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va, va);
-    }
-    {
-        uint64_t va_l = mips_sext(0x8001a4e0u); /* handle_tlbl */
-        uint64_t va_s = mips_sext(0x8001a660u); /* handle_tlbs */
-        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va_l, va_l);
-        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va_s, va_s);
+        static const uint32_t fault_sites[] = {
+            K24_DO_PAGE_FAULT,
+            K24_HANDLE_TLBL,
+            K24_NOPAGE_TLBL,
+            K24_HANDLE_TLBS,
+            0x80016ef0u, /* alt do_page_fault */
+            0x8001a4e0u, /* alt handle_tlbl   */
+            0x8001a660u, /* alt handle_tlbs   */
+        };
+        for (size_t i = 0; i < (sizeof(fault_sites) / sizeof(fault_sites[0])); i++) {
+            uint64_t va = mips_sext(fault_sites[i]);
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va, va);
+        }
     }
 
     /* ICU ETIME fixup: force-enable ETIME bit in MSYSINT1 after

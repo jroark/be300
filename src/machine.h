@@ -81,6 +81,13 @@ struct machine_s {
     uint64_t execve_user_handoff_sp;     /* last user stack for stale trap redirect     */
     uint8_t  execve_user_handoff_state;  /* 0=DONE, 1=ARMED, 2=USER_FETCH_SEEN */
     bool     user_handoff_fault_traced;  /* trace first user fault details once per handoff */
+    bool     do_no_page_watch_active;    /* trace do_no_page return for handoff target */
+    uint64_t do_no_page_watch_ra;
+    uint32_t do_no_page_watch_addr;
+    uint64_t do_no_page_watch_pte_ptr;
+    bool     filemap_nopage_watch_active;/* trace filemap_nopage return for handoff target */
+    uint64_t filemap_nopage_watch_ra;
+    uint32_t filemap_nopage_watch_addr;
     bool     execve_watch_active;   /* waiting to log do_execve return value      */
     uint64_t execve_watch_ret_pc;   /* caller PC to observe on do_execve return   */
     uint64_t execve_watch_a0;       /* do_execve filename pointer (entry arg0)    */
