@@ -35,6 +35,7 @@ typedef struct {
     bool        sfb_5bit_green; /* true = apply 5-bit green expansion (2.6 sfb.c non-standard)
                                  * false (default) = pass pixels through as-is (true RGB565) */
     bool        kuseg_hotpath_populate; /* experimental: try shadow-TLB-backed kuseg population in LOAD_EMU/STORE_EMU */
+    bool        trace_user_handoff; /* debug: first-fault and handoff VA->PA trace */
     const char *rom_path;     /* path to flat ROM image, loaded at PA_RESET_VECTOR */
     const char *kernel_path;  /* path to ELF kernel (vmlinux); if set, skip ROM boot */
     const char *cmdline;      /* kernel command line (passed in $a1 as argv[0]) */
@@ -78,6 +79,8 @@ struct machine_s {
     bool     execve_user_handoff_active; /* redirected to userspace entry from execve */
     uint64_t execve_user_handoff_pc;     /* last user entry PC for stale trap redirect */
     uint64_t execve_user_handoff_sp;     /* last user stack for stale trap redirect     */
+    uint8_t  execve_user_handoff_state;  /* 0=DONE, 1=ARMED, 2=USER_FETCH_SEEN */
+    bool     user_handoff_fault_traced;  /* trace first user fault details once per handoff */
     bool     execve_watch_active;   /* waiting to log do_execve return value      */
     uint64_t execve_watch_ret_pc;   /* caller PC to observe on do_execve return   */
     uint64_t execve_watch_a0;       /* do_execve filename pointer (entry arg0)    */

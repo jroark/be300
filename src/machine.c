@@ -92,6 +92,9 @@ static inline bool tlb_trace_window_active(const machine_t *m)
 #define DO_EXECVE_END_PC          0x8004ACA4u
 #define TLB_DEFER_RETRY_LIMIT     32u
 #define TLB_EXL_DROP_DEFER_LIMIT  64u
+#define EXECVE_HANDOFF_STATE_DONE          0u
+#define EXECVE_HANDOFF_STATE_ARMED         1u
+#define EXECVE_HANDOFF_STATE_USER_FETCH_SEEN 2u
 
 static inline bool execve_pc_in_do_execve(uint64_t pc)
 {
@@ -130,6 +133,37 @@ static inline bool in_init_execve_syscall_window(const machine_t *m)
             is_init_execve_epc((uint32_t)m->pending_syscall_epc));
 }
 
+static uint64_t tlb_pair_bytes_from_pagemask(uint32_t pagemask)
+{
+    uint64_t pair_bytes = ((uint64_t)(pagemask | 0x1FFFu) + 1u);
+    if (pair_bytes < 0x2000u)
+        pair_bytes = 0x2000u;
+    if ((pair_bytes & 0xFFFu) != 0u)
+        pair_bytes = (pair_bytes + 0xFFFu) & ~(uint64_t)0xFFFu;
+    if ((pair_bytes & (pair_bytes - 1u)) != 0u) {
+        uint64_t p2 = 0x2000u;
+        while (p2 < pair_bytes && p2 < (1ull << 31))
+            p2 <<= 1;
+        pair_bytes = p2;
+    }
+    return pair_bytes;
+}
+
+static uint64_t tlb_leaf_bytes_from_pagemask(uint32_t pagemask)
+{
+    uint64_t pair_bytes = tlb_pair_bytes_from_pagemask(pagemask);
+    if (pair_bytes < 0x2000u)
+        return 0x1000u;
+    return pair_bytes >> 1;
+}
+
+static bool tlb_entry_matches_va(uint32_t va, uint32_t entryhi, uint32_t pagemask)
+{
+    uint64_t pair_bytes = tlb_pair_bytes_from_pagemask(pagemask);
+    uint32_t mask = ~((uint32_t)(pair_bytes - 1u));
+    return ((va & mask) == (entryhi & mask));
+}
+
 static void reset_tlb_defer_state(machine_t *m)
 {
     m->tlb_defer_count = 0;
@@ -156,6 +190,30 @@ static void clear_synthetic_syscall_state(machine_t *m, bool clear_execve_watch)
         m->execve_entry_pc = 0;
         m->execve_last_pc = 0;
         m->execve_last_ctx_valid = false;
+    }
+}
+
+static void arm_execve_user_handoff(machine_t *m, uint64_t user_pc, uint64_t user_sp)
+{
+    m->execve_user_handoff_active = true;
+    m->execve_user_handoff_pc = user_pc;
+    m->execve_user_handoff_sp = user_sp;
+    m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_ARMED;
+    m->user_handoff_fault_traced = false;
+
+    /* Quarantine stale re-delivered notifications from the completed syscall. */
+    m->pending_cause_served = false;
+    m->pending_epc_served = false;
+    m->last_unmapped_valid = false;
+    reset_tlb_defer_state(m);
+    m->has_saved_exception = false;
+
+    if (m->cfg.trace_user_handoff) {
+        fprintf(stderr,
+                "[EXECVE_HANDOFF_ARM] user_pc=0x%08" PRIX64
+                " user_sp=0x%08" PRIX64 "\n",
+                (uint64_t)(uint32_t)user_pc,
+                (uint64_t)(uint32_t)user_sp);
     }
 }
 
@@ -270,6 +328,9 @@ static bool mem_unmapped_hook(uc_engine *uc, uc_mem_type type,
     return false;
 }
 
+static void format_hex_bytes(const uint8_t *buf, size_t len,
+                             char *out, size_t out_sz);
+
 static bool map_kseg_alias_block(machine_t *m, uint64_t map_base, uint64_t pa_base)
 {
     uc_err me = uc_mem_map(m->uc, map_base, 0x100000, UC_PROT_ALL);
@@ -334,51 +395,96 @@ static bool map_kseg_mirror_block(machine_t *m, uint64_t va_block)
  * Both fixes are applied together; whichever is relevant for the current
  * Unicorn build will unblock execution.
  */
-static void tlb_map_kuseg_page(machine_t *m, uint64_t kuseg_va, uint64_t pa)
+static void tlb_map_kuseg_page(machine_t *m, uint64_t kuseg_va, uint64_t pa,
+                               uint64_t page_bytes)
 {
+    if (page_bytes < 0x1000u)
+        page_bytes = 0x1000u;
+    if ((page_bytes & 0xFFFu) != 0u)
+        page_bytes = (page_bytes + 0xFFFu) & ~(uint64_t)0xFFFu;
+
     if ((uint32_t)kuseg_va >= 0x80000000u)
         return;  /* safety: only handle user-space addresses */
 
-    uint64_t va_pg = kuseg_va & ~(uint64_t)0xFFFu;     /* 4 KB-aligned VA */
-    uint64_t pa_pg = pa       & ~(uint64_t)0xFFFu;     /* 4 KB-aligned PA */
+    uint64_t va_pg = kuseg_va & ~(page_bytes - 1u);
+    uint64_t pa_pg = pa       & ~(page_bytes - 1u);
 
-    uc_err me = uc_mem_map(m->uc, va_pg, 0x1000, UC_PROT_ALL);
+    uc_err me = uc_mem_map(m->uc, va_pg, page_bytes, UC_PROT_ALL);
     bool premap = (me == UC_ERR_MAP);
     if (premap) {
-        /* Pre-mapped VA page: still refresh it from SDRAM PA content. */
+        /* Pre-mapped VA window: still refresh it from SDRAM PA content. */
         me = UC_ERR_OK;
-        uc_err pe = uc_mem_protect(m->uc, va_pg, 0x1000, UC_PROT_ALL);
+        uc_err pe = uc_mem_protect(m->uc, va_pg, page_bytes, UC_PROT_ALL);
         if (pe != UC_ERR_OK) {
             static uint32_t prot_err_log = 0;
             if (prot_err_log++ < 16)
-                fprintf(stderr, "[TLB_MAP_PROT_FAIL] VA_pg=0x%08" PRIX64 " err=%s\n",
-                        va_pg, uc_strerror(pe));
+                fprintf(stderr,
+                        "[TLB_MAP_PROT_FAIL] VA_pg=0x%08" PRIX64
+                        " bytes=0x%08" PRIX64 " err=%s\n",
+                        va_pg, page_bytes, uc_strerror(pe));
         }
     }
     if (me != UC_ERR_OK) {
         static uint32_t err_log = 0;
         if (err_log++ < 16)
-            fprintf(stderr, "[TLB_MAP_FAIL] VA_pg=0x%08" PRIX64 " err=%s\n",
-                    va_pg, uc_strerror(me));
+            fprintf(stderr,
+                    "[TLB_MAP_FAIL] VA_pg=0x%08" PRIX64
+                    " bytes=0x%08" PRIX64 " err=%s\n",
+                    va_pg, page_bytes, uc_strerror(me));
         return;
     }
 
-    /* Populate exactly one translated page; 1MB coarse copies can shift
-     * content when VA/PA offsets differ inside the 1MB region. */
+    /* Populate exactly the translated TLB window. */
     uint8_t buf[4096];
-    if (pa_pg < (uint64_t)m->cfg.sdram_size &&
-        uc_mem_read(m->uc, pa_pg, buf, sizeof(buf)) == UC_ERR_OK) {
-        uc_mem_write(m->uc, va_pg, buf, sizeof(buf));
-    } else {
-        memset(buf, 0, sizeof(buf));
-        uc_mem_write(m->uc, va_pg, buf, sizeof(buf));
+    for (uint64_t off = 0; off < page_bytes; off += sizeof(buf)) {
+        uint64_t pa_off = pa_pg + off;
+        if (pa_off < (uint64_t)m->cfg.sdram_size &&
+            uc_mem_read(m->uc, pa_off, buf, sizeof(buf)) == UC_ERR_OK) {
+            uc_mem_write(m->uc, va_pg + off, buf, sizeof(buf));
+        } else {
+            memset(buf, 0, sizeof(buf));
+            uc_mem_write(m->uc, va_pg + off, buf, sizeof(buf));
+        }
     }
 
     static uint32_t map_log = 0;
     if (map_log++ < 64)
-        fprintf(stderr, "[TLB_MAP] kuseg 4KB VA=0x%08" PRIX64
-                " <- SDRAM PA=0x%08" PRIX64 " premap=%u\n",
-                va_pg, pa_pg, premap ? 1u : 0u);
+        fprintf(stderr,
+                "[TLB_MAP] kuseg VA=0x%08" PRIX64
+                " <- SDRAM PA=0x%08" PRIX64
+                " bytes=0x%08" PRIX64 " premap=%u\n",
+                va_pg, pa_pg, page_bytes, premap ? 1u : 0u);
+
+    if (m->cfg.trace_user_handoff &&
+        m->execve_user_handoff_active &&
+        m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED) {
+        static uint32_t mapcheck_log = 0;
+        uint32_t handoff_pc = (uint32_t)m->execve_user_handoff_pc;
+        uint64_t map_end = va_pg + page_bytes;
+        if (mapcheck_log < 256 &&
+            (uint64_t)handoff_pc >= va_pg &&
+            (uint64_t)handoff_pc + 16u <= map_end) {
+            uint64_t off = (uint64_t)handoff_pc - va_pg;
+            uint64_t pa_target = pa_pg + off;
+            uint8_t va_bytes[16] = {0};
+            uint8_t pa_bytes[16] = {0};
+            uc_err va_err = uc_mem_read(m->uc, (uint64_t)handoff_pc, va_bytes, sizeof(va_bytes));
+            uc_err pa_err = uc_mem_read(m->uc, pa_target, pa_bytes, sizeof(pa_bytes));
+            char va_hex[16 * 3 + 1];
+            char pa_hex[16 * 3 + 1];
+            format_hex_bytes(va_bytes, sizeof(va_bytes), va_hex, sizeof(va_hex));
+            format_hex_bytes(pa_bytes, sizeof(pa_bytes), pa_hex, sizeof(pa_hex));
+            bool same = (va_err == UC_ERR_OK && pa_err == UC_ERR_OK &&
+                         memcmp(va_bytes, pa_bytes, sizeof(va_bytes)) == 0);
+            fprintf(stderr,
+                    "[USER_HANDOFF_MAPCHECK] pc=0x%08X va_page=0x%08" PRIX64
+                    " pa_page=0x%08" PRIX64 " off=0x%04" PRIX64
+                    " va_err=%d pa_err=%d same=%u va=[%s] pa=[%s]\n",
+                    handoff_pc, va_pg, pa_pg, off,
+                    va_err, pa_err, same ? 1u : 0u, va_hex, pa_hex);
+            mapcheck_log++;
+        }
+    }
 
     /* Ensure any stale softmmu negative translation for this VA is dropped
      * before retrying user-mode fetch/load. */
@@ -402,8 +508,11 @@ typedef struct {
     uint32_t lo1;
     uint64_t va_page;
     uint64_t pa_page;
+    uint64_t page_bytes;
+    uint64_t page_offset;
     uint64_t pair_va_page;
     uint64_t pair_pa_page;
+    uint64_t pair_page_bytes;
     uint32_t source_idx;
 } tlb_lookup_result_t;
 
@@ -460,8 +569,8 @@ static tlb_lookup_result_t shadow_tlb_lookup(machine_t *m, uint32_t va)
         if (!m->shadow_tlb_valid[i])
             continue;
         uint32_t hi = m->shadow_tlb_entryhi[i];
-        uint32_t vpn2 = hi & 0xFFFFE000u;
-        if (vpn2 != r.query_vpn2)
+        uint32_t pm = m->shadow_tlb_pagemask[i];
+        if (!tlb_entry_matches_va(va, hi, pm))
             continue;
         if (m->shadow_tlb_seq[i] >= best_seq) {
             best_seq = m->shadow_tlb_seq[i];
@@ -485,25 +594,20 @@ static tlb_lookup_result_t shadow_tlb_lookup(machine_t *m, uint32_t va)
         r.lo0 = (uint32_t)m->shadow_cp0_entrylo0;
         r.lo1 = (uint32_t)m->shadow_cp0_entrylo1;
         r.pagemask = (uint32_t)m->shadow_cp0_pagemask;
-        if (r.entryhi_vpn2 != r.query_vpn2) {
+        if (!tlb_entry_matches_va(va, r.entryhi, r.pagemask)) {
             r.reason = "vpn2_mismatch";
             return r;
         }
     }
     r.hit = true;
 
-    if (r.pagemask != 0u) {
-        /* Some VR41xx paths keep PageMask=0x1800 while still using
-         * EntryLo PFNs compatible with our 4KB block-population strategy. */
-        if (r.pagemask == 0x00001800u) {
-            r.reason = "pagemask_0x1800_compat";
-        } else {
-            r.reason = "pagemask_nonzero";
-            return r;
-        }
+    r.page_bytes = tlb_leaf_bytes_from_pagemask(r.pagemask);
+    if (r.page_bytes < 0x1000u) {
+        r.reason = "invalid_page_bytes";
+        return r;
     }
 
-    bool odd_page = (va & 0x1000u) != 0u;
+    bool odd_page = (((uint64_t)va & r.page_bytes) != 0u);
     uint32_t lo = odd_page ? r.lo1 : r.lo0;
     if ((lo & 0x2u) == 0u) {
         r.reason = odd_page ? "lo1_invalid" : "lo0_invalid";
@@ -521,33 +625,137 @@ static tlb_lookup_result_t shadow_tlb_lookup(machine_t *m, uint32_t va)
         r.reason = "asid_unchecked";
 
     uint64_t pfn = (uint64_t)((lo >> 6) & 0xFFFFFu);
-    uint64_t pa = pfn << 12;
+    uint64_t pa = (pfn << 12) & ~(r.page_bytes - 1u);
     if (pa >= (uint64_t)m->cfg.sdram_size) {
         r.reason = "pa_out_of_range";
         return r;
     }
 
-    r.va_page = (uint64_t)(va & ~0xFFFu);
+    r.va_page = (uint64_t)va & ~(r.page_bytes - 1u);
     r.pa_page = pa;
+    r.page_offset = (uint64_t)va - r.va_page;
     r.confident = true;
     if (r.reason == NULL || strcmp(r.reason, "init") == 0)
         r.reason = "ok";
 
-    if (r.pagemask == 0u) {
-        uint32_t pair_lo = odd_page ? r.lo0 : r.lo1;
-        if ((pair_lo & 0x2u) != 0u) {
-            uint64_t pair_pfn = (uint64_t)((pair_lo >> 6) & 0xFFFFFu);
-            uint64_t pair_pa = pair_pfn << 12;
-            if (pair_pa < (uint64_t)m->cfg.sdram_size) {
-                r.pair_valid = true;
-                r.pair_va_page = odd_page ? (uint64_t)(r.query_vpn2) :
-                                            (uint64_t)(r.query_vpn2 + 0x1000u);
-                r.pair_pa_page = pair_pa;
-            }
+    uint32_t pair_lo = odd_page ? r.lo0 : r.lo1;
+    if ((pair_lo & 0x2u) != 0u) {
+        uint64_t pair_pfn = (uint64_t)((pair_lo >> 6) & 0xFFFFFu);
+        uint64_t pair_pa = (pair_pfn << 12) & ~(r.page_bytes - 1u);
+        if (pair_pa < (uint64_t)m->cfg.sdram_size) {
+            r.pair_valid = true;
+            r.pair_va_page = odd_page ? (r.va_page - r.page_bytes) :
+                                        (r.va_page + r.page_bytes);
+            r.pair_pa_page = pair_pa;
+            r.pair_page_bytes = r.page_bytes;
         }
     }
 
     return r;
+}
+
+static void format_hex_bytes(const uint8_t *buf, size_t len,
+                             char *out, size_t out_sz)
+{
+    size_t pos = 0;
+    if (out_sz == 0)
+        return;
+    out[0] = '\0';
+    for (size_t i = 0; i < len; i++) {
+        if (pos + 4 >= out_sz)
+            break;
+        int n = snprintf(out + pos, out_sz - pos, "%02X", buf[i]);
+        if (n <= 0)
+            break;
+        pos += (size_t)n;
+        if (i + 1 < len && pos + 2 < out_sz)
+            out[pos++] = ' ';
+    }
+    if (pos < out_sz)
+        out[pos] = '\0';
+}
+
+static void trace_user_handoff_fault_once(machine_t *m, uint32_t fault_pc,
+                                          uint32_t fault_va, uint64_t raw_badv)
+{
+    if (!m->cfg.trace_user_handoff || m->user_handoff_fault_traced)
+        return;
+    m->user_handoff_fault_traced = true;
+
+    tlb_lookup_result_t r = shadow_tlb_lookup(m, fault_va);
+    fprintf(stderr,
+            "[USER_HANDOFF_TRACE] first_fault pc=0x%08X va=0x%08X raw_badv=0x%08" PRIX64
+            " hit=%u confident=%u reason=%s\n",
+            fault_pc, fault_va, (uint64_t)(uint32_t)raw_badv,
+            r.hit ? 1u : 0u, r.confident ? 1u : 0u, r.reason);
+    fprintf(stderr,
+            "[USER_HANDOFF_TRACE] entryhi=0x%08X lo0=0x%08X lo1=0x%08X"
+            " pagemask=0x%08X page_bytes=0x%08" PRIX64
+            " src=%s%u asid=0x%02X cur_asid=%s0x%02X\n",
+            r.entryhi, r.lo0, r.lo1, r.pagemask, r.page_bytes,
+            (r.source_idx == 0xFFFFFFFFu) ? "live:" : "tlb:",
+            (r.source_idx == 0xFFFFFFFFu) ? 0u : r.source_idx,
+            (unsigned)r.entryhi_asid,
+            r.current_asid_valid ? "" : "?",
+            (unsigned)r.current_asid);
+
+    if (!r.hit || !r.confident) {
+        uint32_t alias_pa = fault_va & 0x1FFFFFFFu;
+        uint8_t va_bytes[16] = {0};
+        uint8_t pa_bytes[16] = {0};
+        uc_err va_err = uc_mem_read(m->uc, (uint64_t)fault_va, va_bytes, sizeof(va_bytes));
+        uc_err pa_err = uc_mem_read(m->uc, (uint64_t)alias_pa, pa_bytes, sizeof(pa_bytes));
+        char va_hex[16 * 3 + 1];
+        char pa_hex[16 * 3 + 1];
+        format_hex_bytes(va_bytes, sizeof(va_bytes), va_hex, sizeof(va_hex));
+        format_hex_bytes(pa_bytes, sizeof(pa_bytes), pa_hex, sizeof(pa_hex));
+        bool same = (va_err == UC_ERR_OK && pa_err == UC_ERR_OK &&
+                     memcmp(va_bytes, pa_bytes, sizeof(va_bytes)) == 0);
+        fprintf(stderr,
+                "[USER_HANDOFF_TRACE_ALIAS] va=0x%08X alias_pa=0x%08X"
+                " va_err=%d pa_err=%d same=%u va=[%s] pa=[%s]\n",
+                fault_va, alias_pa, va_err, pa_err, same ? 1u : 0u,
+                va_hex, pa_hex);
+        return;
+    }
+
+    uint64_t offset = (uint64_t)fault_va - r.va_page;
+    uint64_t pa_target = r.pa_page + offset;
+
+    uint32_t va_insn = 0, pa_insn = 0;
+    uc_err va_insn_err = uc_mem_read(m->uc, (uint64_t)fault_va, &va_insn, sizeof(va_insn));
+    uc_err pa_insn_err = uc_mem_read(m->uc, pa_target, &pa_insn, sizeof(pa_insn));
+
+    uint8_t va_bytes[16] = {0};
+    uint8_t pa_bytes[16] = {0};
+    uc_err va_bytes_err = uc_mem_read(m->uc, r.va_page + offset, va_bytes, sizeof(va_bytes));
+    uc_err pa_bytes_err = uc_mem_read(m->uc, pa_target, pa_bytes, sizeof(pa_bytes));
+
+    char va_hex[16 * 3 + 1];
+    char pa_hex[16 * 3 + 1];
+    format_hex_bytes(va_bytes, sizeof(va_bytes), va_hex, sizeof(va_hex));
+    format_hex_bytes(pa_bytes, sizeof(pa_bytes), pa_hex, sizeof(pa_hex));
+
+    bool same_bytes = (va_bytes_err == UC_ERR_OK &&
+                       pa_bytes_err == UC_ERR_OK &&
+                       memcmp(va_bytes, pa_bytes, sizeof(va_bytes)) == 0);
+    fprintf(stderr,
+            "[USER_HANDOFF_TRACE] map va_page=0x%08" PRIX64
+            " pa_page=0x%08" PRIX64 " off=0x%04" PRIX64
+            " pair=%u pair_va=0x%08" PRIX64 " pair_pa=0x%08" PRIX64 "\n",
+            r.va_page, r.pa_page, offset,
+            r.pair_valid ? 1u : 0u,
+            r.pair_va_page, r.pair_pa_page);
+    fprintf(stderr,
+            "[USER_HANDOFF_TRACE] insn va@0x%08X=0x%08X err=%d"
+            " pa@0x%08" PRIX64 "=0x%08X err=%d\n",
+            fault_va, va_insn, va_insn_err,
+            pa_target, pa_insn, pa_insn_err);
+    fprintf(stderr,
+            "[USER_HANDOFF_TRACE] bytes va_err=%d pa_err=%d same=%u"
+            " va=[%s] pa=[%s]\n",
+            va_bytes_err, pa_bytes_err, same_bytes ? 1u : 0u,
+            va_hex, pa_hex);
 }
 
 static bool shadow_tlb_populate(machine_t *m, uint32_t va, bool include_pair,
@@ -573,16 +781,18 @@ static bool shadow_tlb_populate(machine_t *m, uint32_t va, bool include_pair,
         return false;
     }
 
-    tlb_map_kuseg_page(m, r.va_page, r.pa_page);
+    tlb_map_kuseg_page(m, r.va_page, r.pa_page, r.page_bytes);
     if (include_pair && r.pair_valid)
-        tlb_map_kuseg_page(m, r.pair_va_page, r.pair_pa_page);
+        tlb_map_kuseg_page(m, r.pair_va_page, r.pair_pa_page, r.pair_page_bytes);
 
     static uint32_t ok_log = 0;
     if (ok_log++ < 256) {
         fprintf(stderr,
                 "[%s_POPULATE] va=0x%08X pc=0x%08X pa=0x%08" PRIX64
+                " bytes=0x%08" PRIX64
                 " pair=%u confident=1 src=%s%u reason=%s\n",
-                tag, va, pc_hint, r.pa_page, r.pair_valid ? 1u : 0u,
+                tag, va, pc_hint, r.pa_page, r.page_bytes,
+                r.pair_valid ? 1u : 0u,
                 (r.source_idx == 0xFFFFFFFFu) ? "live:" : "tlb:",
                 (r.source_idx == 0xFFFFFFFFu) ? 0u : r.source_idx,
                 r.reason);
@@ -1458,6 +1668,21 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t rd  = (insn >> 11) & 0x1Fu;
     uint32_t sel =  insn        & 0x07u;
 
+    if (m->execve_user_handoff_active &&
+        m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED &&
+        (uint32_t)address < 0x80000000u &&
+        insn != 0u) {
+        m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_USER_FETCH_SEEN;
+        if (m->cfg.trace_user_handoff) {
+            fprintf(stderr,
+                    "[EXECVE_HANDOFF_FETCH] pc=0x%08" PRIX64
+                    " insn=0x%08X -> DONE\n",
+                    (uint64_t)(uint32_t)address, insn);
+        }
+        m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
+        m->execve_user_handoff_active = false;
+    }
+
     /*
      * sys_execve path probes (2.4 kernel):
      *   0x800073b4: jal getname (a0 already loaded from stack arg area)
@@ -2255,11 +2480,9 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                  * CP0_EPC is stale.  uc_emu_stop() terminates the batch;
                  * machine_run()'s loop reads PC afresh and resumes at our target. */
                 if ((uint32_t)epc < 0x80000000u) {
-                    m->execve_user_handoff_active = true;
-                    m->execve_user_handoff_pc = epc;
                     uint64_t sp_val = 0;
                     uc_reg_read(uc, UC_MIPS_REG_SP, &sp_val);
-                    m->execve_user_handoff_sp = sp_val;
+                    arm_execve_user_handoff(m, epc, sp_val);
 
                     /* Probe: verify user-space code is present at target VA */
                     uint32_t probe = 0;
@@ -2295,7 +2518,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                                 alias_log++;
                             }
                             if (alias_re == UC_ERR_OK && alias_probe != 0u) {
-                                tlb_map_kuseg_page(m, (uint32_t)epc, (uint64_t)alias_pa);
+                                tlb_map_kuseg_page(m, (uint32_t)epc,
+                                                   (uint64_t)alias_pa, 0x1000u);
                                 re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
                                 fprintf(stderr,
                                         "[ERET_MANUAL_KUSEG_ALIAS] after alias map"
@@ -2461,6 +2685,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
      * those back to the handed-off user context.
      */
     if (m->execve_user_handoff_active &&
+        m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED &&
         m->pending_excode != MIPS_EXCCODE_TLBL &&
         m->pending_excode != MIPS_EXCCODE_TLBS &&
         (uint32_t)pc >= 0x80000000u &&    /* stale kseg0 PC after kuseg handoff */
@@ -2476,11 +2701,12 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             fprintf(stderr,
                     "[EXECVE_USER_HANDOFF_KEEP] intno=%u stale_pc=0x%08" PRIX64
                     " -> user_pc=0x%08" PRIX64 " user_sp=0x%08" PRIX64
-                    " status=0x%08" PRIX64 "\n",
+                    " status=0x%08" PRIX64 " state=%u\n",
                     intno, (uint64_t)(uint32_t)pc,
                     (uint64_t)(uint32_t)restore_pc,
                     (uint64_t)(uint32_t)restore_sp,
-                    (uint64_t)(uint32_t)user_status);
+                    (uint64_t)(uint32_t)user_status,
+                    (unsigned)m->execve_user_handoff_state);
             handoff_stale_log++;
         }
         return;
@@ -3202,6 +3428,8 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     m->has_saved_exception  = false;  /* stale nested state must not leak across syscalls */
     reset_tlb_defer_state(m);         /* reset DEFER retry/ownership for this syscall */
     m->execve_user_handoff_active = false;
+    m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
+    m->user_handoff_fault_traced = false;
 
     {
         uint64_t v0 = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
@@ -4753,7 +4981,8 @@ void machine_run(machine_t *m)
 
         /* Belt-and-suspenders: after uc_emu_stop() from ERET_MANUAL_KUSEG,
          * verify that native ERET didn't override our kuseg PC. */
-        if (m->execve_user_handoff_active) {
+        if (m->execve_user_handoff_active &&
+            m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED) {
             uint64_t post_pc = 0;
             uc_reg_read(m->uc, UC_MIPS_REG_PC, &post_pc);
             if ((uint32_t)post_pc >= 0x80000000u) {
@@ -4920,6 +5149,10 @@ void machine_run(machine_t *m)
                 if ((uint32_t)bad_pc < 0x80000000u &&
                     m->pending_excode == 0u) {
                     uint32_t fault_va = (uint32_t)((badv != 0u) ? badv : bad_pc);
+                    if (m->execve_user_handoff_active &&
+                        m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED) {
+                        trace_user_handoff_fault_once(m, (uint32_t)bad_pc, fault_va, badv);
+                    }
                     uint32_t asid = (uint32_t)(m->shadow_cp0_entryhi_live_valid
                                      ? m->shadow_cp0_entryhi_live
                                      : m->shadow_cp0_entryhi) & 0xFFu;

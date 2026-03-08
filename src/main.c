@@ -21,6 +21,7 @@ static void usage(const char *prog)
         "                        Experimental: in LOAD_EMU/STORE_EMU kuseg accesses,\n"
         "                        attempt shadow-TLB-backed VA->PA population before\n"
         "                        falling back to empty block mapping\n"
+        "  --trace-user-handoff  Debug first user handoff fault/map details (verbose)\n"
         "  --ram <file>          Preload a raw RAM image at PA 0x00000000\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  -h, --help            Show this help\n"
@@ -40,6 +41,7 @@ int main(int argc, char *argv[])
         .log_mmio       = false,
         .sfb_5bit_green = false,
         .kuseg_hotpath_populate = false,
+        .trace_user_handoff = false,
         .rom_path       = NULL,
         .kernel_path    = NULL,
         .cmdline        = NULL,
@@ -60,6 +62,8 @@ int main(int argc, char *argv[])
             cfg.sfb_5bit_green = true;
         } else if (strcmp(argv[i], "--kuseg-hotpath-populate") == 0) {
             cfg.kuseg_hotpath_populate = true;
+        } else if (strcmp(argv[i], "--trace-user-handoff") == 0) {
+            cfg.trace_user_handoff = true;
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
             cfg.ram_path = argv[++i];
         } else if (strcmp(argv[i], "--sdram") == 0 && i + 1 < argc) {
