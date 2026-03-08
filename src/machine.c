@@ -399,6 +399,87 @@ static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *ins
 }
 
 /*
+ * Fallback for TLB load-miss notifications (intno=26) during do_execve:
+ * decode simple MIPS load ops, read from guest memory, write to destination
+ * register, and advance PC.  Analogous to emulate_store_on_write_unmapped
+ * but for reads.  The guest TLB has no entries for kuseg pages, so
+ * Unicorn's softmmu keeps re-notifying; this bypasses the TLB entirely.
+ */
+static bool emulate_load_at_pc(machine_t *m, uint64_t pc)
+{
+    uint32_t insn = 0;
+    if (!read_insn_best_effort(m->uc, pc, &insn))
+        return false;
+
+    uint32_t op = insn >> 26;
+    /* lb=0x20, lbu=0x24, lh=0x21, lhu=0x25, lw=0x23 */
+    if (!(op == 0x20u || op == 0x21u || op == 0x23u ||
+          op == 0x24u || op == 0x25u))
+        return false;
+
+    uint32_t rs = (insn >> 21) & 0x1Fu;
+    uint32_t rt = (insn >> 16) & 0x1Fu;
+    int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+
+    uint64_t base = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_0 + (int)rs, &base);
+    uint32_t addr32 = (uint32_t)((uint32_t)base + (uint32_t)imm);
+    uint64_t addr64 = (uint64_t)addr32;
+
+    /* Ensure the target block is mapped. */
+    uint64_t block32 = (uint64_t)(addr32 & ~0xFFFFFu);
+    uint64_t block = addr64 & ~(uint64_t)0xFFFFF;
+    if (addr32 >= 0x80000000u && addr32 <= 0xBFFFFFFFu) {
+        map_kseg_mirror_block(m, block);
+    } else {
+        uc_mem_map(m->uc, block32, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+        if (block != block32)
+            uc_mem_map(m->uc, block, 0x100000, UC_PROT_READ | UC_PROT_WRITE);
+    }
+
+    uint64_t val = 0;
+    uc_err re = UC_ERR_OK;
+    if (op == 0x20u) { /* lb (sign-extend) */
+        int8_t v = 0;
+        re = uc_mem_read(m->uc, addr64, &v, sizeof(v));
+        val = (uint64_t)(int64_t)v;
+    } else if (op == 0x24u) { /* lbu */
+        uint8_t v = 0;
+        re = uc_mem_read(m->uc, addr64, &v, sizeof(v));
+        val = (uint64_t)v;
+    } else if (op == 0x21u) { /* lh (sign-extend) */
+        int16_t v = 0;
+        re = uc_mem_read(m->uc, addr64, &v, sizeof(v));
+        val = (uint64_t)(int64_t)v;
+    } else if (op == 0x25u) { /* lhu */
+        uint16_t v = 0;
+        re = uc_mem_read(m->uc, addr64, &v, sizeof(v));
+        val = (uint64_t)v;
+    } else if (op == 0x23u) { /* lw (sign-extend) */
+        int32_t v = 0;
+        re = uc_mem_read(m->uc, addr64, &v, sizeof(v));
+        val = (uint64_t)(int64_t)v;
+    }
+    if (re != UC_ERR_OK)
+        return false;
+
+    uc_reg_write(m->uc, UC_MIPS_REG_0 + (int)rt, &val);
+    uint64_t next_pc = pc + 4u;
+    uc_reg_write(m->uc, UC_MIPS_REG_PC, &next_pc);
+
+    static uint32_t load_emu_log = 0;
+    if (load_emu_log < 256) {
+        fprintf(stderr,
+                "[LOAD_EMU] op=0x%02X pc=0x%08" PRIX64
+                " addr=0x%08X rt=$%u val=0x%08" PRIX64 "\n",
+                op, (uint64_t)(uint32_t)pc, addr32, rt,
+                (uint64_t)(uint32_t)val);
+        load_emu_log++;
+    }
+    return true;
+}
+
+/*
  * Fallback for UC_ERR_WRITE_UNMAPPED in late execve/user-copy paths:
  * decode simple MIPS store ops and commit the write directly, then advance PC.
  * This avoids livelock when Unicorn repeatedly reports write-unmapped without
@@ -2460,18 +2541,42 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                          * still gets a chance to establish writable mappings.
                          */
                         if (intno == 26u) {
+                            /*
+                             * TLB load-miss notification during do_execve.
+                             * The guest TLB has no entry for the kuseg page,
+                             * so Unicorn would re-notify forever if we just
+                             * restored PC.  Emulate the load instruction
+                             * directly (bypassing the guest TLB), advancing
+                             * past it so execution continues.
+                             */
+                            uint64_t real_pc = m->last_exec_pc;
+                            if (emulate_load_at_pc(m, real_pc)) {
+                                if (tlb_defer_drop_log < 64) {
+                                    fprintf(stderr,
+                                            "[TLB_DEFER_LOAD_EMU] intno=%u"
+                                            " notif_pc=0x%08" PRIX64
+                                            " real_pc=0x%08" PRIX64
+                                            " owner_epc=0x%08X count=%u\n",
+                                            intno, (uint64_t)(uint32_t)pc,
+                                            (uint64_t)(uint32_t)real_pc,
+                                            m->tlb_defer_owner_epc,
+                                            m->tlb_defer_count);
+                                    tlb_defer_drop_log++;
+                                }
+                                return;
+                            }
+                            /* If load emulation fails, fall through to
+                             * TLB_DEFER_SKIP (restore PC only). */
+                            uc_reg_write(uc, UC_MIPS_REG_PC, &real_pc);
                             if (tlb_defer_drop_log < 64) {
-                                uint64_t v0 = 0, a3 = 0;
-                                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-                                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
                                 fprintf(stderr,
                                         "[TLB_DEFER_DROP] intno=%u PC=0x%08" PRIX64
-                                        " owner_epc=0x%08X retry=%u"
-                                        " v0=0x%08" PRIX64 " a3=0x%08" PRIX64 "\n",
+                                        " real_pc=0x%08" PRIX64
+                                        " owner_epc=0x%08X retry=%u\n",
                                         intno, (uint64_t)(uint32_t)pc,
-                                        m->tlb_defer_owner_epc, m->tlb_defer_count,
-                                        (uint64_t)(uint32_t)v0,
-                                        (uint64_t)(uint32_t)a3);
+                                        (uint64_t)(uint32_t)real_pc,
+                                        m->tlb_defer_owner_epc,
+                                        m->tlb_defer_count);
                                 tlb_defer_drop_log++;
                             }
                             return;
