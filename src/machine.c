@@ -95,6 +95,8 @@ static inline bool tlb_trace_window_active(const machine_t *m)
 #define EXECVE_HANDOFF_STATE_DONE          0u
 #define EXECVE_HANDOFF_STATE_ARMED         1u
 #define EXECVE_HANDOFF_STATE_USER_FETCH_SEEN 2u
+#define USER_HANDOFF_ENTRY_WINDOW_START    0x2AAA8A00u
+#define USER_HANDOFF_ENTRY_WINDOW_END      0x2AAA8A20u
 
 /* vmlinux-pgui-demo (2.4.18) fault-path symbols (resolved with objdump). */
 #define K24_DO_PAGE_FAULT         0x8000AFA8u
@@ -160,6 +162,21 @@ static inline bool in_init_execve_syscall_window(const machine_t *m)
             m->pending_syscall_nr == 4011u &&
             is_init_execve_epc((uint32_t)m->pending_syscall_epc));
 }
+
+static inline bool in_user_handoff_entry_window(uint32_t pc)
+{
+    return (pc >= USER_HANDOFF_ENTRY_WINDOW_START &&
+            pc < USER_HANDOFF_ENTRY_WINDOW_END);
+}
+
+static inline bool is_handoff_stale_pc(uint32_t pc, uint32_t handoff_pc)
+{
+    return (pc == 0x80001850u ||
+            pc == 0x80000180u ||
+            (handoff_pc != 0u && pc == handoff_pc));
+}
+
+static bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *insn);
 
 static inline bool trace_user_handoff_fault_path_active(const machine_t *m)
 {
@@ -244,6 +261,7 @@ static void arm_execve_user_handoff(machine_t *m, uint64_t user_pc, uint64_t use
     m->execve_user_handoff_pc = user_pc;
     m->execve_user_handoff_sp = user_sp;
     m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_ARMED;
+    m->execve_user_handoff_done_keep_count = 0;
     m->user_handoff_fault_traced = false;
 
     /* Quarantine stale re-delivered notifications from the completed syscall. */
@@ -754,87 +772,87 @@ static void format_hex_bytes(const uint8_t *buf, size_t len,
         out[pos] = '\0';
 }
 
-static void trace_user_handoff_fault_once(machine_t *m, uint32_t fault_pc,
-                                          uint32_t fault_va, uint64_t raw_badv)
+static bool trace_user_handoff_entry_probe(machine_t *m, const char *tag,
+                                           uint32_t pc, uint32_t va,
+                                           uint64_t raw_badv, bool first_fault_only)
 {
-    if (!m->cfg.trace_user_handoff || m->user_handoff_fault_traced)
-        return;
-    m->user_handoff_fault_traced = true;
+    if (!in_user_handoff_entry_window(pc))
+        return false;
+    if (first_fault_only && m->cfg.trace_user_handoff && m->user_handoff_fault_traced)
+        return false;
+    if (first_fault_only && m->cfg.trace_user_handoff)
+        m->user_handoff_fault_traced = true;
 
-    tlb_lookup_result_t r = shadow_tlb_lookup(m, fault_va);
-    fprintf(stderr,
-            "[USER_HANDOFF_TRACE] first_fault pc=0x%08X va=0x%08X raw_badv=0x%08" PRIX64
-            " hit=%u confident=%u reason=%s\n",
-            fault_pc, fault_va, (uint64_t)(uint32_t)raw_badv,
-            r.hit ? 1u : 0u, r.confident ? 1u : 0u, r.reason);
-    fprintf(stderr,
-            "[USER_HANDOFF_TRACE] entryhi=0x%08X lo0=0x%08X lo1=0x%08X"
-            " pagemask=0x%08X page_bytes=0x%08" PRIX64
-            " src=%s%u asid=0x%02X cur_asid=%s0x%02X\n",
-            r.entryhi, r.lo0, r.lo1, r.pagemask, r.page_bytes,
-            (r.source_idx == 0xFFFFFFFFu) ? "live:" : "tlb:",
-            (r.source_idx == 0xFFFFFFFFu) ? 0u : r.source_idx,
-            (unsigned)r.entryhi_asid,
-            r.current_asid_valid ? "" : "?",
-            (unsigned)r.current_asid);
-
-    if (!r.hit || !r.confident) {
-        uint32_t alias_pa = fault_va & 0x1FFFFFFFu;
-        uint8_t va_bytes[16] = {0};
-        uint8_t pa_bytes[16] = {0};
-        uc_err va_err = uc_mem_read(m->uc, (uint64_t)fault_va, va_bytes, sizeof(va_bytes));
-        uc_err pa_err = uc_mem_read(m->uc, (uint64_t)alias_pa, pa_bytes, sizeof(pa_bytes));
-        char va_hex[16 * 3 + 1];
-        char pa_hex[16 * 3 + 1];
-        format_hex_bytes(va_bytes, sizeof(va_bytes), va_hex, sizeof(va_hex));
-        format_hex_bytes(pa_bytes, sizeof(pa_bytes), pa_hex, sizeof(pa_hex));
-        bool same = (va_err == UC_ERR_OK && pa_err == UC_ERR_OK &&
-                     memcmp(va_bytes, pa_bytes, sizeof(va_bytes)) == 0);
-        fprintf(stderr,
-                "[USER_HANDOFF_TRACE_ALIAS] va=0x%08X alias_pa=0x%08X"
-                " va_err=%d pa_err=%d same=%u va=[%s] pa=[%s]\n",
-                fault_va, alias_pa, va_err, pa_err, same ? 1u : 0u,
-                va_hex, pa_hex);
-        return;
-    }
-
-    uint64_t offset = (uint64_t)fault_va - r.va_page;
-    uint64_t pa_target = r.pa_page + offset;
-
-    uint32_t va_insn = 0, pa_insn = 0;
-    uc_err va_insn_err = uc_mem_read(m->uc, (uint64_t)fault_va, &va_insn, sizeof(va_insn));
-    uc_err pa_insn_err = uc_mem_read(m->uc, pa_target, &pa_insn, sizeof(pa_insn));
-
+    tlb_lookup_result_t r = shadow_tlb_lookup(m, va);
+    uint64_t pa_base = 0;
+    uint64_t pa_target = 0;
+    uint64_t offset = 0;
     uint8_t va_bytes[16] = {0};
     uint8_t pa_bytes[16] = {0};
-    uc_err va_bytes_err = uc_mem_read(m->uc, r.va_page + offset, va_bytes, sizeof(va_bytes));
-    uc_err pa_bytes_err = uc_mem_read(m->uc, pa_target, pa_bytes, sizeof(pa_bytes));
+    uc_err va_err = uc_mem_read(m->uc, (uint64_t)va, va_bytes, sizeof(va_bytes));
+    uc_err pa_err = UC_ERR_READ_UNMAPPED;
+
+    if (r.hit && r.confident) {
+        offset = (uint64_t)va - r.va_page;
+        pa_base = r.pa_page;
+        pa_target = pa_base + offset;
+        pa_err = uc_mem_read(m->uc, pa_target, pa_bytes, sizeof(pa_bytes));
+    } else {
+        pa_target = (uint64_t)(va & 0x1FFFFFFFu);
+        pa_err = uc_mem_read(m->uc, pa_target, pa_bytes, sizeof(pa_bytes));
+    }
+
+    uint32_t insn = 0;
+    bool insn_ok = read_insn_best_effort(m->uc, va, &insn);
+    bool bytes_same = (va_err == UC_ERR_OK &&
+                       pa_err == UC_ERR_OK &&
+                       memcmp(va_bytes, pa_bytes, sizeof(va_bytes)) == 0);
+    bool bytes_valid = false;
+    if (va_err == UC_ERR_OK) {
+        for (size_t i = 0; i < sizeof(va_bytes); i++) {
+            if (va_bytes[i] != 0u) {
+                bytes_valid = true;
+                break;
+            }
+        }
+    }
 
     char va_hex[16 * 3 + 1];
     char pa_hex[16 * 3 + 1];
     format_hex_bytes(va_bytes, sizeof(va_bytes), va_hex, sizeof(va_hex));
     format_hex_bytes(pa_bytes, sizeof(pa_bytes), pa_hex, sizeof(pa_hex));
 
-    bool same_bytes = (va_bytes_err == UC_ERR_OK &&
-                       pa_bytes_err == UC_ERR_OK &&
-                       memcmp(va_bytes, pa_bytes, sizeof(va_bytes)) == 0);
-    fprintf(stderr,
-            "[USER_HANDOFF_TRACE] map va_page=0x%08" PRIX64
-            " pa_page=0x%08" PRIX64 " off=0x%04" PRIX64
-            " pair=%u pair_va=0x%08" PRIX64 " pair_pa=0x%08" PRIX64 "\n",
-            r.va_page, r.pa_page, offset,
-            r.pair_valid ? 1u : 0u,
-            r.pair_va_page, r.pair_pa_page);
-    fprintf(stderr,
-            "[USER_HANDOFF_TRACE] insn va@0x%08X=0x%08X err=%d"
-            " pa@0x%08" PRIX64 "=0x%08X err=%d\n",
-            fault_va, va_insn, va_insn_err,
-            pa_target, pa_insn, pa_insn_err);
-    fprintf(stderr,
-            "[USER_HANDOFF_TRACE] bytes va_err=%d pa_err=%d same=%u"
-            " va=[%s] pa=[%s]\n",
-            va_bytes_err, pa_bytes_err, same_bytes ? 1u : 0u,
-            va_hex, pa_hex);
+    static uint32_t probe_log = 0;
+    if (m->cfg.trace_user_handoff && probe_log < 192) {
+        fprintf(stderr,
+                "[USER_HANDOFF_PROBE_%s] pc=0x%08X va=0x%08X badv=0x%08" PRIX64
+                " hit=%u confident=%u reason=%s src=%s%u\n",
+                tag, pc, va, (uint64_t)(uint32_t)raw_badv,
+                r.hit ? 1u : 0u, r.confident ? 1u : 0u, r.reason,
+                (r.source_idx == 0xFFFFFFFFu) ? "live:" : "tlb:",
+                (r.source_idx == 0xFFFFFFFFu) ? 0u : r.source_idx);
+        fprintf(stderr,
+                "[USER_HANDOFF_PROBE_%s] entryhi=0x%08X lo0=0x%08X lo1=0x%08X"
+                " mask=0x%08X page=0x%08" PRIX64 " va_page=0x%08" PRIX64
+                " pa_base=0x%08" PRIX64 " off=0x%04" PRIX64 " pa=0x%08" PRIX64 "\n",
+                tag, r.entryhi, r.lo0, r.lo1, r.pagemask, r.page_bytes,
+                r.va_page, pa_base, offset, pa_target);
+        fprintf(stderr,
+                "[USER_HANDOFF_PROBE_%s] insn_ok=%u insn=0x%08X va_err=%d pa_err=%d"
+                " bytes_same=%u bytes_valid=%u va=[%s] pa=[%s]\n",
+                tag, insn_ok ? 1u : 0u, insn,
+                va_err, pa_err, bytes_same ? 1u : 0u, bytes_valid ? 1u : 0u,
+                va_hex, pa_hex);
+        probe_log++;
+    }
+    return bytes_valid;
+}
+
+static void trace_user_handoff_fault_once(machine_t *m, uint32_t fault_pc,
+                                          uint32_t fault_va, uint64_t raw_badv)
+{
+    (void)trace_user_handoff_entry_probe(m, "FAULT", fault_pc, fault_va,
+                                         raw_badv, true);
 }
 
 static bool shadow_tlb_populate(machine_t *m, uint32_t va, bool include_pair,
@@ -2579,11 +2597,16 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             m->pending_epc_served = false;
             m->has_saved_exception = false;
             m->execve_user_handoff_pc = (uint32_t)address;
+            (void)trace_user_handoff_entry_probe(m, "RETIRE",
+                                                 (uint32_t)address,
+                                                 (uint32_t)address,
+                                                 m->shadow_cp0_badvaddr, false);
             if (first_fetch) {
                 m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_USER_FETCH_SEEN;
             } else {
                 m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
                 m->execve_user_handoff_active = false;
+                m->execve_user_handoff_done_keep_count = 0;
             }
         }
     }
@@ -2592,8 +2615,30 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         m->execve_user_handoff_pc != 0u &&
         (uint32_t)address < 0x80000000u &&
         insn != 0u) {
-        /* Keep a moving resume point while stale run_init callbacks are quarantined. */
-        m->execve_user_handoff_pc = (uint32_t)address;
+        (void)trace_user_handoff_entry_probe(m, "RETIRE",
+                                             (uint32_t)address,
+                                             (uint32_t)address,
+                                             m->shadow_cp0_badvaddr, false);
+        /* Track forward progress while DONE quarantine is active. */
+        if ((uint32_t)m->execve_user_handoff_pc != (uint32_t)address) {
+            m->execve_user_handoff_pc = (uint32_t)address;
+        }
+        /* Auto-disarm once at least one non-zero instruction retires outside
+         * the initial handoff entry window. */
+        if (!in_user_handoff_entry_window((uint32_t)address)) {
+            if (m->cfg.trace_user_handoff) {
+                static uint32_t handoff_done_disarm_log = 0;
+                if (handoff_done_disarm_log < 64) {
+                    fprintf(stderr,
+                            "[EXECVE_USER_HANDOFF_DONE_DISARM_RETIRE] pc=0x%08" PRIX64 "\n",
+                            (uint64_t)(uint32_t)address);
+                    handoff_done_disarm_log++;
+                }
+            }
+            m->execve_user_handoff_pc = 0;
+            m->execve_user_handoff_sp = 0;
+            m->execve_user_handoff_done_keep_count = 0;
+        }
     }
 
     /*
@@ -3395,6 +3440,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                  !m->execve_watch_active &&
                  !syscall_is_execve)) {
                 uint64_t status = status_snapshot & ~(uint64_t)0x2u;   /* clear EXL */
+                bool execve_handoff_ctx =
+                    (m->pending_excode == MIPS_EXCCODE_SYS &&
+                     m->pending_syscall_nr == 4011u &&
+                     is_init_execve_epc((uint32_t)m->pending_syscall_epc));
+                if (execve_handoff_ctx) {
+                    /* Quarantine stale post-syscall IRQ delivery while entering
+                     * first user instructions. Kernel will re-enable as needed. */
+                    status &= ~(uint64_t)0xFF01u; /* IM[7:0]=0, IE=0 */
+                }
                 uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
                 uint64_t epc = m->pending_epc;
@@ -3408,69 +3462,61 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                     fprintf(stderr, "[ERET_MANUAL] returning to EPC=0x%08" PRIX64 "\n", epc);
                 }
 
-                /* Prevent QEMU's native ERET from overriding our kuseg PC.
-                 * Our MTC0 EPC intercept skipped the real MTC0, so QEMU's internal
-                 * CP0_EPC is stale.  uc_emu_stop() terminates the batch;
-                 * machine_run()'s loop reads PC afresh and resumes at our target. */
-                if ((uint32_t)epc < 0x80000000u) {
-                    bool execve_handoff_ctx =
-                        (m->pending_excode == MIPS_EXCCODE_SYS &&
-                         m->pending_syscall_nr == 4011u &&
-                         is_init_execve_epc((uint32_t)m->pending_syscall_epc));
-                    if (execve_handoff_ctx) {
-                        uint64_t sp_val = 0;
-                        uc_reg_read(uc, UC_MIPS_REG_SP, &sp_val);
-                        arm_execve_user_handoff(m, epc, sp_val);
+                if ((uint32_t)epc < 0x80000000u && execve_handoff_ctx) {
+                    uint64_t sp_val = 0;
+                    uc_reg_read(uc, UC_MIPS_REG_SP, &sp_val);
+                    arm_execve_user_handoff(m, epc, sp_val);
 
-                        /* Probe: verify user-space code is present at target VA */
-                        uint32_t probe = 0;
-                        uc_err re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
+                    /* Keep execution in the same uc_emu_start batch so kuseg
+                     * softmmu state remains warm across the handoff seam. */
+                    uint32_t probe = 0;
+                    uc_err re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
+                    fprintf(stderr,
+                            "[ERET_MANUAL_KUSEG] target=0x%08X sp=0x%08" PRIX64
+                            " status=0x%08" PRIX64
+                            " insn@target=0x%08X read_err=%d\n",
+                            (uint32_t)epc, sp_val, status, probe, re);
+
+                    if (probe == 0u) {
+                        bool populated = shadow_tlb_populate(m, (uint32_t)epc, true,
+                                                             "ERET_MANUAL_KUSEG",
+                                                             (uint32_t)address);
+                        re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
                         fprintf(stderr,
-                                "[ERET_MANUAL_KUSEG] target=0x%08X sp=0x%08" PRIX64
-                                " status=0x%08" PRIX64
+                                "[ERET_MANUAL_KUSEG] after populate target=0x%08X"
                                 " insn@target=0x%08X read_err=%d\n",
-                                (uint32_t)epc, sp_val, status, probe, re);
+                                (uint32_t)epc, probe, re);
 
                         if (probe == 0u) {
-                            bool populated = shadow_tlb_populate(m, (uint32_t)epc, true,
-                                                                 "ERET_MANUAL_KUSEG",
-                                                                 (uint32_t)address);
-                            re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
-                            fprintf(stderr,
-                                    "[ERET_MANUAL_KUSEG] after populate target=0x%08X"
-                                    " insn@target=0x%08X read_err=%d\n",
-                                    (uint32_t)epc, probe, re);
-
-                            if (probe == 0u) {
-                                uint32_t alias_pa = (uint32_t)epc & 0x1FFFFFFFu;
-                                uint32_t alias_probe = 0;
-                                uc_err alias_re = uc_mem_read(uc, alias_pa, &alias_probe, 4);
-                                static uint32_t alias_log = 0;
-                                if (alias_log < 256) {
-                                    fprintf(stderr,
-                                            "[ERET_MANUAL_KUSEG_ALIAS] target=0x%08X"
-                                            " alias_pa=0x%08X alias_insn=0x%08X alias_err=%d"
-                                            " populated=%u\n",
-                                            (uint32_t)epc, alias_pa, alias_probe, alias_re,
-                                            populated ? 1u : 0u);
-                                    alias_log++;
-                                }
-                                if (alias_re == UC_ERR_OK && alias_probe != 0u) {
-                                    tlb_map_kuseg_page(m, (uint32_t)epc,
-                                                       (uint64_t)alias_pa, 0x1000u);
-                                    re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
-                                    fprintf(stderr,
-                                            "[ERET_MANUAL_KUSEG_ALIAS] after alias map"
-                                            " target=0x%08X insn@target=0x%08X read_err=%d\n",
-                                            (uint32_t)epc, probe, re);
-                                }
+                            uint32_t alias_pa = (uint32_t)epc & 0x1FFFFFFFu;
+                            uint32_t alias_probe = 0;
+                            uc_err alias_re = uc_mem_read(uc, alias_pa, &alias_probe, 4);
+                            static uint32_t alias_log = 0;
+                            if (alias_log < 256) {
+                                fprintf(stderr,
+                                        "[ERET_MANUAL_KUSEG_ALIAS] target=0x%08X"
+                                        " alias_pa=0x%08X alias_insn=0x%08X alias_err=%d"
+                                        " populated=%u\n",
+                                        (uint32_t)epc, alias_pa, alias_probe, alias_re,
+                                        populated ? 1u : 0u);
+                                alias_log++;
+                            }
+                            if (alias_re == UC_ERR_OK && alias_probe != 0u) {
+                                tlb_map_kuseg_page(m, (uint32_t)epc,
+                                                   (uint64_t)alias_pa, 0x1000u);
+                                re = uc_mem_read(uc, (uint32_t)epc, &probe, 4);
+                                fprintf(stderr,
+                                        "[ERET_MANUAL_KUSEG_ALIAS] after alias map"
+                                        " target=0x%08X insn@target=0x%08X read_err=%d\n",
+                                        (uint32_t)epc, probe, re);
                             }
                         }
-
-                        /* Don't uc_emu_stop here — let the native ERET execute
-                         * and continue in the same batch so the softmmu cache
-                         * stays warm for the kuseg VA access. */
                     }
+                    (void)trace_user_handoff_entry_probe(m, "ERET",
+                                                         (uint32_t)epc,
+                                                         (uint32_t)epc,
+                                                         m->shadow_cp0_badvaddr,
+                                                         false);
                 }
 
                 if (m->pending_excode == MIPS_EXCCODE_SYS)
@@ -3621,72 +3667,87 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
     /*
-     * After execve handoff, Unicorn can emit stale notifications pinned to
-     * run_init_process+4. While handoff is in flight, jump to the armed user
-     * context. After the first user fetch, resume at the last user PC.
+     * Post-execve stale callback quarantine:
+     * keep the handoff FSM deterministic (ARMED -> USER_FETCH_SEEN -> DONE),
+     * and in DONE only quarantine intno 12/26 at known stale PCs.
      */
-    bool stale_handoff_irq =
-        ((uint32_t)pc == 0x80001850u) &&
-        (intno == 12u || intno == 26u || intno == 27u);
+    uint32_t pc32 = (uint32_t)pc;
+    uint32_t handoff_pc32 = (uint32_t)m->execve_user_handoff_pc;
+    uint8_t handoff_state = m->execve_user_handoff_state;
+    bool handoff_active_state =
+        (m->execve_user_handoff_active ||
+         handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN ||
+         handoff_state == EXECVE_HANDOFF_STATE_DONE);
+    bool stale_pc_hit = is_handoff_stale_pc(pc32, handoff_pc32);
+    bool stale_intno_ok =
+        (handoff_state == EXECVE_HANDOFF_STATE_DONE)
+            ? (intno == 12u || intno == 26u)
+            : (intno == 12u || intno == 26u || intno == 27u);
     bool handoff_stale_clearable =
         (m->pending_excode == 0u ||
          m->pending_excode == MIPS_EXCCODE_SYS ||
          m->pending_excode == 1u);
-    if (stale_handoff_irq &&
-        m->execve_user_handoff_pc != 0u &&
-        handoff_stale_clearable &&
-        (m->execve_user_handoff_active ||
-         m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_DONE)) {
-        uint8_t handoff_state = m->execve_user_handoff_state;
-        uint64_t restore_pc = m->execve_user_handoff_pc;
-        if (handoff_state == EXECVE_HANDOFF_STATE_DONE &&
-            (uint32_t)m->last_exec_pc < 0x80000000u &&
-            (uint32_t)m->last_exec_pc != 0u) {
-            restore_pc = m->last_exec_pc;
-        }
-        if ((uint32_t)restore_pc < 0x80000000u) {
-            uint64_t restore_sp = m->execve_user_handoff_sp;
-            uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
-            uc_reg_write(uc, UC_MIPS_REG_PC, &restore_pc);
-            if ((uint32_t)restore_sp != 0u)
-                uc_reg_write(uc, UC_MIPS_REG_SP, &restore_sp);
-            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
-            m->execve_user_handoff_pc = (uint32_t)restore_pc;
-            m->pending_epc = 0;
-            m->pending_excode = 0;
-            m->pending_cause = 0;
-            m->epc_was_written = false;
-            m->pending_cause_served = false;
-            m->pending_epc_served = false;
-            m->has_saved_exception = false;
-            if (handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN) {
-                m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
-                m->execve_user_handoff_active = false;
+    if (stale_pc_hit &&
+        stale_intno_ok &&
+        handoff_pc32 != 0u &&
+        handoff_active_state &&
+        handoff_stale_clearable) {
+        uint64_t restore_pc = (uint64_t)handoff_pc32;
+        uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
+        user_status &= ~(uint64_t)0xFF01u; /* IM[7:0]=0, IE=0 */
+        uc_reg_write(uc, UC_MIPS_REG_PC, &restore_pc);
+        uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &user_status);
+
+        m->pending_epc = 0;
+        m->pending_excode = 0;
+        m->pending_cause = 0;
+        m->epc_was_written = false;
+        m->pending_cause_served = false;
+        m->pending_epc_served = false;
+        m->has_saved_exception = false;
+
+        if (handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN) {
+            m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
+            m->execve_user_handoff_active = false;
+            m->execve_user_handoff_done_keep_count = 0;
+        } else if (handoff_state == EXECVE_HANDOFF_STATE_DONE) {
+            m->execve_user_handoff_done_keep_count++;
+            bool entry_probe_valid = trace_user_handoff_entry_probe(
+                m, "DONE_STALE", (uint32_t)restore_pc, (uint32_t)restore_pc, pc, false);
+            if (entry_probe_valid && in_user_handoff_entry_window((uint32_t)restore_pc)) {
+                bool emu_progress = emulate_load_at_pc(m, restore_pc);
+                if (emu_progress) {
+                    uint64_t emu_pc = restore_pc;
+                    uc_reg_read(uc, UC_MIPS_REG_PC, &emu_pc);
+                    if ((uint32_t)emu_pc < 0x80000000u)
+                        m->execve_user_handoff_pc = (uint32_t)emu_pc;
+                    static uint32_t handoff_load_emu_log = 0;
+                    if (handoff_load_emu_log < 128) {
+                        fprintf(stderr,
+                                "[EXECVE_USER_HANDOFF_DONE_LOAD_EMU] intno=%u stale_pc=0x%08" PRIX64
+                                " emu_pc=0x%08" PRIX64 "\n",
+                                intno,
+                                (uint64_t)(uint32_t)pc,
+                                (uint64_t)(uint32_t)emu_pc);
+                        handoff_load_emu_log++;
+                    }
+                }
             }
-            static uint32_t handoff_stale_log = 0;
-            if (handoff_stale_log < 160) {
-                const char *tag = "KEEP";
-                if (handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN)
-                    tag = "QUARANTINE";
-                else if (handoff_state == EXECVE_HANDOFF_STATE_DONE)
-                    tag = "DONE_KEEP";
-                fprintf(stderr,
-                        "[EXECVE_USER_HANDOFF_%s] intno=%u stale_pc=0x%08" PRIX64
-                        " -> user_pc=0x%08" PRIX64 " user_sp=0x%08" PRIX64
-                        " status=0x%08" PRIX64 " state=%u last_pc=0x%08" PRIX64
-                        " excode=%u\n",
-                        tag,
-                        intno, (uint64_t)(uint32_t)pc,
-                        (uint64_t)(uint32_t)restore_pc,
-                        (uint64_t)(uint32_t)restore_sp,
-                        (uint64_t)(uint32_t)user_status,
-                        (unsigned)handoff_state,
-                        (uint64_t)(uint32_t)m->last_exec_pc,
-                        m->pending_excode);
-                handoff_stale_log++;
-            }
-            return;
         }
+
+        static uint32_t handoff_stale_log = 0;
+        if (handoff_stale_log < 192) {
+            fprintf(stderr,
+                    "[EXECVE_USER_HANDOFF_QUARANTINE] intno=%u stale_pc=0x%08" PRIX64
+                    " -> user_pc=0x%08" PRIX64 " state=%u excode=%u done_keep=%u\n",
+                    intno, (uint64_t)(uint32_t)pc,
+                    (uint64_t)(uint32_t)restore_pc,
+                    (unsigned)handoff_state,
+                    m->pending_excode,
+                    m->execve_user_handoff_done_keep_count);
+            handoff_stale_log++;
+        }
+        return;
     }
 
     /*
@@ -3820,7 +3881,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
              * exactly what the kernel intended when it checked for NULL.
              */
             static uint32_t null_ptr_log = 0;
-            if ((uint32_t)pc < 0x10000u) {
+            if ((uint32_t)pc < 0x10000u && !m->cfg.nand_path) {
                 uint64_t ra = 0, t9 = 0, gp = 0, sp = 0;
                 uint64_t a0 = 0, a1 = 0, a2 = 0, v0 = 0;
                 uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
@@ -4406,6 +4467,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     reset_tlb_defer_state(m);         /* reset DEFER retry/ownership for this syscall */
     m->execve_user_handoff_active = false;
     m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
+    m->execve_user_handoff_done_keep_count = 0;
     m->user_handoff_fault_traced = false;
 
     {
@@ -5811,8 +5873,43 @@ machine_t *machine_create(const machine_config_t *cfg)
         uc_hook_add(m->uc, &hk, UC_HOOK_CODE, icu_etime_fixup_hook, m, va, va);
     }
 
+    /* NAND / WinCE boot mode: load B000FF SPL from NAND image */
+    if (cfg->nand_path) {
+        uint32_t entry_va = 0;
+        if (loader_load_nand(m, cfg->nand_path, &entry_va) != 0) {
+            fprintf(stderr, "[MACHINE] NAND B000FF load failed\n");
+            machine_destroy(m);
+            return NULL;
+        }
+        m->kernel_entry = mips_sext(entry_va);
+        m->has_jiffies_pa = false;
+        m->jiffies_pa = 0;
+
+        /*
+         * WinCE SPL boot state: kernel mode, BEV=1 (boot vectors),
+         * ERL=1 (reset state).  The SPL will reconfigure CP0 itself.
+         */
+        uint64_t wince_status = 0x00400004u; /* BEV=1, ERL=1 */
+        uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &wince_status);
+
+        /* Set up a stack for the SPL in high SDRAM */
+        uint64_t sp = mips_sext(0x80F00000u); /* below SPL load area */
+        uc_reg_write(m->uc, UC_MIPS_REG_SP, &sp);
+
+        /* Verify entry-point bytes */
+        {
+            uint32_t pa_entry = entry_va & 0x1FFFFFFFu;
+            uint32_t insns[4] = {0};
+            uc_mem_read(m->uc, pa_entry, insns, sizeof(insns));
+            fprintf(stderr, "[MACHINE] NAND entry PA=0x%08X  insns: %08X %08X %08X %08X\n",
+                    pa_entry, insns[0], insns[1], insns[2], insns[3]);
+        }
+
+        fprintf(stderr, "[MACHINE] WinCE NAND boot: entry VA=0x%08X (PA=0x%08X)\n",
+                entry_va, entry_va & 0x1FFFFFFFu);
+
+    } else if (cfg->kernel_path) {
     /* Kernel direct-boot mode: load ELF and set entry point */
-    if (cfg->kernel_path) {
         uint32_t entry_va = 0;
         uint32_t jiffies_pa = 0;
         if (loader_load_elf(m, cfg->kernel_path, &entry_va, &jiffies_pa) != 0) {
@@ -5916,6 +6013,7 @@ void machine_destroy(machine_t *m)
 {
     if (!m) return;
     if (m->uc) uc_close(m->uc);
+    free(m->nand_data);
     free(m);
 }
 
@@ -6014,43 +6112,6 @@ void machine_run(machine_t *m)
 
         uint32_t step_count = m->post_init_trace_window ? POST_INIT_BATCH_SIZE : BATCH_SIZE;
         uc_err err = uc_emu_start(m->uc, pc, 0, 0, step_count);
-
-        /* Belt-and-suspenders: after uc_emu_stop() from ERET_MANUAL_KUSEG,
-         * verify that native ERET didn't override our kuseg PC. */
-        if (m->execve_user_handoff_active &&
-            m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED) {
-            uint64_t post_pc = 0;
-            uc_reg_read(m->uc, UC_MIPS_REG_PC, &post_pc);
-            if ((uint32_t)post_pc >= 0x80000000u) {
-                uint64_t fix_pc = m->execve_user_handoff_pc;
-                uint64_t fix_sp = m->execve_user_handoff_sp;
-                uc_reg_write(m->uc, UC_MIPS_REG_PC, &fix_pc);
-                uc_reg_write(m->uc, UC_MIPS_REG_SP, &fix_sp);
-                /* Clear EXL so user code runs in user mode */
-                uint64_t fix_status = 0;
-                uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &fix_status);
-                fix_status = (fix_status & ~(uint64_t)0x1Au) | 0x10u; /* clear EXL/KSU, set UM */
-                uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &fix_status);
-
-                shadow_tlb_populate(m, (uint32_t)fix_pc, true,
-                                    "EXECVE_HANDOFF_FIX",
-                                    (uint32_t)post_pc);
-                static uint32_t handoff_fix_log = 0;
-                if (handoff_fix_log < 32) {
-                    fprintf(stderr,
-                            "[EXECVE_HANDOFF_FIX] stale_pc=0x%08" PRIX64
-                            " -> kuseg_pc=0x%08" PRIX64
-                            " sp=0x%08" PRIX64
-                            " status=0x%08" PRIX64 "\n",
-                            (uint64_t)(uint32_t)post_pc,
-                            (uint64_t)(uint32_t)fix_pc,
-                            (uint64_t)(uint32_t)fix_sp,
-                            (uint64_t)(uint32_t)fix_status);
-                    handoff_fix_log++;
-                }
-                continue;  /* re-enter loop with corrected PC */
-            }
-        }
 
         if (err != UC_ERR_OK) {
             uint64_t bad_pc = 0;
@@ -6246,6 +6307,33 @@ void machine_run(machine_t *m)
                     if (m->execve_user_handoff_active &&
                         m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED) {
                         trace_user_handoff_fault_once(m, (uint32_t)bad_pc, fault_va, badv);
+                    }
+                    bool handoff_entry_window =
+                        in_user_handoff_entry_window((uint32_t)bad_pc) &&
+                        (m->execve_user_handoff_active ||
+                         m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN ||
+                         m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_DONE);
+                    if (handoff_entry_window) {
+                        bool entry_bytes_valid = trace_user_handoff_entry_probe(
+                            m, "FAULT_RETRY", (uint32_t)bad_pc, fault_va, badv, false);
+                        if (entry_bytes_valid && emulate_load_at_pc(m, bad_pc)) {
+                            uint64_t emu_pc = bad_pc;
+                            uc_reg_read(m->uc, UC_MIPS_REG_PC, &emu_pc);
+                            if ((uint32_t)emu_pc < 0x80000000u)
+                                m->execve_user_handoff_pc = (uint32_t)emu_pc;
+                            static uint32_t handoff_fault_retry_log = 0;
+                            if (handoff_fault_retry_log < 96) {
+                                fprintf(stderr,
+                                        "[USER_HANDOFF_FAULT_RETRY_LOAD] pc=0x%08" PRIX64
+                                        " fault_va=0x%08X -> emu_pc=0x%08" PRIX64 "\n",
+                                        (uint64_t)(uint32_t)bad_pc,
+                                        fault_va,
+                                        (uint64_t)(uint32_t)emu_pc);
+                                handoff_fault_retry_log++;
+                            }
+                            m->last_unmapped_valid = false;
+                            continue;
+                        }
                     }
                     uint32_t asid = (uint32_t)(m->shadow_cp0_entryhi_live_valid
                                      ? m->shadow_cp0_entryhi_live
