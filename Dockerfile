@@ -40,6 +40,7 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-dev \
     libpixman-1-dev \
     libfdt-dev \
+    libsdl2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Build and install Unicorn 2.1.4 from source
