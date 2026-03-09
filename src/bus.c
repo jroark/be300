@@ -42,8 +42,10 @@ static inline uint32_t vrc4173_cs3_off(const vrc4173_cb_ctx_t *ctx,
 static inline bool is_nand_offset(uint32_t off)
 {
     return (off >= NAND_CTRL_BASE   && off < NAND_CTRL_END)   ||
+           (off >= NAND_XFER_BASE   && off < NAND_XFER_END)   ||
            (off >= NAND_CMD_BASE    && off < NAND_CMD_END)    ||
            (off >= NAND_ENABLE_BASE && off < NAND_ENABLE_END) ||
+           (off >= NAND_STREAM_BASE && off < NAND_STREAM_END) ||
            (off >= NAND_DATA_BASE   && off < NAND_DATA_END);
 }
 

@@ -3,6 +3,13 @@
 #include <inttypes.h>
 #include "nand.h"
 
+static uint8_t nand_image_byte(const nand_state_t *s, uint32_t off)
+{
+    if (!s->image || off >= s->image_size)
+        return 0xFFu;
+    return s->image[off];
+}
+
 void nand_init(nand_state_t *s, const uint8_t *image, size_t size)
 {
     memset(s, 0, sizeof(*s));
@@ -44,19 +51,76 @@ static void nand_setup_transfer(nand_state_t *s)
     s->xfer_cursor = 0;
 }
 
+/* Stream read used by SPL transfer engine through 0xB000 window. */
+static uint64_t nand_stream_read(nand_state_t *s, unsigned size)
+{
+    uint64_t val = 0;
+    uint32_t base = s->stream_base + s->stream_cursor;
+
+    for (unsigned i = 0; i < size; i++) {
+        uint8_t byte = nand_image_byte(s, base + i);
+        val |= ((uint64_t)byte) << (8u * i);
+    }
+    s->stream_cursor += size;
+    return val;
+}
+
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 uint64_t value, bool log)
 {
-    (void)size;
-
     if (log)
-        fprintf(stderr, "[NAND] W offset=0x%04X val=0x%04" PRIX64 "\n",
-                offset, value);
+        fprintf(stderr, "[NAND] W%u offset=0x%04X val=0x%08" PRIX64 "\n",
+                size * 8, offset, value);
 
     /* Control/timing registers — just latch */
     if (offset >= NAND_CTRL_BASE && offset < NAND_CTRL_END) {
         uint32_t idx = (offset - NAND_CTRL_BASE) >> 2;
         if (idx < 8) s->ctrl_regs[idx] = (uint32_t)value;
+        return;
+    }
+
+    /* SPL transfer engine registers (0xA400-0xA4FF). */
+    if (offset >= NAND_XFER_BASE && offset < NAND_XFER_END) {
+        uint32_t idx = (offset - NAND_XFER_BASE) >> 2;
+        uint8_t data_byte = (uint8_t)(value & 0xFFu);
+
+        if (idx < (sizeof(s->xfer_regs) / sizeof(s->xfer_regs[0])))
+            s->xfer_regs[idx] = (uint32_t)value;
+
+        if (offset == NAND_REG_XFER_CMD) {
+            /* New command phase starts a new A420 address sequence. */
+            s->xfer_addr_count = 0;
+        } else if (offset == NAND_REG_XFER_ADDR) {
+            /* A420 feeds a 24-bit byte address (little-endian). */
+            if (s->xfer_addr_count < sizeof(s->xfer_addr_bytes)) {
+                s->xfer_addr_bytes[s->xfer_addr_count++] = data_byte;
+            } else {
+                memmove(s->xfer_addr_bytes, s->xfer_addr_bytes + 1,
+                        sizeof(s->xfer_addr_bytes) - 1);
+                s->xfer_addr_bytes[sizeof(s->xfer_addr_bytes) - 1] = data_byte;
+            }
+
+            if (s->xfer_addr_count >= 3) {
+                s->xfer_addr24 = (uint32_t)s->xfer_addr_bytes[0]
+                               | ((uint32_t)s->xfer_addr_bytes[1] << 8)
+                               | ((uint32_t)s->xfer_addr_bytes[2] << 16);
+            }
+        } else if (offset == NAND_REG_XFER_KICK) {
+            /* Engine kick toggles busy->ready in our simplified model. */
+            s->ready = false;
+        } else if (offset == NAND_REG_XFER_MODE) {
+            /*
+             * SPL uses mode 5 for the first 520-byte burst, then mode 4 for
+             * the trailing 8-byte burst. Start stream on mode 5 and keep
+             * cursor continuity across mode 4.
+             */
+            if (data_byte == 0x05u) {
+                s->stream_base = s->xfer_addr24;
+                s->stream_cursor = 0;
+                s->stream_active = true;
+            }
+            s->ready = true;
+        }
         return;
     }
 
@@ -151,13 +215,34 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
 
 uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log)
 {
-    (void)size;
     uint64_t val = 0;
 
     /* Control/timing registers — return latched value */
     if (offset >= NAND_CTRL_BASE && offset < NAND_CTRL_END) {
         uint32_t idx = (offset - NAND_CTRL_BASE) >> 2;
         val = (idx < 8) ? s->ctrl_regs[idx] : 0;
+        goto out;
+    }
+
+    /* SPL transfer engine registers (0xA400-0xA4FF). */
+    if (offset >= NAND_XFER_BASE && offset < NAND_XFER_END) {
+        uint32_t idx = (offset - NAND_XFER_BASE) >> 2;
+        if (offset == NAND_REG_XFER_STATUS) {
+            val = s->ready ? 0x00000001u : 0u;
+        } else if (idx < (sizeof(s->xfer_regs) / sizeof(s->xfer_regs[0]))) {
+            val = s->xfer_regs[idx];
+        } else {
+            val = 0;
+        }
+        goto out;
+    }
+
+    /* SPL stream window (0xB000): return sequential data bytes. */
+    if (offset >= NAND_STREAM_BASE && offset < NAND_STREAM_END) {
+        if (!s->stream_active)
+            val = (size >= 4) ? UINT32_C(0xFFFFFFFF) : UINT64_C(0xFF);
+        else
+            val = nand_stream_read(s, size);
         goto out;
     }
 
@@ -218,7 +303,7 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log)
 
 out:
     if (log)
-        fprintf(stderr, "[NAND] R offset=0x%04X -> 0x%04" PRIX64 "\n",
-                offset, val);
+        fprintf(stderr, "[NAND] R%u offset=0x%04X -> 0x%08" PRIX64 "\n",
+                size * 8, offset, val);
     return val;
 }
