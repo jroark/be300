@@ -5,14 +5,29 @@
 #include <stdbool.h>
 
 /* VRC4173 NAND controller register offsets (from PA_VRC4173_BASE = 0x0A000000) */
-#define NAND_CTRL_BASE    0xA000u   /* Control/timing init registers */
+#define NAND_CTRL_BASE    0xA000u   /* Legacy control/timing init registers */
 #define NAND_CTRL_END     0xA020u
-#define NAND_CMD_BASE     0xAC00u   /* Command/address registers */
+#define NAND_XFER_BASE    0xA400u   /* SPL transfer engine control/status */
+#define NAND_XFER_END     0xA500u
+#define NAND_CMD_BASE     0xAC00u   /* Legacy command/address registers */
 #define NAND_CMD_END      0xAC50u
-#define NAND_ENABLE_BASE  0xB100u   /* Enable registers */
+#define NAND_ENABLE_BASE  0xB100u   /* Legacy enable registers */
 #define NAND_ENABLE_END   0xB110u
-#define NAND_DATA_BASE    0xD7F8u   /* Data port registers */
+#define NAND_STREAM_BASE  0xB000u   /* SPL data stream window */
+#define NAND_STREAM_END   0xB210u
+#define NAND_DATA_BASE    0xD7F8u   /* Legacy data port registers */
 #define NAND_DATA_END     0xD800u
+
+/* SPL transfer-engine registers */
+#define NAND_REG_XFER_CTRL     0xA410u
+#define NAND_REG_XFER_CMD      0xA414u
+#define NAND_REG_XFER_ADDR     0xA420u
+#define NAND_REG_XFER_ACK      0xA430u
+#define NAND_REG_XFER_STATUS   0xA440u
+#define NAND_REG_XFER_KICK     0xA460u
+#define NAND_REG_XFER_MODE     0xA464u
+#define NAND_REG_XFER_MISC     0xA468u
+#define NAND_REG_STREAM_DATA   0xB000u
 
 /* Individual data port registers */
 #define NAND_REG_DEVID    0xD7F8u   /* Device ID (read) */
@@ -62,6 +77,15 @@ typedef struct {
 
     /* Latched control registers */
     uint32_t ctrl_regs[8];      /* 0xA000-0xA01C */
+    uint32_t xfer_regs[64];     /* 0xA400-0xA4FC */
+
+    /* SPL transfer engine state (A420/A440/A460/A464/B000 path) */
+    uint8_t  xfer_addr_bytes[4];
+    uint8_t  xfer_addr_count;
+    uint32_t xfer_addr24;
+    uint32_t stream_base;
+    uint32_t stream_cursor;
+    bool     stream_active;
 } nand_state_t;
 
 void     nand_init(nand_state_t *s, const uint8_t *image, size_t size);
