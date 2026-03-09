@@ -2570,6 +2570,24 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t rd  = (insn >> 11) & 0x1Fu;
     uint32_t sel =  insn        & 0x07u;
 
+    /*
+     * WinCE SPL uses COP0 WAIT (0x42000023) in early boot.
+     * Unicorn's MIPS core traps this path and lands at PC=0.
+     * Treat it as a low-power hint (NOP) so execution advances.
+     */
+    if (m->cfg.nand_path && insn == 0x42000023u) {
+        uint64_t next_pc = address + 4u;
+        static uint32_t wince_wait_skip_log = 0;
+        if (wince_wait_skip_log < 32u) {
+            fprintf(stderr,
+                    "[WINCE_WAIT_SKIP] PC=0x%08" PRIX64 " -> 0x%08" PRIX64 "\n",
+                    (uint64_t)(uint32_t)address, (uint64_t)(uint32_t)next_pc);
+            wince_wait_skip_log++;
+        }
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
     if (m->execve_user_handoff_active &&
         (m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_ARMED ||
          m->execve_user_handoff_state == EXECVE_HANDOFF_STATE_USER_FETCH_SEEN) &&
