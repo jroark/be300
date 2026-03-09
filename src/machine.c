@@ -96,7 +96,7 @@ static inline bool tlb_trace_window_active(const machine_t *m)
 #define EXECVE_HANDOFF_STATE_ARMED         1u
 #define EXECVE_HANDOFF_STATE_USER_FETCH_SEEN 2u
 #define USER_HANDOFF_ENTRY_WINDOW_START    0x2AAA8A00u
-#define USER_HANDOFF_ENTRY_WINDOW_END      0x2AAA8A20u
+#define USER_HANDOFF_ENTRY_WINDOW_END      0x2AAA8A40u
 
 /* vmlinux-pgui-demo (2.4.18) fault-path symbols (resolved with objdump). */
 #define K24_DO_PAGE_FAULT         0x8000AFA8u
@@ -2623,21 +2623,21 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         if ((uint32_t)m->execve_user_handoff_pc != (uint32_t)address) {
             m->execve_user_handoff_pc = (uint32_t)address;
         }
-        /* Auto-disarm once at least one non-zero instruction retires outside
-         * the initial handoff entry window. */
-        if (!in_user_handoff_entry_window((uint32_t)address)) {
-            if (m->cfg.trace_user_handoff) {
-                static uint32_t handoff_done_disarm_log = 0;
-                if (handoff_done_disarm_log < 64) {
-                    fprintf(stderr,
-                            "[EXECVE_USER_HANDOFF_DONE_DISARM_RETIRE] pc=0x%08" PRIX64 "\n",
-                            (uint64_t)(uint32_t)address);
-                    handoff_done_disarm_log++;
-                }
+        /* Keep DONE quarantine anchor until a subsequent syscall path reset.
+         * Disarming here allows stale intno=12/26 callbacks at 0x80001850 to
+         * re-surface immediately after first user progress. */
+        if (!in_user_handoff_entry_window((uint32_t)address) &&
+            m->cfg.trace_user_handoff) {
+            static uint32_t handoff_done_retain_log = 0;
+            if (handoff_done_retain_log < 64) {
+                fprintf(stderr,
+                        "[EXECVE_USER_HANDOFF_DONE_RETAIN] pc=0x%08" PRIX64
+                        " anchor=0x%08" PRIX64 " done_keep=%u\n",
+                        (uint64_t)(uint32_t)address,
+                        (uint64_t)(uint32_t)m->execve_user_handoff_pc,
+                        m->execve_user_handoff_done_keep_count);
+                handoff_done_retain_log++;
             }
-            m->execve_user_handoff_pc = 0;
-            m->execve_user_handoff_sp = 0;
-            m->execve_user_handoff_done_keep_count = 0;
         }
     }
 
@@ -2959,37 +2959,6 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     /* Observe TLB management instructions with current CP0 shadow state. */
     if (insn == 0x42000002u || insn == 0x42000006u ||
         insn == 0x42000008u || insn == 0x42000001u) {
-        /*
-         * Work around suspected Unicorn tlbwi(index with P-bit) behavior by
-         * rewriting this single instruction to tlbwr for one execution.
-         */
-        if (insn == 0x42000002u &&
-            tlb_trace_window_active(m) &&
-            !m->tlbwi_patch_pending) {
-            uint32_t replacement = 0x42000006u; /* tlbwr */
-            uc_err patch_err = write_mem_best_effort(uc, address, &replacement, 4);
-            if (patch_err == UC_ERR_OK) {
-                m->tlbwi_patch_pending = true;
-                m->tlbwi_patch_addr = address;
-                m->tlbwi_patch_orig = insn;
-                if (tlbwi_patch_log < 64) {
-                    fprintf(stderr,
-                            "[TLBWI_PATCH] PC=0x%08" PRIX64
-                            " idx=0x%08" PRIX64 " -> tlbwr\n",
-                            (uint64_t)(uint32_t)address,
-                            (uint64_t)(uint32_t)m->shadow_cp0_index);
-                    tlbwi_patch_log++;
-                }
-            } else if (tlbwi_patch_log < 64) {
-                fprintf(stderr,
-                        "[TLBWI_PATCH_FAIL] PC=0x%08" PRIX64 " idx=0x%08" PRIX64
-                        " err=%s\n",
-                        (uint64_t)(uint32_t)address,
-                        (uint64_t)(uint32_t)m->shadow_cp0_index,
-                        uc_strerror(patch_err));
-                tlbwi_patch_log++;
-            }
-        }
         if (tlb_trace_window_active(m) && tlbop_log < 512) {
             const char *opname = (insn == 0x42000002u) ? "tlbwi" :
                                  (insn == 0x42000006u) ? "tlbwr" :
@@ -3667,6 +3636,33 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
     /*
+     * WinCE boot mode: skip all Linux-specific exception intercepts.
+     * Let Unicorn's MIPS CPU handle exceptions natively (TLB miss,
+     * syscall, etc.).  Only log the first few for diagnostics.
+     */
+    if (m->cfg.nand_path) {
+        static uint32_t wince_intr_log = 0;
+        if (wince_intr_log < 32u) {
+            fprintf(stderr, "[WINCE_INTR] intno=%u PC=0x%08" PRIX64
+                    " STATUS=0x%08" PRIX64 "\n",
+                    intno, (uint64_t)(uint32_t)pc, (uint64_t)(uint32_t)status);
+            wince_intr_log++;
+        }
+        /* For TLB miss at address 0 (null function pointer), stop execution
+         * to avoid infinite exception loops.  The SPL has no exception
+         * vectors installed. */
+        if ((uint32_t)pc == 0u && (intno == 20u || intno == 26u || intno == 27u)) {
+            uint64_t ra = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            fprintf(stderr, "[WINCE_INTR] NULL call detected (ra=0x%08" PRIX64
+                    ") — stopping\n", (uint64_t)(uint32_t)ra);
+            machine_stop(m);
+            uc_emu_stop(uc);
+        }
+        return;
+    }
+
+    /*
      * Post-execve stale callback quarantine:
      * keep the handoff FSM deterministic (ARMED -> USER_FETCH_SEEN -> DONE),
      * and in DONE only quarantine intno 12/26 at known stale PCs.
@@ -3692,6 +3688,55 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
         handoff_pc32 != 0u &&
         handoff_active_state &&
         handoff_stale_clearable) {
+        if (handoff_state == EXECVE_HANDOFF_STATE_DONE &&
+            intno == 12u &&
+            handoff_pc32 < 0x80000000u) {
+            tlb_lookup_result_t handoff_lookup = shadow_tlb_lookup(m, handoff_pc32);
+            if (!handoff_lookup.confident) {
+                uint32_t asid = (uint32_t)(m->shadow_cp0_entryhi_live_valid
+                                 ? m->shadow_cp0_entryhi_live
+                                 : m->shadow_cp0_entryhi) & 0xFFu;
+                uint32_t ctx_base = (uint32_t)m->shadow_cp0_context & 0xFF800000u;
+                uint32_t ctx_badvpn2 = ((handoff_pc32 >> 9) & 0x007FFFF0u);
+                m->shadow_cp0_badvaddr = (uint64_t)handoff_pc32;
+                m->shadow_cp0_entryhi = (uint64_t)((handoff_pc32 & 0xFFFFE000u) | asid);
+                m->shadow_cp0_context = (uint64_t)(ctx_base | ctx_badvpn2);
+
+                m->pending_epc          = handoff_pc32;
+                m->pending_excode       = MIPS_EXCCODE_TLBL;
+                m->pending_cause        = (uint32_t)(MIPS_EXCCODE_TLBL << 2);
+                m->epc_was_written      = false;
+                m->pending_cause_served = false;
+                m->pending_epc_served   = false;
+
+                uint64_t ex_status = status | 0x2u;  /* EXL=1 */
+                uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+                uint64_t vec = (ex_status & 0x00400000u) ?
+                               mips_sext(0xBFC00380u) :
+                               mips_sext(0x80000180u);
+                uc_reg_write(uc, UC_MIPS_REG_PC, &vec);
+
+                static uint32_t handoff_itlbl_inject_log = 0;
+                if (handoff_itlbl_inject_log < 96) {
+                    fprintf(stderr,
+                            "[EXECVE_HANDOFF_ITLBL_INJECT] intno=%u stale_pc=0x%08" PRIX64
+                            " user_pc=0x%08X reason=%s lo0=0x%08X lo1=0x%08X"
+                            " entryhi=0x%08X vec=0x%08" PRIX64 " status=0x%08" PRIX64 "\n",
+                            intno,
+                            (uint64_t)(uint32_t)pc,
+                            handoff_pc32,
+                            handoff_lookup.reason ? handoff_lookup.reason : "unknown",
+                            handoff_lookup.lo0,
+                            handoff_lookup.lo1,
+                            handoff_lookup.entryhi,
+                            (uint64_t)(uint32_t)vec,
+                            (uint64_t)(uint32_t)ex_status);
+                    handoff_itlbl_inject_log++;
+                }
+                return;
+            }
+        }
+
         uint64_t restore_pc = (uint64_t)handoff_pc32;
         uint64_t user_status = ((uint64_t)status & ~(uint64_t)0x1Au) | 0x10u;
         user_status &= ~(uint64_t)0xFF01u; /* IM[7:0]=0, IE=0 */
@@ -3731,6 +3776,27 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                 (uint64_t)(uint32_t)emu_pc);
                         handoff_load_emu_log++;
                     }
+                } else {
+                    uint32_t handoff_insn = 0xFFFFFFFFu;
+                    if (read_insn_best_effort(uc, restore_pc, &handoff_insn) &&
+                        handoff_insn == 0u) {
+                        uint64_t next_pc = restore_pc + 4u;
+                        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+                        if ((uint32_t)next_pc < 0x80000000u)
+                            m->execve_user_handoff_pc = (uint32_t)next_pc;
+                        static uint32_t handoff_skip_nop_log = 0;
+                        if (handoff_skip_nop_log < 64) {
+                            fprintf(stderr,
+                                    "[EXECVE_USER_HANDOFF_DONE_SKIP_NOP] intno=%u"
+                                    " stale_pc=0x%08" PRIX64 " pc=0x%08" PRIX64
+                                    " -> next=0x%08" PRIX64 "\n",
+                                    intno,
+                                    (uint64_t)(uint32_t)pc,
+                                    (uint64_t)(uint32_t)restore_pc,
+                                    (uint64_t)(uint32_t)next_pc);
+                            handoff_skip_nop_log++;
+                        }
+                    }
                 }
             }
         }
@@ -3746,6 +3812,22 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     m->pending_excode,
                     m->execve_user_handoff_done_keep_count);
             handoff_stale_log++;
+        }
+        if (handoff_state == EXECVE_HANDOFF_STATE_DONE &&
+            intno == 12u &&
+            m->execve_user_handoff_done_keep_count >= 4u &&
+            (m->execve_user_handoff_done_keep_count & 0xFu) == 0u) {
+            static uint32_t handoff_stale_restart_log = 0;
+            if (handoff_stale_restart_log < 64) {
+                fprintf(stderr,
+                        "[EXECVE_USER_HANDOFF_STALE_RESTART] stale_pc=0x%08" PRIX64
+                        " user_pc=0x%08" PRIX64 " done_keep=%u\n",
+                        (uint64_t)(uint32_t)pc,
+                        (uint64_t)(uint32_t)restore_pc,
+                        m->execve_user_handoff_done_keep_count);
+                handoff_stale_restart_log++;
+            }
+            uc_emu_stop(uc);
         }
         return;
     }

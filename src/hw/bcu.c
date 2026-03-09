@@ -27,7 +27,8 @@ uint32_t bcu_read(bcu_state_t *s, uint32_t offset, unsigned size)
     case BCU_REVIDREG:    return BCU_REVID_VR4131;
     case BCU_CLKSPEEDREG: return s->clkspeedreg;
     default:
-        fprintf(stderr, "[BCU] Unhandled read offset 0x%02X\n", offset);
+        /* WinCE probes additional BCU registers (SDRAM config, etc.)
+         * that we don't model — return 0 silently. */
         return 0;
     }
 }
@@ -46,8 +47,7 @@ void bcu_write(bcu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case BCU_REVIDREG:    /* read-only */ break;
     case BCU_CLKSPEEDREG: s->clkspeedreg = (uint16_t)val; break;
     default:
-        fprintf(stderr, "[BCU] Unhandled write offset 0x%02X = 0x%04X\n",
-                offset, val);
+        /* Ignore writes to unmodeled BCU registers */
         break;
     }
 }

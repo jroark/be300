@@ -23,6 +23,8 @@
  *   THR (PA 0x0A008680, offset VRC4173_UART_THR): writes forwarded to
  *     stdout so kernel boot messages are visible.
  */
+static uint8_t vrc4173_uart_scr;  /* scratch register (read/write) */
+
 static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
                                  unsigned size, void *user_data)
 {
@@ -33,8 +35,28 @@ static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
         fprintf(stderr, "[VRC4173] R%u offset=0x%05" PRIX64 "\n",
                 size * 8, offset);
 
-    if (offset == VRC4173_UART_LSR)
-        return 0x60u;   /* TEMT | THRE — transmitter always ready */
+    /* VRC4173 UART (NS16550-compatible, 4-byte register spacing) */
+    switch ((uint32_t)offset) {
+    case VRC4173_UART_THR:   return 0;       /* RBR: no data */
+    case VRC4173_UART_IER:   return 0;       /* IER: no interrupts enabled */
+    case VRC4173_UART_IIR:   return 0x01u;   /* IIR: no pending interrupt */
+    case VRC4173_UART_LCR:   return 0x03u;   /* LCR: 8N1 */
+    case VRC4173_UART_MCR:   return 0;       /* MCR: no modem control */
+    case VRC4173_UART_LSR:   return 0x60u;   /* TEMT | THRE: tx ready */
+    case VRC4173_UART_MSR:   return 0;       /* MSR: no modem status */
+    case VRC4173_UART_SCR:   return vrc4173_uart_scr;
+    default: break;
+    }
+
+    /* Companion chip stub registers */
+    if (offset >= 0x0300u && offset < 0x0400u)
+        return 0;           /* Touch panel: no pen down */
+    if (offset >= 0x1000u && offset < 0x1100u)
+        return 0x0Cu;       /* CF status: card removed */
+    if (offset >= 0x8000u && offset < 0x8100u)
+        return 0;           /* Vic/CommMode */
+    if (offset >= 0xA000u && offset < 0xA100u)
+        return 0;           /* KjCMU */
 
     return 0;
 }
@@ -49,12 +71,21 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
         fprintf(stderr, "[VRC4173] W%u offset=0x%05" PRIX64 " <- 0x%" PRIX64 "\n",
                 size * 8, offset, value);
 
-    if (offset == VRC4173_UART_THR) {
+    switch ((uint32_t)offset) {
+    case VRC4173_UART_THR:
 #ifndef __ANDROID__
-        int ch = (int)(value & 0xFF);
-        putchar(ch);
-        fflush(stdout);
+        {
+            int ch = (int)(value & 0xFF);
+            putchar(ch);
+            fflush(stdout);
+        }
 #endif
+        break;
+    case VRC4173_UART_SCR:
+        vrc4173_uart_scr = (uint8_t)(value & 0xFF);
+        break;
+    default:
+        break;
     }
 }
 
@@ -85,10 +116,15 @@ static uint64_t mmio_read_cb(uc_engine *uc, uint64_t offset,
         val = gpio_read(&m->gpio, (uint32_t)(offset - IO_GPIO_BASE), size);
     else if (offset >= IO_SIU_BASE && offset < IO_SIU_BASE + IO_SIU_SIZE)
         val = siu_read(&m->siu, (uint32_t)(offset - IO_SIU_BASE), size);
-    else
-        fprintf(stderr, "[BUS] Unhandled MMIO read  @ PA 0x%08" PRIX64
-                " (offset 0x%03" PRIX64 ") size %u\n",
-                PA_IO_BASE + offset, offset, size);
+    else {
+        /* Unrecognized internal I/O: return 0 silently.
+         * WinCE SPL probes many registers (DMAAU, DSIU, PIU, FIR, etc.)
+         * that we don't emulate — returning 0 lets probing continue. */
+        if (m->cfg.log_mmio)
+            fprintf(stderr, "[BUS] Unhandled MMIO read  @ PA 0x%08" PRIX64
+                    " (offset 0x%03" PRIX64 ") size %u\n",
+                    PA_IO_BASE + offset, offset, size);
+    }
 
     if (m->cfg.log_mmio)
         fprintf(stderr, "[MMIO] R%u PA=0x%08" PRIX64 " -> 0x%" PRIX64 "\n",
@@ -123,10 +159,12 @@ static void mmio_write_cb(uc_engine *uc, uint64_t offset,
         gpio_write(&m->gpio, (uint32_t)(offset - IO_GPIO_BASE), size, (uint32_t)value);
     else if (offset >= IO_SIU_BASE && offset < IO_SIU_BASE + IO_SIU_SIZE)
         siu_write(&m->siu, (uint32_t)(offset - IO_SIU_BASE), size, (uint32_t)value);
-    else
-        fprintf(stderr, "[BUS] Unhandled MMIO write @ PA 0x%08" PRIX64
-                " (offset 0x%03" PRIX64 ") size %u value 0x%" PRIX64 "\n",
-                PA_IO_BASE + offset, offset, size, value);
+    else {
+        if (m->cfg.log_mmio)
+            fprintf(stderr, "[BUS] Unhandled MMIO write @ PA 0x%08" PRIX64
+                    " (offset 0x%03" PRIX64 ") size %u value 0x%" PRIX64 "\n",
+                    PA_IO_BASE + offset, offset, size, value);
+    }
 }
 
 /* ------------------------------------------------------------------ */

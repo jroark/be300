@@ -23,11 +23,12 @@ static void usage(const char *prog)
         "                        falling back to empty block mapping\n"
         "  --trace-user-handoff  Debug first user handoff fault/map details (verbose)\n"
         "  --ram <file>          Preload a raw RAM image at PA 0x00000000\n"
+        "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  -h, --help            Show this help\n"
         "\n"
         "ROM image (positional arg) is loaded at PA 0x1FC00000 (MIPS reset vector).\n"
-        "--kernel and rom.bin are mutually exclusive.\n",
+        "--kernel, --nand, and rom.bin are mutually exclusive.\n",
         prog);
 }
 
@@ -46,6 +47,7 @@ int main(int argc, char *argv[])
         .kernel_path    = NULL,
         .cmdline        = NULL,
         .ram_path       = NULL,
+        .nand_path      = NULL,
         .sdram_size     = 16u * 1024u * 1024u,
     };
 
@@ -64,6 +66,8 @@ int main(int argc, char *argv[])
             cfg.kuseg_hotpath_populate = true;
         } else if (strcmp(argv[i], "--trace-user-handoff") == 0) {
             cfg.trace_user_handoff = true;
+        } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {
+            cfg.nand_path = argv[++i];
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
             cfg.ram_path = argv[++i];
         } else if (strcmp(argv[i], "--sdram") == 0 && i + 1 < argc) {
@@ -86,15 +90,20 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (!cfg.kernel_path && !cfg.rom_path) {
-        fprintf(stderr, "Error: must specify either --kernel <vmlinux> or a ROM image\n");
+    if (!cfg.kernel_path && !cfg.rom_path && !cfg.nand_path) {
+        fprintf(stderr, "Error: must specify --kernel, --nand, or a ROM image\n");
         usage(argv[0]);
         return 1;
     }
-    if (cfg.kernel_path && cfg.rom_path) {
-        fprintf(stderr, "Error: --kernel and rom.bin are mutually exclusive\n");
-        usage(argv[0]);
-        return 1;
+    {
+        int boot_modes = (cfg.kernel_path ? 1 : 0) +
+                         (cfg.rom_path    ? 1 : 0) +
+                         (cfg.nand_path   ? 1 : 0);
+        if (boot_modes > 1) {
+            fprintf(stderr, "Error: --kernel, --nand, and rom.bin are mutually exclusive\n");
+            usage(argv[0]);
+            return 1;
+        }
     }
 
     machine_t *m = machine_create(&cfg);

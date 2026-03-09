@@ -40,6 +40,7 @@ typedef struct {
     const char *kernel_path;  /* path to ELF kernel (vmlinux); if set, skip ROM boot */
     const char *cmdline;      /* kernel command line (passed in $a1 as argv[0]) */
     const char *ram_path;     /* optional: preload a raw RAM image at PA_SDRAM_BASE */
+    const char *nand_path;    /* optional: NAND image for WinCE boot (B000FF SPL) */
     uint32_t    sdram_size;   /* SDRAM size in bytes (default 16 MB) */
 } machine_config_t;
 
@@ -55,6 +56,10 @@ struct machine_s {
     siu_state_t  siu;
     rtc_state_t  rtc;
     gpio_state_t gpio;
+
+    /* NAND image backing store (WinCE boot) */
+    uint8_t *nand_data;     /* host-side copy of the NAND image */
+    size_t   nand_size;     /* size in bytes */
 
     uint64_t kernel_entry;  /* VA to start execution from, sign-extended for MIPS64 */
     uint32_t jiffies_pa;    /* PA of kernel jiffies symbol (resolved from ELF) */
@@ -80,6 +85,7 @@ struct machine_s {
     uint64_t execve_user_handoff_pc;     /* last user entry PC for stale trap redirect */
     uint64_t execve_user_handoff_sp;     /* last user stack for stale trap redirect     */
     uint8_t  execve_user_handoff_state;  /* 0=DONE, 1=ARMED, 2=USER_FETCH_SEEN */
+    uint32_t execve_user_handoff_done_keep_count; /* stale DONE redirects since last progress */
     bool     user_handoff_fault_traced;  /* trace first user fault details once per handoff */
     bool     do_no_page_watch_active;    /* trace do_no_page return for handoff target */
     uint64_t do_no_page_watch_ra;

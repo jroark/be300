@@ -32,6 +32,17 @@ uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
     (void)size;
 
     if (offset == RTC_ETIMELREG || offset == RTC_ETIMEMREG || offset == RTC_ETIMEHREG) {
+        /*
+         * Auto-advance the timer slightly on each read.  The SPL/WinCE
+         * bootloader uses RTC polling loops for short delays (write ECMP,
+         * then spin on ETIME).  Since rtc_tick() is only called between
+         * execution batches, the timer would never advance during a
+         * tight polling loop within a single batch.  Advancing by 1 tick
+         * per read lets these delay loops complete.
+         */
+        s->etime += 1;
+        rtc_update_elapsed_irq(s);
+
         /* Keep a stable snapshot across the kernel's multiword read sequence. */
         if (s->etime_reads == 0)
             s->etime_latched = s->etime;
