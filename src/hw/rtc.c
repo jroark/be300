@@ -12,6 +12,7 @@ void rtc_init(rtc_state_t *s)
     s->etime = 0;
     s->etime_latched = 0;
     s->etime_reads = 0;
+    s->etime_read_step = 1;
     /*
      * The VR41xx Linux timer driver only writes the low 32 bits of ECMP
      * (ECMPLREG + ECMPMREG); it never writes ECMPHREG (bits 47:32).
@@ -29,29 +30,34 @@ void rtc_init(rtc_state_t *s)
 
 uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
 {
-    (void)size;
-
     if (offset == RTC_ETIMELREG || offset == RTC_ETIMEMREG || offset == RTC_ETIMEHREG) {
+        uint32_t step = s->etime_read_step ? s->etime_read_step : 1;
         /*
          * Auto-advance the timer slightly on each read.  The SPL/WinCE
          * bootloader uses RTC polling loops for short delays (write ECMP,
          * then spin on ETIME).  Since rtc_tick() is only called between
          * execution batches, the timer would never advance during a
-         * tight polling loop within a single batch.  Advancing by 1 tick
-         * per read lets these delay loops complete.
+         * tight polling loop within a single batch.  Advancing by a small
+         * configurable step per read lets these delay loops complete.
          */
-        s->etime += 1;
+        s->etime += step;
         rtc_update_elapsed_irq(s);
 
-        /* Keep a stable snapshot across the kernel's multiword read sequence. */
+        /* Keep a stable snapshot across multiword read sequences. */
         if (s->etime_reads == 0)
             s->etime_latched = s->etime;
 
         uint64_t snap = s->etime_latched;
         uint32_t ret = 0;
-        if (offset == RTC_ETIMELREG) ret =  (uint32_t)(snap & 0xFFFF);
-        if (offset == RTC_ETIMEMREG) ret =  (uint32_t)((snap >> 16) & 0xFFFF);
-        if (offset == RTC_ETIMEHREG) ret =  (uint32_t)((snap >> 32) & 0xFFFF);
+        if (size >= 4) {
+            if (offset == RTC_ETIMELREG) ret =  (uint32_t)(snap & 0xFFFFFFFFu);
+            if (offset == RTC_ETIMEMREG) ret =  (uint32_t)((snap >> 16) & 0xFFFFFFFFu);
+            if (offset == RTC_ETIMEHREG) ret =  (uint32_t)((snap >> 32) & 0xFFFFFFFFu);
+        } else {
+            if (offset == RTC_ETIMELREG) ret =  (uint32_t)(snap & 0xFFFF);
+            if (offset == RTC_ETIMEMREG) ret =  (uint32_t)((snap >> 16) & 0xFFFF);
+            if (offset == RTC_ETIMEHREG) ret =  (uint32_t)((snap >> 32) & 0xFFFF);
+        }
 
         s->etime_reads++;
         if (s->etime_reads >= 6)

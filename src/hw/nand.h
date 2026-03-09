@@ -29,9 +29,9 @@
 #define NAND_REG_XFER_MISC     0xA468u
 #define NAND_REG_STREAM_DATA   0xB000u
 
-/* Individual data port registers */
-#define NAND_REG_DEVID    0xD7F8u   /* Device ID (read) */
-#define NAND_REG_ALTSTS   0xD7FAu   /* Alternate status */
+/* Individual legacy data-port registers */
+#define NAND_REG_PORTCTL  0xD7F8u   /* Port control / command latch */
+#define NAND_REG_DEVID    0xD7FAu   /* Device ID probe register */
 #define NAND_REG_DATA     0xD7FCu   /* Data R/W (16-bit) */
 #define NAND_REG_STATUS   0xD7FEu   /* Status */
 
@@ -86,6 +86,7 @@ typedef struct {
     uint32_t stream_base;
     uint32_t stream_cursor;
     bool     stream_active;
+    uint16_t portctl;
 } nand_state_t;
 
 void     nand_init(nand_state_t *s, const uint8_t *image, size_t size);
