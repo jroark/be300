@@ -32,7 +32,8 @@ Push with: `git push -u origin <current branch>`
 **Target:** Casio BE-300 (NEC VR4131 MIPS little-endian) emulator in Unicorn.
 
 **Kernels**
-- All kernels booted to userspace on real hardware
+- All kernels have been booted to userspace on real hardware
+- All kernels contain ramdisks
 - `kernels/vmlinux-2.6`        — ELF32 MIPS LE, 2.6.8.1, built 2004-09-08.
 - `kernels/vmlinux`            - ELF 32-bit LSB executable, MIPS, MIPS-II version 1 (SYSV), statically linked, not stripped, too many notes (256)
   - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
@@ -51,6 +52,12 @@ Push with: `git push -u origin <current branch>`
 
 **WinCE ELF loader**
 - `ce/cyace` - source code for CyaCE loader
+
+**WinCE restore images**
+- Should be full NAND images including NK.exe
+- RESTORE_IMAGES.md, contains details of the NAND images
+- `ce/restore_images/All_nand_300.bin` - WinCE 3.0 image
+- `ce/restore_images/CE_Net.bin` - WinCE 4.0 image
 
 **Things to note**
 - originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
@@ -76,7 +83,7 @@ Push with: `git push -u origin <current branch>`
    mkdir -p build-docker && cd build-docker
    cmake ..
    make -j$(nproc)
-   timeout 180s ./be300 --kernel ../linux4be20040908/vmlinux \
+   timeout 180s ./be300 --kernel ../kernels/vmlinux-2.6 \
      > docker_2.6_stdout.log 2> docker_2.6_stderr.log
    timeout 180s ./be300 --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" --kernel ../kernels/vmlinux-pgui-demo \
      > docker_2.4_stdout.log 2> docker_2.4_stderr.log
@@ -88,3 +95,77 @@ Push with: `git push -u origin <current branch>`
 
 2. **Logs & artifacts:**
    - Always capture both stdout and stderr from emulator runs (`docker_*.log`).
+
+---
+
+## WinCE NAND Boot: Debugging & Testing
+
+### NAND Image Layout (All_nand_300.bin, 16MB)
+- `0x00000` — Partition table / boot metadata (16KB)
+- `0x04000` — SPL bootloader (B000FF format, ~49KB, "Kernel loader core - Ver 0.52")
+- `0x14000` — NK.exe (compressed, ~6MB, Casio proprietary compression)
+- `0x3B5000` — FAT16 filesystem (12MB)
+
+### SPL B000FF Details (confirmed via disassembly)
+- **Signature**: `B000FF\n` at NAND offset 0x4000
+- **Format**: 7-byte sig + 4-byte image_start + 4-byte image_length, then records [addr(4) + len(4) + cksum(4) + data(len)]
+- **Load address**: VA 0x80F00000 = PA 0x00F00000 (kseg0, within 16MB SDRAM)
+- **Entry point**: 0x80F00000 → NOP, LUI/ORI/JR → jumps to 0x80F02404
+- **Code flow**: 0x2404 writes CP0 Config, switches to kseg1 (uncached 0xA0F0xxxx), calls HW init routines
+- **HW access**: VR4131 I/O at 0xAF00xxxx, VRC4173 at 0xAA00xxxx/0xAA01xxxx, framebuffer at 0xAA20xxxx
+- **CP0 writes**: Only Config ($16) and TagLo ($28) — does NOT set Status, relies on boot-time value
+- **No exception vectors**: SPL does not set BEV=0 or install its own exception handlers
+
+### Build & Test Commands (in Docker)
+```bash
+# Build
+cd /work && mkdir -p build-docker && cd build-docker
+cmake .. && make -j$(nproc)
+
+# WinCE NAND boot test (60s timeout)
+timeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
+  > wince_stdout.log 2> wince_stderr.log
+cat wince_stdout.log                         # serial output
+grep -E "Unhandled|STOP|error" wince_stderr.log | sort -u | head -30
+
+# WinCE NAND boot with MMIO logging
+timeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin --log-mmio \
+  > wince_mmio_stdout.log 2> wince_mmio_stderr.log
+
+# WinCE NAND boot with instruction trace (very verbose, short timeout)
+timeout 10s ./be300 --nand ../ce/restore_images/All_nand_300.bin --trace \
+  > wince_trace_stdout.log 2> wince_trace_stderr.log
+
+# Linux kernel regression tests (MUST pass after any change)
+timeout 180s ./be300 --kernel ../kernels/vmlinux-2.6 \
+  > docker_2.6_stdout.log 2> docker_2.6_stderr.log && echo "2.6 OK" || echo "2.6 FAIL"
+timeout 180s ./be300 --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" \
+  --kernel ../kernels/vmlinux-pgui-demo \
+  > docker_2.4_stdout.log 2> docker_2.4_stderr.log && echo "2.4 OK" || echo "2.4 FAIL"
+```
+
+### SPL Disassembly (in Docker, cross-tools available)
+```bash
+# Extract and flatten SPL from NAND (use Python B000FF parser)
+# Disassemble flat binary
+mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL spl_flat.bin > spl_disasm.txt
+# Find hardware address references
+grep -E "lui.*0x(0a|aa|af|bf)" spl_disasm.txt
+# Find CP0 accesses (MTC0/MFC0)
+grep -E "mtc0|mfc0" spl_disasm.txt
+```
+
+### Key Files for WinCE Boot
+- `src/main.c` — `--nand` CLI flag
+- `src/machine.h` — `nand_path`, `nand_data`, `nand_size` fields in config/state
+- `src/machine.c` — WinCE boot path in `machine_create()`, null-call recovery gated on `!nand_path`
+- `src/loader.c` — `loader_load_nand()` B000FF parser
+- `src/bus.c` — VRC4173 UART stubs (IER, IIR, LCR, MCR, MSR, SCR), companion chip stubs
+- `src/hw/rtc.c` — Auto-advance etime on read (fixes SPL polling loops)
+- `src/hw/bcu.c` — Silenced unhandled register reads (SPL probes many)
+
+### Known Issues / Blockers
+- SPL calls address 0 via null function pointer (JALR with t9=0) — needs investigation
+- SPL runs in kseg1 (uncached, 0xA0F0xxxx) — memory must be accessible at PA 0x00F00000
+- SPL does not install exception vectors — BEV=1 vectors at 0xBFC00000+ contain zeros
+- RTC auto-advance-on-read is a crude approximation; may cause timing issues for Linux kernels
