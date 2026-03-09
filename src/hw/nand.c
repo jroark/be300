@@ -73,7 +73,6 @@ static int nand_idx_log_count = 0;
 #define LEGACY_STATUS_IDX          0x07u
 #define LEGACY_STATUS_ESCAPE_READS 64u
 #define LEGACY_STATUS_IDLE_MASK    0xC0u
-#define LEGACY_STATUS_BOOT_WARMUP_READS 2u
 #define UART_TX_CONSOLE_PC         UINT32_C(0x80F03308)
 
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
@@ -464,18 +463,7 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
 
     /* Status register */
     if (offset == NAND_REG_STATUS) {
-        uint8_t status = s->ready ? 0x80u : 0x00u;
-
-        /*
-         * Preserve pre-Step6 startup flow: early SPL probe at D7FE should see
-         * "not ready" so it falls back into the progress-bar init path.
-         */
-        if (s->legacy_status_reg_reads < LEGACY_STATUS_BOOT_WARMUP_READS)
-            status &= (uint8_t)~0x80u;
-        if (s->legacy_status_reg_reads < UINT16_MAX)
-            s->legacy_status_reg_reads++;
-
-        val = status;
+        val = s->ready ? 0x80u : 0x00u;
         goto out;
     }
 
