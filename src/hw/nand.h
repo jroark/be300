@@ -90,6 +90,7 @@ typedef struct {
     uint8_t  legacy_regs[256];
     bool     legacy_dirty[256];             /* per-index: write since last full ack */
     uint16_t legacy_read_since_write[256]; /* per-index: read count since last write */
+    uint16_t legacy_status_reg_reads;      /* direct D7FE reads since reset */
     uint16_t legacy_status7_event_reads;   /* sustained idx7 event-bit poll counter */
     bool     legacy_status7_ff_armed;      /* one-shot 0xFF escape has been emitted */
 } nand_state_t;
