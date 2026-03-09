@@ -87,6 +87,7 @@ typedef struct {
     uint32_t stream_cursor;
     bool     stream_active;
     uint16_t portctl;
+    uint8_t  legacy_regs[256];
 } nand_state_t;
 
 void     nand_init(nand_state_t *s, const uint8_t *image, size_t size);
