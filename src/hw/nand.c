@@ -72,6 +72,8 @@ static int nand_idx_log_count = 0;
 #define NAND_IDX_LOG_MAX 50000
 #define LEGACY_STATUS_IDX          0x07u
 #define LEGACY_STATUS_ESCAPE_READS 64u
+#define LEGACY_STATUS_IDLE_MASK    0xC0u
+#define LEGACY_STATUS_BOOT_WARMUP_READS 2u
 #define UART_TX_CONSOLE_PC         UINT32_C(0x80F03308)
 
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
@@ -375,7 +377,8 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                     s->legacy_dirty[ri] = false;
             } else {
                 bool has_events = (raw & 0x1Bu) != 0;
-                bool idleish = !has_events && ((raw & 0x40u) != 0 || s->legacy_dirty[ri]);
+                bool idleish = !has_events &&
+                               ((raw & LEGACY_STATUS_IDLE_MASK) != 0 || s->legacy_dirty[ri]);
 
                 if (s->legacy_dirty[ri] && has_events) {
                     if (s->legacy_status7_event_reads < UINT16_MAX)
@@ -386,10 +389,10 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                             /* One-shot poll escape to satisfy loops waiting for 0xFF. */
                             byte_val = 0xFFu;
                             s->legacy_status7_ff_armed = true;
-                            s->legacy_regs[ri] = 0x40u;
+                            s->legacy_regs[ri] = LEGACY_STATUS_IDLE_MASK;
                         } else {
                             /* Subsequent read settles to idle and clears dirty state. */
-                            byte_val = 0x40u;
+                            byte_val = LEGACY_STATUS_IDLE_MASK;
                             s->legacy_regs[ri] = byte_val;
                             s->legacy_dirty[ri] = false;
                             s->legacy_read_since_write[ri] = 0;
@@ -412,7 +415,7 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                         s->legacy_regs[ri] = byte_val;
 
                         if ((byte_val & 0x1Bu) == 0) {
-                            byte_val = (byte_val & ~0x1Bu) | 0x40u;
+                            byte_val = (byte_val & ~0x1Bu) | LEGACY_STATUS_IDLE_MASK;
                             s->legacy_regs[ri] = byte_val;
                             s->legacy_dirty[ri] = false;
                             s->legacy_read_since_write[ri] = 0;
@@ -424,25 +427,13 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                         byte_val = raw;
                     }
                 } else if (idleish) {
-                    /* idx7 idle polling path: after sustained polls, emit one-shot 0xFF. */
-                    byte_val = (raw & ~0x1Bu) | 0x40u;
+                    /* idx7 idle-complete state: present Ready semantics (bits 7 and 6). */
+                    byte_val = (raw & ~0x1Bu) | LEGACY_STATUS_IDLE_MASK;
                     s->legacy_regs[ri] = byte_val;
                     s->legacy_dirty[ri] = false;
                     s->legacy_read_since_write[ri] = 0;
-
-                    if (s->legacy_status7_event_reads < UINT16_MAX)
-                        s->legacy_status7_event_reads++;
-
-                    if (s->legacy_status7_event_reads >= LEGACY_STATUS_ESCAPE_READS) {
-                        if (!s->legacy_status7_ff_armed) {
-                            byte_val = 0xFFu;
-                            s->legacy_status7_ff_armed = true;
-                        } else {
-                            byte_val = 0x40u;
-                            s->legacy_status7_ff_armed = false;
-                            s->legacy_status7_event_reads = 0;
-                        }
-                    }
+                    s->legacy_status7_event_reads = 0;
+                    s->legacy_status7_ff_armed = false;
                 } else {
                     /* Non-polling idx7 reads: strict echo and reset escape tracking. */
                     s->legacy_status7_event_reads = 0;
@@ -455,8 +446,8 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                 s->legacy_status7_ff_armed == false &&
                 (s->legacy_regs[ri] & 0x1Bu) == 0) {
                 /* Ensure idle bit is retained after status completion. */
-                if ((s->legacy_regs[ri] & 0x40u) == 0) {
-                    byte_val = (s->legacy_regs[ri] & ~0x1Bu) | 0x40u;
+                if ((s->legacy_regs[ri] & LEGACY_STATUS_IDLE_MASK) == 0) {
+                    byte_val = (s->legacy_regs[ri] & ~0x1Bu) | LEGACY_STATUS_IDLE_MASK;
                     s->legacy_regs[ri] = byte_val;
                 }
             }
@@ -473,7 +464,18 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
 
     /* Status register */
     if (offset == NAND_REG_STATUS) {
-        val = 0x80u;  /* ready */
+        uint8_t status = s->ready ? 0x80u : 0x00u;
+
+        /*
+         * Preserve pre-Step6 startup flow: early SPL probe at D7FE should see
+         * "not ready" so it falls back into the progress-bar init path.
+         */
+        if (s->legacy_status_reg_reads < LEGACY_STATUS_BOOT_WARMUP_READS)
+            status &= (uint8_t)~0x80u;
+        if (s->legacy_status_reg_reads < UINT16_MAX)
+            s->legacy_status_reg_reads++;
+
+        val = status;
         goto out;
     }
 
