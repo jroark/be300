@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <time.h>
 
 #include "ui.h"
 #include "bus.h"
@@ -269,6 +270,39 @@ void ui_set_frame_callback(ui_frame_callback_t cb, void *user_data)
     g_frame_cb_user = user_data;
 }
 
+void ui_save_screenshot(machine_t *m)
+{
+    if (!g_linear_fb)
+        return;
+
+    char filename[64];
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    strftime(filename, sizeof(filename), "screenshot_%Y%m%d_%H%M%S.bmp", t);
+
+#ifdef HAVE_SDL2
+    SDL_Surface *surface = SDL_CreateRGBSurfaceFrom(
+        g_linear_fb,
+        m->fb_width,
+        m->fb_height,
+        16,
+        m->fb_width * 2,
+        0xF800, 0x07E0, 0x001F, 0x0000
+    );
+    if (surface) {
+        if (SDL_SaveBMP(surface, filename) == 0) {
+            fprintf(stderr, "[UI] Screenshot saved to %s\n", filename);
+        } else {
+            fprintf(stderr, "[UI] Failed to save screenshot: %s\n", SDL_GetError());
+        }
+        SDL_FreeSurface(surface);
+    }
+#else
+    (void)m;
+    fprintf(stderr, "[UI] Screenshots only supported with SDL2\n");
+#endif
+}
+
 #ifdef HAVE_SDL2
 
 int ui_init(machine_t *m)
@@ -342,11 +376,23 @@ void ui_update(machine_t *m)
 
 bool ui_should_quit(machine_t *m)
 {
-    (void)m;
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT)
             return true;
+        if (event.type == SDL_KEYDOWN) {
+            if (event.key.keysym.sym == SDLK_s) {
+                ui_save_screenshot(m);
+            } else if (event.key.keysym.sym == SDLK_m) {
+                fprintf(stderr, "\n--- Emulator Menu ---\n");
+                fprintf(stderr, "  s: Take Screenshot\n");
+                fprintf(stderr, "  q: Quit emulator\n");
+                fprintf(stderr, "  m: Print this menu\n");
+                fprintf(stderr, "----------------------\n");
+            } else if (event.key.keysym.sym == SDLK_q) {
+                return true;
+            }
+        }
     }
     return false;
 }
