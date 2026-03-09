@@ -18,6 +18,7 @@ void nand_init(nand_state_t *s, const uint8_t *image, size_t size)
     s->ready      = true;
     s->state      = NAND_STATE_IDLE;
     s->portctl    = 0;
+    memset(s->legacy_regs, 0x40, sizeof(s->legacy_regs));
 }
 
 /* Resolve current page_addr + column into a byte offset in the NAND image.
@@ -209,8 +210,11 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         return;
     }
 
-    /* Data port write — ignored for read-only emulation */
+    /* Indexed legacy data register writes (D7F8 selects byte register). */
     if (offset == NAND_REG_DATA) {
+        uint32_t idx = (uint8_t)(s->portctl & 0xFFu);
+        for (unsigned i = 0; i < size; i++)
+            s->legacy_regs[(uint8_t)(idx + i)] = (uint8_t)((value >> (8u * i)) & 0xFFu);
         return;
     }
 
@@ -277,31 +281,36 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log)
         goto out;
     }
 
-    /* Data port — return next 16-bit LE from image */
+    /* Data port — indexed legacy register protocol and NAND transfer data. */
     if (offset == NAND_REG_DATA) {
-        /*
-         * Legacy byte polls (lbu from D7FC after writing D7F8) are used as a
-         * ready/status handshake in the SPL. Keep bit6 set so wait loops can
-         * advance, while preserving 16-bit data reads for bulk transfer paths.
-         */
-        if (size == 1) {
-            val = 0x40u;
+        uint32_t idx = (uint8_t)(s->portctl & 0xFFu);
+        bool data_mode =
+            (size >= 2) &&
+            (s->state == NAND_STATE_READ_DATA ||
+             s->state == NAND_STATE_READ_OOB ||
+             s->state == NAND_STATE_READ_ID) &&
+            (s->xfer_length > 0);
+
+        if (data_mode) {
+            if (!s->image || s->xfer_cursor >= s->xfer_length) {
+                val = 0xFFFF;
+                goto out;
+            }
+            uint32_t img_off = s->nand_offset + s->xfer_cursor;
+            if (img_off + 1 < s->image_size) {
+                val = s->image[img_off] | ((uint16_t)s->image[img_off + 1] << 8);
+                s->xfer_cursor += 2;
+            } else if (img_off < s->image_size) {
+                val = s->image[img_off];
+                s->xfer_cursor += 2;
+            } else {
+                val = 0xFFFF;
+            }
             goto out;
         }
-        if (!s->image || s->xfer_cursor >= s->xfer_length) {
-            val = 0xFFFF;
-            goto out;
-        }
-        uint32_t img_off = s->nand_offset + s->xfer_cursor;
-        if (img_off + 1 < s->image_size) {
-            val = s->image[img_off] | ((uint16_t)s->image[img_off + 1] << 8);
-            s->xfer_cursor += 2;
-        } else if (img_off < s->image_size) {
-            val = s->image[img_off];
-            s->xfer_cursor += 2;
-        } else {
-            val = 0xFFFF;
-        }
+
+        for (unsigned i = 0; i < size; i++)
+            val |= ((uint64_t)s->legacy_regs[(uint8_t)(idx + i)]) << (8u * i);
         goto out;
     }
 
