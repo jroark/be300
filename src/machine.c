@@ -3671,7 +3671,40 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
          * vectors installed. */
         if ((uint32_t)pc == 0u && (intno == 20u || intno == 26u || intno == 27u)) {
             uint64_t ra = 0;
+            uint64_t v0 = 0;
             uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+
+            /*
+             * SPL handoff site:
+             *   0xA0F024F8: jalr a1   ; returns stage entry in v0
+             *   0xA0F02500: move t0,v0
+             *   0xA0F02504: jr t0
+             *
+             * If v0 is unexpectedly 0, jr t0 jumps to 0. Recover by
+             * redirecting to the stage entry block at 0xA0F0250C.
+             */
+            if ((uint32_t)ra == 0xA0F02500u) {
+                uint64_t stage = mips_sext(0xA0F0250Cu);
+                uc_reg_write(uc, UC_MIPS_REG_V0, &stage);
+                uc_reg_write(uc, UC_MIPS_REG_T0, &stage);
+                uc_reg_write(uc, UC_MIPS_REG_PC, &stage);
+                static uint32_t wince_null_recover_log = 0;
+                if (wince_null_recover_log < 32u) {
+                    fprintf(stderr,
+                            "[WINCE_NULL_RECOVER] intno=%u pc=0x%08" PRIX64
+                            " ra=0x%08" PRIX64 " v0=0x%08" PRIX64
+                            " -> stage=0x%08X\n",
+                            intno,
+                            (uint64_t)(uint32_t)pc,
+                            (uint64_t)(uint32_t)ra,
+                            (uint64_t)(uint32_t)v0,
+                            0xA0F0250Cu);
+                    wince_null_recover_log++;
+                }
+                return;
+            }
+
             fprintf(stderr, "[WINCE_INTR] NULL call detected (ra=0x%08" PRIX64
                     ") — stopping\n", (uint64_t)(uint32_t)ra);
             machine_stop(m);
@@ -5772,6 +5805,8 @@ machine_t *machine_create(const machine_config_t *cfg)
     icu_init(&m->icu);
     siu_init(&m->siu);
     rtc_init(&m->rtc);
+    if (cfg->nand_path)
+        m->rtc.etime_read_step = 64;
     gpio_init(&m->gpio);
     nand_init(&m->nand, NULL, 0);
 

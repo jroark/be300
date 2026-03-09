@@ -17,6 +17,7 @@ void nand_init(nand_state_t *s, const uint8_t *image, size_t size)
     s->image_size = size;
     s->ready      = true;
     s->state      = NAND_STATE_IDLE;
+    s->portctl    = 0;
 }
 
 /* Resolve current page_addr + column into a byte offset in the NAND image.
@@ -202,6 +203,12 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         return;
     }
 
+    /* Legacy port control register */
+    if (offset == NAND_REG_PORTCTL) {
+        s->portctl = (uint16_t)(value & 0xFFFFu);
+        return;
+    }
+
     /* Data port write — ignored for read-only emulation */
     if (offset == NAND_REG_DATA) {
         return;
@@ -258,20 +265,29 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log)
         goto out;
     }
 
+    /* Legacy port control register */
+    if (offset == NAND_REG_PORTCTL) {
+        val = s->portctl;
+        goto out;
+    }
+
     /* Device ID */
     if (offset == NAND_REG_DEVID) {
         val = 0xF237u;
         goto out;
     }
 
-    /* Alternate status register */
-    if (offset == NAND_REG_ALTSTS) {
-        val = 0x40u; /* ready */
-        goto out;
-    }
-
     /* Data port — return next 16-bit LE from image */
     if (offset == NAND_REG_DATA) {
+        /*
+         * Legacy byte polls (lbu from D7FC after writing D7F8) are used as a
+         * ready/status handshake in the SPL. Keep bit6 set so wait loops can
+         * advance, while preserving 16-bit data reads for bulk transfer paths.
+         */
+        if (size == 1) {
+            val = 0x40u;
+            goto out;
+        }
         if (!s->image || s->xfer_cursor >= s->xfer_length) {
             val = 0xFFFF;
             goto out;
@@ -291,7 +307,7 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log)
 
     /* Status register */
     if (offset == NAND_REG_STATUS) {
-        val = 0x40u;  /* ready, no error */
+        val = 0x80u;  /* ready */
         goto out;
     }
 
