@@ -29,12 +29,22 @@
 #define ICU_MDSIUINTREG  0x16u   /* DSIU interrupt mask         */
 #define ICU_NMIREG       0x18u   /* NMI control                 */
 #define ICU_SOFTINTREG   0x1Au   /* Software interrupt          */
+#define ICU_INTASSIGN2   0x1Cu   /* INTASSIGN2 (VR4133 style)   */
+#define ICU_INTASSIGN3   0x1Eu   /* INTASSIGN3 (VR4133 style)   */
 #define ICU_SYSINT2REG   0x20u   /* System interrupt 2 status   */
 #define ICU_GIUINTHREG   0x22u   /* GIU interrupt high status   */
 #define ICU_FIRINTREG    0x24u   /* FIR interrupt status        */
 #define ICU_MSYSINT2REG  0x26u   /* System interrupt 2 mask     */
 #define ICU_MGIUINTHREG  0x28u   /* GIU interrupt high mask     */
 #define ICU_MFIRINTREG   0x2Au   /* FIR interrupt mask          */
+#define ICU_PCIINTREG    0x2Cu   /* PCI interrupt status        */
+#define ICU_SCUINTREG    0x2Eu   /* SCU interrupt status        */
+#define ICU_CSIINTREG    0x30u   /* CSI interrupt status        */
+#define ICU_MPCIINTREG   0x32u   /* PCI interrupt mask          */
+#define ICU_MSCUINTREG   0x34u   /* SCU interrupt mask          */
+#define ICU_MCSIINTREG   0x36u   /* CSI interrupt mask          */
+#define ICU_BCUINTREG    0x38u   /* BCU interrupt status        */
+#define ICU_MBCUINTREG   0x3Au   /* BCU interrupt mask          */
 
 /* SYSINT1 source bits */
 #define ICU_SRC1_POWER   (1u << 0)
@@ -61,6 +71,10 @@ typedef struct {
     uint16_t firint,  mfirint;
     uint16_t softint;
     uint16_t nmi;
+    uint16_t intassign2, intassign3;
+    uint16_t pciint, scuint, csiint;
+    uint16_t mpciint, mscuint, mcsiint;
+    uint16_t bcuint, mbcuint;
 } icu_state_t;
 
 void     icu_init    (icu_state_t *s);

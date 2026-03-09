@@ -82,6 +82,18 @@ uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
     case RTC_TCLKCNTLREG: return (uint32_t)(s->etime & 0xFFFF);
     case RTC_TCLKCNTHREG: return (uint32_t)((s->etime >> 16) & 0xFFFF);
     case RTC_RTCINTREG: return s->rtcint;
+    case 0x28:
+    case 0x2A:
+    case 0x2C:
+    case 0x2E:
+    case 0x30:
+    case 0x32:
+    case 0x34:
+    case 0x36:
+    case 0x38:
+    case 0x3A:
+    case 0x3C:
+        return 0; /* RFU in RTC2 window on VR4131 */
     default:
         fprintf(stderr, "[RTC] Unhandled read offset 0x%02X\n", offset);
         return 0;
@@ -134,6 +146,18 @@ void rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val)
         /* Write-one-to-clear interrupt status bits. */
         s->rtcint &= (uint16_t)~val;
         break;
+    case 0x28:
+    case 0x2A:
+    case 0x2C:
+    case 0x2E:
+    case 0x30:
+    case 0x32:
+    case 0x34:
+    case 0x36:
+    case 0x38:
+    case 0x3A:
+    case 0x3C:
+        break; /* RFU */
     default:
         fprintf(stderr, "[RTC] Unhandled write offset 0x%02X = 0x%04X\n",
                 offset, val);

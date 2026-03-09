@@ -17,6 +17,12 @@ static inline uint64_t mips_sext(uint32_t va32) {
     return (uint64_t)(int32_t)va32;
 }
 
+static inline bool is_kseg_va32(uint32_t va32)
+{
+    uint32_t seg = va32 & 0xE0000000u;
+    return seg == 0x80000000u || seg == 0xA0000000u;
+}
+
 static const char *cp0_reg_name(uint32_t rd, uint32_t sel)
 {
     if (sel != 0)
@@ -3685,7 +3691,16 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
              * redirecting to the stage entry block at 0xA0F0250C.
              */
             if ((uint32_t)ra == 0xA0F02500u) {
-                uint64_t stage = mips_sext(0xA0F0250Cu);
+                uint32_t stage32 = 0xA0F0250Cu;
+                uint32_t saved_stage32 = 0;
+                uc_err saved_stage_err = uc_mem_read(uc, mips_sext(0xA00024FCu),
+                                                     &saved_stage32, sizeof(saved_stage32));
+                if (saved_stage_err != UC_ERR_OK)
+                    saved_stage_err = uc_mem_read(uc, UINT64_C(0x000024FC),
+                                                  &saved_stage32, sizeof(saved_stage32));
+                if (saved_stage_err == UC_ERR_OK && is_kseg_va32(saved_stage32))
+                    stage32 = saved_stage32;
+                uint64_t stage = mips_sext(stage32);
                 uc_reg_write(uc, UC_MIPS_REG_V0, &stage);
                 uc_reg_write(uc, UC_MIPS_REG_T0, &stage);
                 uc_reg_write(uc, UC_MIPS_REG_PC, &stage);
@@ -3694,12 +3709,15 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     fprintf(stderr,
                             "[WINCE_NULL_RECOVER] intno=%u pc=0x%08" PRIX64
                             " ra=0x%08" PRIX64 " v0=0x%08" PRIX64
-                            " -> stage=0x%08X\n",
+                            " saved_stage=0x%08" PRIX32 " saved_stage_err=%d"
+                            " -> stage=0x%08" PRIX32 "\n",
                             intno,
                             (uint64_t)(uint32_t)pc,
                             (uint64_t)(uint32_t)ra,
                             (uint64_t)(uint32_t)v0,
-                            0xA0F0250Cu);
+                            saved_stage32,
+                            (int)saved_stage_err,
+                            stage32);
                     wince_null_recover_log++;
                 }
                 return;
