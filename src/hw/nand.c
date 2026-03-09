@@ -67,8 +67,15 @@ static uint64_t nand_stream_read(nand_state_t *s, unsigned size)
     return val;
 }
 
+/* Rate-limited indexed register logging */
+static int nand_idx_log_count = 0;
+#define NAND_IDX_LOG_MAX 50000
+#define LEGACY_STATUS_IDX          0x07u
+#define LEGACY_STATUS_ESCAPE_READS 64u
+#define UART_TX_CONSOLE_PC         UINT32_C(0x80F03308)
+
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
-                uint64_t value, bool log)
+                uint64_t value, bool log, uint32_t pc)
 {
     if (log)
         fprintf(stderr, "[NAND] W%u offset=0x%04X val=0x%08" PRIX64 "\n",
@@ -207,14 +214,54 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
     /* Legacy port control register */
     if (offset == NAND_REG_PORTCTL) {
         s->portctl = (uint16_t)(value & 0xFFFFu);
+        if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
+            fprintf(stderr, "[NAND_IDX] SEL idx=0x%02X PC=0x%08X\n",
+                    (unsigned)(value & 0xFF), pc);
+            nand_idx_log_count++;
+        }
         return;
     }
 
     /* Indexed legacy data register writes (D7F8 selects byte register). */
     if (offset == NAND_REG_DATA) {
         uint32_t idx = (uint8_t)(s->portctl & 0xFFu);
-        for (unsigned i = 0; i < size; i++)
-            s->legacy_regs[(uint8_t)(idx + i)] = (uint8_t)((value >> (8u * i)) & 0xFFu);
+        for (unsigned i = 0; i < size; i++) {
+            uint8_t ri = (uint8_t)(idx + i);
+            uint8_t byte = (uint8_t)((value >> (8u * i)) & 0xFFu);
+            bool was_dirty = s->legacy_dirty[ri];
+            uint8_t old = s->legacy_regs[ri];
+
+            s->legacy_regs[ri] = byte;
+            s->legacy_dirty[ri] = true;
+
+            if (ri == LEGACY_STATUS_IDX) {
+                bool keep_read_count =
+                    was_dirty && old == byte && (old & 0x1Bu) != 0;
+
+                if (!keep_read_count)
+                    s->legacy_read_since_write[ri] = 0;
+
+                if ((byte & 0x1Bu) == 0) {
+                    s->legacy_status7_event_reads = 0;
+                    s->legacy_status7_ff_armed = false;
+                }
+            } else {
+                s->legacy_read_since_write[ri] = 0;
+            }
+
+            /* Forward VRC4173 indexed UART data (idx 0x00) to stdout */
+            if (ri == 0x00 &&
+                pc == UART_TX_CONSOLE_PC &&
+                (byte == 0x0A || byte == 0x0D || (byte >= 0x20 && byte <= 0x7E))) {
+                putchar(byte);
+                fflush(stdout);
+            }
+        }
+        if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
+            fprintf(stderr, "[NAND_IDX] W idx=0x%02X val=0x%02X PC=0x%08X\n",
+                    (unsigned)(idx & 0xFF), (unsigned)(value & 0xFF), pc);
+            nand_idx_log_count++;
+        }
         return;
     }
 
@@ -224,7 +271,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
     }
 }
 
-uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log)
+uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, uint32_t pc)
 {
     uint64_t val = 0;
 
@@ -309,8 +356,118 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log)
             goto out;
         }
 
-        for (unsigned i = 0; i < size; i++)
-            val |= ((uint64_t)s->legacy_regs[(uint8_t)(idx + i)]) << (8u * i);
+        /* Legacy indexed register protocol:
+         * - idx7 is treated as status and may transition over repeated reads.
+         * - all non-idx7 registers are strict echo (especially idx0 command). */
+        for (unsigned i = 0; i < size; i++) {
+            uint8_t ri = (uint8_t)(idx + i);
+            uint8_t raw = s->legacy_regs[ri];
+            uint8_t byte_val = raw;
+            uint16_t n = s->legacy_read_since_write[ri];
+
+            /* Always track reads */
+            if (n < UINT16_MAX)
+                s->legacy_read_since_write[ri] = n + 1;
+
+            if (ri != LEGACY_STATUS_IDX) {
+                /* Non-status legacy indices are strict echo. */
+                if (s->legacy_dirty[ri])
+                    s->legacy_dirty[ri] = false;
+            } else {
+                bool has_events = (raw & 0x1Bu) != 0;
+                bool idleish = !has_events && ((raw & 0x40u) != 0 || s->legacy_dirty[ri]);
+
+                if (s->legacy_dirty[ri] && has_events) {
+                    if (s->legacy_status7_event_reads < UINT16_MAX)
+                        s->legacy_status7_event_reads++;
+
+                    if (s->legacy_status7_event_reads >= LEGACY_STATUS_ESCAPE_READS) {
+                        if (!s->legacy_status7_ff_armed) {
+                            /* One-shot poll escape to satisfy loops waiting for 0xFF. */
+                            byte_val = 0xFFu;
+                            s->legacy_status7_ff_armed = true;
+                            s->legacy_regs[ri] = 0x40u;
+                        } else {
+                            /* Subsequent read settles to idle and clears dirty state. */
+                            byte_val = 0x40u;
+                            s->legacy_regs[ri] = byte_val;
+                            s->legacy_dirty[ri] = false;
+                            s->legacy_read_since_write[ri] = 0;
+                            s->legacy_status7_event_reads = 0;
+                            s->legacy_status7_ff_armed = false;
+                        }
+                    } else if (n == 0) {
+                        /* First read after write: unchanged. */
+                        byte_val = raw;
+                    } else if (n == 1) {
+                        /* Second read: clear highest-priority event group. */
+                        if (raw & 0x10u)
+                            byte_val = raw & ~0x10u;
+                        else if (raw & 0x05u)
+                            byte_val = raw & ~0x05u;
+                        else if (raw & 0x0Au)
+                            byte_val = raw & ~0x0Au;
+                        else
+                            byte_val = raw & ~0x1Bu;
+                        s->legacy_regs[ri] = byte_val;
+
+                        if ((byte_val & 0x1Bu) == 0) {
+                            byte_val = (byte_val & ~0x1Bu) | 0x40u;
+                            s->legacy_regs[ri] = byte_val;
+                            s->legacy_dirty[ri] = false;
+                            s->legacy_read_since_write[ri] = 0;
+                            s->legacy_status7_event_reads = 0;
+                            s->legacy_status7_ff_armed = false;
+                        }
+                    } else {
+                        /* Hold current status while waiting for either clear or escape. */
+                        byte_val = raw;
+                    }
+                } else if (idleish) {
+                    /* idx7 idle polling path: after sustained polls, emit one-shot 0xFF. */
+                    byte_val = (raw & ~0x1Bu) | 0x40u;
+                    s->legacy_regs[ri] = byte_val;
+                    s->legacy_dirty[ri] = false;
+                    s->legacy_read_since_write[ri] = 0;
+
+                    if (s->legacy_status7_event_reads < UINT16_MAX)
+                        s->legacy_status7_event_reads++;
+
+                    if (s->legacy_status7_event_reads >= LEGACY_STATUS_ESCAPE_READS) {
+                        if (!s->legacy_status7_ff_armed) {
+                            byte_val = 0xFFu;
+                            s->legacy_status7_ff_armed = true;
+                        } else {
+                            byte_val = 0x40u;
+                            s->legacy_status7_ff_armed = false;
+                            s->legacy_status7_event_reads = 0;
+                        }
+                    }
+                } else {
+                    /* Non-polling idx7 reads: strict echo and reset escape tracking. */
+                    s->legacy_status7_event_reads = 0;
+                    s->legacy_status7_ff_armed = false;
+                }
+            }
+
+            if (ri == LEGACY_STATUS_IDX &&
+                s->legacy_dirty[ri] == false &&
+                s->legacy_status7_ff_armed == false &&
+                (s->legacy_regs[ri] & 0x1Bu) == 0) {
+                /* Ensure idle bit is retained after status completion. */
+                if ((s->legacy_regs[ri] & 0x40u) == 0) {
+                    byte_val = (s->legacy_regs[ri] & ~0x1Bu) | 0x40u;
+                    s->legacy_regs[ri] = byte_val;
+                }
+            }
+
+            val |= ((uint64_t)byte_val) << (8u * i);
+        }
+        if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
+            fprintf(stderr, "[NAND_IDX] R idx=0x%02X val=0x%02X PC=0x%08X\n",
+                    (unsigned)(idx & 0xFF), (unsigned)(val & 0xFF), pc);
+            nand_idx_log_count++;
+        }
         goto out;
     }
 

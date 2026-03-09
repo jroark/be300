@@ -41,6 +41,7 @@ typedef struct {
     bool        sfb_5bit_green; /* true = apply 5-bit green expansion (2.6 sfb.c non-standard)
                                  * false (default) = pass pixels through as-is (true RGB565) */
     bool        kuseg_hotpath_populate; /* experimental: try shadow-TLB-backed kuseg population in LOAD_EMU/STORE_EMU */
+    bool        log_nand_legacy; /* log D7F8/D7FC indexed register traffic */
     bool        trace_user_handoff; /* debug: first-fault and handoff VA->PA trace */
     const char *rom_path;     /* path to flat ROM image, loaded at PA_RESET_VECTOR */
     const char *kernel_path;  /* path to ELF kernel (vmlinux); if set, skip ROM boot */

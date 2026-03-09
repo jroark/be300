@@ -25,6 +25,7 @@
  *     stdout so kernel boot messages are visible.
  */
 static uint8_t vrc4173_uart_scr;  /* scratch register (read/write) */
+static uint32_t vrc4173_ne2k_cwin_latch[20]; /* 0x0C00..0x0C4C, 32-bit words */
 
 static inline uint32_t vrc4173_cs3_off(const vrc4173_cb_ctx_t *ctx,
                                        uint64_t callback_offset)
@@ -47,6 +48,16 @@ static inline bool is_nand_offset(uint32_t off)
            (off >= NAND_ENABLE_BASE && off < NAND_ENABLE_END) ||
            (off >= NAND_STREAM_BASE && off < NAND_STREAM_END) ||
            (off >= NAND_DATA_BASE   && off < NAND_DATA_END);
+}
+
+static inline bool is_ne2k_cwin_offset(uint32_t off)
+{
+    return off >= 0x0C00u && off <= 0x0C4Cu;
+}
+
+static inline uint32_t ne2k_cwin_idx(uint32_t off)
+{
+    return (off - 0x0C00u) >> 2;
 }
 
 static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
@@ -78,8 +89,30 @@ static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
     }
 
     /* NAND controller registers */
-    if (is_nand_offset(cs3_off))
-        return nand_read(&m->nand, cs3_off, size, m->cfg.log_mmio);
+    if (is_nand_offset(cs3_off)) {
+        uint64_t pc64 = 0;
+        if (m->cfg.log_nand_legacy || m->cfg.log_mmio)
+            uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
+        return nand_read(&m->nand, cs3_off, size,
+                         m->cfg.log_mmio || m->cfg.log_nand_legacy,
+                         (uint32_t)pc64);
+    }
+
+    /* No onboard NE2000: deterministic no-card behavior for C-window probes. */
+    if (is_ne2k_cwin_offset(cs3_off)) {
+        uint64_t val = 0;
+        if (cs3_off == 0x0C48u)
+            val = UINT32_C(0x00000001);
+        else if (cs3_off == 0x0C4Cu)
+            val = UINT32_C(0x00000000);
+        else if (size == 4 && (cs3_off & 3u) == 0u)
+            val = vrc4173_ne2k_cwin_latch[ne2k_cwin_idx(cs3_off)];
+
+        if (m->cfg.log_mmio)
+            fprintf(stderr, "[VRC4173_CWIN] R%u cs3_off=0x%05X -> 0x%" PRIX64 "\n",
+                    size * 8, cs3_off, val);
+        return val;
+    }
 
     /* Companion chip stub registers */
     if (cs3_off >= 0x0300u && cs3_off < 0x0400u)
@@ -121,9 +154,22 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
         vrc4173_uart_scr = (uint8_t)(value & 0xFF);
         break;
     default:
+        /* No onboard NE2000: latch C-window writes, but never signal presence. */
+        if (is_ne2k_cwin_offset(cs3_off)) {
+            if (size == 4 && (cs3_off & 3u) == 0u)
+                vrc4173_ne2k_cwin_latch[ne2k_cwin_idx(cs3_off)] = (uint32_t)value;
+            return;
+        }
+
         /* NAND controller registers */
-        if (is_nand_offset(cs3_off))
-            nand_write(&m->nand, cs3_off, size, value, m->cfg.log_mmio);
+        if (is_nand_offset(cs3_off)) {
+            uint64_t pc64 = 0;
+            if (m->cfg.log_nand_legacy || m->cfg.log_mmio)
+                uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
+            nand_write(&m->nand, cs3_off, size, value,
+                       m->cfg.log_mmio || m->cfg.log_nand_legacy,
+                       (uint32_t)pc64);
+        }
         break;
     }
 }

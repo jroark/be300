@@ -88,9 +88,13 @@ typedef struct {
     bool     stream_active;
     uint16_t portctl;
     uint8_t  legacy_regs[256];
+    bool     legacy_dirty[256];             /* per-index: write since last full ack */
+    uint16_t legacy_read_since_write[256]; /* per-index: read count since last write */
+    uint16_t legacy_status7_event_reads;   /* sustained idx7 event-bit poll counter */
+    bool     legacy_status7_ff_armed;      /* one-shot 0xFF escape has been emitted */
 } nand_state_t;
 
 void     nand_init(nand_state_t *s, const uint8_t *image, size_t size);
-uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log);
+uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, uint32_t pc);
 void     nand_write(nand_state_t *s, uint32_t offset, unsigned size,
-                    uint64_t value, bool log);
+                    uint64_t value, bool log, uint32_t pc);
