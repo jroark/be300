@@ -65,6 +65,7 @@ set(BE300_CORE_SOURCES
     src/hw/siu.c
     src/hw/rtc.c
     src/hw/gpio.c
+    src/hw/nand.c
 )
 
 # Main executable

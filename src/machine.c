@@ -5755,6 +5755,7 @@ machine_t *machine_create(const machine_config_t *cfg)
     siu_init(&m->siu);
     rtc_init(&m->rtc);
     gpio_init(&m->gpio);
+    nand_init(&m->nand, NULL, 0);
 
     /* Always install the invalid-instruction hook (for MACC) */
     uc_hook hk;
@@ -5966,6 +5967,9 @@ machine_t *machine_create(const machine_config_t *cfg)
         m->kernel_entry = mips_sext(entry_va);
         m->has_jiffies_pa = false;
         m->jiffies_pa = 0;
+
+        /* Initialize NAND controller with the loaded image */
+        nand_init(&m->nand, m->nand_data, m->nand_size);
 
         /*
          * WinCE SPL boot state: kernel mode, BEV=1 (boot vectors),

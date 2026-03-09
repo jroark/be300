@@ -395,6 +395,7 @@ int loader_load_nand(machine_t *m, const char *path,
     int rec_count = 0;
     while (off + 12 <= records_end) {
         uint32_t addr, length, cksum;
+        uint32_t rec_hdr_off = off;
         memcpy(&addr,   data + off, 4);
         memcpy(&length, data + off + 4, 4);
         memcpy(&cksum,  data + off + 8, 4);
@@ -414,6 +415,28 @@ int loader_load_nand(machine_t *m, const char *path,
         }
 
         if (off + length > records_end) {
+            /* Check for 4-byte sentinel before entry record */
+            if (addr == 0 && rec_hdr_off + 4 + 12 <= records_end) {
+                uint32_t next_addr, next_len, next_cksum;
+                bool next_is_kseg;
+                uint32_t next_off = rec_hdr_off + 4;
+
+                memcpy(&next_addr, data + next_off, 4);
+                memcpy(&next_len,  data + next_off + 4, 4);
+                memcpy(&next_cksum, data + next_off + 8, 4);
+                next_is_kseg =
+                    ((next_addr & 0xE0000000u) == 0x80000000u) ||
+                    ((next_addr & 0xE0000000u) == 0xA0000000u);
+                if (next_len == 0 && next_is_kseg && next_cksum == 0xFFFFFFFFu) {
+                    fprintf(stderr, "[LOADER] B000FF: skipped 4-byte sentinel, "
+                            "entry VA=0x%08X cksum=0x%08X (%d records loaded)\n",
+                            next_addr, next_cksum, rec_count);
+                    if (entry_va_out) *entry_va_out = next_addr;
+                    m->nand_data = data;
+                    m->nand_size = (size_t)fsize;
+                    return 0;
+                }
+            }
             fprintf(stderr, "[LOADER] B000FF record %d data overflows image bounds\n",
                     rec_count);
             break;

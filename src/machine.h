@@ -11,6 +11,7 @@
 #include "hw/siu.h"
 #include "hw/rtc.h"
 #include "hw/gpio.h"
+#include "hw/nand.h"
 
 /* Physical address map (VR4131 hardware manual §3.1) */
 #define PA_SDRAM_BASE    UINT32_C(0x00000000)
@@ -28,6 +29,11 @@
 #define VR4131_PRID      UINT32_C(0x00000C80)
 
 typedef struct machine_s machine_t;
+
+typedef struct {
+    machine_t *m;
+    uint32_t   region_base_pa;
+} vrc4173_cb_ctx_t;
 
 typedef struct {
     bool        trace;        /* log each instruction to stderr */
@@ -56,6 +62,9 @@ struct machine_s {
     siu_state_t  siu;
     rtc_state_t  rtc;
     gpio_state_t gpio;
+    nand_state_t nand;
+    vrc4173_cb_ctx_t vrc4173_region1_ctx;
+    vrc4173_cb_ctx_t vrc4173_region3_ctx;
 
     /* NAND image backing store (WinCE boot) */
     uint8_t *nand_data;     /* host-side copy of the NAND image */
