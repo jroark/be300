@@ -23,6 +23,34 @@ static inline bool is_kseg_va32(uint32_t va32)
     return seg == 0x80000000u || seg == 0xA0000000u;
 }
 
+static bool sdram_alias_pa_offset(const machine_t *m, uint64_t addr, uint64_t *off_out)
+{
+    uint64_t sdram_size = (uint64_t)m->cfg.sdram_size;
+    uint64_t off = UINT64_MAX;
+
+    if (addr < sdram_size) {
+        off = addr;
+    } else if (addr >= UINT64_C(0x0000000080000000) &&
+               addr < UINT64_C(0x0000000080000000) + sdram_size) {
+        off = addr - UINT64_C(0x0000000080000000);
+    } else if (addr >= UINT64_C(0x00000000A0000000) &&
+               addr < UINT64_C(0x00000000A0000000) + sdram_size) {
+        off = addr - UINT64_C(0x00000000A0000000);
+    } else if (addr >= UINT64_C(0xFFFFFFFF80000000) &&
+               addr < UINT64_C(0xFFFFFFFF80000000) + sdram_size) {
+        off = addr - UINT64_C(0xFFFFFFFF80000000);
+    } else if (addr >= UINT64_C(0xFFFFFFFFA0000000) &&
+               addr < UINT64_C(0xFFFFFFFFA0000000) + sdram_size) {
+        off = addr - UINT64_C(0xFFFFFFFFA0000000);
+    } else {
+        return false;
+    }
+
+    if (off_out)
+        *off_out = off;
+    return true;
+}
+
 static const char *cp0_reg_name(uint32_t rd, uint32_t sel)
 {
     if (sel != 0)
@@ -404,11 +432,127 @@ static bool mem_unmapped_hook(uc_engine *uc, uc_mem_type type,
     return false;
 }
 
+static bool alias_write_sync_hook(uc_engine *uc, uc_mem_type type,
+                                  uint64_t address, int size, int64_t value,
+                                  void *user_data)
+{
+    (void)uc;
+    (void)type;
+    machine_t *m = user_data;
+
+    if (!m->alias_fallback_sync_active || m->shared_alias_active)
+        return true;
+    if (m->alias_sync_reentrant)
+        return true;
+    if (size <= 0 || size > 8)
+        return true;
+
+    uint64_t off = 0;
+    if (!sdram_alias_pa_offset(m, address, &off))
+        return true;
+    if (off + (uint64_t)size > (uint64_t)m->cfg.sdram_size)
+        return true;
+
+    uint8_t bytes[8];
+    uint64_t uval = (uint64_t)value;
+    for (int i = 0; i < size; i++)
+        bytes[i] = (uint8_t)(uval >> (i * 8));
+
+    uint64_t targets[] = {
+        off,
+        UINT64_C(0x0000000080000000) + off,
+        UINT64_C(0x00000000A0000000) + off,
+        UINT64_C(0xFFFFFFFF80000000) + off,
+        UINT64_C(0xFFFFFFFFA0000000) + off,
+    };
+
+    m->alias_sync_reentrant = true;
+    for (unsigned i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        if (targets[i] == address)
+            continue;
+        uc_mem_write(m->uc, targets[i], bytes, (size_t)size);
+    }
+    m->alias_sync_reentrant = false;
+    return true;
+}
+
+static void alias_coherence_probe(machine_t *m)
+{
+    if (m->shared_alias_active) {
+        if (m->cfg.sdram_size < 0x200u) {
+            fprintf(stderr, "[ALIAS_COHERENCE] fail mode=shared reason=sdram_too_small\n");
+            return;
+        }
+
+        uint32_t probe_pa32 = (m->cfg.sdram_size - 0x100u) & ~UINT32_C(0x3);
+        uint64_t pa = probe_pa32;
+        uint64_t kseg0 = UINT64_C(0x0000000080000000) + probe_pa32;
+        uint64_t kseg1 = UINT64_C(0x00000000A0000000) + probe_pa32;
+        uint32_t orig = 0, pa_val = 0, kseg0_val = 0, kseg1_val = 0;
+        const uint32_t pattern = UINT32_C(0xA55A3CC3);
+
+        uc_err e_orig = uc_mem_read(m->uc, pa, &orig, sizeof(orig));
+        uc_err e_w = uc_mem_write(m->uc, kseg1, &pattern, sizeof(pattern));
+        uc_err e_pa = uc_mem_read(m->uc, pa, &pa_val, sizeof(pa_val));
+        uc_err e_k0 = uc_mem_read(m->uc, kseg0, &kseg0_val, sizeof(kseg0_val));
+        uc_err e_k1 = uc_mem_read(m->uc, kseg1, &kseg1_val, sizeof(kseg1_val));
+        if (e_orig == UC_ERR_OK) {
+            uc_mem_write(m->uc, pa, &orig, sizeof(orig));
+            uc_mem_write(m->uc, kseg0, &orig, sizeof(orig));
+            uc_mem_write(m->uc, kseg1, &orig, sizeof(orig));
+        }
+
+        bool pass = (e_orig == UC_ERR_OK &&
+                     e_w == UC_ERR_OK &&
+                     e_pa == UC_ERR_OK &&
+                     e_k0 == UC_ERR_OK &&
+                     e_k1 == UC_ERR_OK &&
+                     pa_val == pattern &&
+                     kseg0_val == pattern &&
+                     kseg1_val == pattern);
+        fprintf(stderr,
+                "[ALIAS_COHERENCE] %s mode=shared probe_pa=0x%08X"
+                " pa=0x%08X k0=0x%08X k1=0x%08X"
+                " errs=(orig:%d wr:%d pa:%d k0:%d k1:%d)\n",
+                pass ? "pass" : "fail",
+                probe_pa32, pa_val, kseg0_val, kseg1_val,
+                (int)e_orig, (int)e_w, (int)e_pa, (int)e_k0, (int)e_k1);
+        return;
+    }
+
+    if (m->alias_fallback_sync_active) {
+        fprintf(stderr,
+                "[ALIAS_COHERENCE] fallback-write-sync active"
+                " mode=fallback shared=0\n");
+        return;
+    }
+
+    fprintf(stderr, "[ALIAS_COHERENCE] fail mode=none reason=no_alias_strategy\n");
+}
+
 static void format_hex_bytes(const uint8_t *buf, size_t len,
                              char *out, size_t out_sz);
 
 static bool map_kseg_alias_block(machine_t *m, uint64_t map_base, uint64_t pa_base)
 {
+    if (m->shared_alias_active &&
+        m->sdram_backing != NULL &&
+        pa_base < (uint64_t)m->cfg.sdram_size &&
+        pa_base + UINT64_C(0x100000) <= (uint64_t)m->cfg.sdram_size) {
+        uc_err pe = uc_mem_map_ptr(m->uc, map_base, 0x100000, UC_PROT_ALL,
+                                   m->sdram_backing + (size_t)pa_base);
+        if (pe == UC_ERR_OK || pe == UC_ERR_MAP)
+            return true;
+        static uint32_t shared_alias_map_fail = 0;
+        if (shared_alias_map_fail < 16) {
+            fprintf(stderr,
+                    "[ALIAS_MODE] shared map_kseg_alias_block failed"
+                    " map=0x%08" PRIX64 " pa=0x%08" PRIX64 " err=%s\n",
+                    map_base, pa_base, uc_strerror(pe));
+            shared_alias_map_fail++;
+        }
+    }
+
     uc_err me = uc_mem_map(m->uc, map_base, 0x100000, UC_PROT_ALL);
     if (me != UC_ERR_OK && me != UC_ERR_MAP)
         return false;
@@ -2576,6 +2720,23 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t rd  = (insn >> 11) & 0x1Fu;
     uint32_t sel =  insn        & 0x07u;
 
+    /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
+     * Only active when --log-wince-stall is set and PC is in NK range. */
+    if (m->cfg.nand_path && m->cfg.log_wince_stall) {
+        static uint32_t nk_pc_ring[256];
+        static uint32_t nk_pc_ring_head = 0;
+        static bool nk_pc_ring_active = false;
+        uint32_t pc32 = (uint32_t)address;
+
+        if (pc32 >= 0x80060000u && pc32 < 0x80F00000u) {
+            nk_pc_ring_active = true;
+            nk_pc_ring[nk_pc_ring_head & 0xFF] = pc32;
+            nk_pc_ring_head++;
+        }
+        /* Provide a way for the postmortem to access the ring */
+        (void)nk_pc_ring_active; /* suppress unused warning */
+    }
+
     /*
      * WinCE SPL uses COP0 WAIT (0x42000023) in early boot.
      * Unicorn's MIPS core traps this path and lands at PC=0.
@@ -3926,6 +4087,24 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
                 fprintf(stderr, "\n");
             }
         }
+        /* Dump exception vectors and context block */
+        struct { uint32_t pa; const char *name; } mem_regions[] = {
+            { 0x00000000, "exception_vectors" },
+            { 0x00000100, "exception_vectors+0x100" },
+            { 0x00000180, "exception_vectors+0x180" },
+            { 0x00002200, "context_block" },
+        };
+        for (int r = 0; r < 4; r++) {
+            uint8_t mc[64];
+            if (uc_mem_read(uc, (uint64_t)mem_regions[r].pa, mc, 64) == UC_ERR_OK) {
+                fprintf(stderr, "[WINCE_NULL_POSTMORTEM] %s PA=0x%08X hex=",
+                        mem_regions[r].name, mem_regions[r].pa);
+                for (int b = 0; b < 64; b++)
+                    fprintf(stderr, "%02X", mc[b]);
+                fprintf(stderr, "\n");
+            }
+        }
+
         /* Dump all GPRs */
         static const int gpr_ids[32] = {
             UC_MIPS_REG_ZERO, UC_MIPS_REG_AT, UC_MIPS_REG_V0, UC_MIPS_REG_V1,
@@ -6032,6 +6211,23 @@ machine_t *machine_create(const machine_config_t *cfg)
     if (m->cfg.sdram_size == 0)
         m->cfg.sdram_size = 16u * 1024u * 1024u;   /* 16 MB default */
 
+    {
+        size_t backing_size = ((size_t)m->cfg.sdram_size + 0xFFFu) & ~(size_t)0xFFFu;
+        void *backing = NULL;
+        if (posix_memalign(&backing, 0x1000u, backing_size) == 0 && backing != NULL) {
+            memset(backing, 0, backing_size);
+            m->sdram_backing = (uint8_t *)backing;
+            m->sdram_backing_size = backing_size;
+        } else {
+            fprintf(stderr,
+                    "[ALIAS_MODE] SDRAM backing alloc failed"
+                    " size=0x%08X -> map+write-sync fallback\n",
+                    m->cfg.sdram_size);
+            m->sdram_backing = NULL;
+            m->sdram_backing_size = 0;
+        }
+    }
+
     /*
      * Open the Unicorn engine: MIPS64 little-endian.
      *
@@ -6048,6 +6244,7 @@ machine_t *machine_create(const machine_config_t *cfg)
                          &m->uc);
     if (err != UC_ERR_OK) {
         fprintf(stderr, "[MACHINE] uc_open failed: %s\n", uc_strerror(err));
+        free(m->sdram_backing);
         free(m);
         return NULL;
     }
@@ -6132,6 +6329,15 @@ machine_t *machine_create(const machine_config_t *cfg)
                 UC_HOOK_MEM_WRITE_UNMAPPED |
                 UC_HOOK_MEM_FETCH_UNMAPPED,
                 mem_unmapped_hook, m, 1, 0);
+    if (m->alias_fallback_sync_active && !m->shared_alias_active) {
+        uc_err hs = uc_hook_add(m->uc, &hk, UC_HOOK_MEM_WRITE,
+                                alias_write_sync_hook, m, 1, 0);
+        if (hs == UC_ERR_OK) {
+            fprintf(stderr, "[ALIAS_MODE] write-sync hook enabled\n");
+        } else {
+            fprintf(stderr, "[ALIAS_MODE] write-sync hook failed: %s\n", uc_strerror(hs));
+        }
+    }
 
     /*
      * Interrupt / CPU-exception hook.
@@ -6460,6 +6666,8 @@ machine_t *machine_create(const machine_config_t *cfg)
     if (cfg->ram_path)
         loader_load_ram(m, cfg->ram_path);
 
+    alias_coherence_probe(m);
+
     return m;
 }
 
@@ -6468,6 +6676,7 @@ void machine_destroy(machine_t *m)
     if (!m) return;
     if (m->uc) uc_close(m->uc);
     free(m->nand_data);
+    free(m->sdram_backing);
     free(m);
 }
 

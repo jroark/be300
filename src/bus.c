@@ -342,14 +342,69 @@ static bool mem_fault_cb(uc_engine *uc, uc_mem_type type,
 
 /* ------------------------------------------------------------------ */
 
+static bool map_sdram_alias_ptr(machine_t *m, uint64_t base, const char *tag)
+{
+    uc_err err = uc_mem_map_ptr(m->uc, base, m->cfg.sdram_size,
+                                UC_PROT_ALL, m->sdram_backing);
+    if (err == UC_ERR_OK || err == UC_ERR_MAP)
+        return true;
+    fprintf(stderr, "[ALIAS_MODE] map_ptr %s @ 0x%016" PRIX64 " failed: %s\n",
+            tag, base, uc_strerror(err));
+    return false;
+}
+
+/* ------------------------------------------------------------------ */
+
 void bus_init(machine_t *m)
 {
     uc_err err;
+    bool pa_sdram_mapped = false;
+
+    m->shared_alias_active = false;
+    m->alias_fallback_sync_active = false;
 
     /* SDRAM — read/write/exec */
-    err = uc_mem_map(m->uc, PA_SDRAM_BASE, m->cfg.sdram_size, UC_PROT_ALL);
-    if (err != UC_ERR_OK)
-        fprintf(stderr, "[BUS] SDRAM map failed: %s\n", uc_strerror(err));
+    if (m->sdram_backing != NULL &&
+        m->sdram_backing_size >= (size_t)m->cfg.sdram_size) {
+        bool pa_ok = map_sdram_alias_ptr(m, PA_SDRAM_BASE, "PA");
+        bool kseg0_ok = map_sdram_alias_ptr(m, UINT64_C(0x0000000080000000), "kseg0");
+        bool kseg1_ok = map_sdram_alias_ptr(m, UINT64_C(0x00000000A0000000), "kseg1");
+        bool kseg0_sx_ok = map_sdram_alias_ptr(m, UINT64_C(0xFFFFFFFF80000000), "kseg0_sx");
+        bool kseg1_sx_ok = map_sdram_alias_ptr(m, UINT64_C(0xFFFFFFFFA0000000), "kseg1_sx");
+
+        pa_sdram_mapped = pa_ok;
+        if (pa_ok && kseg0_ok && kseg1_ok) {
+            m->shared_alias_active = true;
+            fprintf(stderr,
+                    "[ALIAS_MODE] shared SDRAM backing active size=0x%08X"
+                    " kseg0_sx=%u kseg1_sx=%u\n",
+                    m->cfg.sdram_size,
+                    kseg0_sx_ok ? 1u : 0u,
+                    kseg1_sx_ok ? 1u : 0u);
+        } else {
+            m->alias_fallback_sync_active = true;
+            fprintf(stderr,
+                    "[ALIAS_MODE] shared SDRAM alias incomplete"
+                    " pa=%u kseg0=%u kseg1=%u kseg0_sx=%u kseg1_sx=%u"
+                    " -> enabling write-sync fallback\n",
+                    pa_ok ? 1u : 0u,
+                    kseg0_ok ? 1u : 0u,
+                    kseg1_ok ? 1u : 0u,
+                    kseg0_sx_ok ? 1u : 0u,
+                    kseg1_sx_ok ? 1u : 0u);
+        }
+    } else {
+        m->alias_fallback_sync_active = true;
+        fprintf(stderr,
+                "[ALIAS_MODE] no shared SDRAM backing"
+                " -> using map+write-sync fallback\n");
+    }
+
+    if (!pa_sdram_mapped) {
+        err = uc_mem_map(m->uc, PA_SDRAM_BASE, m->cfg.sdram_size, UC_PROT_ALL);
+        if (err != UC_ERR_OK && err != UC_ERR_MAP)
+            fprintf(stderr, "[BUS] SDRAM map failed: %s\n", uc_strerror(err));
+    }
 
     /* ROM/Flash — read/exec only */
     err = uc_mem_map(m->uc, PA_ROM_BASE, PA_ROM_SIZE,

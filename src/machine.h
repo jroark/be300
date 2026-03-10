@@ -86,6 +86,13 @@ struct machine_s {
     uint8_t *nand_data;     /* host-side copy of the NAND image */
     size_t   nand_size;     /* size in bytes */
 
+    /* Optional host-backed SDRAM mapping used for PA/kseg alias coherence. */
+    uint8_t *sdram_backing;
+    size_t   sdram_backing_size;
+    bool     shared_alias_active;       /* true when PA+kseg aliases share backing */
+    bool     alias_fallback_sync_active;/* write-sync fallback when shared aliasing fails */
+    bool     alias_sync_reentrant;      /* recursion guard for write-sync hook */
+
     uint64_t kernel_entry;  /* VA to start execution from, sign-extended for MIPS64 */
     uint32_t jiffies_pa;    /* PA of kernel jiffies symbol (resolved from ELF) */
     bool     has_jiffies_pa;
