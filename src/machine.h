@@ -49,6 +49,22 @@ typedef struct {
     uint64_t value;
 } mmio_hist_entry_t;
 
+/* WinCE diagnostic write tracker for key low-PA regions. */
+typedef struct {
+    uint32_t writes;
+    uint32_t zero_writes;
+    bool     first_valid;
+    bool     saw_nonzero;
+    uint32_t first_pa;
+    uint32_t first_pc;
+    uint8_t  first_size;
+    uint64_t first_value;
+    uint32_t last_pa;
+    uint32_t last_pc;
+    uint8_t  last_size;
+    uint64_t last_value;
+} wince_pa_watch_t;
+
 typedef struct {
     bool        trace;        /* log each instruction to stderr */
     bool        log_mmio;     /* log all MMIO register accesses */
@@ -104,6 +120,10 @@ struct machine_s {
     mmio_hist_entry_t mmio_hist[WINCE_MMIO_HISTORY_LEN];
     uint32_t mmio_hist_head;
     uint32_t mmio_hist_count;
+    bool     wince_pa_watch_active;
+    uint32_t wince_pa_watch_logs;
+    wince_pa_watch_t wince_vec_watch;
+    wince_pa_watch_t wince_ctx_watch;
     uint32_t wince_null_last_ra;
     uint32_t wince_null_last_intno;
     uint32_t wince_null_consecutive;
