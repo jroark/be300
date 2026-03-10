@@ -596,6 +596,129 @@ static void log_wince_pa_watch_summary(const machine_t *m, const char *reason)
     }
 }
 
+#define WINCE_NK_TRACE_BASE UINT32_C(0x80020000)
+#define WINCE_NK_TRACE_END  UINT32_C(0x80F00000)
+
+static inline bool is_wince_nk_pc32(uint32_t pc32)
+{
+    return pc32 >= WINCE_NK_TRACE_BASE && pc32 < WINCE_NK_TRACE_END;
+}
+
+static void wince_ctrl_hist_record(machine_t *m,
+                                   uint8_t kind,
+                                   uint32_t pc,
+                                   uint32_t target,
+                                   uint32_t value,
+                                   uint8_t reg_idx,
+                                   uint32_t ra,
+                                   uint32_t sp,
+                                   uint32_t a0)
+{
+    uint32_t idx = m->wince_ctrl_hist_head % WINCE_CTRL_HISTORY_LEN;
+    wince_ctrl_hist_entry_t *e = &m->wince_ctrl_hist[idx];
+    e->kind = kind;
+    e->pc = pc;
+    e->target = target;
+    e->value = value;
+    e->reg_idx = reg_idx;
+    e->ra = ra;
+    e->sp = sp;
+    e->a0 = a0;
+    e->reserved = 0;
+
+    m->wince_ctrl_hist_head = (m->wince_ctrl_hist_head + 1u) % WINCE_CTRL_HISTORY_LEN;
+    if (m->wince_ctrl_hist_count < WINCE_CTRL_HISTORY_LEN)
+        m->wince_ctrl_hist_count++;
+}
+
+static void maybe_record_wince_ctrl_event(machine_t *m, uc_engine *uc,
+                                          uint32_t pc32, uint32_t insn,
+                                          uint32_t op, uint32_t rs, uint32_t rt,
+                                          uint32_t rd, uint32_t sel)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+    if (!is_wince_nk_pc32(pc32))
+        return;
+
+    uint8_t kind = 0;
+    uint8_t reg_idx = 0;
+    uint32_t target = 0;
+    uint32_t value = 0;
+    uint32_t funct = insn & 0x3Fu;
+
+    if (op == 0x03u) { /* JAL */
+        kind = 1u;
+        target = ((pc32 + 4u) & 0xF0000000u) | ((insn & 0x03FFFFFFu) << 2);
+    } else if (op == 0u && funct == 0x09u) { /* JALR */
+        uint64_t t = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rs, &t);
+        kind = 2u;
+        target = (uint32_t)t;
+    } else if (op == 0u && funct == 0x08u && rs == 31u) { /* JR $ra */
+        uint64_t ra64 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_RA, &ra64);
+        kind = 3u;
+        target = (uint32_t)ra64;
+    } else if (op == 0x10u && rs == 0x04u && rd == 12u && sel == 0u) { /* MTC0 Status */
+        uint64_t v = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &v);
+        kind = 4u;
+        reg_idx = (uint8_t)rt;
+        value = (uint32_t)v;
+        target = (uint32_t)v;
+    } else {
+        return;
+    }
+
+    uint64_t ra64 = 0, sp64 = 0, a064 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra64);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp64);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a064);
+    wince_ctrl_hist_record(m, kind, pc32, target, value, reg_idx,
+                           (uint32_t)ra64, (uint32_t)sp64, (uint32_t)a064);
+}
+
+static void log_wince_ctrl_hist_summary(const machine_t *m,
+                                        const char *reason,
+                                        uint32_t max_lines)
+{
+    if (!m || m->wince_ctrl_hist_count == 0)
+        return;
+
+    uint32_t emit = m->wince_ctrl_hist_count;
+    if (emit > max_lines)
+        emit = max_lines;
+    uint32_t dropped = m->wince_ctrl_hist_count - emit;
+    uint32_t start = (m->wince_ctrl_hist_head + WINCE_CTRL_HISTORY_LEN - emit)
+                   % WINCE_CTRL_HISTORY_LEN;
+
+    fprintf(stderr,
+            "[WINCE_CTRL_SUMMARY] reason=%s entries=%u emitted=%u dropped=%u\n",
+            reason, m->wince_ctrl_hist_count, emit, dropped);
+    for (uint32_t i = 0; i < emit; i++) {
+        uint32_t idx = (start + i) % WINCE_CTRL_HISTORY_LEN;
+        const wince_ctrl_hist_entry_t *e = &m->wince_ctrl_hist[idx];
+        const char *kind =
+            (e->kind == 1u) ? "JAL" :
+            (e->kind == 2u) ? "JALR" :
+            (e->kind == 3u) ? "JR_RA" :
+            (e->kind == 4u) ? "MTC0_STATUS" : "UNK";
+        if (e->kind == 4u) {
+            fprintf(stderr,
+                    "[WINCE_CTRL] %02u kind=%s pc=0x%08X status=0x%08X"
+                    " rt=$%u ra=0x%08X sp=0x%08X a0=0x%08X\n",
+                    i, kind, e->pc, e->value, (unsigned)e->reg_idx,
+                    e->ra, e->sp, e->a0);
+        } else {
+            fprintf(stderr,
+                    "[WINCE_CTRL] %02u kind=%s pc=0x%08X target=0x%08X"
+                    " ra=0x%08X sp=0x%08X a0=0x%08X\n",
+                    i, kind, e->pc, e->target, e->ra, e->sp, e->a0);
+        }
+    }
+}
+
 static void alias_coherence_probe(machine_t *m)
 {
     if (m->shared_alias_active) {
@@ -2840,6 +2963,9 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t rd  = (insn >> 11) & 0x1Fu;
     uint32_t sel =  insn        & 0x07u;
 
+    maybe_record_wince_ctrl_event(m, uc, (uint32_t)address,
+                                  insn, op, rs, rt, rd, sel);
+
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */
     if (is_wince_boot_machine(m) && m->cfg.log_wince_stall) {
@@ -4191,6 +4317,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             (uint64_t)(uint32_t)ra,
             (uint64_t)(uint32_t)m->last_exec_pc);
     log_wince_pa_watch_summary(m, "NULL_POSTMORTEM");
+    log_wince_ctrl_hist_summary(m, "NULL_POSTMORTEM", 64u);
 
     /* Dump code around last known execution PC for post-mortem analysis */
     {
@@ -6257,6 +6384,7 @@ static void log_wince_stall_dump(machine_t *m, uint32_t pc32)
             " LCR=0x%02X MCR=0x%02X\n",
             m->siu.lsr, m->siu.ier, m->siu.iir, m->siu.lcr, m->siu.mcr);
     log_wince_pa_watch_summary(m, "STALL");
+    log_wince_ctrl_hist_summary(m, "STALL", 24u);
 
     if (m->mmio_hist_count == 0) {
         fprintf(stderr, "[WINCE_STALL_MMIO] (empty)\n");
