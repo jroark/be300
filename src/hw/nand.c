@@ -465,7 +465,18 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
 
     /* Status register */
     if (offset == NAND_REG_STATUS) {
-        val = s->ready ? 0x80u : 0x00u;
+        /* At the EBOOT NIC probe sites, return "not ready" to skip NE2000Init.
+         * The SPL reads D7FE and tests bit 0x80 to decide whether to enter the
+         * EDBG loop (infinite, no timeout). Clearing bit 0x80 makes it take
+         * the "no board" path → falls through to NAND boot at 0x80F03B64. */
+        uint32_t norm_pc = pc & ~UINT32_C(0x20000000);
+        if (norm_pc == 0x80F022C4u ||
+            norm_pc == 0x80F02324u ||
+            norm_pc == 0x80F09E1Cu) {
+            val = 0x00u;  /* bit 0x80 clear → no NIC */
+        } else {
+            val = s->ready ? 0x80u : 0x00u;
+        }
         goto out;
     }
 
