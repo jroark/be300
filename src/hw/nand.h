@@ -44,6 +44,8 @@
 #define NAND_PAGE_DATA    512u
 #define NAND_PAGE_OOB     16u
 #define NAND_PAGE_RAW     (NAND_PAGE_DATA + NAND_PAGE_OOB)
+#define NAND_BLOCK_PAGES  32u
+#define NAND_BLOCK_COUNT  1024u
 
 /* NAND commands */
 #define NAND_CMD_READ0    0x00u   /* Read area A (column 0-255) */
@@ -83,6 +85,8 @@ typedef struct {
     uint8_t  xfer_addr_bytes[4];
     uint8_t  xfer_addr_count;
     uint32_t xfer_addr24;
+    uint32_t stream_page;
+    uint32_t stream_col;
     uint32_t stream_base;
     uint32_t stream_cursor;
     bool     stream_active;

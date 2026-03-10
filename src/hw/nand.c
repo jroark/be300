@@ -10,6 +10,51 @@ static uint8_t nand_image_byte(const nand_state_t *s, uint32_t off)
     return s->image[off];
 }
 
+static uint8_t nand_stream_oob_byte(const nand_state_t *s,
+                                    uint32_t page, uint32_t oob_idx)
+{
+    uint32_t block = page / NAND_BLOCK_PAGES;
+    uint32_t page_in_block = page % NAND_BLOCK_PAGES;
+
+    if (oob_idx >= NAND_PAGE_OOB)
+        return 0xFFu;
+
+    /*
+     * The restore images are data-only dumps (no physical OOB bytes).
+     * Synthesize minimal per-block metadata on page 0 so SPL ReadLogBlock()
+     * validation can build a straightforward logical->physical map:
+     *   OOB[0..1] = 0x55AA (little-endian: AA 55),
+     *   OOB[2] = 0x0F, OOB[4..7] = logical block id.
+     */
+    if (page_in_block == 0 && block < NAND_BLOCK_COUNT) {
+        switch (oob_idx) {
+        case 0: return 0xAAu;
+        case 1: return 0x55u;
+        case 2: return 0x0Fu;
+        case 4: return (uint8_t)(block & 0xFFu);
+        case 5: return (uint8_t)((block >> 8) & 0xFFu);
+        case 6: return 0x00u;
+        case 7: return 0x00u;
+        default: return 0xFFu;
+        }
+    }
+
+    return 0xFFu;
+}
+
+static uint8_t nand_stream_byte(const nand_state_t *s, uint32_t cursor_pos)
+{
+    uint32_t absolute = s->stream_col + cursor_pos;
+    uint32_t page = s->stream_page + (absolute / NAND_PAGE_RAW);
+    uint32_t in_page = absolute % NAND_PAGE_RAW;
+
+    if (in_page < NAND_PAGE_DATA) {
+        uint32_t off = page * NAND_PAGE_DATA + in_page;
+        return nand_image_byte(s, off);
+    }
+    return nand_stream_oob_byte(s, page, in_page - NAND_PAGE_DATA);
+}
+
 void nand_init(nand_state_t *s, const uint8_t *image, size_t size)
 {
     memset(s, 0, sizeof(*s));
@@ -57,10 +102,9 @@ static void nand_setup_transfer(nand_state_t *s)
 static uint64_t nand_stream_read(nand_state_t *s, unsigned size)
 {
     uint64_t val = 0;
-    uint32_t base = s->stream_base + s->stream_cursor;
 
     for (unsigned i = 0; i < size; i++) {
-        uint8_t byte = nand_image_byte(s, base + i);
+        uint8_t byte = nand_stream_byte(s, s->stream_cursor + i);
         val |= ((uint64_t)byte) << (8u * i);
     }
     s->stream_cursor += size;
@@ -125,7 +169,12 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
              * cursor continuity across mode 4.
              */
             if (data_byte == 0x05u) {
-                s->stream_base = s->xfer_addr24;
+                uint32_t row = (uint32_t)s->xfer_addr_bytes[1]
+                             | ((uint32_t)s->xfer_addr_bytes[2] << 8);
+                uint32_t col = (uint32_t)s->xfer_addr_bytes[0];
+                s->stream_page = row;
+                s->stream_col = col;
+                s->stream_base = row * NAND_PAGE_DATA + col;
                 s->stream_cursor = 0;
                 s->stream_active = true;
             }
