@@ -35,6 +35,20 @@ typedef struct {
     uint32_t   region_base_pa;
 } vrc4173_cb_ctx_t;
 
+/*
+ * Recent MMIO access ring used by WinCE stall diagnostics.
+ * Records are ordered by insertion; head points to next write slot.
+ */
+#define WINCE_MMIO_HISTORY_LEN 64u
+typedef struct {
+    uint32_t pa;
+    uint32_t pc;
+    uint16_t size_bits;
+    uint8_t  is_write;
+    uint8_t  reserved;
+    uint64_t value;
+} mmio_hist_entry_t;
+
 typedef struct {
     bool        trace;        /* log each instruction to stderr */
     bool        log_mmio;     /* log all MMIO register accesses */
@@ -42,6 +56,7 @@ typedef struct {
                                  * false (default) = pass pixels through as-is (true RGB565) */
     bool        kuseg_hotpath_populate; /* experimental: try shadow-TLB-backed kuseg population in LOAD_EMU/STORE_EMU */
     bool        log_nand_legacy; /* log D7F8/D7FC indexed register traffic */
+    bool        log_wince_stall; /* log WinCE post-NAND stall diagnostics */
     bool        trace_user_handoff; /* debug: first-fault and handoff VA->PA trace */
     const char *rom_path;     /* path to flat ROM image, loaded at PA_RESET_VECTOR */
     const char *kernel_path;  /* path to ELF kernel (vmlinux); if set, skip ROM boot */
@@ -79,6 +94,9 @@ struct machine_s {
     uint64_t irq_injected_count;
     uint64_t insn_count;
     bool     running;
+    mmio_hist_entry_t mmio_hist[WINCE_MMIO_HISTORY_LEN];
+    uint32_t mmio_hist_head;
+    uint32_t mmio_hist_count;
 
     /* Manual MIPS exception-entry state (set by intr_hook / inject_hw_irq_if_pending) */
     uint64_t pending_epc;           /* EPC to return/restore via MFC0/ERET intercepts      */
@@ -220,3 +238,5 @@ machine_t *machine_create(const machine_config_t *cfg);
 void       machine_destroy(machine_t *m);
 void       machine_run(machine_t *m);
 void       machine_stop(machine_t *m);
+void       machine_mmio_history_record(machine_t *m, bool is_write, uint32_t pa,
+                                       unsigned size, uint64_t value, uint32_t pc);

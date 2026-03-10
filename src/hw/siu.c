@@ -14,6 +14,8 @@ void siu_init(siu_state_t *s)
 uint32_t siu_read(siu_state_t *s, uint32_t offset, unsigned size)
 {
     (void)size;
+    /* VR41xx SIU appears on 16-bit lanes; normalize odd-byte aliases. */
+    offset &= ~1u;
     bool dlab = (s->lcr & SIU_LCR_DLAB) != 0;
 
     switch (offset) {
@@ -50,6 +52,8 @@ uint32_t siu_read(siu_state_t *s, uint32_t offset, unsigned size)
 void siu_write(siu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
 {
     (void)size;
+    /* VR41xx SIU appears on 16-bit lanes; normalize odd-byte aliases. */
+    offset &= ~1u;
     bool dlab = (s->lcr & SIU_LCR_DLAB) != 0;
 
     switch (offset) {

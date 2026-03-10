@@ -5724,6 +5724,90 @@ static void icu_etime_fixup_hook(uc_engine *uc, uint64_t address,
             m->icu.msysint1);
 }
 
+void machine_mmio_history_record(machine_t *m, bool is_write, uint32_t pa,
+                                 unsigned size, uint64_t value, uint32_t pc)
+{
+    if (!m || !m->cfg.log_wince_stall)
+        return;
+
+    uint32_t idx = m->mmio_hist_head % WINCE_MMIO_HISTORY_LEN;
+    mmio_hist_entry_t *e = &m->mmio_hist[idx];
+    e->pa = pa;
+    e->pc = pc;
+    e->size_bits = (uint16_t)(size * 8u);
+    e->is_write = is_write ? 1u : 0u;
+    e->reserved = 0;
+    e->value = value;
+
+    m->mmio_hist_head = (m->mmio_hist_head + 1u) % WINCE_MMIO_HISTORY_LEN;
+    if (m->mmio_hist_count < WINCE_MMIO_HISTORY_LEN)
+        m->mmio_hist_count++;
+}
+
+#define WINCE_STALL_SAMPLE_COUNT 3u
+#define WINCE_SPL_VA_BASE UINT32_C(0x80F00000)
+#define WINCE_SPL_VA_END  UINT32_C(0x80F10000)
+
+static inline bool is_wince_spl_pc(uint32_t pc32)
+{
+    return pc32 >= WINCE_SPL_VA_BASE && pc32 < WINCE_SPL_VA_END;
+}
+
+static void log_wince_stall_dump(machine_t *m, uint32_t pc32)
+{
+    uint32_t insn = 0xFFFFFFFFu;
+    uint64_t cp0_status = 0;
+    uint64_t cp0_cause = (uint64_t)m->pending_cause;
+    uint64_t cp0_epc = m->shadow_cp0_epc ? m->shadow_cp0_epc : m->pending_epc;
+    uint64_t cp0_badv = m->shadow_cp0_badvaddr;
+
+    (void)read_insn_best_effort(m->uc, (uint64_t)(int32_t)pc32, &insn);
+    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &cp0_status);
+
+    fprintf(stderr,
+            "[WINCE_STALL] PC=0x%08X INSN=0x%08X"
+            " STATUS=0x%08" PRIX64 " CAUSE=0x%08" PRIX64
+            " EPC=0x%08" PRIX64 " BADV=0x%08" PRIX64 "\n",
+            pc32, insn,
+            (uint64_t)(uint32_t)cp0_status,
+            (uint64_t)(uint32_t)cp0_cause,
+            (uint64_t)(uint32_t)cp0_epc,
+            (uint64_t)(uint32_t)cp0_badv);
+    fprintf(stderr,
+            "[WINCE_STALL] ICU sys1=0x%04X m1=0x%04X sys2=0x%04X m2=0x%04X\n",
+            m->icu.sysint1, m->icu.msysint1, m->icu.sysint2, m->icu.msysint2);
+    fprintf(stderr,
+            "[WINCE_STALL] RTC etime=0x%012" PRIX64 " ecmp=0x%012" PRIX64
+            " rtcint=0x%04X\n",
+            m->rtc.etime & UINT64_C(0xFFFFFFFFFFFF),
+            m->rtc.ecmp & UINT64_C(0xFFFFFFFFFFFF),
+            m->rtc.rtcint);
+    fprintf(stderr,
+            "[WINCE_STALL] SIU LSR=0x%02X IER=0x%02X IIR=0x%02X"
+            " LCR=0x%02X MCR=0x%02X\n",
+            m->siu.lsr, m->siu.ier, m->siu.iir, m->siu.lcr, m->siu.mcr);
+
+    if (m->mmio_hist_count == 0) {
+        fprintf(stderr, "[WINCE_STALL_MMIO] (empty)\n");
+        return;
+    }
+
+    uint32_t oldest = (m->mmio_hist_head + WINCE_MMIO_HISTORY_LEN - m->mmio_hist_count)
+                    % WINCE_MMIO_HISTORY_LEN;
+    for (uint32_t i = 0; i < m->mmio_hist_count; i++) {
+        uint32_t idx = (oldest + i) % WINCE_MMIO_HISTORY_LEN;
+        const mmio_hist_entry_t *e = &m->mmio_hist[idx];
+        fprintf(stderr,
+                "[WINCE_STALL_MMIO] %02u %c%u PA=0x%08X PC=0x%08X VAL=0x%08" PRIX64 "\n",
+                i,
+                e->is_write ? 'W' : 'R',
+                e->size_bits,
+                e->pa,
+                e->pc,
+                e->value);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Machine lifecycle                                                     */
 /* ------------------------------------------------------------------ */
@@ -6194,6 +6278,12 @@ void machine_run(machine_t *m)
     m->post_init_trace_window = false;
     m->post_init_trace_batches = 0;
     int write_unmapped_recoveries = 0;
+    uint32_t stall_track_pc = UINT32_MAX;
+    uint32_t stall_track_samples = 0;
+    bool stall_episode_active = false;
+    bool stall_episode_dumped = false;
+    bool stall_episode_kicked = false;
+    uint32_t stall_episode_pc = 0;
 
     fprintf(stderr, "[MACHINE] Starting execution at VA 0x%016" PRIX64 "\n",
             m->kernel_entry);
@@ -6263,12 +6353,89 @@ void machine_run(machine_t *m)
         /* Periodic PC sample: log PC every 100 batches (~10M insns) to
          * show where execution is spending time when silent. */
         if ((m->insn_count / BATCH_SIZE) % 100 == 0) {
+            uint32_t pc32 = (uint32_t)pc;
             fprintf(stderr, "[PROGRESS] insns=%" PRIu64 "M  PC=0x%08" PRIX64 "\n",
-                    m->insn_count / 1000000, (uint64_t)(uint32_t)pc);
+                    m->insn_count / 1000000, (uint64_t)pc32);
+
+            bool stall_candidate =
+                (m->cfg.nand_path != NULL) &&
+                !is_wince_spl_pc(pc32);
+
+            if (stall_candidate && pc32 == stall_track_pc) {
+                if (stall_track_samples < UINT32_MAX)
+                    stall_track_samples++;
+            } else {
+                stall_track_pc = pc32;
+                stall_track_samples = stall_candidate ? 1u : 0u;
+            }
+
+            if (stall_episode_active && pc32 != stall_episode_pc) {
+                stall_episode_active = false;
+                stall_episode_dumped = false;
+                stall_episode_kicked = false;
+                if (m->cfg.log_wince_stall) {
+                    fprintf(stderr,
+                            "[WINCE_STALL_CLEAR] prev_pc=0x%08X new_pc=0x%08X\n",
+                            stall_episode_pc, pc32);
+                }
+            }
+
+            if (stall_candidate && stall_track_samples >= WINCE_STALL_SAMPLE_COUNT) {
+                if (!stall_episode_active || stall_episode_pc != pc32) {
+                    stall_episode_active = true;
+                    stall_episode_pc = pc32;
+                    stall_episode_dumped = false;
+                    stall_episode_kicked = false;
+                }
+
+                if (m->cfg.log_wince_stall && !stall_episode_dumped) {
+                    log_wince_stall_dump(m, pc32);
+                    stall_episode_dumped = true;
+                }
+
+                if (!stall_episode_kicked) {
+                    uint64_t status_before = 0;
+                    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status_before);
+                    uint64_t status_after = status_before;
+
+                    /*
+                     * WinCE NK can remain in reset-style Status (ERL=1, IE=0),
+                     * which blocks interrupt delivery entirely. For the
+                     * stall-episode kick path only, make Status receptive to
+                     * INT0 delivery: IE=1, EXL=0, ERL=0, IM2=1.
+                     */
+                    status_after &= ~(uint64_t)0x7u;
+                    status_after |= (uint64_t)0x1u;
+                    status_after |= (uint64_t)(1u << 10);
+                    if (status_after != status_before)
+                        uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &status_after);
+
+                    m->rtc.rtcint |= RTCINT_ELAPSEDTIME_INT;
+                    m->icu.msysint1 |= ICU_SRC1_ETIME;
+                    icu_assert(&m->icu, ICU_SRC1_ETIME);
+                    update_irq_lines(m);
+                    inject_hw_irq_if_pending(m);
+                    stall_episode_kicked = true;
+                    if (m->cfg.log_wince_stall) {
+                        fprintf(stderr,
+                                "[WINCE_IRQ_KICK] PC=0x%08X"
+                                " rtcint=0x%04X sys1=0x%04X m1=0x%04X"
+                                " status_before=0x%08X status_after=0x%08X\n",
+                                pc32,
+                                m->rtc.rtcint,
+                                m->icu.sysint1,
+                                m->icu.msysint1,
+                                (uint32_t)status_before,
+                                (uint32_t)status_after);
+                    }
+                }
+            }
         }
 
+        uint64_t run_pc = 0;
+        uc_reg_read(m->uc, UC_MIPS_REG_PC, &run_pc);
         uint32_t step_count = m->post_init_trace_window ? POST_INIT_BATCH_SIZE : BATCH_SIZE;
-        uc_err err = uc_emu_start(m->uc, pc, 0, 0, step_count);
+        uc_err err = uc_emu_start(m->uc, run_pc, 0, 0, step_count);
 
         if (err != UC_ERR_OK) {
             uint64_t bad_pc = 0;

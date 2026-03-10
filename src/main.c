@@ -22,6 +22,7 @@ static void usage(const char *prog)
         "                        attempt shadow-TLB-backed VA->PA population before\n"
         "                        falling back to empty block mapping\n"
         "  --log-nand-legacy     Log D7F8/D7FC indexed register traffic (with PC)\n"
+        "  --log-wince-stall     Log WinCE post-NAND stall diagnostics\n"
         "  --trace-user-handoff  Debug first user handoff fault/map details (verbose)\n"
         "  --ram <file>          Preload a raw RAM image at PA 0x00000000\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
@@ -43,6 +44,7 @@ int main(int argc, char *argv[])
         .log_mmio       = false,
         .sfb_5bit_green = false,
         .kuseg_hotpath_populate = false,
+        .log_wince_stall = false,
         .trace_user_handoff = false,
         .rom_path       = NULL,
         .kernel_path    = NULL,
@@ -69,6 +71,8 @@ int main(int argc, char *argv[])
             cfg.trace_user_handoff = true;
         } else if (strcmp(argv[i], "--log-nand-legacy") == 0) {
             cfg.log_nand_legacy = true;
+        } else if (strcmp(argv[i], "--log-wince-stall") == 0) {
+            cfg.log_wince_stall = true;
         } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {
             cfg.nand_path = argv[++i];
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {

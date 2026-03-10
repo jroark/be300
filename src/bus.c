@@ -27,6 +27,13 @@
 static uint8_t vrc4173_uart_scr;  /* scratch register (read/write) */
 static uint32_t vrc4173_ne2k_cwin_latch[20]; /* 0x0C00..0x0C4C, 32-bit words */
 
+static inline uint32_t read_pc32(uc_engine *uc)
+{
+    uint64_t pc64 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
+    return (uint32_t)pc64;
+}
+
 static inline uint32_t vrc4173_cs3_off(const vrc4173_cb_ctx_t *ctx,
                                        uint64_t callback_offset)
 {
@@ -63,43 +70,48 @@ static inline uint32_t ne2k_cwin_idx(uint32_t off)
 static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
                                  unsigned size, void *user_data)
 {
-    (void)uc;
     vrc4173_cb_ctx_t *ctx = user_data;
     machine_t *m = ctx->m;
     uint32_t cs3_off = vrc4173_cs3_off(ctx, offset);
+    uint32_t pc32 = 0;
+    uint64_t val = 0;
+
+    if (m->cfg.log_wince_stall || m->cfg.log_nand_legacy || m->cfg.log_mmio)
+        pc32 = read_pc32(uc);
 
     if (m->cfg.log_mmio)
         fprintf(stderr, "[VRC4173] R%u cb_off=0x%05" PRIX64 " cs3_off=0x%05X\n",
                 size * 8, offset, cs3_off);
 
     if (cs3_off == UINT32_MAX)
-        return 0;
+        goto out;
 
     /* VRC4173 UART (NS16550-compatible, 4-byte register spacing) */
     switch (cs3_off) {
-    case VRC4173_UART_THR:   return 0;       /* RBR: no data */
-    case VRC4173_UART_IER:   return 0;       /* IER: no interrupts enabled */
-    case VRC4173_UART_IIR:   return 0x01u;   /* IIR: no pending interrupt */
-    case VRC4173_UART_LCR:   return 0x03u;   /* LCR: 8N1 */
-    case VRC4173_UART_MCR:   return 0;       /* MCR: no modem control */
-    case VRC4173_UART_LSR:   return 0x60u;   /* TEMT | THRE: tx ready */
-    case VRC4173_UART_MSR:   return 0;       /* MSR: no modem status */
-    case VRC4173_UART_SCR:   return vrc4173_uart_scr;
+    case VRC4173_UART_THR:   val = 0; break;       /* RBR: no data */
+    case VRC4173_UART_IER:   val = 0; break;       /* IER: no interrupts enabled */
+    case VRC4173_UART_IIR:   val = 0x01u; break;   /* IIR: no pending interrupt */
+    case VRC4173_UART_LCR:   val = 0x03u; break;   /* LCR: 8N1 */
+    case VRC4173_UART_MCR:   val = 0; break;       /* MCR: no modem control */
+    case VRC4173_UART_LSR:   val = 0x60u; break;   /* TEMT | THRE: tx ready */
+    case VRC4173_UART_MSR:   val = 0; break;       /* MSR: no modem status */
+    case VRC4173_UART_SCR:   val = vrc4173_uart_scr; break;
     default: break;
     }
+    if (cs3_off >= VRC4173_UART_THR && cs3_off <= VRC4173_UART_SCR &&
+        ((cs3_off - VRC4173_UART_THR) % 4u) == 0u)
+        goto out;
 
     /* NAND controller registers */
     if (is_nand_offset(cs3_off)) {
-        uint64_t pc64 = 0;
-        uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
-        return nand_read(&m->nand, cs3_off, size,
-                         m->cfg.log_mmio || m->cfg.log_nand_legacy,
-                         (uint32_t)pc64);
+        val = nand_read(&m->nand, cs3_off, size,
+                        m->cfg.log_mmio || m->cfg.log_nand_legacy,
+                        pc32);
+        goto out;
     }
 
     /* No onboard NE2000: deterministic no-card behavior for C-window probes. */
     if (is_ne2k_cwin_offset(cs3_off)) {
-        uint64_t val = 0;
         if (cs3_off == 0x0C48u)
             val = UINT32_C(0x00000001);
         else if (cs3_off == 0x0C4Cu)
@@ -110,34 +122,43 @@ static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
         if (m->cfg.log_mmio)
             fprintf(stderr, "[VRC4173_CWIN] R%u cs3_off=0x%05X -> 0x%" PRIX64 "\n",
                     size * 8, cs3_off, val);
-        return val;
+        goto out;
     }
 
     /* Companion chip stub registers */
     if (cs3_off >= 0x0300u && cs3_off < 0x0400u)
-        return 0;           /* Touch panel: no pen down */
+        goto out;           /* Touch panel: no pen down */
     if (cs3_off >= 0x1000u && cs3_off < 0x1100u)
-        return 0x0Cu;       /* CF status: card removed */
+        val = 0x0Cu;        /* CF status: card removed */
     if (cs3_off >= 0x8000u && cs3_off < 0x8100u)
-        return 0;           /* Vic/CommMode */
+        goto out;           /* Vic/CommMode */
 
-    return 0;
+out:
+    {
+        uint64_t pa = (uint64_t)ctx->region_base_pa + offset;
+        if (pa <= UINT32_MAX)
+            machine_mmio_history_record(m, false, (uint32_t)pa, size, val, pc32);
+    }
+    return val;
 }
 
 static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
                               unsigned size, uint64_t value, void *user_data)
 {
-    (void)uc;
     vrc4173_cb_ctx_t *ctx = user_data;
     machine_t *m = ctx->m;
     uint32_t cs3_off = vrc4173_cs3_off(ctx, offset);
+    uint32_t pc32 = 0;
+
+    if (m->cfg.log_wince_stall || m->cfg.log_nand_legacy || m->cfg.log_mmio)
+        pc32 = read_pc32(uc);
 
     if (m->cfg.log_mmio)
         fprintf(stderr, "[VRC4173] W%u cb_off=0x%05" PRIX64 " cs3_off=0x%05X <- 0x%" PRIX64 "\n",
                 size * 8, offset, cs3_off, value);
 
     if (cs3_off == UINT32_MAX)
-        return;
+        goto out;
 
     switch (cs3_off) {
     case VRC4173_UART_THR:
@@ -157,18 +178,22 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
         if (is_ne2k_cwin_offset(cs3_off)) {
             if (size == 4 && (cs3_off & 3u) == 0u)
                 vrc4173_ne2k_cwin_latch[ne2k_cwin_idx(cs3_off)] = (uint32_t)value;
-            return;
+            goto out;
         }
 
         /* NAND controller registers */
         if (is_nand_offset(cs3_off)) {
-            uint64_t pc64 = 0;
-            uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
             nand_write(&m->nand, cs3_off, size, value,
                        m->cfg.log_mmio || m->cfg.log_nand_legacy,
-                       (uint32_t)pc64);
+                       pc32);
         }
         break;
+    }
+out:
+    {
+        uint64_t pa = (uint64_t)ctx->region_base_pa + offset;
+        if (pa <= UINT32_MAX)
+            machine_mmio_history_record(m, true, (uint32_t)pa, size, value, pc32);
     }
 }
 
@@ -179,9 +204,12 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
 static uint64_t mmio_read_cb(uc_engine *uc, uint64_t offset,
                               unsigned size, void *user_data)
 {
-    (void)uc;
     machine_t *m = user_data;
     uint64_t val = 0;
+    uint32_t pc32 = 0;
+
+    if (m->cfg.log_wince_stall)
+        pc32 = read_pc32(uc);
 
     if (offset >= IO_BCU_BASE && offset < IO_BCU_BASE + IO_BCU_SIZE)
         val = bcu_read(&m->bcu, (uint32_t)(offset - IO_BCU_BASE), size);
@@ -213,14 +241,19 @@ static uint64_t mmio_read_cb(uc_engine *uc, uint64_t offset,
         fprintf(stderr, "[MMIO] R%u PA=0x%08" PRIX64 " -> 0x%" PRIX64 "\n",
                 size * 8, PA_IO_BASE + offset, val);
 
+    machine_mmio_history_record(m, false, (uint32_t)(PA_IO_BASE + offset),
+                                size, val, pc32);
     return val;
 }
 
 static void mmio_write_cb(uc_engine *uc, uint64_t offset,
                            unsigned size, uint64_t value, void *user_data)
 {
-    (void)uc;
     machine_t *m = user_data;
+    uint32_t pc32 = 0;
+
+    if (m->cfg.log_wince_stall)
+        pc32 = read_pc32(uc);
 
     if (m->cfg.log_mmio)
         fprintf(stderr, "[MMIO] W%u PA=0x%08" PRIX64 " <- 0x%" PRIX64 "\n",
@@ -248,6 +281,9 @@ static void mmio_write_cb(uc_engine *uc, uint64_t offset,
                     " (offset 0x%03" PRIX64 ") size %u value 0x%" PRIX64 "\n",
                     PA_IO_BASE + offset, offset, size, value);
     }
+
+    machine_mmio_history_record(m, true, (uint32_t)(PA_IO_BASE + offset),
+                                size, value, pc32);
 }
 
 /* ------------------------------------------------------------------ */
