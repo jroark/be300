@@ -91,8 +91,7 @@ static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
     /* NAND controller registers */
     if (is_nand_offset(cs3_off)) {
         uint64_t pc64 = 0;
-        if (m->cfg.log_nand_legacy || m->cfg.log_mmio)
-            uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
+        uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
         return nand_read(&m->nand, cs3_off, size,
                          m->cfg.log_mmio || m->cfg.log_nand_legacy,
                          (uint32_t)pc64);
@@ -164,8 +163,7 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
         /* NAND controller registers */
         if (is_nand_offset(cs3_off)) {
             uint64_t pc64 = 0;
-            if (m->cfg.log_nand_legacy || m->cfg.log_mmio)
-                uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
+            uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
             nand_write(&m->nand, cs3_off, size, value,
                        m->cfg.log_mmio || m->cfg.log_nand_legacy,
                        (uint32_t)pc64);

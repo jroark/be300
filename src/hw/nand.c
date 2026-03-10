@@ -250,9 +250,11 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 s->legacy_read_since_write[ri] = 0;
             }
 
-            /* Forward VRC4173 indexed UART data (idx 0x00) to stdout */
+            /* Forward VRC4173 indexed UART data (idx 0x00) to stdout.
+             * Normalize 0x80/0xA0 kseg aliases for the known console callsite. */
+            uint32_t norm_pc = pc & ~UINT32_C(0x20000000);
             if (ri == 0x00 &&
-                pc == UART_TX_CONSOLE_PC &&
+                norm_pc == UART_TX_CONSOLE_PC &&
                 (byte == 0x0A || byte == 0x0D || (byte >= 0x20 && byte <= 0x7E))) {
                 putchar(byte);
                 fflush(stdout);
