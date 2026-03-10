@@ -26,6 +26,27 @@
  */
 static uint8_t vrc4173_uart_scr;  /* scratch register (read/write) */
 static uint32_t vrc4173_ne2k_cwin_latch[20]; /* 0x0C00..0x0C4C, 32-bit words */
+/*
+ * Generic VRC4173 register latch for not-yet-modeled blocks.
+ * Keeps write->readback deterministic and allows us to seed warm-state values
+ * observed on hardware without fully modeling each sub-device.
+ */
+#define VRC4173_LATCH_SIZE UINT32_C(0x20000)
+static uint8_t vrc4173_latch_bytes[VRC4173_LATCH_SIZE];
+static uint8_t vrc4173_latch_valid[VRC4173_LATCH_SIZE];
+static bool vrc4173_latch_seeded;
+
+typedef struct {
+    uint16_t off;
+    uint32_t val;
+} vrc4173_seed_word_t;
+
+/*
+ * WinCE NK board-detect probe reads PA 0xAA00A0C0 (cs3_off=0x0A0C0),
+ * masks with 0xFFF0, and expects 0x7100 on BE-300 hardware.
+ */
+#define VRC4173_BOOT_ID_OFF    UINT32_C(0x0A0C0)
+#define VRC4173_BOOT_ID_VALUE  UINT32_C(0x00007100)
 
 static inline uint32_t read_pc32(uc_engine *uc)
 {
@@ -67,6 +88,65 @@ static inline uint32_t ne2k_cwin_idx(uint32_t off)
     return (off - 0x0C00u) >> 2;
 }
 
+static inline void vrc4173_latch_write(uint32_t off, unsigned size, uint64_t value)
+{
+    if (size == 0u || size > 4u)
+        return;
+    if (off > VRC4173_LATCH_SIZE || (uint64_t)off + size > VRC4173_LATCH_SIZE)
+        return;
+
+    for (unsigned i = 0; i < size; i++) {
+        vrc4173_latch_bytes[off + i] = (uint8_t)((value >> (i * 8u)) & 0xFFu);
+        vrc4173_latch_valid[off + i] = 1u;
+    }
+}
+
+static inline bool vrc4173_latch_read(uint32_t off, unsigned size, uint64_t *value_out)
+{
+    if (!value_out || size == 0u || size > 4u)
+        return false;
+    if (off > VRC4173_LATCH_SIZE || (uint64_t)off + size > VRC4173_LATCH_SIZE)
+        return false;
+
+    uint64_t v = 0;
+    for (unsigned i = 0; i < size; i++) {
+        if (!vrc4173_latch_valid[off + i])
+            return false;
+        v |= (uint64_t)vrc4173_latch_bytes[off + i] << (i * 8u);
+    }
+    *value_out = v;
+    return true;
+}
+
+static void vrc4173_seed_core_dump_once(void)
+{
+    if (vrc4173_latch_seeded)
+        return;
+    vrc4173_latch_seeded = true;
+
+    /*
+     * Warm-state VRC4173 core snapshot from hardware_survey/HardwareDump 2.txt
+     * (PA 0x0A000000, Size 0x100). Seed non-zero words only.
+     */
+    static const vrc4173_seed_word_t seed_words[] = {
+        { 0x0008u, 0x00000001u },
+        { 0x0010u, 0x0000000Cu }, { 0x0014u, 0x0000000Cu },
+        { 0x0018u, 0x0000000Cu }, { 0x0020u, 0x0000000Cu },
+        { 0x0028u, 0x0000000Cu }, { 0x002Cu, 0x0000000Cu },
+        { 0x0030u, 0x0000000Cu }, { 0x0034u, 0x0000003Cu },
+        { 0x0040u, 0x0000000Cu },
+        { 0x0088u, 0x00000001u },
+        { 0x0090u, 0x0000000Cu }, { 0x0094u, 0x0000000Cu },
+        { 0x0098u, 0x0000000Cu }, { 0x00A0u, 0x0000000Cu },
+        { 0x00A8u, 0x0000000Cu }, { 0x00ACu, 0x0000000Cu },
+        { 0x00B0u, 0x0000000Cu }, { 0x00B4u, 0x0000003Cu },
+        { 0x00C0u, 0x0000000Cu },
+    };
+
+    for (unsigned i = 0; i < (sizeof(seed_words) / sizeof(seed_words[0])); i++)
+        vrc4173_latch_write(seed_words[i].off, 4u, seed_words[i].val);
+}
+
 static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
                                  unsigned size, void *user_data)
 {
@@ -85,9 +165,22 @@ static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
 
     if (cs3_off == UINT32_MAX)
         goto out;
+    vrc4173_seed_core_dump_once();
+
+    if (cs3_off == VRC4173_BOOT_ID_OFF && m->cfg.log_wince_stall) {
+        static uint32_t boot_id_probe_logs = 0;
+        if (boot_id_probe_logs < 16u) {
+            fprintf(stderr,
+                    "[VRC4173_BOOT_ID] R%u cs3_off=0x%05X cb_off=0x%05" PRIX64
+                    " pc=0x%08X\n",
+                    size * 8, cs3_off, offset, pc32);
+            boot_id_probe_logs++;
+        }
+    }
 
     /* VRC4173 UART (NS16550-compatible, 4-byte register spacing) */
     switch (cs3_off) {
+    case VRC4173_BOOT_ID_OFF: val = VRC4173_BOOT_ID_VALUE; break;
     case VRC4173_UART_THR:   val = 0; break;       /* RBR: no data */
     case VRC4173_UART_IER:   val = 0; break;       /* IER: no interrupts enabled */
     case VRC4173_UART_IIR:   val = 0x01u; break;   /* IIR: no pending interrupt */
@@ -132,6 +225,8 @@ static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
         val = 0x0Cu;        /* CF status: card removed */
     if (cs3_off >= 0x8000u && cs3_off < 0x8100u)
         goto out;           /* Vic/CommMode */
+    if (vrc4173_latch_read(cs3_off, size, &val))
+        goto out;
 
 out:
     {
@@ -159,6 +254,7 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
 
     if (cs3_off == UINT32_MAX)
         goto out;
+    vrc4173_seed_core_dump_once();
 
     switch (cs3_off) {
     case VRC4173_UART_THR:
@@ -173,6 +269,9 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
     case VRC4173_UART_SCR:
         vrc4173_uart_scr = (uint8_t)(value & 0xFF);
         break;
+    case VRC4173_BOOT_ID_OFF:
+        /* Read-only identity probe on hardware; ignore writes. */
+        break;
     default:
         /* No onboard NE2000: latch C-window writes, but never signal presence. */
         if (is_ne2k_cwin_offset(cs3_off)) {
@@ -186,6 +285,8 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
             nand_write(&m->nand, cs3_off, size, value,
                        m->cfg.log_mmio || m->cfg.log_nand_legacy,
                        pc32);
+        } else {
+            vrc4173_latch_write(cs3_off, size, value);
         }
         break;
     }
@@ -228,13 +329,30 @@ static uint64_t mmio_read_cb(uc_engine *uc, uint64_t offset,
     else if (offset >= IO_SIU_BASE && offset < IO_SIU_BASE + IO_SIU_SIZE)
         val = siu_read(&m->siu, (uint32_t)(offset - IO_SIU_BASE), size);
     else {
-        /* Unrecognized internal I/O: return 0 silently.
-         * WinCE SPL probes many registers (DMAAU, DSIU, PIU, FIR, etc.)
-         * that we don't emulate — returning 0 lets probing continue. */
+        /* Unrecognized internal I/O: read from write-latched shadow bytes.
+         * This preserves write->readback behavior for unknown blocks
+         * (for example, WinCE probing ranges around 0x0F0000C0). */
+        bool have_latch = true;
+        if (offset + size > PA_IO_SIZE)
+            have_latch = false;
+        else {
+            val = 0;
+            for (unsigned i = 0; i < size; i++) {
+                uint32_t idx = (uint32_t)offset + i;
+                if (!m->io_fallback_valid[idx]) {
+                    have_latch = false;
+                    break;
+                }
+                val |= (uint64_t)m->io_fallback_bytes[idx] << (i * 8u);
+            }
+        }
+        if (!have_latch)
+            val = 0;
         if (m->cfg.log_mmio)
             fprintf(stderr, "[BUS] Unhandled MMIO read  @ PA 0x%08" PRIX64
-                    " (offset 0x%03" PRIX64 ") size %u\n",
-                    PA_IO_BASE + offset, offset, size);
+                    " (offset 0x%03" PRIX64 ") size %u%s\n",
+                    PA_IO_BASE + offset, offset, size,
+                    have_latch ? " [latched]" : "");
     }
 
     if (m->cfg.log_mmio)
@@ -276,6 +394,14 @@ static void mmio_write_cb(uc_engine *uc, uint64_t offset,
     else if (offset >= IO_SIU_BASE && offset < IO_SIU_BASE + IO_SIU_SIZE)
         siu_write(&m->siu, (uint32_t)(offset - IO_SIU_BASE), size, (uint32_t)value);
     else {
+        /* Latch unknown internal-I/O writes for deterministic readback. */
+        if (offset + size <= PA_IO_SIZE) {
+            for (unsigned i = 0; i < size; i++) {
+                uint32_t idx = (uint32_t)offset + i;
+                m->io_fallback_bytes[idx] = (uint8_t)(value >> (i * 8u));
+                m->io_fallback_valid[idx] = 1u;
+            }
+        }
         if (m->cfg.log_mmio)
             fprintf(stderr, "[BUS] Unhandled MMIO write @ PA 0x%08" PRIX64
                     " (offset 0x%03" PRIX64 ") size %u value 0x%" PRIX64 "\n",
