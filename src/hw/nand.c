@@ -118,6 +118,7 @@ static int nand_idx_log_count = 0;
 #define LEGACY_STATUS_ESCAPE_READS 64u
 #define LEGACY_STATUS_IDLE_MASK    0xC0u
 #define UART_TX_CONSOLE_PC         UINT32_C(0x80F03308)
+#define UART_TX_CONSOLE_PC_CENET   UINT32_C(0x80F03350)
 
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 uint64_t value, bool log, uint32_t pc)
@@ -142,8 +143,9 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             s->xfer_regs[idx] = (uint32_t)value;
 
         if (offset == NAND_REG_XFER_CMD) {
-            /* New command phase starts a new A420 address sequence. */
-            s->xfer_addr_count = 0;
+            /* SPL traces show only subcommands 0x03/0x06 open address phases. */
+            if (data_byte == 0x03u || data_byte == 0x06u)
+                s->xfer_addr_count = 0;
         } else if (offset == NAND_REG_XFER_ADDR) {
             /* A420 feeds a 24-bit byte address (little-endian). */
             if (s->xfer_addr_count < sizeof(s->xfer_addr_bytes)) {
@@ -302,8 +304,12 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             /* Forward VRC4173 indexed UART data (idx 0x00) to stdout.
              * Normalize 0x80/0xA0 kseg aliases for the known console callsite. */
             uint32_t norm_pc = pc & ~UINT32_C(0x20000000);
-            if (ri == 0x00 &&
-                norm_pc == UART_TX_CONSOLE_PC &&
+            bool known_console_pc =
+                norm_pc == UART_TX_CONSOLE_PC ||
+                norm_pc == UART_TX_CONSOLE_PC_CENET;
+            bool known_uart_idx = (ri == 0x00u || ri == 0xF0u);
+            if (known_uart_idx &&
+                known_console_pc &&
                 (byte == 0x0A || byte == 0x0D || (byte >= 0x20 && byte <= 0x7E))) {
                 putchar(byte);
                 fflush(stdout);
