@@ -3787,6 +3787,21 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             m->wince_null_consecutive = 1u;
         }
 
+        if (m->wince_null_consecutive == 2u) {
+            static uint32_t wince_null_burst_log = 0;
+            if (wince_null_burst_log < 64u) {
+                fprintf(stderr,
+                        "[WINCE_NULL_BURST] intno=%u ra=0x%08X"
+                        " pending_excode=%u pending_epc=0x%08" PRIX64
+                        " pending_cause=0x%08X STATUS=0x%08" PRIX64 "\n",
+                        intno, ra32, m->pending_excode,
+                        (uint64_t)(uint32_t)m->pending_epc,
+                        m->pending_cause,
+                        (uint64_t)(uint32_t)status);
+                wince_null_burst_log++;
+            }
+        }
+
         if (m->wince_null_consecutive > WINCE_NULL_RECOVER_CAP) {
             fprintf(stderr,
                     "[WINCE_NULL_BAILOUT] intno=%u ra=0x%08X count=%u cap=%u"
@@ -6309,11 +6324,15 @@ void machine_run(machine_t *m)
     uint32_t stall_track_samples = 0;
     bool stall_episode_active = false;
     bool stall_episode_dumped = false;
-    bool stall_episode_kicked = false;
     uint32_t stall_episode_pc = 0;
 
     fprintf(stderr, "[MACHINE] Starting execution at VA 0x%016" PRIX64 "\n",
             m->kernel_entry);
+    if (m->cfg.nand_path && m->cfg.log_wince_stall) {
+        fprintf(stderr,
+                "[WINCE_STALL_MODE] diagnostics-only"
+                " (no synthetic IRQ kick)\n");
+    }
 
     /* Set PC to the entry point (sign-extended 64-bit VA for MIPS64 mode) */
     uc_reg_write(m->uc, UC_MIPS_REG_PC, &m->kernel_entry);
@@ -6399,7 +6418,6 @@ void machine_run(machine_t *m)
             if (stall_episode_active && pc32 != stall_episode_pc) {
                 stall_episode_active = false;
                 stall_episode_dumped = false;
-                stall_episode_kicked = false;
                 if (m->cfg.log_wince_stall) {
                     fprintf(stderr,
                             "[WINCE_STALL_CLEAR] prev_pc=0x%08X new_pc=0x%08X\n",
@@ -6412,49 +6430,11 @@ void machine_run(machine_t *m)
                     stall_episode_active = true;
                     stall_episode_pc = pc32;
                     stall_episode_dumped = false;
-                    stall_episode_kicked = false;
                 }
 
                 if (m->cfg.log_wince_stall && !stall_episode_dumped) {
                     log_wince_stall_dump(m, pc32);
                     stall_episode_dumped = true;
-                }
-
-                if (!stall_episode_kicked) {
-                    uint64_t status_before = 0;
-                    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &status_before);
-                    uint64_t status_after = status_before;
-
-                    /*
-                     * WinCE NK can remain in reset-style Status (ERL=1, IE=0),
-                     * which blocks interrupt delivery entirely. For the
-                     * stall-episode kick path only, make Status receptive to
-                     * INT0 delivery: IE=1, EXL=0, ERL=0, IM2=1.
-                     */
-                    status_after &= ~(uint64_t)0x7u;
-                    status_after |= (uint64_t)0x1u;
-                    status_after |= (uint64_t)(1u << 10);
-                    if (status_after != status_before)
-                        uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &status_after);
-
-                    m->rtc.rtcint |= RTCINT_ELAPSEDTIME_INT;
-                    m->icu.msysint1 |= ICU_SRC1_ETIME;
-                    icu_assert(&m->icu, ICU_SRC1_ETIME);
-                    update_irq_lines(m);
-                    inject_hw_irq_if_pending(m);
-                    stall_episode_kicked = true;
-                    if (m->cfg.log_wince_stall) {
-                        fprintf(stderr,
-                                "[WINCE_IRQ_KICK] PC=0x%08X"
-                                " rtcint=0x%04X sys1=0x%04X m1=0x%04X"
-                                " status_before=0x%08X status_after=0x%08X\n",
-                                pc32,
-                                m->rtc.rtcint,
-                                m->icu.sysint1,
-                                m->icu.msysint1,
-                                (uint32_t)status_before,
-                                (uint32_t)status_after);
-                    }
                 }
             }
         }
