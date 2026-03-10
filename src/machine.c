@@ -489,9 +489,13 @@ static bool alias_write_sync_hook(uc_engine *uc, uc_mem_type type,
 }
 
 #define WINCE_TRACE_VEC_PA_START UINT32_C(0x00000000)
-#define WINCE_TRACE_VEC_PA_END   UINT32_C(0x00000200)
-#define WINCE_TRACE_CTX_PA_START UINT32_C(0x00002200)
-#define WINCE_TRACE_CTX_PA_END   UINT32_C(0x00002300)
+#define WINCE_TRACE_VEC_PA_END   UINT32_C(0x00000400)
+#define WINCE_TRACE_CTX_PA_START UINT32_C(0x00002000)
+#define WINCE_TRACE_CTX_PA_END   UINT32_C(0x00002400)
+#define WINCE_TRACE_CB_PA_START  UINT32_C(0x00051680)
+#define WINCE_TRACE_CB_PA_END    UINT32_C(0x00051B00)
+#define WINCE_TRACE_OBJ_PA_START UINT32_C(0x0066BFC0)
+#define WINCE_TRACE_OBJ_PA_END   UINT32_C(0x00680000)
 
 static inline bool write_value_is_zero(unsigned size, uint64_t value)
 {
@@ -565,6 +569,34 @@ static bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
     } else if (pa >= WINCE_TRACE_CTX_PA_START && pa < WINCE_TRACE_CTX_PA_END) {
         wince_pa_watch_update(m, &m->wince_ctx_watch, "ctx2200",
                               pa, pc, (unsigned)size, uval);
+    } else if (pa >= WINCE_TRACE_CB_PA_START && pa < WINCE_TRACE_CB_PA_END) {
+        bool is_zero = write_value_is_zero((unsigned)size, uval);
+        m->wince_cb_writes++;
+        if (!is_zero)
+            m->wince_cb_nonzero = true;
+        if (m->cfg.log_wince_stall && m->wince_pa_watch_logs < 192u) {
+            fprintf(stderr,
+                    "[WINCE_CB_WATCH] writes=%u nonzero=%u"
+                    " pa=0x%08X pc=0x%08X size=%u val=0x%016" PRIX64 "\n",
+                    m->wince_cb_writes,
+                    m->wince_cb_nonzero ? 1u : 0u,
+                    pa, pc, (unsigned)size, uval);
+            m->wince_pa_watch_logs++;
+        }
+    } else if (pa >= WINCE_TRACE_OBJ_PA_START && pa < WINCE_TRACE_OBJ_PA_END) {
+        bool is_zero = write_value_is_zero((unsigned)size, uval);
+        m->wince_obj_writes++;
+        if (!is_zero)
+            m->wince_obj_nonzero = true;
+        if (m->cfg.log_wince_stall && m->wince_pa_watch_logs < 224u) {
+            fprintf(stderr,
+                    "[WINCE_OBJ_WATCH] writes=%u nonzero=%u"
+                    " pa=0x%08X pc=0x%08X size=%u val=0x%016" PRIX64 "\n",
+                    m->wince_obj_writes,
+                    m->wince_obj_nonzero ? 1u : 0u,
+                    pa, pc, (unsigned)size, uval);
+            m->wince_pa_watch_logs++;
+        }
     }
 
     return true;
@@ -596,6 +628,25 @@ static void log_wince_pa_watch_summary(const machine_t *m, const char *reason)
                 w->first_pc, w->first_pa, (unsigned)w->first_size, w->first_value,
                 w->last_pc, w->last_pa, (unsigned)w->last_size, w->last_value);
     }
+}
+
+static void log_wince_pa_watch_nonzero(const machine_t *m, const char *reason)
+{
+    if (!m || !m->wince_pa_watch_active)
+        return;
+    fprintf(stderr,
+            "[WINCE_PA_WATCH_NONZERO] reason=%s vectors_nonzero=%u"
+            " ctx_nonzero=%u vectors_writes=%u ctx_writes=%u"
+            " cb_nonzero=%u cb_writes=%u obj_nonzero=%u obj_writes=%u\n",
+            reason,
+            m->wince_vec_watch.saw_nonzero ? 1u : 0u,
+            m->wince_ctx_watch.saw_nonzero ? 1u : 0u,
+            m->wince_vec_watch.writes,
+            m->wince_ctx_watch.writes,
+            m->wince_cb_nonzero ? 1u : 0u,
+            m->wince_cb_writes,
+            m->wince_obj_nonzero ? 1u : 0u,
+            m->wince_obj_writes);
 }
 
 #define WINCE_NK_TRACE_BASE UINT32_C(0x80020000)
@@ -723,7 +774,7 @@ static void log_wince_ctrl_hist_summary(const machine_t *m,
 
 static bool pc_in_wince_ctx_range(uint32_t pc32)
 {
-    if (pc32 >= 0x80079640u && pc32 <= 0x800798A0u)
+    if (pc32 >= 0x80079580u && pc32 <= 0x800798A0u)
         return true;
     if (pc32 >= 0x80032530u && pc32 <= 0x80032790u)
         return true;
@@ -733,11 +784,19 @@ static bool pc_in_wince_ctx_range(uint32_t pc32)
 static const char *wince_ctx_key_tag(uint32_t pc32)
 {
     switch (pc32) {
+    case 0x80079640u: return "ALL_call_5e70";
+    case 0x80079648u: return "ALL_call_5fec";
+    case 0x80079650u: return "ALL_call_7aaac";
+    case 0x80079658u: return "ALL_call_7a65c";
     case 0x80079660u: return "ALL_pre_ctx_call";
     case 0x80079844u: return "ALL_ctx_fn_entry";
     case 0x80079890u: return "ALL_ctx_fn_return";
     case 0x80079668u: return "ALL_after_ctx_fn";
     case 0x80079714u: return "ALL_mtc0_status";
+    case 0x80032530u: return "NET_call_16f20";
+    case 0x80032538u: return "NET_call_17008";
+    case 0x80032540u: return "NET_call_17388";
+    case 0x80032548u: return "NET_call_1354C";
     case 0x80032550u: return "NET_pre_ctx_call";
     case 0x80032734u: return "NET_ctx_fn_entry";
     case 0x80032780u: return "NET_ctx_fn_return";
@@ -745,6 +804,105 @@ static const char *wince_ctx_key_tag(uint32_t pc32)
     case 0x800326C4u: return "NET_mtc0_status";
     default: return NULL;
     }
+}
+
+static const char *wince_ctx_phase_tag(uint32_t pc32)
+{
+    switch (pc32) {
+    case 0x80079640u: return "ALL_call_5e70";
+    case 0x80079648u: return "ALL_call_5fec";
+    case 0x80079650u: return "ALL_call_7aaac";
+    case 0x80079658u: return "ALL_call_7a65c";
+    case 0x80079660u: return "ALL_pre_ctx_call";
+    case 0x80079844u: return "ALL_ctx_fn_entry";
+    case 0x80079890u: return "ALL_ctx_fn_return";
+    case 0x80079668u: return "ALL_post_ctx_call";
+    case 0x80079714u: return "ALL_mtc0_status";
+    case 0x80032530u: return "NET_call_16f20";
+    case 0x80032538u: return "NET_call_17008";
+    case 0x80032540u: return "NET_call_17388";
+    case 0x80032548u: return "NET_call_1354C";
+    case 0x80032550u: return "NET_pre_ctx_call";
+    case 0x80032734u: return "NET_ctx_fn_entry";
+    case 0x80032780u: return "NET_ctx_fn_return";
+    case 0x80032558u: return "NET_post_ctx_call";
+    case 0x800326C4u: return "NET_mtc0_status";
+    default: return NULL;
+    }
+}
+
+static bool wince_ctx_branch_track_slot(uint32_t pc32, uint16_t **count_out)
+{
+    enum { MAX_BRANCH_SITES = 16 };
+    static struct {
+        uint32_t pc;
+        uint16_t count;
+    } sites[MAX_BRANCH_SITES];
+
+    int found = -1;
+    int empty = -1;
+    for (int i = 0; i < MAX_BRANCH_SITES; i++) {
+        if (sites[i].count != 0u && sites[i].pc == pc32) {
+            found = i;
+            break;
+        }
+        if (sites[i].count == 0u && empty < 0)
+            empty = i;
+    }
+    if (found < 0) {
+        if (empty < 0)
+            return false;
+        sites[empty].pc = pc32;
+        sites[empty].count = 0u;
+        found = empty;
+    }
+    if (count_out)
+        *count_out = &sites[found].count;
+    return true;
+}
+
+static void log_wince_words32(uc_engine *uc, const char *tag,
+                              uint32_t base, unsigned words);
+
+static bool ptr_in_sdram(const machine_t *m, uint32_t ptr32)
+{
+    return ((ptr32 & UINT32_C(0x1FFFFFFF)) < m->cfg.sdram_size);
+}
+
+static void log_wince_ctx_snapshot(machine_t *m, uc_engine *uc,
+                                   const char *phase, uint32_t pc32)
+{
+    uint64_t a0 = 0, a1 = 0, t0 = 0, t1 = 0, s0 = 0, s1 = 0, v0 = 0, v1 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+    uc_reg_read(uc, UC_MIPS_REG_T1, &t1);
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+
+    uint32_t a0p = (uint32_t)a0;
+    uint32_t a1p = (uint32_t)a1;
+    uint32_t t0p = (uint32_t)t0;
+    uint32_t t1p = (uint32_t)t1;
+
+    fprintf(stderr,
+            "[WINCE_CTX_SNAPSHOT] phase=%s pc=0x%08X"
+            " dst(a0)=0x%08X src(a1)=0x%08X alt_t0=0x%08X alt_t1=0x%08X"
+            " s0=0x%08X s1=0x%08X v0=0x%08X v1=0x%08X\n",
+            phase, pc32, a0p, a1p, t0p, t1p,
+            (uint32_t)s0, (uint32_t)s1, (uint32_t)v0, (uint32_t)v1);
+
+    if (ptr_in_sdram(m, a0p))
+        log_wince_words32(uc, "dst_a0", a0p, 8u);
+    if (ptr_in_sdram(m, a1p))
+        log_wince_words32(uc, "src_a1", a1p, 8u);
+    if (t0p != a0p && ptr_in_sdram(m, t0p))
+        log_wince_words32(uc, "alt_t0", t0p, 8u);
+    if (t1p != a1p && ptr_in_sdram(m, t1p))
+        log_wince_words32(uc, "alt_t1", t1p, 8u);
+    log_wince_words32(uc, "ctx_tbl", 0xA0051680u, 8u);
 }
 
 static void log_wince_words32(uc_engine *uc, const char *tag,
@@ -837,7 +995,7 @@ static void maybe_probe_wince_ctx_path(machine_t *m, uc_engine *uc,
         return;
     if (!pc_in_wince_ctx_range(pc32))
         return;
-    if (m->wince_ctx_probe_logs >= 512u)
+    if (m->wince_ctx_probe_logs >= 1024u)
         return;
 
     const char *tag = wince_ctx_key_tag(pc32);
@@ -850,6 +1008,12 @@ static void maybe_probe_wince_ctx_path(machine_t *m, uc_engine *uc,
         return;
 
     if (is_branch) {
+        uint16_t *site_count = NULL;
+        if (!wince_ctx_branch_track_slot(pc32, &site_count))
+            return;
+        if (site_count == NULL || *site_count >= 8u)
+            return;
+
         bool taken = false;
         uint32_t target = 0, fallthrough = 0, rs_val = 0, rt_val = 0;
         if (decode_branch_decision(uc, pc32, insn, op, rs, rt,
@@ -862,6 +1026,7 @@ static void maybe_probe_wince_ctx_path(machine_t *m, uc_engine *uc,
                     pc32, insn, rs, rs_val, rt, rt_val,
                     taken ? 1u : 0u, target, fallthrough);
             m->wince_ctx_probe_logs++;
+            (*site_count)++;
         }
         return;
     }
@@ -898,7 +1063,13 @@ static void maybe_probe_wince_ctx_path(machine_t *m, uc_engine *uc,
                 (uint32_t)v0, (uint32_t)v1, (uint32_t)status);
         m->wince_ctx_probe_logs++;
 
-        if (m->wince_ctx_probe_logs >= 512u)
+        const char *phase = wince_ctx_phase_tag(pc32);
+        if (phase != NULL) {
+            log_wince_ctx_snapshot(m, uc, phase, pc32);
+            m->wince_ctx_probe_logs += 4u;
+        }
+
+        if (m->wince_ctx_probe_logs >= 1024u)
             return;
         if (((uint32_t)a0 & 0x1FFFFFFFu) < m->cfg.sdram_size)
             log_wince_words32(uc, "a0_ptr", (uint32_t)a0, 8u);
@@ -3149,6 +3320,24 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t insn = 0;
     if (!read_insn_best_effort(uc, address, &insn))
         return;
+
+    if (is_wince_boot_machine(m) && !m->wince_nk_epoch_reset_done) {
+        uint32_t pc32 = (uint32_t)address;
+        if (pc32 >= WINCE_NK_TRACE_BASE && pc32 < WINCE_NK_TRACE_END) {
+            m->wince_nk_epoch_reset_done = true;
+            m->rtc.etime = 0;
+            m->rtc.etime_latched = 0;
+            m->rtc.etime_reads = 0;
+            m->rtc.etime_read_step = 1;
+            if (m->cfg.log_wince_stall) {
+                fprintf(stderr,
+                        "[WINCE_RTC_MODE] nk_epoch_reset pc=0x%08X"
+                        " etime=0 step=%u\n",
+                        pc32, m->rtc.etime_read_step);
+            }
+        }
+    }
+
     uint32_t op  = (insn >> 26) & 0x3Fu;
     uint32_t rs  = (insn >> 21) & 0x1Fu;
     uint32_t rt  = (insn >> 16) & 0x1Fu;
@@ -4423,6 +4612,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
                     " STATUS=0x%08" PRIX64 "\n",
                     intno, ra32, m->wince_null_consecutive,
                     WINCE_NULL_RECOVER_CAP, (uint64_t)(uint32_t)status);
+            log_wince_pa_watch_nonzero(m, "NULL_BAILOUT");
             machine_stop(m);
             uc_emu_stop(uc);
             return true;
@@ -4510,6 +4700,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             ") last_exec_pc=0x%08" PRIX64 " — stopping\n",
             (uint64_t)(uint32_t)ra,
             (uint64_t)(uint32_t)m->last_exec_pc);
+    log_wince_pa_watch_nonzero(m, "NULL_POSTMORTEM");
     log_wince_pa_watch_summary(m, "NULL_POSTMORTEM");
     log_wince_ctrl_hist_summary(m, "NULL_POSTMORTEM", 64u);
 
@@ -4535,13 +4726,65 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             { 0x00000100, "exception_vectors+0x100" },
             { 0x00000180, "exception_vectors+0x180" },
             { 0x00002200, "context_block" },
+            { 0x80079580, "ctx_caller_0x80079580" },
+            { 0x800795C0, "ctx_caller_0x800795C0" },
+            { 0x80079600, "ctx_caller_0x80079600" },
+            { 0x80079640, "ctx_path_0x80079640" },
+            { 0x80079680, "ctx_path_0x80079680" },
+            { 0x80079700, "ctx_path_0x80079700" },
+            { 0x80079780, "ctx_path_0x80079780" },
+            { 0x80079840, "ctx_path_0x80079840" },
+            { 0x80079880, "ctx_path_0x80079880" },
+            { 0x80077DC0, "ctx_caller_0x80077DC0" },
+            { 0x80077E28, "ctx_caller_0x80077E28" },
+            { 0x800781C0, "ctx_caller_0x800781C0" },
+            { 0x80078200, "ctx_caller_0x80078200" },
+            { 0x80078BA0, "ctx_caller_0x80078BC0" },
+            { 0x80077FC0, "ctx_caller_0x80077FE4" },
+            { 0x80079A80, "ctx_caller_0x80079AC4" },
+            { 0x80079DD0, "ctx_caller_0x80079DF8" },
+            { 0x8007AF80, "ctx_caller_0x8007AFA8" },
+            { 0x800A7D40, "ctx_caller_0x800A7D64" },
+            { 0x80660000, "ctx_objptr_0x80660000" },
+            { 0x8067BFC0, "ctx_obj_0x8067BFC0" },
+            { 0x8007A650, "ctx_callee_0x8007A65C" },
+            { 0x8007AAA0, "ctx_callee_0x8007AAAC" },
+            { 0x800A5E60, "ctx_callee_0x800A5E70" },
+            { 0x800A5FE0, "ctx_callee_0x800A5FEC" },
+            { 0x800A7640, "ctx_callee_0x800A7650" },
+            { 0x800A7DC0, "ctx_callee_0x800A7DCC" },
+            { 0xA0051680, "ctx_table_0xA0051680" },
+            { 0x007E9000, "ctx_src_0x007E9000" },
+            { 0xA0003800, "ctx_stack_0xA0003800" },
         };
-        for (int r = 0; r < 4; r++) {
-            uint8_t mc[64];
-            if (uc_mem_read(uc, (uint64_t)mem_regions[r].pa, mc, 64) == UC_ERR_OK) {
+        size_t region_count = sizeof(mem_regions) / sizeof(mem_regions[0]);
+        for (size_t r = 0; r < region_count; r++) {
+            size_t dump_len = 64u;
+            if (mem_regions[r].pa == 0x8007A650u ||
+                mem_regions[r].pa == 0x8007AAA0u ||
+                mem_regions[r].pa == 0x800A5E60u ||
+                mem_regions[r].pa == 0x800A5FE0u ||
+                mem_regions[r].pa == 0x800A7640u ||
+                mem_regions[r].pa == 0x800A7DC0u ||
+                mem_regions[r].pa == 0x80078BA0u ||
+                mem_regions[r].pa == 0x80077FC0u ||
+                mem_regions[r].pa == 0x80077DC0u ||
+                mem_regions[r].pa == 0x80077E28u ||
+                mem_regions[r].pa == 0x800781C0u ||
+                mem_regions[r].pa == 0x80078200u ||
+                mem_regions[r].pa == 0x80079A80u ||
+                mem_regions[r].pa == 0x80079DD0u ||
+                mem_regions[r].pa == 0x8007AF80u ||
+                mem_regions[r].pa == 0x800A7D40u) {
+                dump_len = 512u;
+            } else if (mem_regions[r].pa >= 0x80000000u) {
+                dump_len = 128u;
+            }
+            uint8_t mc[512];
+            if (uc_mem_read(uc, (uint64_t)mem_regions[r].pa, mc, dump_len) == UC_ERR_OK) {
                 fprintf(stderr, "[WINCE_NULL_POSTMORTEM] %s PA=0x%08X hex=",
                         mem_regions[r].name, mem_regions[r].pa);
-                for (int b = 0; b < 64; b++)
+                for (size_t b = 0; b < dump_len; b++)
                     fprintf(stderr, "%02X", mc[b]);
                 fprintf(stderr, "\n");
             }
@@ -6800,28 +7043,44 @@ machine_t *machine_create(const machine_config_t *cfg)
             UINT64_C(0xFFFFFFFF80000000),
             UINT64_C(0xFFFFFFFFA0000000),
         };
-        uint64_t start_off = 0u;
-        uint64_t end_off = (uint64_t)WINCE_TRACE_CTX_PA_END - 1u;
+        static const struct {
+            uint32_t start;
+            uint32_t end; /* inclusive */
+            const char *name;
+        } watch_ranges[] = {
+            { WINCE_TRACE_VEC_PA_START, WINCE_TRACE_CTX_PA_END - 1u, "vec_ctx" },
+            { WINCE_TRACE_CB_PA_START,  WINCE_TRACE_CB_PA_END - 1u,  "cb_tbl" },
+            { WINCE_TRACE_OBJ_PA_START, WINCE_TRACE_OBJ_PA_END - 1u, "obj" },
+        };
         bool watch_ok = true;
-        for (unsigned i = 0; i < sizeof(watch_bases) / sizeof(watch_bases[0]); i++) {
-            uc_err hw = uc_hook_add(m->uc, &hk, UC_HOOK_MEM_WRITE,
-                                    wince_pa_watch_write_hook, m,
-                                    watch_bases[i] + start_off,
-                                    watch_bases[i] + end_off);
-            if (hw != UC_ERR_OK) {
-                watch_ok = false;
-                fprintf(stderr,
-                        "[WINCE_PA_WATCH] hook failed base=0x%016" PRIX64 ": %s\n",
-                        watch_bases[i], uc_strerror(hw));
+        for (unsigned r = 0; r < sizeof(watch_ranges) / sizeof(watch_ranges[0]); r++) {
+            uint64_t start_off = watch_ranges[r].start;
+            uint64_t end_off = watch_ranges[r].end;
+            for (unsigned i = 0; i < sizeof(watch_bases) / sizeof(watch_bases[0]); i++) {
+                uc_err hw = uc_hook_add(m->uc, &hk, UC_HOOK_MEM_WRITE,
+                                        wince_pa_watch_write_hook, m,
+                                        watch_bases[i] + start_off,
+                                        watch_bases[i] + end_off);
+                if (hw != UC_ERR_OK) {
+                    watch_ok = false;
+                    fprintf(stderr,
+                            "[WINCE_PA_WATCH] hook failed range=%s base=0x%016" PRIX64
+                            " start=0x%08" PRIX64 " end=0x%08" PRIX64 ": %s\n",
+                            watch_ranges[r].name, watch_bases[i], start_off, end_off,
+                            uc_strerror(hw));
+                }
             }
         }
         if (watch_ok) {
             m->wince_pa_watch_active = true;
             fprintf(stderr,
                     "[WINCE_PA_WATCH] enabled ranges"
-                    " vec=0x%08X-0x%08X ctx=0x%08X-0x%08X aliases=5\n",
+                    " vec=0x%08X-0x%08X ctx=0x%08X-0x%08X"
+                    " cb=0x%08X-0x%08X obj=0x%08X-0x%08X aliases=5\n",
                     WINCE_TRACE_VEC_PA_START, WINCE_TRACE_VEC_PA_END - 1u,
-                    WINCE_TRACE_CTX_PA_START, WINCE_TRACE_CTX_PA_END - 1u);
+                    WINCE_TRACE_CTX_PA_START, WINCE_TRACE_CTX_PA_END - 1u,
+                    WINCE_TRACE_CB_PA_START, WINCE_TRACE_CB_PA_END - 1u,
+                    WINCE_TRACE_OBJ_PA_START, WINCE_TRACE_OBJ_PA_END - 1u);
         }
     }
 
