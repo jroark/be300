@@ -9,8 +9,12 @@ static inline void rtc_update_elapsed_irq(rtc_state_t *s)
 
 void rtc_init(rtc_state_t *s)
 {
-    s->etime = 0;
-    s->etime_latched = 0;
+    /*
+     * Warm-state seed from hardware_survey/HardwareDump6.txt:
+     * ETIMEH/ETIMEM/ETIMEL = 0xA5B3/0x5149/0xBB10.
+     */
+    s->etime = UINT64_C(0xA5B35149BB10);
+    s->etime_latched = s->etime;
     s->etime_reads = 0;
     s->etime_read_step = 1;
     /*

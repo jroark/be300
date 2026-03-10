@@ -125,10 +125,13 @@ static void vrc4173_seed_core_dump_once(void)
     vrc4173_latch_seeded = true;
 
     /*
-     * Warm-state VRC4173 core snapshot from hardware_survey/HardwareDump 2.txt
-     * (PA 0x0A000000, Size 0x100). Seed non-zero words only.
+     * Warm-state VRC4173 snapshot seeds:
+     *  - hardware_survey/HardwareDump 2.txt (legacy low-offset probes)
+     *  - hardware_survey/HardwareDump6.txt (active pages 0x0A008000, 0x0A00A000)
+     * Seed non-zero words only.
      */
     static const vrc4173_seed_word_t seed_words[] = {
+        /* HardwareDump 2: low-offset companion core words. */
         { 0x0008u, 0x00000001u },
         { 0x0010u, 0x0000000Cu }, { 0x0014u, 0x0000000Cu },
         { 0x0018u, 0x0000000Cu }, { 0x0020u, 0x0000000Cu },
@@ -141,6 +144,55 @@ static void vrc4173_seed_core_dump_once(void)
         { 0x00A8u, 0x0000000Cu }, { 0x00ACu, 0x0000000Cu },
         { 0x00B0u, 0x0000000Cu }, { 0x00B4u, 0x0000003Cu },
         { 0x00C0u, 0x0000000Cu },
+
+        /* HardwareDump6: PA 0x0A008000 page (bridge/config identity). */
+        { 0x08000u, 0x0000200Cu },
+        { 0x08004u, 0x00001100u },
+        { 0x08010u, 0x0000000Cu },
+        { 0x08014u, 0x00000002u },
+        { 0x08040u, 0x0000000Au },
+
+        /* HardwareDump6: PA 0x0A00A000 page (functional core). */
+        { 0x0A000u, 0x0000000Bu },
+        { 0x0A004u, 0x00000004u },
+        { 0x0A008u, 0x000002F9u },
+        { 0x0A010u, 0x00001073u },
+        { 0x0A014u, 0x00001061u },
+        { 0x0A018u, 0x000010B1u },
+        { 0x0A01Cu, 0x00000004u },
+        { 0x0A020u, 0x00000078u },
+        { 0x0A024u, 0x00000040u },
+        { 0x0A030u, 0x00000040u },
+        { 0x0A034u, 0x0000000Cu },
+        { 0x0A040u, 0x00009EFFu },
+        { 0x0A060u, 0x000C000Cu }, { 0x0A064u, 0x000C000Cu },
+        { 0x0A068u, 0x000C000Cu }, { 0x0A06Cu, 0x000C000Cu },
+        { 0x0A070u, 0x000C000Cu }, { 0x0A074u, 0x000C000Cu },
+        { 0x0A078u, 0x000C000Cu }, { 0x0A07Cu, 0x000C000Cu },
+        { 0x0A084u, 0x00000001u },
+        { 0x0A08Cu, 0x00007100u },
+        { 0x0A090u, 0x00007100u }, { 0x0A094u, 0x00007100u },
+        { 0x0A098u, 0x00007100u }, { 0x0A09Cu, 0x00007100u },
+        { 0x0A0A0u, 0x00007100u }, { 0x0A0A4u, 0x00007100u },
+        { 0x0A0A8u, 0x00007100u }, { 0x0A0ACu, 0x00007100u },
+        { 0x0A0B0u, 0x00007100u }, { 0x0A0B4u, 0x00007100u },
+        { 0x0A0B8u, 0x00007100u }, { 0x0A0BCu, 0x00007100u },
+        { 0x0A0C0u, 0x00007100u },
+        { 0x0A0C4u, 0x00000003u },
+        { 0x0A0C8u, 0x0000FFFFu },
+        { 0x0A0D0u, 0x00000002u },
+        { 0x0A0DCu, 0x00000005u },
+        { 0x0A0E0u, 0x00000041u },
+        { 0x0A0E4u, 0x0000000Fu },
+        { 0x0A0F4u, 0x00007100u },
+        { 0x0A0F8u, 0x00007100u },
+        { 0x0A0FCu, 0x00007100u },
+        { 0x0A140u, 0x00000001u },
+        { 0x0A19Cu, 0x00000001u },
+        { 0x0A1A0u, 0x00000001u },
+        { 0x0A1A4u, 0x00000001u },
+        { 0x0A1C8u, 0x00000001u },
+        { 0x0A1CCu, 0x00000040u },
     };
 
     for (unsigned i = 0; i < (sizeof(seed_words) / sizeof(seed_words[0])); i++)
