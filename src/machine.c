@@ -33,6 +33,8 @@ static inline bool is_wince_boot_machine(const machine_t *m)
     return m != NULL && is_wince_boot_cfg(&m->cfg);
 }
 
+static bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out);
+
 static bool sdram_alias_pa_offset(const machine_t *m, uint64_t addr, uint64_t *off_out)
 {
     uint64_t sdram_size = (uint64_t)m->cfg.sdram_size;
@@ -716,6 +718,196 @@ static void log_wince_ctrl_hist_summary(const machine_t *m,
                     " ra=0x%08X sp=0x%08X a0=0x%08X\n",
                     i, kind, e->pc, e->target, e->ra, e->sp, e->a0);
         }
+    }
+}
+
+static bool pc_in_wince_ctx_range(uint32_t pc32)
+{
+    if (pc32 >= 0x80079640u && pc32 <= 0x800798A0u)
+        return true;
+    if (pc32 >= 0x80032530u && pc32 <= 0x80032790u)
+        return true;
+    return false;
+}
+
+static const char *wince_ctx_key_tag(uint32_t pc32)
+{
+    switch (pc32) {
+    case 0x80079660u: return "ALL_pre_ctx_call";
+    case 0x80079844u: return "ALL_ctx_fn_entry";
+    case 0x80079890u: return "ALL_ctx_fn_return";
+    case 0x80079668u: return "ALL_after_ctx_fn";
+    case 0x80079714u: return "ALL_mtc0_status";
+    case 0x80032550u: return "NET_pre_ctx_call";
+    case 0x80032734u: return "NET_ctx_fn_entry";
+    case 0x80032780u: return "NET_ctx_fn_return";
+    case 0x80032558u: return "NET_after_ctx_fn";
+    case 0x800326C4u: return "NET_mtc0_status";
+    default: return NULL;
+    }
+}
+
+static void log_wince_words32(uc_engine *uc, const char *tag,
+                              uint32_t base, unsigned words)
+{
+    if (words == 0u)
+        return;
+    if (words > 8u)
+        words = 8u;
+
+    fprintf(stderr, "[WINCE_CTX_MEM] %s base=0x%08X", tag, base);
+    for (unsigned i = 0; i < words; i++) {
+        uint32_t w = 0;
+        if (read_guest_u32(uc, (uint64_t)base + (uint64_t)(i * 4u), &w)) {
+            fprintf(stderr, " w%u=0x%08X", i, w);
+        } else {
+            fprintf(stderr, " w%u=????", i);
+        }
+    }
+    fprintf(stderr, "\n");
+}
+
+static bool decode_branch_decision(uc_engine *uc, uint32_t pc32, uint32_t insn,
+                                   uint32_t op, uint32_t rs, uint32_t rt,
+                                   bool *taken_out, uint32_t *target_out,
+                                   uint32_t *fallthrough_out,
+                                   uint32_t *rs_val_out, uint32_t *rt_val_out)
+{
+    int32_t imm = (int16_t)(insn & 0xFFFFu);
+    uint32_t fallthrough = pc32 + 4u;
+    uint32_t target = fallthrough + (uint32_t)(imm << 2);
+    uint64_t rs64 = 0, rt64 = 0;
+    bool known = true;
+    bool taken = false;
+
+    uc_reg_read(uc, UC_MIPS_REG_0 + (int)rs, &rs64);
+    uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &rt64);
+    uint32_t rs_val = (uint32_t)rs64;
+    uint32_t rt_val = (uint32_t)rt64;
+
+    switch (op) {
+    case 0x04u: /* BEQ */
+        taken = (rs_val == rt_val);
+        break;
+    case 0x05u: /* BNE */
+        taken = (rs_val != rt_val);
+        break;
+    case 0x06u: /* BLEZ */
+        taken = ((int32_t)rs_val <= 0);
+        break;
+    case 0x07u: /* BGTZ */
+        taken = ((int32_t)rs_val > 0);
+        break;
+    case 0x01u: /* REGIMM */
+        switch (rt) {
+        case 0x00u: /* BLTZ */
+        case 0x10u: /* BLTZAL */
+            taken = ((int32_t)rs_val < 0);
+            break;
+        case 0x01u: /* BGEZ */
+        case 0x11u: /* BGEZAL */
+            taken = ((int32_t)rs_val >= 0);
+            break;
+        default:
+            known = false;
+            break;
+        }
+        break;
+    default:
+        known = false;
+        break;
+    }
+
+    if (!known)
+        return false;
+    if (taken_out) *taken_out = taken;
+    if (target_out) *target_out = target;
+    if (fallthrough_out) *fallthrough_out = fallthrough;
+    if (rs_val_out) *rs_val_out = rs_val;
+    if (rt_val_out) *rt_val_out = rt_val;
+    return true;
+}
+
+static void maybe_probe_wince_ctx_path(machine_t *m, uc_engine *uc,
+                                       uint32_t pc32, uint32_t insn,
+                                       uint32_t op, uint32_t rs,
+                                       uint32_t rt, uint32_t rd, uint32_t sel)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+    if (!pc_in_wince_ctx_range(pc32))
+        return;
+    if (m->wince_ctx_probe_logs >= 512u)
+        return;
+
+    const char *tag = wince_ctx_key_tag(pc32);
+    bool is_key = (tag != NULL);
+    bool is_branch = (op == 0x01u || op == 0x04u || op == 0x05u ||
+                      op == 0x06u || op == 0x07u);
+    bool is_mtc0_status = (op == 0x10u && rs == 0x04u && rd == 12u && sel == 0u);
+
+    if (!is_key && !is_branch && !is_mtc0_status)
+        return;
+
+    if (is_branch) {
+        bool taken = false;
+        uint32_t target = 0, fallthrough = 0, rs_val = 0, rt_val = 0;
+        if (decode_branch_decision(uc, pc32, insn, op, rs, rt,
+                                   &taken, &target, &fallthrough,
+                                   &rs_val, &rt_val)) {
+            fprintf(stderr,
+                    "[WINCE_CTX_BRANCH] pc=0x%08X insn=0x%08X"
+                    " rs=$%u:0x%08X rt=$%u:0x%08X taken=%u"
+                    " target=0x%08X fallthrough=0x%08X\n",
+                    pc32, insn, rs, rs_val, rt, rt_val,
+                    taken ? 1u : 0u, target, fallthrough);
+            m->wince_ctx_probe_logs++;
+        }
+        return;
+    }
+
+    if (is_key || is_mtc0_status) {
+        uint64_t ra = 0, sp = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+        uint64_t t0 = 0, t1 = 0, v0 = 0, v1 = 0, s0 = 0, s1 = 0;
+        uint64_t status = 0;
+        uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+        uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+        uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+        uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+        uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+        uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+        uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+        uc_reg_read(uc, UC_MIPS_REG_T1, &t1);
+        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+        uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+        uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+        uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+        uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+        const char *name = tag ? tag : "MTC0_STATUS";
+        fprintf(stderr,
+                "[WINCE_CTX_PROBE] tag=%s pc=0x%08X insn=0x%08X"
+                " ra=0x%08X sp=0x%08X"
+                " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+                " t0=0x%08X t1=0x%08X s0=0x%08X s1=0x%08X"
+                " v0=0x%08X v1=0x%08X status=0x%08X\n",
+                name, pc32, insn,
+                (uint32_t)ra, (uint32_t)sp,
+                (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+                (uint32_t)t0, (uint32_t)t1, (uint32_t)s0, (uint32_t)s1,
+                (uint32_t)v0, (uint32_t)v1, (uint32_t)status);
+        m->wince_ctx_probe_logs++;
+
+        if (m->wince_ctx_probe_logs >= 512u)
+            return;
+        if (((uint32_t)a0 & 0x1FFFFFFFu) < m->cfg.sdram_size)
+            log_wince_words32(uc, "a0_ptr", (uint32_t)a0, 8u);
+        if (((uint32_t)t0 & 0x1FFFFFFFu) < m->cfg.sdram_size &&
+            ((uint32_t)t0 != (uint32_t)a0))
+            log_wince_words32(uc, "t0_ptr", (uint32_t)t0, 8u);
+        log_wince_words32(uc, "ctx2200", 0xA0002200u, 8u);
+        log_wince_words32(uc, "vec0000", 0xA0000000u, 8u);
+        m->wince_ctx_probe_logs += 4u;
     }
 }
 
@@ -2965,6 +3157,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 
     maybe_record_wince_ctrl_event(m, uc, (uint32_t)address,
                                   insn, op, rs, rt, rd, sel);
+    maybe_probe_wince_ctx_path(m, uc, (uint32_t)address,
+                               insn, op, rs, rt, rd, sel);
 
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */

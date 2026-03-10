@@ -140,6 +140,7 @@ struct machine_s {
     wince_ctrl_hist_entry_t wince_ctrl_hist[WINCE_CTRL_HISTORY_LEN];
     uint32_t wince_ctrl_hist_head;
     uint32_t wince_ctrl_hist_count;
+    uint32_t wince_ctx_probe_logs;
     uint32_t wince_null_last_ra;
     uint32_t wince_null_last_intno;
     uint32_t wince_null_consecutive;
