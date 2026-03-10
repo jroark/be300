@@ -2850,6 +2850,20 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         }
     }
 
+    /* Simulate CP0 Count register ($9).
+     * Unicorn does not auto-increment CP0 Count, so MFC0 rt,$9 always
+     * returns 0.  WinCE (and some Linux paths) use Count-based busy-wait
+     * loops that spin forever without this.  We derive a monotonic count
+     * from insn_count, scaling by 2 to approximate "one count tick per
+     * two instructions" (roughly matching a single-issue pipeline). */
+    if (op == 0x10u && rs == 0u && rd == 9u && sel == 0u) {
+        uint64_t count_val = (uint64_t)(uint32_t)(m->insn_count / 2u);
+        uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &count_val);
+        uint64_t next_pc = address + 4u;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
     /* Always capture MFC0 BadVAddr (rd=8) via deferred readback so that
      * shadow_cp0_badvaddr is current when TLBWI fires.  This is needed for
      * the tlb_map_kuseg_page call even before tlb_trace_window is active. */
@@ -5829,22 +5843,73 @@ static void log_wince_stall_dump(machine_t *m, uint32_t pc32)
 
     if (m->mmio_hist_count == 0) {
         fprintf(stderr, "[WINCE_STALL_MMIO] (empty)\n");
-        return;
+    } else {
+        uint32_t oldest = (m->mmio_hist_head + WINCE_MMIO_HISTORY_LEN - m->mmio_hist_count)
+                        % WINCE_MMIO_HISTORY_LEN;
+        for (uint32_t i = 0; i < m->mmio_hist_count; i++) {
+            uint32_t idx = (oldest + i) % WINCE_MMIO_HISTORY_LEN;
+            const mmio_hist_entry_t *e = &m->mmio_hist[idx];
+            fprintf(stderr,
+                    "[WINCE_STALL_MMIO] %02u %c%u PA=0x%08X PC=0x%08X VAL=0x%08" PRIX64 "\n",
+                    i,
+                    e->is_write ? 'W' : 'R',
+                    e->size_bits,
+                    e->pa,
+                    e->pc,
+                    e->value);
+        }
     }
 
-    uint32_t oldest = (m->mmio_hist_head + WINCE_MMIO_HISTORY_LEN - m->mmio_hist_count)
-                    % WINCE_MMIO_HISTORY_LEN;
-    for (uint32_t i = 0; i < m->mmio_hist_count; i++) {
-        uint32_t idx = (oldest + i) % WINCE_MMIO_HISTORY_LEN;
-        const mmio_hist_entry_t *e = &m->mmio_hist[idx];
-        fprintf(stderr,
-                "[WINCE_STALL_MMIO] %02u %c%u PA=0x%08X PC=0x%08X VAL=0x%08" PRIX64 "\n",
-                i,
-                e->is_write ? 'W' : 'R',
-                e->size_bits,
-                e->pa,
-                e->pc,
-                e->value);
+    /* GPR dump: read all 32 general-purpose registers */
+    {
+        static const int gpr_ids[32] = {
+            UC_MIPS_REG_ZERO, UC_MIPS_REG_AT, UC_MIPS_REG_V0, UC_MIPS_REG_V1,
+            UC_MIPS_REG_A0,   UC_MIPS_REG_A1, UC_MIPS_REG_A2, UC_MIPS_REG_A3,
+            UC_MIPS_REG_T0,   UC_MIPS_REG_T1, UC_MIPS_REG_T2, UC_MIPS_REG_T3,
+            UC_MIPS_REG_T4,   UC_MIPS_REG_T5, UC_MIPS_REG_T6, UC_MIPS_REG_T7,
+            UC_MIPS_REG_S0,   UC_MIPS_REG_S1, UC_MIPS_REG_S2, UC_MIPS_REG_S3,
+            UC_MIPS_REG_S4,   UC_MIPS_REG_S5, UC_MIPS_REG_S6, UC_MIPS_REG_S7,
+            UC_MIPS_REG_T8,   UC_MIPS_REG_T9, UC_MIPS_REG_K0, UC_MIPS_REG_K1,
+            UC_MIPS_REG_GP,   UC_MIPS_REG_SP, UC_MIPS_REG_FP, UC_MIPS_REG_RA
+        };
+        static const char *gpr_names[32] = {
+            "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+            "t0",   "t1", "t2", "t3", "t4", "t5", "t6", "t7",
+            "s0",   "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+            "t8",   "t9", "k0", "k1", "gp", "sp", "fp", "ra"
+        };
+        uint64_t gpr_val;
+        for (int i = 0; i < 32; i++) {
+            gpr_val = 0;
+            uc_reg_read(m->uc, gpr_ids[i], &gpr_val);
+            fprintf(stderr, "[WINCE_STALL_GPR] $%-4s = 0x%08X\n",
+                    gpr_names[i], (uint32_t)gpr_val);
+        }
+    }
+
+    /* Code dump: 256 bytes (64 instructions) around the stall PC.
+     * Try VA first (sign-extended kseg0/kseg1), then fall back to PA. */
+    {
+        uint32_t dump_base = pc32 & ~UINT32_C(0xFF);
+        uint32_t dump_pa_base = dump_base & UINT32_C(0x1FFFFFFF);
+        for (uint32_t off = 0; off < 256; off += 64) {
+            uint8_t chunk[64];
+            uint64_t va = (uint64_t)(int32_t)(dump_base + off);
+            uint64_t pa = (uint64_t)(dump_pa_base + off);
+            uc_err merr = uc_mem_read(m->uc, va, chunk, 64);
+            if (merr != UC_ERR_OK)
+                merr = uc_mem_read(m->uc, pa, chunk, 64);
+            if (merr != UC_ERR_OK) {
+                fprintf(stderr, "[WINCE_STALL_MEM] chunk at 0x%08X: READ FAILED\n",
+                        dump_pa_base + off);
+                continue;
+            }
+            fprintf(stderr, "[WINCE_STALL_MEM] base=0x%08X off=0x%02X hex=",
+                    dump_base, off);
+            for (int b = 0; b < 64; b++)
+                fprintf(stderr, "%02X", chunk[b]);
+            fprintf(stderr, "\n");
+        }
     }
 }
 
