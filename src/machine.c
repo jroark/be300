@@ -1082,6 +1082,88 @@ static void maybe_probe_wince_ctx_path(machine_t *m, uc_engine *uc,
     }
 }
 
+static void maybe_probe_wince_bootctx_gate(machine_t *m, uc_engine *uc,
+                                           uint32_t pc32)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+    if (pc32 != 0x80079C70u)
+        return;
+
+    static uint32_t gate_log_count = 0;
+    if (gate_log_count >= 16u)
+        return;
+
+    uint64_t ra = 0, a0 = 0, a1 = 0, v0 = 0, status = 0;
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+    uint32_t boot0 = 0, boot1 = 0, boot2 = 0;
+    uint32_t sig0 = 0, sig1 = 0;
+    bool ok_boot0 = read_guest_u32(uc, 0xA0006000u, &boot0);
+    bool ok_boot1 = read_guest_u32(uc, 0xA0006004u, &boot1);
+    bool ok_boot2 = read_guest_u32(uc, 0xA0006008u, &boot2);
+    bool ok_sig0 = read_guest_u32(uc, 0x800748D0u, &sig0);
+    bool ok_sig1 = read_guest_u32(uc, 0x800748D4u, &sig1);
+
+    bool sig_ok = (ok_boot0 && ok_boot1 && ok_sig0 && ok_sig1 &&
+                   boot0 == sig0 && boot1 == sig1);
+    fprintf(stderr,
+            "[WINCE_BOOTCTX_GATE] pc=0x%08X ra=0x%08X"
+            " a0=0x%08X a1=0x%08X v0=0x%08X status=0x%08X"
+            " boot=[0x%08X 0x%08X 0x%08X] sig=[0x%08X 0x%08X] match=%u"
+            " rd_ok=[%u %u %u %u %u]\n",
+            pc32, (uint32_t)ra,
+            (uint32_t)a0, (uint32_t)a1, (uint32_t)v0, (uint32_t)status,
+            boot0, boot1, boot2, sig0, sig1, sig_ok ? 1u : 0u,
+            ok_boot0 ? 1u : 0u, ok_boot1 ? 1u : 0u, ok_boot2 ? 1u : 0u,
+            ok_sig0 ? 1u : 0u, ok_sig1 ? 1u : 0u);
+    gate_log_count++;
+}
+
+static void maybe_probe_wince_live_call_targets(machine_t *m, uc_engine *uc,
+                                                uint32_t pc32)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+    if (pc32 != 0x80079AC4u && pc32 != 0x8007AFA8u)
+        return;
+
+    static uint8_t seen_79ac4 = 0;
+    static uint8_t seen_7afa8 = 0;
+    if (pc32 == 0x80079AC4u && seen_79ac4)
+        return;
+    if (pc32 == 0x8007AFA8u && seen_7afa8)
+        return;
+
+    uint64_t ra = 0, v0 = 0, t0 = 0, status = 0;
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+    uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0;
+    bool ok0 = read_guest_u32(uc, pc32 + 0u, &w0);
+    bool ok1 = read_guest_u32(uc, pc32 + 4u, &w1);
+    bool ok2 = read_guest_u32(uc, pc32 + 8u, &w2);
+    bool ok3 = read_guest_u32(uc, pc32 + 12u, &w3);
+
+    fprintf(stderr,
+            "[WINCE_LIVE_CALL] pc=0x%08X ra=0x%08X v0=0x%08X t0=0x%08X"
+            " status=0x%08X words=[%08X %08X %08X %08X] ok=[%u %u %u %u]\n",
+            pc32, (uint32_t)ra, (uint32_t)v0, (uint32_t)t0, (uint32_t)status,
+            w0, w1, w2, w3,
+            ok0 ? 1u : 0u, ok1 ? 1u : 0u, ok2 ? 1u : 0u, ok3 ? 1u : 0u);
+
+    if (pc32 == 0x80079AC4u)
+        seen_79ac4 = 1;
+    else
+        seen_7afa8 = 1;
+}
+
 static void alias_coherence_probe(machine_t *m)
 {
     if (m->shared_alias_active) {
@@ -3348,6 +3430,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                                   insn, op, rs, rt, rd, sel);
     maybe_probe_wince_ctx_path(m, uc, (uint32_t)address,
                                insn, op, rs, rt, rd, sel);
+    maybe_probe_wince_bootctx_gate(m, uc, (uint32_t)address);
+    maybe_probe_wince_live_call_targets(m, uc, (uint32_t)address);
 
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */
