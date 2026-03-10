@@ -23,6 +23,16 @@ static inline bool is_kseg_va32(uint32_t va32)
     return seg == 0x80000000u || seg == 0xA0000000u;
 }
 
+static inline bool is_wince_boot_cfg(const machine_config_t *cfg)
+{
+    return cfg != NULL && cfg->nand_path != NULL;
+}
+
+static inline bool is_wince_boot_machine(const machine_t *m)
+{
+    return m != NULL && is_wince_boot_cfg(&m->cfg);
+}
+
 static bool sdram_alias_pa_offset(const machine_t *m, uint64_t addr, uint64_t *off_out)
 {
     uint64_t sdram_size = (uint64_t)m->cfg.sdram_size;
@@ -2722,7 +2732,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */
-    if (m->cfg.nand_path && m->cfg.log_wince_stall) {
+    if (is_wince_boot_machine(m) && m->cfg.log_wince_stall) {
         static uint32_t nk_pc_ring[256];
         static uint32_t nk_pc_ring_head = 0;
         static bool nk_pc_ring_active = false;
@@ -2742,7 +2752,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * Unicorn's MIPS core traps this path and lands at PC=0.
      * Treat it as a low-power hint (NOP) so execution advances.
      */
-    if (m->cfg.nand_path && insn == 0x42000023u) {
+    if (is_wince_boot_machine(m) && insn == 0x42000023u) {
         uint64_t next_pc = address + 4u;
         static uint32_t wince_wait_skip_log = 0;
         if (wince_wait_skip_log < 32u) {
@@ -4145,9 +4155,29 @@ static bool handle_null_call_interrupt(machine_t *m, uc_engine *uc,
 {
     if ((uint32_t)pc != 0u || !is_null_call_class_intno(intno))
         return false;
-    if (m->cfg.nand_path)
+    if (is_wince_boot_machine(m))
         return handle_wince_null_call_interrupt(m, uc, intno, pc, status);
     return handle_linux_null_call_interrupt(m, uc, intno, pc);
+}
+
+static bool handle_wince_interrupt_passthrough(machine_t *m, uint32_t intno,
+                                               uint64_t pc, uint64_t status)
+{
+    if (!is_wince_boot_machine(m))
+        return false;
+
+    m->wince_null_last_ra = 0;
+    m->wince_null_last_intno = 0;
+    m->wince_null_consecutive = 0;
+
+    static uint32_t wince_intr_log = 0;
+    if (wince_intr_log < 32u) {
+        fprintf(stderr, "[WINCE_INTR] intno=%u PC=0x%08" PRIX64
+                " STATUS=0x%08" PRIX64 "\n",
+                intno, (uint64_t)(uint32_t)pc, (uint64_t)(uint32_t)status);
+        wince_intr_log++;
+    }
+    return true;
 }
 
 /*
@@ -4193,17 +4223,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
      * Let Unicorn's MIPS CPU handle exceptions natively (TLB miss,
      * syscall, etc.).  Only log the first few for diagnostics.
      */
-    if (m->cfg.nand_path) {
-        m->wince_null_last_ra = 0;
-        m->wince_null_last_intno = 0;
-        m->wince_null_consecutive = 0;
-        static uint32_t wince_intr_log = 0;
-        if (wince_intr_log < 32u) {
-            fprintf(stderr, "[WINCE_INTR] intno=%u PC=0x%08" PRIX64
-                    " STATUS=0x%08" PRIX64 "\n",
-                    intno, (uint64_t)(uint32_t)pc, (uint64_t)(uint32_t)status);
-            wince_intr_log++;
-        }
+    if (handle_wince_interrupt_passthrough(m, intno, pc, status)) {
         return;
     }
 
@@ -6315,7 +6335,7 @@ machine_t *machine_create(const machine_config_t *cfg)
     icu_init(&m->icu);
     siu_init(&m->siu);
     rtc_init(&m->rtc);
-    if (cfg->nand_path)
+    if (is_wince_boot_cfg(cfg))
         m->rtc.etime_read_step = 64;
     gpio_init(&m->gpio);
     nand_init(&m->nand, NULL, 0);
@@ -6358,7 +6378,7 @@ machine_t *machine_create(const machine_config_t *cfg)
     if (cfg->trace)
         uc_hook_add(m->uc, &hk, UC_HOOK_CODE, trace_hook, m, 1, 0);
 
-    if (!cfg->nand_path) {
+    if (!is_wince_boot_cfg(cfg)) {
         /* One-shot checkpoint hooks: fire once when each named function is entered */
         memset(checkpoint_fired, 0, sizeof(checkpoint_fired));
         for (int i = 0; i < CHECKPOINT_COUNT; i++) {
@@ -6531,7 +6551,7 @@ machine_t *machine_create(const machine_config_t *cfg)
     }
 
     /* NAND / WinCE boot mode: load B000FF SPL from NAND image */
-    if (cfg->nand_path) {
+    if (is_wince_boot_cfg(cfg)) {
         uint32_t entry_va = 0;
         if (loader_load_nand(m, cfg->nand_path, &entry_va) != 0) {
             fprintf(stderr, "[MACHINE] NAND B000FF load failed\n");
@@ -6708,7 +6728,7 @@ void machine_run(machine_t *m)
 
     fprintf(stderr, "[MACHINE] Starting execution at VA 0x%016" PRIX64 "\n",
             m->kernel_entry);
-    if (m->cfg.nand_path && m->cfg.log_wince_stall) {
+    if (is_wince_boot_machine(m) && m->cfg.log_wince_stall) {
         fprintf(stderr,
                 "[WINCE_STALL_MODE] diagnostics-only"
                 " (no synthetic IRQ kick)\n");
@@ -6783,9 +6803,8 @@ void machine_run(machine_t *m)
             fprintf(stderr, "[PROGRESS] insns=%" PRIu64 "M  PC=0x%08" PRIX64 "\n",
                     m->insn_count / 1000000, (uint64_t)pc32);
 
-            bool stall_candidate =
-                (m->cfg.nand_path != NULL) &&
-                !is_wince_spl_pc(pc32);
+            bool stall_candidate = is_wince_boot_machine(m) &&
+                                   !is_wince_spl_pc(pc32);
 
             if (stall_candidate && pc32 == stall_track_pc) {
                 if (stall_track_samples < UINT32_MAX)
