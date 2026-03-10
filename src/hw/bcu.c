@@ -10,7 +10,13 @@ void bcu_init(bcu_state_t *s)
     s->io0sizereg  = 0x0000;
     s->io0speedreg = 0x00FF;
     s->io1speedreg = 0x00FF;
-    s->clkspeedreg = 0x0000;
+    /* CLKSPEEDREG is a read-only register reflecting hardware pin strapping.
+     * BE-300 runs VR4131 at ~131MHz.  Formula (from Linux bcu.c):
+     *   PClock = 18432000 * 108 / CLKSP
+     * CLKSP=15 → PClock = 132.71 MHz (closest to 131MHz).
+     * VTDIVMODE=2 (bits [10:8]) → VTClock = PClock/2 ≈ 66MHz.
+     * TDIVMODE bit 12 = 0 → TClock = VTClock/2 ≈ 33MHz. */
+    s->clkspeedreg = 0x020F;
 }
 
 uint32_t bcu_read(bcu_state_t *s, uint32_t offset, unsigned size)

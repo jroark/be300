@@ -3844,11 +3844,117 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
                     (uint64_t)(uint32_t)status, ra32);
             wince_general_recover_log++;
         }
+
+        /* One-shot code dump around the null-call site for NK addresses.
+         * JALR is at RA-8, delay slot at RA-4, return at RA. */
+        static bool null_call_code_dumped = false;
+        if (!null_call_code_dumped &&
+            !(ra32 >= UINT32_C(0x80F00000) && ra32 < UINT32_C(0x80F10000))) {
+            null_call_code_dumped = true;
+            uint32_t dump_base = (ra32 - 64u) & ~UINT32_C(0x3);
+            fprintf(stderr, "[WINCE_NULL_CODE] dumping 128 bytes around RA=0x%08X:\n", ra32);
+            for (uint32_t off = 0; off < 128; off += 64) {
+                uint8_t chunk[64];
+                uint64_t pa = (uint64_t)((dump_base + off) & 0x1FFFFFFFu);
+                uc_err merr = uc_mem_read(uc, pa, chunk, 64);
+                if (merr != UC_ERR_OK) {
+                    fprintf(stderr, "[WINCE_NULL_CODE] chunk at 0x%08X: READ FAILED\n",
+                            dump_base + off);
+                    continue;
+                }
+                fprintf(stderr, "[WINCE_NULL_CODE] base=0x%08X off=0x%02X hex=",
+                        dump_base, off);
+                for (int b = 0; b < 64; b++)
+                    fprintf(stderr, "%02X", chunk[b]);
+                fprintf(stderr, "\n");
+            }
+            /* Also dump GPRs for context */
+            uint64_t t9v = 0, a0v = 0, a1v = 0, s0v = 0;
+            uc_reg_read(uc, UC_MIPS_REG_T9, &t9v);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0v);
+            uc_reg_read(uc, UC_MIPS_REG_A1, &a1v);
+            uc_reg_read(uc, UC_MIPS_REG_S0, &s0v);
+            fprintf(stderr,
+                    "[WINCE_NULL_CODE] t9=0x%08X a0=0x%08X a1=0x%08X s0=0x%08X\n",
+                    (uint32_t)t9v, (uint32_t)a0v, (uint32_t)a1v, (uint32_t)s0v);
+
+            /* Dump the JAL target function (RA-8 is the JAL, extract target) */
+            uint32_t jal_insn = 0;
+            uint64_t jal_pa = (uint64_t)((ra32 - 8u) & 0x1FFFFFFFu);
+            if (uc_mem_read(uc, jal_pa, &jal_insn, 4) == UC_ERR_OK) {
+                uint32_t jal_op = jal_insn >> 26;
+                if (jal_op == 3u) { /* JAL */
+                    uint32_t jal_target = ((jal_insn & 0x03FFFFFFu) << 2) |
+                                          (ra32 & 0xF0000000u);
+                    fprintf(stderr, "[WINCE_NULL_CODE] JAL target=0x%08X, dumping:\n",
+                            jal_target);
+                    uint32_t tgt_pa = jal_target & 0x1FFFFFFFu;
+                    for (uint32_t off = 0; off < 128; off += 64) {
+                        uint8_t tc[64];
+                        if (uc_mem_read(uc, (uint64_t)(tgt_pa + off), tc, 64) == UC_ERR_OK) {
+                            fprintf(stderr, "[WINCE_NULL_CODE] tgt=0x%08X off=0x%02X hex=",
+                                    jal_target, off);
+                            for (int b = 0; b < 64; b++)
+                                fprintf(stderr, "%02X", tc[b]);
+                            fprintf(stderr, "\n");
+                        }
+                    }
+                }
+            }
+        }
         return true;
     }
 
     fprintf(stderr, "[WINCE_INTR] NULL call detected (ra=0x%08" PRIX64
-            ") — stopping\n", (uint64_t)(uint32_t)ra);
+            ") last_exec_pc=0x%08" PRIX64 " — stopping\n",
+            (uint64_t)(uint32_t)ra,
+            (uint64_t)(uint32_t)m->last_exec_pc);
+
+    /* Dump code around last known execution PC for post-mortem analysis */
+    {
+        uint32_t lpc = (uint32_t)m->last_exec_pc;
+        uint32_t dump_base = (lpc >= 32u) ? (lpc - 32u) & ~UINT32_C(0x3) : 0u;
+        uint32_t dump_pa = dump_base & UINT32_C(0x1FFFFFFF);
+        fprintf(stderr, "[WINCE_NULL_POSTMORTEM] last_exec_pc=0x%08X dump:\n", lpc);
+        for (uint32_t off = 0; off < 128; off += 64) {
+            uint8_t chunk[64];
+            if (uc_mem_read(uc, (uint64_t)(dump_pa + off), chunk, 64) == UC_ERR_OK) {
+                fprintf(stderr, "[WINCE_NULL_POSTMORTEM] base=0x%08X off=0x%02X hex=",
+                        dump_base, off);
+                for (int b = 0; b < 64; b++)
+                    fprintf(stderr, "%02X", chunk[b]);
+                fprintf(stderr, "\n");
+            }
+        }
+        /* Dump all GPRs */
+        static const int gpr_ids[32] = {
+            UC_MIPS_REG_ZERO, UC_MIPS_REG_AT, UC_MIPS_REG_V0, UC_MIPS_REG_V1,
+            UC_MIPS_REG_A0,   UC_MIPS_REG_A1, UC_MIPS_REG_A2, UC_MIPS_REG_A3,
+            UC_MIPS_REG_T0,   UC_MIPS_REG_T1, UC_MIPS_REG_T2, UC_MIPS_REG_T3,
+            UC_MIPS_REG_T4,   UC_MIPS_REG_T5, UC_MIPS_REG_T6, UC_MIPS_REG_T7,
+            UC_MIPS_REG_S0,   UC_MIPS_REG_S1, UC_MIPS_REG_S2, UC_MIPS_REG_S3,
+            UC_MIPS_REG_S4,   UC_MIPS_REG_S5, UC_MIPS_REG_S6, UC_MIPS_REG_S7,
+            UC_MIPS_REG_T8,   UC_MIPS_REG_T9, UC_MIPS_REG_K0, UC_MIPS_REG_K1,
+            UC_MIPS_REG_GP,   UC_MIPS_REG_SP, UC_MIPS_REG_FP, UC_MIPS_REG_RA
+        };
+        static const char *gpr_names[32] = {
+            "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+            "t0",   "t1", "t2", "t3", "t4", "t5", "t6", "t7",
+            "s0",   "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+            "t8",   "t9", "k0", "k1", "gp", "sp", "fp", "ra"
+        };
+        for (int i = 0; i < 32; i++) {
+            uint64_t gv = 0;
+            uc_reg_read(uc, gpr_ids[i], &gv);
+            fprintf(stderr, "[WINCE_NULL_POSTMORTEM] $%-4s = 0x%08X\n",
+                    gpr_names[i], (uint32_t)gv);
+        }
+        uint64_t cp0_status_v = 0, cp0_cause_v = 0;
+        uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &cp0_status_v);
+        fprintf(stderr, "[WINCE_NULL_POSTMORTEM] STATUS=0x%08X CAUSE=0x%08X EPC=0x%08X\n",
+                (uint32_t)cp0_status_v, m->pending_cause, (uint32_t)m->pending_epc);
+    }
+
     machine_stop(m);
     uc_emu_stop(uc);
     return true;
