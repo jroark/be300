@@ -64,7 +64,31 @@ RUN apt-get update && apt-get install -y \
     g++-mips64el-linux-gnuabi64 \
     binutils-mips64el-linux-gnuabi64 \
     libc6-dev-mips64el-cross \
+    file \
     && rm -rf /var/lib/apt/lists/*
+
+# Build and install mipsel-pe binutils (for WinCE PE files)
+RUN wget https://ftp.gnu.org/gnu/binutils/binutils-2.21.1.tar.bz2 && \
+    tar xf binutils-2.21.1.tar.bz2 && \
+    cd binutils-2.21.1 && \
+    # Patch config.bfd to re-enable mips-pe targets
+    sed -i 's/mips\*- \*-pe\*)/mips*-*-pe-disabled)/' bfd/config.bfd && \
+    sed -i 's/mips\*-\*-pe\*)/mips*-*-pe-disabled)/' bfd/config.bfd && \
+    sed -i '/plugin)/i \  mips*-*-pe*)\n    targ_defvec=mipslpe_vec\n    targ_selvecs="mipslpe_vec mipslpei_vec"\n    ;;\n' bfd/config.bfd && \
+    # Patch targets.c to include mipslpe_vec and mipslpei_vec
+    sed -i "/static const bfd_target \* const _bfd_target_vector\[\] =/,/};/c\static const bfd_target * const _bfd_target_vector[] = { \&mipslpe_vec, \&mipslpei_vec, NULL };" bfd/targets.c && \
+    sed -i "/const bfd_target \*bfd_default_vector\[\] =/,/};/c\const bfd_target *bfd_default_vector[] = { \&mipslpe_vec, NULL };" bfd/targets.c && \
+    ./configure --target=mipsel-pe --build=arm-linux-gnu --disable-werror && \
+    # First pass: build enough to generate config.h
+    make all-bfd -j$(nproc) && \
+    make all-binutils -j$(nproc) || true && \
+    # Force the target name in binutils/config.h
+    sed -i 's/#define TARGET "mipsel-unknown-pe"/#define TARGET "pe-mips"/' binutils/config.h && \
+    # Second pass: final build of binutils directory
+    make all-binutils -j$(nproc) && \
+    make -C binutils install && \
+    cd .. && \
+    rm -rf binutils-2.21.1*
 
 # Set up work directory
 WORKDIR /work
