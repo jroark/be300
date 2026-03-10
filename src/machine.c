@@ -4725,7 +4725,9 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             { 0x00000000, "exception_vectors" },
             { 0x00000100, "exception_vectors+0x100" },
             { 0x00000180, "exception_vectors+0x180" },
+            { 0xA0002000, "ctx_tlb_seed_0xA0002000" },
             { 0x00002200, "context_block" },
+            { 0x800748D0, "ctx_boot_magic_0x800748D0" },
             { 0x80079580, "ctx_caller_0x80079580" },
             { 0x800795C0, "ctx_caller_0x800795C0" },
             { 0x80079600, "ctx_caller_0x80079600" },
@@ -4755,6 +4757,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             { 0x800A7DC0, "ctx_callee_0x800A7DCC" },
             { 0xA0051680, "ctx_table_0xA0051680" },
             { 0x007E9000, "ctx_src_0x007E9000" },
+            { 0xA0006000, "ctx_bootctx_0xA0006000" },
             { 0xA0003800, "ctx_stack_0xA0003800" },
         };
         size_t region_count = sizeof(mem_regions) / sizeof(mem_regions[0]);
@@ -4766,6 +4769,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
                 mem_regions[r].pa == 0x800A5FE0u ||
                 mem_regions[r].pa == 0x800A7640u ||
                 mem_regions[r].pa == 0x800A7DC0u ||
+                mem_regions[r].pa == 0xA0002000u ||
                 mem_regions[r].pa == 0x80078BA0u ||
                 mem_regions[r].pa == 0x80077FC0u ||
                 mem_regions[r].pa == 0x80077DC0u ||
