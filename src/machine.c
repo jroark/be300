@@ -34,6 +34,8 @@ static inline bool is_wince_boot_machine(const machine_t *m)
 }
 
 static bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out);
+static uc_err write_mem_best_effort(uc_engine *uc, uint64_t address,
+                                    const void *data, size_t size);
 
 static bool sdram_alias_pa_offset(const machine_t *m, uint64_t addr, uint64_t *off_out)
 {
@@ -1591,6 +1593,90 @@ static void maybe_probe_wince_obj_dispatch(machine_t *m, uc_engine *uc,
     logs++;
 }
 
+static void maybe_probe_wince_bootmode_sp_flow(machine_t *m, uc_engine *uc,
+                                               uint32_t pc32, uint32_t insn)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+
+    bool in_obj_dispatch = (pc32 >= 0x80078BC0u && pc32 <= 0x80078C10u);
+    bool in_bootmode_init = (pc32 >= 0x80077FE0u && pc32 <= 0x80078020u);
+    bool in_probe_builder = (pc32 >= 0x80077DC0u && pc32 <= 0x80077E30u);
+    if (!in_obj_dispatch && !in_bootmode_init && !in_probe_builder)
+        return;
+
+    static uint32_t flow_logs = 0;
+    static uint32_t flow_seq = 0;
+    static bool have_prev = false;
+    static uint32_t prev_pc = 0;
+    static uint32_t prev_sp = 0;
+    if (flow_logs >= 320u)
+        return;
+
+    uint64_t sp = 0, ra = 0, v0 = 0, status = 0;
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+    uint32_t sp32 = (uint32_t)sp;
+    uint32_t ra32 = (uint32_t)ra;
+    uint32_t v032 = (uint32_t)v0;
+
+    int32_t delta = 0;
+    if (have_prev)
+        delta = (int32_t)sp32 - (int32_t)prev_sp;
+
+    fprintf(stderr,
+            "[WINCE_BOOTMODE_SP] seq=%u pc=0x%08X insn=0x%08X"
+            " sp=0x%08X ra=0x%08X v0=0x%08X"
+            " prev_pc=0x%08X dSP=%d"
+            " STATUS=0x%08X pending_excode=%u\n",
+            flow_seq, pc32, insn,
+            sp32, ra32, v032,
+            have_prev ? prev_pc : 0u, delta,
+            (uint32_t)status, m->pending_excode);
+
+    have_prev = true;
+    prev_pc = pc32;
+    prev_sp = sp32;
+    flow_logs++;
+    flow_seq++;
+}
+
+static bool maybe_emulate_wince_objptr_init_call(machine_t *m, uc_engine *uc,
+                                                 uint32_t pc32, uint32_t insn)
+{
+    if (!is_wince_boot_machine(m))
+        return false;
+
+    /* Work around Unicorn mis-executing 0x80078BE0 -> 0x80077FE4 call entry. */
+    if (pc32 != 0x80078BE0u || insn != 0x0C01DFF9u)
+        return false;
+
+    uint64_t a0 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uint32_t a032 = (uint32_t)a0;
+    uint64_t ra = mips_sext(0x80078BE8u);
+    uint64_t target = mips_sext(0x80077FE4u);
+
+    /* Preserve the original delay slot effect at 0x80078BE4: sw a0, 0x80660000. */
+    (void)write_mem_best_effort(uc, mips_sext(0x80660000u), &a032, sizeof(a032));
+
+    uc_reg_write(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_write(uc, UC_MIPS_REG_PC, &target);
+
+    static uint32_t fix_logs = 0;
+    if (fix_logs < 16u) {
+        fprintf(stderr,
+                "[WINCE_JAL_FIX] pc=0x80078BE0 emulated call target=0x80077FE4"
+                " ra=0x80078BE8 a0=0x%08X\n",
+                a032);
+        fix_logs++;
+    }
+    return true;
+}
+
 static bool maybe_skip_wince_bootmode_delay_call(machine_t *m, uc_engine *uc,
                                                  uint32_t pc32, uint32_t insn)
 {
@@ -1617,12 +1703,12 @@ static bool maybe_skip_wince_bootmode_delay_call(machine_t *m, uc_engine *uc,
     return true;
 }
 
-static bool wince_seed_block_is_zero(uc_engine *uc)
+static bool wince_ctx_block_is_zero(uc_engine *uc)
 {
-    /* 0xA0002000..0xA000227F holds TLB seed + GPR/CP0 restore context. */
-    for (uint32_t off = 0; off < 0x280u; off += 4u) {
+    /* 0xA0002200..0xA00022E7 stores the restore context payload. */
+    for (uint32_t off = 0; off < 0xE8u; off += 4u) {
         uint32_t w = 0;
-        if (!read_guest_u32(uc, 0xA0002000u + off, &w))
+        if (!read_guest_u32(uc, 0xA0002200u + off, &w))
             return false;
         if (w != 0u)
             return false;
@@ -1630,104 +1716,123 @@ static bool wince_seed_block_is_zero(uc_engine *uc)
     return true;
 }
 
-static void maybe_patch_wince_pre_ctx_branch(machine_t *m, uc_engine *uc,
-                                             uint32_t pc32, uint32_t insn)
+static inline uint32_t read_gpr32(uc_engine *uc, int regid)
 {
-    if (!is_wince_boot_machine(m))
-        return;
-
-    /* Expected buggy template:
-     *   ... bnez v0, +N
-     *   ... jal <probe_fn>; nop
-     *   ... bnez t0, +N   <-- patch to bnez v0 when seed block is empty
-     */
-    if (insn != 0x15000010u)
-        return;
-
-    uint32_t p16 = 0, p8 = 0, p4 = 0, n8 = 0;
-    if (!read_insn_best_effort(uc, (uint64_t)(int32_t)(pc32 - 16u), &p16) ||
-        !read_insn_best_effort(uc, (uint64_t)(int32_t)(pc32 - 8u),  &p8) ||
-        !read_insn_best_effort(uc, (uint64_t)(int32_t)(pc32 - 4u),  &p4) ||
-        !read_insn_best_effort(uc, (uint64_t)(int32_t)(pc32 + 8u),  &n8))
-        return;
-    if ((p16 & 0xFFFF0000u) != 0x14400000u) /* bne v0,$zero,imm */
-        return;
-    if ((p8 & 0xFC000000u) != 0x0C000000u) /* jal */
-        return;
-    if (p4 != 0x00000000u) /* nop */
-        return;
-    if (n8 != 0x3C04A000u) /* lui a0,0xA000 */
-        return;
-    if (!wince_seed_block_is_zero(uc))
-        return;
-
-    uint32_t patched = (insn & ~UINT32_C(0x03E00000)) | UINT32_C(2u << 21);
-    uint64_t patch_pc = (uint64_t)(int32_t)pc32;
-    uc_err pe = uc_mem_write(uc, patch_pc, &patched, sizeof(patched));
-    if (pe == UC_ERR_OK) {
-        static uint32_t patch_logs = 0;
-        if (patch_logs < 32u) {
-            fprintf(stderr,
-                    "[WINCE_CTX_BRANCH_PATCH] pc=0x%08X old=0x%08X new=0x%08X\n",
-                    pc32, insn, patched);
-            patch_logs++;
-        }
-    } else {
-        static uint32_t patch_err_logs = 0;
-        if (patch_err_logs < 16u) {
-            fprintf(stderr,
-                    "[WINCE_CTX_BRANCH_PATCH_ERR] pc=0x%08X err=%s\n",
-                    pc32, uc_strerror(pe));
-            patch_err_logs++;
-        }
-    }
-
-    /* Ensure this in-flight execution uses v0 semantics as well. */
-    {
-        uint64_t v0 = 0;
-        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-        uc_reg_write(uc, UC_MIPS_REG_T0, &v0);
-    }
+    uint64_t v = 0;
+    uc_reg_read(uc, regid, &v);
+    return (uint32_t)v;
 }
 
-static void maybe_force_wince_cold_path(machine_t *m, uc_engine *uc,
-                                        uint32_t pc32, uint32_t insn)
+static void maybe_seed_wince_live_ctx_block(machine_t *m, uc_engine *uc,
+                                            uint32_t pc32)
 {
     if (!is_wince_boot_machine(m))
         return;
-    if (pc32 != 0x80079608u && pc32 != 0x8007961Cu &&
-        pc32 != 0x800324F8u && pc32 != 0x8003250Cu)
+    if (pc32 != 0x80032558u && pc32 != 0x80079640u)
         return;
-    if (!wince_seed_block_is_zero(uc))
+    if (!wince_ctx_block_is_zero(uc))
         return;
 
-    /* Keep warm-restore gate branches on cold-path while seed is empty:
-     *   bnez v1, +0x0A  -> force not taken (v1=0)
-     *   beqz t0, +0x05  -> force not taken (t0=1)
-     *
-     * Covers both All_nand (0x80079608/0x8007961C) and
-     * CE_Net (0x800324F8/0x8003250C) templates.
-     */
-    if (insn == 0x1460000Au) {
-        uint64_t zero = 0;
-        uc_reg_write(uc, UC_MIPS_REG_V1, &zero);
-        static uint32_t force_v1_logs = 0;
-        if (force_v1_logs < 64u) {
-            fprintf(stderr,
-                    "[WINCE_CTX_COLD_FORCE] pc=0x%08X op=bnez_v1 force_v1=0\n",
-                    pc32);
-            force_v1_logs++;
+    static const struct {
+        uint16_t off;
+        int reg;
+    } gpr_map[] = {
+        { 0x00u, UC_MIPS_REG_AT }, { 0x04u, UC_MIPS_REG_V0 },
+        { 0x08u, UC_MIPS_REG_V1 }, { 0x0Cu, UC_MIPS_REG_A0 },
+        { 0x10u, UC_MIPS_REG_A1 }, { 0x14u, UC_MIPS_REG_A2 },
+        { 0x18u, UC_MIPS_REG_A3 }, { 0x1Cu, UC_MIPS_REG_T0 },
+        { 0x20u, UC_MIPS_REG_T2 }, { 0x24u, UC_MIPS_REG_T3 },
+        { 0x28u, UC_MIPS_REG_T4 }, { 0x2Cu, UC_MIPS_REG_T5 },
+        { 0x30u, UC_MIPS_REG_T6 }, { 0x34u, UC_MIPS_REG_T7 },
+        { 0x38u, UC_MIPS_REG_S0 }, { 0x3Cu, UC_MIPS_REG_S1 },
+        { 0x40u, UC_MIPS_REG_S2 }, { 0x44u, UC_MIPS_REG_S3 },
+        { 0x48u, UC_MIPS_REG_S4 }, { 0x4Cu, UC_MIPS_REG_S5 },
+        { 0x50u, UC_MIPS_REG_S6 }, { 0x54u, UC_MIPS_REG_S7 },
+        { 0x58u, UC_MIPS_REG_T8 }, { 0x5Cu, UC_MIPS_REG_T9 },
+        { 0x60u, UC_MIPS_REG_K0 }, { 0x64u, UC_MIPS_REG_K1 },
+        { 0x68u, UC_MIPS_REG_GP }, { 0x6Cu, UC_MIPS_REG_SP },
+        { 0x70u, UC_MIPS_REG_FP }, { 0x74u, UC_MIPS_REG_RA },
+    };
+
+    uint64_t status64 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status64);
+    uint32_t status = (uint32_t)status64;
+
+    for (size_t i = 0; i < sizeof(gpr_map) / sizeof(gpr_map[0]); i++) {
+        uint32_t v = read_gpr32(uc, gpr_map[i].reg);
+        (void)write_mem_best_effort(uc, mips_sext(0xA0002200u + gpr_map[i].off),
+                                    &v, sizeof(v));
+    }
+
+    {
+        uint32_t hi = read_gpr32(uc, UC_MIPS_REG_HI);
+        uint32_t lo = read_gpr32(uc, UC_MIPS_REG_LO);
+        (void)write_mem_best_effort(uc, mips_sext(0xA0002278u), &hi, sizeof(hi));
+        (void)write_mem_best_effort(uc, mips_sext(0xA000227Cu), &lo, sizeof(lo));
+    }
+
+    {
+        uint32_t count = (uint32_t)(m->insn_count / 2ull);
+        uint32_t entryhi = (uint32_t)(m->shadow_cp0_entryhi_live_valid
+                             ? m->shadow_cp0_entryhi_live
+                             : m->shadow_cp0_entryhi);
+        uint32_t cp0_words[] = {
+            (uint32_t)m->shadow_cp0_index,     /* 0x80: Index    */
+            0u,                                /* 0x84: Random   */
+            (uint32_t)m->shadow_cp0_entrylo0,  /* 0x88: EntryLo0 */
+            (uint32_t)m->shadow_cp0_entrylo1,  /* 0x8C: EntryLo1 */
+            (uint32_t)m->shadow_cp0_context,   /* 0x90: Context  */
+            (uint32_t)m->shadow_cp0_pagemask,  /* 0x94: PageMask */
+            0u,                                /* 0x98: Wired    */
+            count,                             /* 0x9C: Count    */
+            entryhi,                           /* 0xA0: EntryHi  */
+            0u,                                /* 0xA4: Compare  */
+            status,                            /* 0xA8: Status   */
+            m->pending_cause,                  /* 0xAC: Cause    */
+            (uint32_t)m->shadow_cp0_epc,       /* 0xB0: EPC      */
+            0u,                                /* 0xB4: Config   */
+            0u,                                /* 0xB8           */
+            0u,                                /* 0xBC           */
+            0u,                                /* 0xC0           */
+            0u,                                /* 0xC4           */
+            0u,                                /* 0xC8           */
+            0u,                                /* 0xCC           */
+            0u,                                /* 0xD0           */
+        };
+        for (size_t i = 0; i < sizeof(cp0_words) / sizeof(cp0_words[0]); i++) {
+            uint32_t off = 0x80u + (uint32_t)(i * 4u);
+            (void)write_mem_best_effort(uc, mips_sext(0xA0002200u + off),
+                                        &cp0_words[i], sizeof(uint32_t));
         }
-    } else if (insn == 0x11000005u) {
-        uint64_t one = 1;
-        uc_reg_write(uc, UC_MIPS_REG_T0, &one);
-        static uint32_t force_t0_logs = 0;
-        if (force_t0_logs < 64u) {
-            fprintf(stderr,
-                    "[WINCE_CTX_COLD_FORCE] pc=0x%08X op=beqz_t0 force_t0=1\n",
-                    pc32);
-            force_t0_logs++;
+    }
+
+    {
+        uint16_t hw_half[6] = { 0 };
+        uint32_t hw_word = 0;
+        if (read_guest_u32(uc, 0xAF00008Cu, &hw_word)) hw_half[0] = (uint16_t)(hw_word & 0xFFFFu);
+        if (read_guest_u32(uc, 0xAF000094u, &hw_word)) hw_half[1] = (uint16_t)(hw_word & 0xFFFFu);
+        if (read_guest_u32(uc, 0xAF000096u, &hw_word)) hw_half[2] = (uint16_t)(hw_word & 0xFFFFu);
+        if (read_guest_u32(uc, 0xAF0000A6u, &hw_word)) hw_half[3] = (uint16_t)(hw_word & 0xFFFFu);
+        if (read_guest_u32(uc, 0xAF0000A8u, &hw_word)) hw_half[4] = (uint16_t)(hw_word & 0xFFFFu);
+        if (read_guest_u32(uc, 0xAF0000AAu, &hw_word)) hw_half[5] = (uint16_t)(hw_word & 0xFFFFu);
+        for (uint32_t i = 0; i < 6u; i++) {
+            uint64_t dst = mips_sext(0xA00022D4u + (i * 2u) + ((i >= 1u) ? 6u : 0u));
+            (void)write_mem_best_effort(uc, dst, &hw_half[i], sizeof(uint16_t));
         }
+    }
+
+    static uint32_t seed_logs = 0;
+    if (seed_logs < 64u) {
+        uint32_t ra = read_gpr32(uc, UC_MIPS_REG_RA);
+        uint32_t sp = read_gpr32(uc, UC_MIPS_REG_SP);
+        fprintf(stderr,
+                "[WINCE_CTX_LIVE_SEED] pc=0x%08X ra=0x%08X sp=0x%08X"
+                " status=0x%08X cause=0x%08X entryhi=0x%08X\n",
+                pc32, ra, sp, status, m->pending_cause,
+                (uint32_t)(m->shadow_cp0_entryhi_live_valid
+                    ? m->shadow_cp0_entryhi_live
+                    : m->shadow_cp0_entryhi));
+        seed_logs++;
     }
 }
 
@@ -3972,6 +4077,9 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 
     if (maybe_skip_wince_bootmode_delay_call(m, uc, (uint32_t)address, insn))
         return;
+    if (maybe_emulate_wince_objptr_init_call(m, uc, (uint32_t)address, insn))
+        return;
+    maybe_seed_wince_live_ctx_block(m, uc, (uint32_t)address);
 
     if (is_wince_boot_machine(m) && !m->wince_nk_epoch_reset_done) {
         uint32_t pc32 = (uint32_t)address;
@@ -3996,9 +4104,6 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t rd  = (insn >> 11) & 0x1Fu;
     uint32_t sel =  insn        & 0x07u;
 
-    maybe_patch_wince_pre_ctx_branch(m, uc, (uint32_t)address, insn);
-    maybe_force_wince_cold_path(m, uc, (uint32_t)address, insn);
-
     maybe_record_wince_ctrl_event(m, uc, (uint32_t)address,
                                   insn, op, rs, rt, rd, sel);
     maybe_probe_wince_ctx_path(m, uc, (uint32_t)address,
@@ -4008,6 +4113,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     maybe_probe_wince_gate_path_hits(m, uc, (uint32_t)address);
     maybe_probe_wince_bootmode(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_obj_dispatch(m, uc, (uint32_t)address, insn);
+    maybe_probe_wince_bootmode_sp_flow(m, uc, (uint32_t)address, insn);
 
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */
