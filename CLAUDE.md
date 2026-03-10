@@ -34,6 +34,7 @@ Push with: `git push -u origin <current branch>`
 **Kernels**
 - All kernels have been booted to userspace on real hardware
 - All kernels contain ramdisks
+- None of the linux kernels had much more than serial and framebuffer support, no NAND, no touchscreen, no compact flash support.
 - `kernels/vmlinux-2.6`        — ELF32 MIPS LE, 2.6.8.1, built 2004-09-08.
 - `kernels/vmlinux`            - ELF 32-bit LSB executable, MIPS, MIPS-II version 1 (SYSV), statically linked, not stripped, too many notes (256)
   - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
@@ -136,12 +137,18 @@ timeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin --log-mmio \
 timeout 10s ./be300 --nand ../ce/restore_images/All_nand_300.bin --trace \
   > wince_trace_stdout.log 2> wince_trace_stderr.log
 
-# Linux kernel regression tests (MUST pass after any change)
+# Linux kernel regression tests
+# NOTE: These kernels never terminate on their own — they run until timeout
+# kills them (exit code 124). This is expected, NOT a failure. To check for
+# regressions, inspect stdout for successful boot markers like
+# "Freeing unused kernel memory" (2.6) or similar userspace-entry messages.
 timeout 180s ./be300 --kernel ../kernels/vmlinux-2.6 \
-  > docker_2.6_stdout.log 2> docker_2.6_stderr.log && echo "2.6 OK" || echo "2.6 FAIL"
+  > docker_2.6_stdout.log 2> docker_2.6_stderr.log; \
+  grep -q "Freeing unused kernel memory" docker_2.6_stdout.log && echo "2.6 OK" || echo "2.6 FAIL"
 timeout 180s ./be300 --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" \
   --kernel ../kernels/vmlinux-pgui-demo \
-  > docker_2.4_stdout.log 2> docker_2.4_stderr.log && echo "2.4 OK" || echo "2.4 FAIL"
+  > docker_2.4_stdout.log 2> docker_2.4_stderr.log; \
+  grep -q "Freeing unused kernel memory" docker_2.4_stdout.log && echo "2.4 OK" || echo "2.4 FAIL"
 ```
 
 ### SPL Disassembly (in Docker, cross-tools available)
