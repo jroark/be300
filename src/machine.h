@@ -97,6 +97,9 @@ struct machine_s {
     mmio_hist_entry_t mmio_hist[WINCE_MMIO_HISTORY_LEN];
     uint32_t mmio_hist_head;
     uint32_t mmio_hist_count;
+    uint32_t wince_null_last_ra;
+    uint32_t wince_null_last_intno;
+    uint32_t wince_null_consecutive;
 
     /* Manual MIPS exception-entry state (set by intr_hook / inject_hw_irq_if_pending) */
     uint64_t pending_epc;           /* EPC to return/restore via MFC0/ERET intercepts      */
