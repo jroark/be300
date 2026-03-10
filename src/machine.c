@@ -3624,6 +3624,218 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     }
 }
 
+#define WINCE_NULL_RECOVER_CAP 64u
+
+static inline bool is_null_call_class_intno(uint32_t intno)
+{
+    return intno == 20u || intno == 26u || intno == 27u;
+}
+
+static void clear_pending_exception_state(machine_t *m)
+{
+    m->pending_epc          = 0;
+    m->pending_excode       = 0;
+    m->pending_cause        = 0;
+    m->epc_was_written      = false;
+    m->pending_cause_served = false;
+    m->pending_epc_served   = false;
+}
+
+static bool handle_linux_null_call_interrupt(machine_t *m, uc_engine *uc,
+                                             uint32_t intno, uint64_t pc)
+{
+    (void)m;
+    if ((uint32_t)pc != 0u || !is_null_call_class_intno(intno))
+        return false;
+
+    uint64_t ra = 0, t9 = 0, gp = 0, sp = 0;
+    uint64_t a0 = 0, a1 = 0, a2 = 0, v0 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
+    uc_reg_read(uc, UC_MIPS_REG_GP, &gp);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+
+    static uint32_t null_ptr_log = 0;
+    if (null_ptr_log < 8u) {
+        fprintf(stderr,
+                "[NULL_CALL] PC=0x%08" PRIX64 " ra=0x%08" PRIX64
+                " t9=0x%08" PRIX64 " gp=0x%08" PRIX64 " sp=0x%08" PRIX64
+                " a0=0x%08" PRIX64 " a1=0x%08" PRIX64
+                " a2=0x%08" PRIX64 " v0=0x%08" PRIX64 "\n",
+                (uint64_t)(uint32_t)pc,
+                (uint64_t)(uint32_t)ra, (uint64_t)(uint32_t)t9,
+                (uint64_t)(uint32_t)gp, (uint64_t)(uint32_t)sp,
+                (uint64_t)(uint32_t)a0, (uint64_t)(uint32_t)a1,
+                (uint64_t)(uint32_t)a2, (uint64_t)(uint32_t)v0);
+        null_ptr_log++;
+    }
+
+    uint32_t ra32 = (uint32_t)ra;
+    if (ra32 == 0x80042F8Cu) {
+        uint32_t saved_ra_lo = 0;
+        uint64_t sp_val = 0;
+        uc_reg_read(uc, UC_MIPS_REG_SP, &sp_val);
+        uint32_t sp32   = (uint32_t)sp_val;
+        uint64_t va_sp  = mips_sext(sp32);
+        uc_mem_read(uc, va_sp + 16u, &saved_ra_lo, 4u);
+        uint64_t new_sp = mips_sext(sp32 + 24u);
+        uint64_t new_ra = mips_sext(saved_ra_lo);
+        uint64_t neg2   = (uint64_t)(uint32_t)-2;
+        fprintf(stderr,
+                "[NULL_CALL_RECOVER] parse_one jalr t3 NULL;"
+                " va_sp=0x%016" PRIX64 " saved_ra=0x%08" PRIX32
+                " new_sp=0x%08" PRIX64 "\n",
+                va_sp, saved_ra_lo, (uint64_t)(uint32_t)new_sp);
+        if (saved_ra_lo >= 0x80000000u) {
+            uc_reg_write(uc, UC_MIPS_REG_SP, &new_sp);
+            uc_reg_write(uc, UC_MIPS_REG_RA, &new_ra);
+            uc_reg_write(uc, UC_MIPS_REG_V0, &neg2);
+            uc_reg_write(uc, UC_MIPS_REG_PC, &new_ra);
+            return true;
+        }
+    }
+
+    if (ra32 >= 0x80000000u) {
+        uint64_t new_pc = mips_sext(ra32);
+        uint64_t zero   = 0;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &new_pc);
+        uc_reg_write(uc, UC_MIPS_REG_V0, &zero);
+        static uint32_t gen_recover_log = 0;
+        if (gen_recover_log < 16u) {
+            fprintf(stderr,
+                    "[NULL_CALL_RECOVER_GENERAL] PC=0 ra=0x%08" PRIX32
+                    " -> redirecting to ra (v0=0)\n", ra32);
+            gen_recover_log++;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
+                                             uint32_t intno, uint64_t pc,
+                                             uint64_t status)
+{
+    if ((uint32_t)pc != 0u || !is_null_call_class_intno(intno))
+        return false;
+
+    uint64_t ra = 0;
+    uint64_t v0 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+
+    /*
+     * SPL handoff site:
+     *   0xA0F024F8: jalr a1   ; returns stage entry in v0
+     *   0xA0F02500: move t0,v0
+     *   0xA0F02504: jr t0
+     *
+     * If v0 is unexpectedly 0, jr t0 jumps to 0. Recover by
+     * redirecting to the stage entry block at 0xA0F0250C.
+     */
+    if ((uint32_t)ra == 0xA0F02500u) {
+        uint32_t stage32 = 0xA0F0250Cu;
+        uint32_t saved_stage32 = 0;
+        uc_err saved_stage_err = uc_mem_read(uc, mips_sext(0xA00024FCu),
+                                             &saved_stage32, sizeof(saved_stage32));
+        if (saved_stage_err != UC_ERR_OK)
+            saved_stage_err = uc_mem_read(uc, UINT64_C(0x000024FC),
+                                          &saved_stage32, sizeof(saved_stage32));
+        if (saved_stage_err == UC_ERR_OK && is_kseg_va32(saved_stage32))
+            stage32 = saved_stage32;
+        uint64_t stage = mips_sext(stage32);
+        uc_reg_write(uc, UC_MIPS_REG_V0, &stage);
+        uc_reg_write(uc, UC_MIPS_REG_T0, &stage);
+        uc_reg_write(uc, UC_MIPS_REG_PC, &stage);
+        m->wince_null_last_ra = 0;
+        m->wince_null_last_intno = 0;
+        m->wince_null_consecutive = 0;
+
+        static uint32_t wince_spl_recover_log = 0;
+        if (wince_spl_recover_log < 32u) {
+            fprintf(stderr,
+                    "[WINCE_NULL_RECOVER] intno=%u pc=0x%08" PRIX64
+                    " ra=0x%08" PRIX64 " v0=0x%08" PRIX64
+                    " saved_stage=0x%08" PRIX32 " saved_stage_err=%d"
+                    " -> stage=0x%08" PRIX32 "\n",
+                    intno,
+                    (uint64_t)(uint32_t)pc,
+                    (uint64_t)(uint32_t)ra,
+                    (uint64_t)(uint32_t)v0,
+                    saved_stage32,
+                    (int)saved_stage_err,
+                    stage32);
+            wince_spl_recover_log++;
+        }
+        return true;
+    }
+
+    uint32_t ra32 = (uint32_t)ra;
+    if (ra32 >= 0x80000000u) {
+        if (m->wince_null_last_ra == ra32 &&
+            m->wince_null_last_intno == intno) {
+            if (m->wince_null_consecutive < UINT32_MAX)
+                m->wince_null_consecutive++;
+        } else {
+            m->wince_null_last_ra = ra32;
+            m->wince_null_last_intno = intno;
+            m->wince_null_consecutive = 1u;
+        }
+
+        if (m->wince_null_consecutive > WINCE_NULL_RECOVER_CAP) {
+            fprintf(stderr,
+                    "[WINCE_NULL_BAILOUT] intno=%u ra=0x%08X count=%u cap=%u"
+                    " STATUS=0x%08" PRIX64 "\n",
+                    intno, ra32, m->wince_null_consecutive,
+                    WINCE_NULL_RECOVER_CAP, (uint64_t)(uint32_t)status);
+            machine_stop(m);
+            uc_emu_stop(uc);
+            return true;
+        }
+
+        uint64_t next_pc = mips_sext(ra32);
+        uint64_t zero = 0;
+        uint64_t new_status = status & ~(uint64_t)0x2u; /* clear EXL only */
+        clear_pending_exception_state(m);
+        uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &new_status);
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        uc_reg_write(uc, UC_MIPS_REG_V0, &zero);
+
+        static uint32_t wince_general_recover_log = 0;
+        if (wince_general_recover_log < 128u) {
+            fprintf(stderr,
+                    "[WINCE_NULL_RECOVER] intno=%u ra=0x%08X count=%u"
+                    " STATUS=0x%08" PRIX64 " -> PC=0x%08X\n",
+                    intno, ra32, m->wince_null_consecutive,
+                    (uint64_t)(uint32_t)status, ra32);
+            wince_general_recover_log++;
+        }
+        return true;
+    }
+
+    fprintf(stderr, "[WINCE_INTR] NULL call detected (ra=0x%08" PRIX64
+            ") — stopping\n", (uint64_t)(uint32_t)ra);
+    machine_stop(m);
+    uc_emu_stop(uc);
+    return true;
+}
+
+static bool handle_null_call_interrupt(machine_t *m, uc_engine *uc,
+                                       uint32_t intno, uint64_t pc,
+                                       uint64_t status)
+{
+    if ((uint32_t)pc != 0u || !is_null_call_class_intno(intno))
+        return false;
+    if (m->cfg.nand_path)
+        return handle_wince_null_call_interrupt(m, uc, intno, pc, status);
+    return handle_linux_null_call_interrupt(m, uc, intno, pc);
+}
+
 /*
  * Interrupt / CPU-exception hook.
  *
@@ -3659,74 +3871,24 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
     uc_reg_read(uc, UC_MIPS_REG_PC,         &pc);
     uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
+    if (handle_null_call_interrupt(m, uc, intno, pc, status))
+        return;
+
     /*
      * WinCE boot mode: skip all Linux-specific exception intercepts.
      * Let Unicorn's MIPS CPU handle exceptions natively (TLB miss,
      * syscall, etc.).  Only log the first few for diagnostics.
      */
     if (m->cfg.nand_path) {
+        m->wince_null_last_ra = 0;
+        m->wince_null_last_intno = 0;
+        m->wince_null_consecutive = 0;
         static uint32_t wince_intr_log = 0;
         if (wince_intr_log < 32u) {
             fprintf(stderr, "[WINCE_INTR] intno=%u PC=0x%08" PRIX64
                     " STATUS=0x%08" PRIX64 "\n",
                     intno, (uint64_t)(uint32_t)pc, (uint64_t)(uint32_t)status);
             wince_intr_log++;
-        }
-        /* For TLB miss at address 0 (null function pointer), stop execution
-         * to avoid infinite exception loops.  The SPL has no exception
-         * vectors installed. */
-        if ((uint32_t)pc == 0u && (intno == 20u || intno == 26u || intno == 27u)) {
-            uint64_t ra = 0;
-            uint64_t v0 = 0;
-            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
-            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-
-            /*
-             * SPL handoff site:
-             *   0xA0F024F8: jalr a1   ; returns stage entry in v0
-             *   0xA0F02500: move t0,v0
-             *   0xA0F02504: jr t0
-             *
-             * If v0 is unexpectedly 0, jr t0 jumps to 0. Recover by
-             * redirecting to the stage entry block at 0xA0F0250C.
-             */
-            if ((uint32_t)ra == 0xA0F02500u) {
-                uint32_t stage32 = 0xA0F0250Cu;
-                uint32_t saved_stage32 = 0;
-                uc_err saved_stage_err = uc_mem_read(uc, mips_sext(0xA00024FCu),
-                                                     &saved_stage32, sizeof(saved_stage32));
-                if (saved_stage_err != UC_ERR_OK)
-                    saved_stage_err = uc_mem_read(uc, UINT64_C(0x000024FC),
-                                                  &saved_stage32, sizeof(saved_stage32));
-                if (saved_stage_err == UC_ERR_OK && is_kseg_va32(saved_stage32))
-                    stage32 = saved_stage32;
-                uint64_t stage = mips_sext(stage32);
-                uc_reg_write(uc, UC_MIPS_REG_V0, &stage);
-                uc_reg_write(uc, UC_MIPS_REG_T0, &stage);
-                uc_reg_write(uc, UC_MIPS_REG_PC, &stage);
-                static uint32_t wince_null_recover_log = 0;
-                if (wince_null_recover_log < 32u) {
-                    fprintf(stderr,
-                            "[WINCE_NULL_RECOVER] intno=%u pc=0x%08" PRIX64
-                            " ra=0x%08" PRIX64 " v0=0x%08" PRIX64
-                            " saved_stage=0x%08" PRIX32 " saved_stage_err=%d"
-                            " -> stage=0x%08" PRIX32 "\n",
-                            intno,
-                            (uint64_t)(uint32_t)pc,
-                            (uint64_t)(uint32_t)ra,
-                            (uint64_t)(uint32_t)v0,
-                            saved_stage32,
-                            (int)saved_stage_err,
-                            stage32);
-                    wince_null_recover_log++;
-                }
-                return;
-            }
-
-            fprintf(stderr, "[WINCE_INTR] NULL call detected (ra=0x%08" PRIX64
-                    ") — stopping\n", (uint64_t)(uint32_t)ra);
-            machine_stop(m);
-            uc_emu_stop(uc);
         }
         return;
     }
@@ -4004,143 +4166,6 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         (uint64_t)(uint32_t)k0, (uint64_t)(uint32_t)k1,
                         status, m->pending_excode);
                 tlb_badvaddr_log++;
-            }
-
-            /*
-             * NULL function-pointer recovery.
-             *
-             * If PC is in the low kuseg range (< 0x10000) this is almost
-             * certainly a NULL indirect call from kernel code (jalr $t3 or
-             * similar with a zero call-target).  Unicorn's MIPS BEQZ delay-slot
-             * emulation has a known bug: when the beqz is taken, it can execute
-             * the instruction two words after the branch (instead of the true
-             * delay slot one word after), so a NULL-guard like
-             *
-             *   beqz t3, epilogue       ; intended: if t3==0 skip call
-             *   li   v0, -2             ; delay-slot (skipped by Unicorn bug)
-             *   jalr t3                 ; "delay slot" that Unicorn runs instead
-             *
-             * ends up executing "jalr t3" even when t3==0, landing here.
-             *
-             * Recovery: read $ra (return address deposited by jalr PC+8) and,
-             * if it is a valid kseg0 kernel address, treat the NULL call as a
-             * no-op function that returns 0 and redirect PC to $ra.  We also
-             * set v0=0 so the caller sees a clean zero return.
-             *
-             * This is safe because the only side-effect of skipping the call is
-             * that the "unknown parameter" handler is not invoked — which is
-             * exactly what the kernel intended when it checked for NULL.
-             */
-            static uint32_t null_ptr_log = 0;
-            if ((uint32_t)pc < 0x10000u && !m->cfg.nand_path) {
-                uint64_t ra = 0, t9 = 0, gp = 0, sp = 0;
-                uint64_t a0 = 0, a1 = 0, a2 = 0, v0 = 0;
-                uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
-                uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
-                uc_reg_read(uc, UC_MIPS_REG_GP, &gp);
-                uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
-                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
-                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
-                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-                if (null_ptr_log < 8u) {
-                    fprintf(stderr,
-                            "[NULL_CALL] PC=0x%08" PRIX64 " ra=0x%08" PRIX64
-                            " t9=0x%08" PRIX64 " gp=0x%08" PRIX64 " sp=0x%08" PRIX64
-                            " a0=0x%08" PRIX64 " a1=0x%08" PRIX64
-                            " a2=0x%08" PRIX64 " v0=0x%08" PRIX64 "\n",
-                            (uint64_t)(uint32_t)pc,
-                            (uint64_t)(uint32_t)ra, (uint64_t)(uint32_t)t9,
-                            (uint64_t)(uint32_t)gp, (uint64_t)(uint32_t)sp,
-                            (uint64_t)(uint32_t)a0, (uint64_t)(uint32_t)a1,
-                            (uint64_t)(uint32_t)a2, (uint64_t)(uint32_t)v0);
-                    null_ptr_log++;
-                }
-                /* If $ra matches the known parse_one jalr-t3 call-site
-                 * (0x80042F8C = jalr_addr+8), the prid_hook intercept at
-                 * 0x80042F7C fired too late (basic-block boundary).
-                 *
-                 * We can't safely redirect to 0x80042F8C (the epilogue) because
-                 * the epilogue uses `ld ra,16(sp)` — a 64-bit load — and Unicorn
-                 * stores sd/ld with zero-extension in MIPS32 mode, so the reloaded
-                 * ra ends up in the kuseg range and generates another TLB miss.
-                 *
-                 * Instead, reconstruct the full frame unwind manually:
-                 *   1. Read the 4-byte saved-ra from the stack (sp+16, little-endian).
-                 *   2. Sign-extend it to a kseg0 address.
-                 *   3. Restore sp (add 24, undoing parse_one's prologue).
-                 *   4. Set v0 = -2 (the "unknown param" return value).
-                 *   5. Jump directly to the restored ra (parse_args return site).
-                 */
-                uint32_t ra32 = (uint32_t)ra;
-                if (ra32 == 0x80042F8Cu) {
-                    /*
-                     * NULL jalr t3 from parse_one at 0x80042F84.
-                     * ra=0x80042F8C = jalr+8 (parse_one's epilogue return).
-                     *
-                     * We cannot safely run parse_one's epilogue (`ld ra,16(sp)`
-                     * then `jr ra`) because Unicorn's 64-bit sd/ld zero-extends
-                     * addresses stored by jal, making the loaded ra land in
-                     * kuseg and causing another TLB miss.
-                     *
-                     * Instead, manually unwind parse_one's stack frame:
-                     *   sp+16 (PA) holds the saved ra (parse_args return site).
-                     *   Frame size = 24 bytes (addiu sp,-24 in prologue).
-                     *
-                     * BUG FIX (v2): read the saved ra from the kseg0 alias VA,
-                     * NOT from the raw PA.  The kernel's `sd ra,16(sp)` writes
-                     * to mips_sext(sp32)+16 (the sign-extended kseg0 VA that
-                     * map_kseg_alias_block maps separately from SDRAM PA=0).
-                     * Reading from PA (sp32 & 0x1FFFFFFF) would return whatever
-                     * the ELF loader placed there — not the live stack data.
-                     */
-                    uint32_t saved_ra_lo = 0;
-                    uint64_t sp_val = 0;
-                    uc_reg_read(uc, UC_MIPS_REG_SP, &sp_val);
-                    uint32_t sp32   = (uint32_t)sp_val;
-                    uint64_t va_sp  = mips_sext(sp32);   /* kseg0 alias VA */
-                    uc_mem_read(uc, va_sp + 16u, &saved_ra_lo, 4u);
-                    /* restore frame */
-                    uint64_t new_sp = mips_sext(sp32 + 24u);
-                    uint64_t new_ra = mips_sext(saved_ra_lo);
-                    uint64_t neg2   = (uint64_t)(uint32_t)-2;
-                    fprintf(stderr,
-                            "[NULL_CALL_RECOVER] parse_one jalr t3 NULL;"
-                            " va_sp=0x%016" PRIX64 " saved_ra=0x%08" PRIX32
-                            " new_sp=0x%08" PRIX64 "\n",
-                            va_sp, saved_ra_lo, (uint64_t)(uint32_t)new_sp);
-                    if (saved_ra_lo >= 0x80000000u) {
-                        /* Valid kseg0 return site — unwind and continue. */
-                        uc_reg_write(uc, UC_MIPS_REG_SP, &new_sp);
-                        uc_reg_write(uc, UC_MIPS_REG_RA, &new_ra);
-                        uc_reg_write(uc, UC_MIPS_REG_V0, &neg2);
-                        uc_reg_write(uc, UC_MIPS_REG_PC, &new_ra);
-                        return;   /* skip normal TLB-miss handling */
-                    }
-                    /* saved_ra was garbage (read failed or kuseg) — fall through
-                     * to the general recovery below which redirects to ra. */
-                }
-                /*
-                 * General NULL-call recovery: for any kseg0 ra, treat this as
-                 * a null function call that returned 0.  Just redirect PC to ra
-                 * (the return address deposited by the faulting jalr) with v0=0.
-                 * This handles do_early_param's `jalr v0` when v0==0
-                 * (ra=0x802724DC) and any other null indirect calls.
-                 */
-                if (ra32 >= 0x80000000u) {
-                    uint64_t new_pc = mips_sext(ra32);
-                    uint64_t zero   = 0;
-                    uc_reg_write(uc, UC_MIPS_REG_PC, &new_pc);
-                    uc_reg_write(uc, UC_MIPS_REG_V0, &zero);
-                    static uint32_t gen_recover_log = 0;
-                    if (gen_recover_log < 16u) {
-                        fprintf(stderr,
-                                "[NULL_CALL_RECOVER_GENERAL] PC=0 ra=0x%08" PRIX32
-                                " → redirecting to ra (v0=0)\n", ra32);
-                        gen_recover_log++;
-                    }
-                    return;   /* skip normal TLB-miss handling */
-                }
             }
             /*
              * Guard against misclassifying a syscall-site interrupt as nested
@@ -5941,174 +5966,176 @@ machine_t *machine_create(const machine_config_t *cfg)
     if (cfg->trace)
         uc_hook_add(m->uc, &hk, UC_HOOK_CODE, trace_hook, m, 1, 0);
 
-    /* One-shot checkpoint hooks: fire once when each named function is entered */
-    memset(checkpoint_fired, 0, sizeof(checkpoint_fired));
-    for (int i = 0; i < CHECKPOINT_COUNT; i++) {
-        uint64_t va = mips_sext(checkpoint_table[i].va);
-        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, checkpoint_hook,
-                    (void *)(uintptr_t)i, va, va);
-    }
-    {
-        uint64_t va = mips_sext(0x80001598u); /* run_init_process */
-        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, run_init_entry_trace_hook, m, va, va);
-    }
-    /* run_init_process execve site probes (real failing path). */
-    {
-        static const uint32_t execve_sites[] = {
-            RUN_INIT_SYSCALL_EPC,
-            RUN_INIT_SYSCALL_RET_PC,
-        };
-        for (int i = 0; i < 2; i++) {
-            uint64_t va = mips_sext(execve_sites[i]);
-            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, init_execve_site_probe_hook, m, va, va);
+    if (!cfg->nand_path) {
+        /* One-shot checkpoint hooks: fire once when each named function is entered */
+        memset(checkpoint_fired, 0, sizeof(checkpoint_fired));
+        for (int i = 0; i < CHECKPOINT_COUNT; i++) {
+            uint64_t va = mips_sext(checkpoint_table[i].va);
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, checkpoint_hook,
+                        (void *)(uintptr_t)i, va, va);
         }
-    }
-
-    /* vmlinux-pgui-demo (2.4.18) one-shot probes */
-    memset(pgui_probe_fired, 0, sizeof(pgui_probe_fired));
-    {
-        static const struct { uint32_t va; int idx; } pgui_probes[] = {
-            { 0x8015873cu,  0 },  /* start_kernel       */
-            { 0x801651a8u,  1 },  /* prom_init          */
-            { 0x800015d0u,  2 },  /* prepare_namespace  */
-            { 0x80161234u,  3 },  /* rd_init            */
-            { 0x80160fc4u,  4 },  /* blk_dev_init       */
-            { 0x80161c5cu,  5 },  /* initrd_load        */
-            { 0x8015dd30u,  6 },  /* mount_root:entry   */
-            { 0x800014dcu,  7 },  /* do_linuxrc         */
-            { 0x80001764u,  8 },  /* pns_no_initrd_path (branch when initrd_start==0) */
-            { 0x8000a90cu,  9 },  /* free_initmem       */
-            { 0x80001634u, 10 },  /* post_mount_root (reads ROOT_DEV, real_root_dev) */
-            { 0x8015ecbcu, 11 },  /* change_root        */
-            /* mount_root internals */
-            { 0x8015deb8u, 12 },  /* mount_root:alloc_vfsmnt (got superblock) */
-            { 0x8015df74u, 13 },  /* mount_root:graft_tree                    */
-            { 0x8015dfe8u, 14 },  /* mount_root:set_fs_root (sw s2,20(s1))   */
-            { 0x8015e328u, 15 },  /* mount_root:no_super_loop (fs-type loop)  */
-            { 0x8015e3d4u, 16 },  /* mount_root:read_super in fs-type loop    */
-            { 0x8015e460u, 17 },  /* mount_root:blkdev_get failed             */
-            { 0x8015e280u, 18 },  /* mount_root:return (jr ra)                */
-            /* filesystem */
-            { 0x80071928u, 19 },  /* ext2_read_super                          */
-            /* execve path */
-            { 0x80007394u, 20 },  /* sys_execve                               */
-            /* init() SYSCALL instructions (probe fires before syscall executes) */
-            { 0x800017a4u, 21 },  /* init:open("/dev/console")                */
-            { 0x8000181cu, 22 },  /* init:execve(execute_command)             */
-            { 0x8000184cu, 23 },  /* init:execve("/sbin/init")                */
-            { 0x800018acu, 24 },  /* init:execve("/bin/sh") — last attempt    */
-            { 0x80007ac0u, 25 },  /* handle_sys (MIPS syscall dispatch)       */
-        };
-        for (int i = 0; i < PGUI_PROBE_COUNT; i++) {
-            uint64_t va = mips_sext(pgui_probes[i].va);
-            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, pgui_probe_hook,
-                        (void *)(uintptr_t)pgui_probes[i].idx, va, va);
+        {
+            uint64_t va = mips_sext(0x80001598u); /* run_init_process */
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, run_init_entry_trace_hook, m, va, va);
         }
-    }
-
-    /* do_initcalls tracer: logs which function pointer is called at JALR site */
-    initcall_trace_count = 0;
-    {
-        uint64_t jalr_va = mips_sext(0x80272874u);
-        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, initcall_trace_hook, NULL,
-                    jalr_va, jalr_va);
-    }
-
-    /* RCU / wait_for_completion diagnostic probes (multi-fire, up to 8 each) */
-    rcu_probe_wait_count     = 0;
-    rcu_probe_dotimer_count  = 0;
-    rcu_probe_rcucheck_count = 0;
-    rcu_probe_rcuproc_count  = 0;
-    rcu_probe_timerint_count = 0;
-    {
-        static const struct { uint32_t va; int idx; } rcu_probes[] = {
-            { 0x801ab590u, 0 },  /* wait_for_completion   */
-            { 0x800379a8u, 1 },  /* do_timer               */
-            { 0x800428b8u, 2 },  /* rcu_check_callbacks    */
-            { 0x80042780u, 3 },  /* rcu_process_callbacks  */
-            { 0x8000eb30u, 4 },  /* timer_interrupt        */
-        };
-        for (int i = 0; i < 5; i++) {
-            uint64_t va = mips_sext(rcu_probes[i].va);
-            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, rcu_probe_hook,
-                        (void *)(uintptr_t)rcu_probes[i].idx, va, va);
+        /* run_init_process execve site probes (real failing path). */
+        {
+            static const uint32_t execve_sites[] = {
+                RUN_INIT_SYSCALL_EPC,
+                RUN_INIT_SYSCALL_RET_PC,
+            };
+            for (int i = 0; i < 2; i++) {
+                uint64_t va = mips_sext(execve_sites[i]);
+                uc_hook_add(m->uc, &hk, UC_HOOK_CODE, init_execve_site_probe_hook, m, va, va);
+            }
         }
-    }
 
-    /* IRQ dispatch path probes (multi-fire, up to 24 each) */
-    memset(irq_probe_counts, 0, sizeof(irq_probe_counts));
-    {
-        static const struct { uint32_t va; int idx; } irq_probes[] = {
-            { 0x800076c0u, 0 },  /* vr41xx_handle_interrupt */
-            { 0x80007508u, 1 },  /* irq_dispatch            */
-            { 0x80009c30u, 2 },  /* do_IRQ                  */
-            { 0x8000eb30u, 3 },  /* timer_interrupt         */
-            { 0x80007a98u, 4 },  /* vr41xx_timer_ack        */
-            { 0x8000ed88u, 5 },  /* ll_timer_interrupt      */
-            { 0x8000ea38u, 6 },  /* local_timer_interrupt   */
-            { 0x8000ee18u, 7 },  /* ll_local_timer_interrupt*/
-        };
-        for (int i = 0; i < 8; i++) {
-            uint64_t va = mips_sext(irq_probes[i].va);
-            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, irq_probe_hook,
-                        (void *)(uintptr_t)irq_probes[i].idx, va, va);
+        /* vmlinux-pgui-demo (2.4.18) one-shot probes */
+        memset(pgui_probe_fired, 0, sizeof(pgui_probe_fired));
+        {
+            static const struct { uint32_t va; int idx; } pgui_probes[] = {
+                { 0x8015873cu,  0 },  /* start_kernel       */
+                { 0x801651a8u,  1 },  /* prom_init          */
+                { 0x800015d0u,  2 },  /* prepare_namespace  */
+                { 0x80161234u,  3 },  /* rd_init            */
+                { 0x80160fc4u,  4 },  /* blk_dev_init       */
+                { 0x80161c5cu,  5 },  /* initrd_load        */
+                { 0x8015dd30u,  6 },  /* mount_root:entry   */
+                { 0x800014dcu,  7 },  /* do_linuxrc         */
+                { 0x80001764u,  8 },  /* pns_no_initrd_path (branch when initrd_start==0) */
+                { 0x8000a90cu,  9 },  /* free_initmem       */
+                { 0x80001634u, 10 },  /* post_mount_root (reads ROOT_DEV, real_root_dev) */
+                { 0x8015ecbcu, 11 },  /* change_root        */
+                /* mount_root internals */
+                { 0x8015deb8u, 12 },  /* mount_root:alloc_vfsmnt (got superblock) */
+                { 0x8015df74u, 13 },  /* mount_root:graft_tree                    */
+                { 0x8015dfe8u, 14 },  /* mount_root:set_fs_root (sw s2,20(s1))   */
+                { 0x8015e328u, 15 },  /* mount_root:no_super_loop (fs-type loop)  */
+                { 0x8015e3d4u, 16 },  /* mount_root:read_super in fs-type loop    */
+                { 0x8015e460u, 17 },  /* mount_root:blkdev_get failed             */
+                { 0x8015e280u, 18 },  /* mount_root:return (jr ra)                */
+                /* filesystem */
+                { 0x80071928u, 19 },  /* ext2_read_super                          */
+                /* execve path */
+                { 0x80007394u, 20 },  /* sys_execve                               */
+                /* init() SYSCALL instructions (probe fires before syscall executes) */
+                { 0x800017a4u, 21 },  /* init:open("/dev/console")                */
+                { 0x8000181cu, 22 },  /* init:execve(execute_command)             */
+                { 0x8000184cu, 23 },  /* init:execve("/sbin/init")                */
+                { 0x800018acu, 24 },  /* init:execve("/bin/sh") — last attempt    */
+                { 0x80007ac0u, 25 },  /* handle_sys (MIPS syscall dispatch)       */
+            };
+            for (int i = 0; i < PGUI_PROBE_COUNT; i++) {
+                uint64_t va = mips_sext(pgui_probes[i].va);
+                uc_hook_add(m->uc, &hk, UC_HOOK_CODE, pgui_probe_hook,
+                            (void *)(uintptr_t)pgui_probes[i].idx, va, va);
+            }
         }
-    }
 
-    /* Syscall dispatch and return probes. */
-    {
-        uint64_t va_sys = mips_sext(0x800111a0u); /* handle_sys */
-        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va_sys, va_sys);
-    }
-    {
-        uint64_t va_zero = 0; /* User entry point 0? */
-        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va_zero, va_zero);
-    }
-
-    /* Exception vector probes (TLB refill + general exception vectors). */
-    memset(vec_probe_counts, 0, sizeof(vec_probe_counts));
-    {
-        static const uint32_t vecs[] = {
-            0x80000000u, /* refill vector */
-            0x80000080u, /* xtlb refill   */
-            0x80000180u, /* general       */
-            0x80000048u, /* refill_tlbwr  */
-            0x8000004Cu, /* refill_eret   */
-            0x00000000u, /* BEV=1 refill  */
-            0x00000180u, /* BEV=1 general */
-            0x80000008u, /* nested refill?*/
-        };
-        for (int i = 0; i < 8; i++) {
-            uint64_t va = mips_sext(vecs[i]);
-            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, exception_vector_probe_hook,
-                        m, va, va);
+        /* do_initcalls tracer: logs which function pointer is called at JALR site */
+        initcall_trace_count = 0;
+        {
+            uint64_t jalr_va = mips_sext(0x80272874u);
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, initcall_trace_hook, NULL,
+                        jalr_va, jalr_va);
         }
-    }
 
-    /* Page-fault probe: log the first few fault-path entries for 2.4/2.6 kernels. */
-    pf_probe_count = 0;
-    {
-        static const uint32_t fault_sites[] = {
-            K24_DO_PAGE_FAULT,
-            K24_HANDLE_TLBL,
-            K24_NOPAGE_TLBL,
-            K24_HANDLE_TLBS,
-            0x80016ef0u, /* alt do_page_fault */
-            0x8001a4e0u, /* alt handle_tlbl   */
-            0x8001a660u, /* alt handle_tlbs   */
-        };
-        for (size_t i = 0; i < (sizeof(fault_sites) / sizeof(fault_sites[0])); i++) {
-            uint64_t va = mips_sext(fault_sites[i]);
-            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va, va);
+        /* RCU / wait_for_completion diagnostic probes (multi-fire, up to 8 each) */
+        rcu_probe_wait_count     = 0;
+        rcu_probe_dotimer_count  = 0;
+        rcu_probe_rcucheck_count = 0;
+        rcu_probe_rcuproc_count  = 0;
+        rcu_probe_timerint_count = 0;
+        {
+            static const struct { uint32_t va; int idx; } rcu_probes[] = {
+                { 0x801ab590u, 0 },  /* wait_for_completion   */
+                { 0x800379a8u, 1 },  /* do_timer               */
+                { 0x800428b8u, 2 },  /* rcu_check_callbacks    */
+                { 0x80042780u, 3 },  /* rcu_process_callbacks  */
+                { 0x8000eb30u, 4 },  /* timer_interrupt        */
+            };
+            for (int i = 0; i < 5; i++) {
+                uint64_t va = mips_sext(rcu_probes[i].va);
+                uc_hook_add(m->uc, &hk, UC_HOOK_CODE, rcu_probe_hook,
+                            (void *)(uintptr_t)rcu_probes[i].idx, va, va);
+            }
         }
-    }
 
-    /* ICU ETIME fixup: force-enable ETIME bit in MSYSINT1 after
-     * vr41xx_icu_init clears it.  Fires at the jr $ra (0x80275bec). */
-    icu_etime_fixup_fired = false;
-    {
-        uint64_t va = mips_sext(0x80275becu);
-        uc_hook_add(m->uc, &hk, UC_HOOK_CODE, icu_etime_fixup_hook, m, va, va);
+        /* IRQ dispatch path probes (multi-fire, up to 24 each) */
+        memset(irq_probe_counts, 0, sizeof(irq_probe_counts));
+        {
+            static const struct { uint32_t va; int idx; } irq_probes[] = {
+                { 0x800076c0u, 0 },  /* vr41xx_handle_interrupt */
+                { 0x80007508u, 1 },  /* irq_dispatch            */
+                { 0x80009c30u, 2 },  /* do_IRQ                  */
+                { 0x8000eb30u, 3 },  /* timer_interrupt         */
+                { 0x80007a98u, 4 },  /* vr41xx_timer_ack        */
+                { 0x8000ed88u, 5 },  /* ll_timer_interrupt      */
+                { 0x8000ea38u, 6 },  /* local_timer_interrupt   */
+                { 0x8000ee18u, 7 },  /* ll_local_timer_interrupt*/
+            };
+            for (int i = 0; i < 8; i++) {
+                uint64_t va = mips_sext(irq_probes[i].va);
+                uc_hook_add(m->uc, &hk, UC_HOOK_CODE, irq_probe_hook,
+                            (void *)(uintptr_t)irq_probes[i].idx, va, va);
+            }
+        }
+
+        /* Syscall dispatch and return probes. */
+        {
+            uint64_t va_sys = mips_sext(0x800111a0u); /* handle_sys */
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va_sys, va_sys);
+        }
+        {
+            uint64_t va_zero = 0; /* User entry point 0? */
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va_zero, va_zero);
+        }
+
+        /* Exception vector probes (TLB refill + general exception vectors). */
+        memset(vec_probe_counts, 0, sizeof(vec_probe_counts));
+        {
+            static const uint32_t vecs[] = {
+                0x80000000u, /* refill vector */
+                0x80000080u, /* xtlb refill   */
+                0x80000180u, /* general       */
+                0x80000048u, /* refill_tlbwr  */
+                0x8000004Cu, /* refill_eret   */
+                0x00000000u, /* BEV=1 refill  */
+                0x00000180u, /* BEV=1 general */
+                0x80000008u, /* nested refill?*/
+            };
+            for (int i = 0; i < 8; i++) {
+                uint64_t va = mips_sext(vecs[i]);
+                uc_hook_add(m->uc, &hk, UC_HOOK_CODE, exception_vector_probe_hook,
+                            m, va, va);
+            }
+        }
+
+        /* Page-fault probe: log the first few fault-path entries for 2.4/2.6 kernels. */
+        pf_probe_count = 0;
+        {
+            static const uint32_t fault_sites[] = {
+                K24_DO_PAGE_FAULT,
+                K24_HANDLE_TLBL,
+                K24_NOPAGE_TLBL,
+                K24_HANDLE_TLBS,
+                0x80016ef0u, /* alt do_page_fault */
+                0x8001a4e0u, /* alt handle_tlbl   */
+                0x8001a660u, /* alt handle_tlbs   */
+            };
+            for (size_t i = 0; i < (sizeof(fault_sites) / sizeof(fault_sites[0])); i++) {
+                uint64_t va = mips_sext(fault_sites[i]);
+                uc_hook_add(m->uc, &hk, UC_HOOK_CODE, page_fault_probe_hook, m, va, va);
+            }
+        }
+
+        /* ICU ETIME fixup: force-enable ETIME bit in MSYSINT1 after
+         * vr41xx_icu_init clears it.  Fires at the jr $ra (0x80275bec). */
+        icu_etime_fixup_fired = false;
+        {
+            uint64_t va = mips_sext(0x80275becu);
+            uc_hook_add(m->uc, &hk, UC_HOOK_CODE, icu_etime_fixup_hook, m, va, va);
+        }
     }
 
     /* NAND / WinCE boot mode: load B000FF SPL from NAND image */
