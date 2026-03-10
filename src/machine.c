@@ -486,6 +486,116 @@ static bool alias_write_sync_hook(uc_engine *uc, uc_mem_type type,
     return true;
 }
 
+#define WINCE_TRACE_VEC_PA_START UINT32_C(0x00000000)
+#define WINCE_TRACE_VEC_PA_END   UINT32_C(0x00000200)
+#define WINCE_TRACE_CTX_PA_START UINT32_C(0x00002200)
+#define WINCE_TRACE_CTX_PA_END   UINT32_C(0x00002300)
+
+static inline bool write_value_is_zero(unsigned size, uint64_t value)
+{
+    if (size >= 8u)
+        return value == 0u;
+    uint64_t mask = (UINT64_C(1) << (size * 8u)) - 1u;
+    return (value & mask) == 0u;
+}
+
+static void wince_pa_watch_update(machine_t *m, wince_pa_watch_t *watch,
+                                  const char *region, uint32_t pa, uint32_t pc,
+                                  unsigned size, uint64_t value)
+{
+    bool is_zero = write_value_is_zero(size, value);
+
+    watch->writes++;
+    if (is_zero)
+        watch->zero_writes++;
+    else
+        watch->saw_nonzero = true;
+
+    if (!watch->first_valid) {
+        watch->first_valid = true;
+        watch->first_pa = pa;
+        watch->first_pc = pc;
+        watch->first_size = (uint8_t)size;
+        watch->first_value = value;
+    }
+
+    watch->last_pa = pa;
+    watch->last_pc = pc;
+    watch->last_size = (uint8_t)size;
+    watch->last_value = value;
+
+    if (m->cfg.log_wince_stall && m->wince_pa_watch_logs < 96u) {
+        bool should_log = (watch->writes <= 4u) ||
+                          (!is_zero && watch->writes <= 32u);
+        if (should_log) {
+            fprintf(stderr,
+                    "[WINCE_PA_WATCH] region=%s writes=%u zero=%u"
+                    " pa=0x%08X pc=0x%08X size=%u val=0x%016" PRIX64 "\n",
+                    region, watch->writes, watch->zero_writes,
+                    pa, pc, size, value);
+            m->wince_pa_watch_logs++;
+        }
+    }
+}
+
+static bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
+                                      uint64_t address, int size, int64_t value,
+                                      void *user_data)
+{
+    (void)type;
+    machine_t *m = user_data;
+    if (!m->wince_pa_watch_active)
+        return true;
+    if (size <= 0 || size > 8)
+        return true;
+    uint32_t pa = (uint32_t)address & UINT32_C(0x1FFFFFFF);
+    if ((uint64_t)pa >= (uint64_t)m->cfg.sdram_size)
+        return true;
+
+    uint64_t pc64 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
+    uint32_t pc = (uint32_t)pc64;
+    uint64_t uval = (uint64_t)value;
+
+    if (pa < WINCE_TRACE_VEC_PA_END) {
+        wince_pa_watch_update(m, &m->wince_vec_watch, "vectors",
+                              pa, pc, (unsigned)size, uval);
+    } else if (pa >= WINCE_TRACE_CTX_PA_START && pa < WINCE_TRACE_CTX_PA_END) {
+        wince_pa_watch_update(m, &m->wince_ctx_watch, "ctx2200",
+                              pa, pc, (unsigned)size, uval);
+    }
+
+    return true;
+}
+
+static void log_wince_pa_watch_summary(const machine_t *m, const char *reason)
+{
+    if (!m || !m->wince_pa_watch_active)
+        return;
+
+    const wince_pa_watch_t *watches[] = { &m->wince_vec_watch, &m->wince_ctx_watch };
+    const char *names[] = { "vectors", "ctx2200" };
+
+    for (int i = 0; i < 2; i++) {
+        const wince_pa_watch_t *w = watches[i];
+        if (!w->first_valid) {
+            fprintf(stderr,
+                    "[WINCE_PA_WATCH_SUMMARY] reason=%s region=%s writes=0\n",
+                    reason, names[i]);
+            continue;
+        }
+        fprintf(stderr,
+                "[WINCE_PA_WATCH_SUMMARY] reason=%s region=%s writes=%u"
+                " zero=%u nonzero=%u"
+                " first(pc=0x%08X pa=0x%08X size=%u val=0x%016" PRIX64 ")"
+                " last(pc=0x%08X pa=0x%08X size=%u val=0x%016" PRIX64 ")\n",
+                reason, names[i],
+                w->writes, w->zero_writes, w->saw_nonzero ? 1u : 0u,
+                w->first_pc, w->first_pa, (unsigned)w->first_size, w->first_value,
+                w->last_pc, w->last_pa, (unsigned)w->last_size, w->last_value);
+    }
+}
+
 static void alias_coherence_probe(machine_t *m)
 {
     if (m->shared_alias_active) {
@@ -4080,6 +4190,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             ") last_exec_pc=0x%08" PRIX64 " — stopping\n",
             (uint64_t)(uint32_t)ra,
             (uint64_t)(uint32_t)m->last_exec_pc);
+    log_wince_pa_watch_summary(m, "NULL_POSTMORTEM");
 
     /* Dump code around last known execution PC for post-mortem analysis */
     {
@@ -6145,6 +6256,7 @@ static void log_wince_stall_dump(machine_t *m, uint32_t pc32)
             "[WINCE_STALL] SIU LSR=0x%02X IER=0x%02X IIR=0x%02X"
             " LCR=0x%02X MCR=0x%02X\n",
             m->siu.lsr, m->siu.ier, m->siu.iir, m->siu.lcr, m->siu.mcr);
+    log_wince_pa_watch_summary(m, "STALL");
 
     if (m->mmio_hist_count == 0) {
         fprintf(stderr, "[WINCE_STALL_MMIO] (empty)\n");
@@ -6356,6 +6468,38 @@ machine_t *machine_create(const machine_config_t *cfg)
             fprintf(stderr, "[ALIAS_MODE] write-sync hook enabled\n");
         } else {
             fprintf(stderr, "[ALIAS_MODE] write-sync hook failed: %s\n", uc_strerror(hs));
+        }
+    }
+    if (is_wince_boot_cfg(cfg) && cfg->log_wince_stall) {
+        static const uint64_t watch_bases[] = {
+            UINT64_C(0x0000000000000000),
+            UINT64_C(0x0000000080000000),
+            UINT64_C(0x00000000A0000000),
+            UINT64_C(0xFFFFFFFF80000000),
+            UINT64_C(0xFFFFFFFFA0000000),
+        };
+        uint64_t start_off = 0u;
+        uint64_t end_off = (uint64_t)WINCE_TRACE_CTX_PA_END - 1u;
+        bool watch_ok = true;
+        for (unsigned i = 0; i < sizeof(watch_bases) / sizeof(watch_bases[0]); i++) {
+            uc_err hw = uc_hook_add(m->uc, &hk, UC_HOOK_MEM_WRITE,
+                                    wince_pa_watch_write_hook, m,
+                                    watch_bases[i] + start_off,
+                                    watch_bases[i] + end_off);
+            if (hw != UC_ERR_OK) {
+                watch_ok = false;
+                fprintf(stderr,
+                        "[WINCE_PA_WATCH] hook failed base=0x%016" PRIX64 ": %s\n",
+                        watch_bases[i], uc_strerror(hw));
+            }
+        }
+        if (watch_ok) {
+            m->wince_pa_watch_active = true;
+            fprintf(stderr,
+                    "[WINCE_PA_WATCH] enabled ranges"
+                    " vec=0x%08X-0x%08X ctx=0x%08X-0x%08X aliases=5\n",
+                    WINCE_TRACE_VEC_PA_START, WINCE_TRACE_VEC_PA_END - 1u,
+                    WINCE_TRACE_CTX_PA_START, WINCE_TRACE_CTX_PA_END - 1u);
         }
     }
 
