@@ -65,6 +65,19 @@ typedef struct {
     uint64_t last_value;
 } wince_pa_watch_t;
 
+#define WINCE_CTRL_HISTORY_LEN 128u
+typedef struct {
+    uint32_t pc;
+    uint32_t target;
+    uint32_t ra;
+    uint32_t sp;
+    uint32_t a0;
+    uint32_t value;      /* status value for MTC0_STATUS, else 0 */
+    uint8_t  kind;       /* 1=JAL, 2=JALR, 3=JR_RA, 4=MTC0_STATUS */
+    uint8_t  reg_idx;    /* source GPR index for MTC0_STATUS, else 0 */
+    uint16_t reserved;
+} wince_ctrl_hist_entry_t;
+
 typedef struct {
     bool        trace;        /* log each instruction to stderr */
     bool        log_mmio;     /* log all MMIO register accesses */
@@ -124,6 +137,9 @@ struct machine_s {
     uint32_t wince_pa_watch_logs;
     wince_pa_watch_t wince_vec_watch;
     wince_pa_watch_t wince_ctx_watch;
+    wince_ctrl_hist_entry_t wince_ctrl_hist[WINCE_CTRL_HISTORY_LEN];
+    uint32_t wince_ctrl_hist_head;
+    uint32_t wince_ctrl_hist_count;
     uint32_t wince_null_last_ra;
     uint32_t wince_null_last_intno;
     uint32_t wince_null_consecutive;
