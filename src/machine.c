@@ -5540,6 +5540,8 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             { 0x80079780, "ctx_path_0x80079780" },
             { 0x80079840, "ctx_path_0x80079840" },
             { 0x80079880, "ctx_path_0x80079880" },
+            { 0x80096780, "ctx_caller_0x80096790" },
+            { 0x80096880, "ctx_caller_0x80096894" },
             { 0x80077DC0, "ctx_caller_0x80077DC0" },
             { 0x80077CA0, "ctx_caller_0x80077CC0" },
             { 0x80077D00, "ctx_caller_0x80077D20" },
@@ -5562,6 +5564,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             { 0x80032700, "ctx_path_0x80032700" },
             { 0x80032740, "ctx_path_0x80032740" },
             { 0x80032780, "ctx_path_0x80032780" },
+            { 0x806794D0, "ctx_cbslot_0x806794D0" },
             { 0x80660000, "ctx_objptr_0x80660000" },
             { 0x8066BFC0, "ctx_obj_0x8066BFC0" },
             { 0x8067BFC0, "ctx_obj_0x8067BFC0" },
@@ -5623,6 +5626,8 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
                 mem_regions[r].pa == 0x80032700u ||
                 mem_regions[r].pa == 0x80032740u ||
                 mem_regions[r].pa == 0x80032780u ||
+                mem_regions[r].pa == 0x80096780u ||
+                mem_regions[r].pa == 0x80096880u ||
                 mem_regions[r].pa == 0x80078260u ||
                 mem_regions[r].pa == 0x80078300u ||
                 mem_regions[r].pa == 0x80078340u ||
