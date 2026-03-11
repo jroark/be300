@@ -1703,139 +1703,6 @@ static bool maybe_skip_wince_bootmode_delay_call(machine_t *m, uc_engine *uc,
     return true;
 }
 
-static bool wince_ctx_block_is_zero(uc_engine *uc)
-{
-    /* 0xA0002200..0xA00022E7 stores the restore context payload. */
-    for (uint32_t off = 0; off < 0xE8u; off += 4u) {
-        uint32_t w = 0;
-        if (!read_guest_u32(uc, 0xA0002200u + off, &w))
-            return false;
-        if (w != 0u)
-            return false;
-    }
-    return true;
-}
-
-static inline uint32_t read_gpr32(uc_engine *uc, int regid)
-{
-    uint64_t v = 0;
-    uc_reg_read(uc, regid, &v);
-    return (uint32_t)v;
-}
-
-static void maybe_seed_wince_live_ctx_block(machine_t *m, uc_engine *uc,
-                                            uint32_t pc32)
-{
-    if (!is_wince_boot_machine(m))
-        return;
-    if (pc32 != 0x80032558u && pc32 != 0x80079640u)
-        return;
-    if (!wince_ctx_block_is_zero(uc))
-        return;
-
-    static const struct {
-        uint16_t off;
-        int reg;
-    } gpr_map[] = {
-        { 0x00u, UC_MIPS_REG_AT }, { 0x04u, UC_MIPS_REG_V0 },
-        { 0x08u, UC_MIPS_REG_V1 }, { 0x0Cu, UC_MIPS_REG_A0 },
-        { 0x10u, UC_MIPS_REG_A1 }, { 0x14u, UC_MIPS_REG_A2 },
-        { 0x18u, UC_MIPS_REG_A3 }, { 0x1Cu, UC_MIPS_REG_T0 },
-        { 0x20u, UC_MIPS_REG_T2 }, { 0x24u, UC_MIPS_REG_T3 },
-        { 0x28u, UC_MIPS_REG_T4 }, { 0x2Cu, UC_MIPS_REG_T5 },
-        { 0x30u, UC_MIPS_REG_T6 }, { 0x34u, UC_MIPS_REG_T7 },
-        { 0x38u, UC_MIPS_REG_S0 }, { 0x3Cu, UC_MIPS_REG_S1 },
-        { 0x40u, UC_MIPS_REG_S2 }, { 0x44u, UC_MIPS_REG_S3 },
-        { 0x48u, UC_MIPS_REG_S4 }, { 0x4Cu, UC_MIPS_REG_S5 },
-        { 0x50u, UC_MIPS_REG_S6 }, { 0x54u, UC_MIPS_REG_S7 },
-        { 0x58u, UC_MIPS_REG_T8 }, { 0x5Cu, UC_MIPS_REG_T9 },
-        { 0x60u, UC_MIPS_REG_K0 }, { 0x64u, UC_MIPS_REG_K1 },
-        { 0x68u, UC_MIPS_REG_GP }, { 0x6Cu, UC_MIPS_REG_SP },
-        { 0x70u, UC_MIPS_REG_FP }, { 0x74u, UC_MIPS_REG_RA },
-    };
-
-    uint64_t status64 = 0;
-    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status64);
-    uint32_t status = (uint32_t)status64;
-
-    for (size_t i = 0; i < sizeof(gpr_map) / sizeof(gpr_map[0]); i++) {
-        uint32_t v = read_gpr32(uc, gpr_map[i].reg);
-        (void)write_mem_best_effort(uc, mips_sext(0xA0002200u + gpr_map[i].off),
-                                    &v, sizeof(v));
-    }
-
-    {
-        uint32_t hi = read_gpr32(uc, UC_MIPS_REG_HI);
-        uint32_t lo = read_gpr32(uc, UC_MIPS_REG_LO);
-        (void)write_mem_best_effort(uc, mips_sext(0xA0002278u), &hi, sizeof(hi));
-        (void)write_mem_best_effort(uc, mips_sext(0xA000227Cu), &lo, sizeof(lo));
-    }
-
-    {
-        uint32_t count = (uint32_t)(m->insn_count / 2ull);
-        uint32_t entryhi = (uint32_t)(m->shadow_cp0_entryhi_live_valid
-                             ? m->shadow_cp0_entryhi_live
-                             : m->shadow_cp0_entryhi);
-        uint32_t cp0_words[] = {
-            (uint32_t)m->shadow_cp0_index,     /* 0x80: Index    */
-            0u,                                /* 0x84: Random   */
-            (uint32_t)m->shadow_cp0_entrylo0,  /* 0x88: EntryLo0 */
-            (uint32_t)m->shadow_cp0_entrylo1,  /* 0x8C: EntryLo1 */
-            (uint32_t)m->shadow_cp0_context,   /* 0x90: Context  */
-            (uint32_t)m->shadow_cp0_pagemask,  /* 0x94: PageMask */
-            0u,                                /* 0x98: Wired    */
-            count,                             /* 0x9C: Count    */
-            entryhi,                           /* 0xA0: EntryHi  */
-            0u,                                /* 0xA4: Compare  */
-            status,                            /* 0xA8: Status   */
-            m->pending_cause,                  /* 0xAC: Cause    */
-            (uint32_t)m->shadow_cp0_epc,       /* 0xB0: EPC      */
-            0u,                                /* 0xB4: Config   */
-            0u,                                /* 0xB8           */
-            0u,                                /* 0xBC           */
-            0u,                                /* 0xC0           */
-            0u,                                /* 0xC4           */
-            0u,                                /* 0xC8           */
-            0u,                                /* 0xCC           */
-            0u,                                /* 0xD0           */
-        };
-        for (size_t i = 0; i < sizeof(cp0_words) / sizeof(cp0_words[0]); i++) {
-            uint32_t off = 0x80u + (uint32_t)(i * 4u);
-            (void)write_mem_best_effort(uc, mips_sext(0xA0002200u + off),
-                                        &cp0_words[i], sizeof(uint32_t));
-        }
-    }
-
-    {
-        uint16_t hw_half[6] = { 0 };
-        uint32_t hw_word = 0;
-        if (read_guest_u32(uc, 0xAF00008Cu, &hw_word)) hw_half[0] = (uint16_t)(hw_word & 0xFFFFu);
-        if (read_guest_u32(uc, 0xAF000094u, &hw_word)) hw_half[1] = (uint16_t)(hw_word & 0xFFFFu);
-        if (read_guest_u32(uc, 0xAF000096u, &hw_word)) hw_half[2] = (uint16_t)(hw_word & 0xFFFFu);
-        if (read_guest_u32(uc, 0xAF0000A6u, &hw_word)) hw_half[3] = (uint16_t)(hw_word & 0xFFFFu);
-        if (read_guest_u32(uc, 0xAF0000A8u, &hw_word)) hw_half[4] = (uint16_t)(hw_word & 0xFFFFu);
-        if (read_guest_u32(uc, 0xAF0000AAu, &hw_word)) hw_half[5] = (uint16_t)(hw_word & 0xFFFFu);
-        for (uint32_t i = 0; i < 6u; i++) {
-            uint64_t dst = mips_sext(0xA00022D4u + (i * 2u) + ((i >= 1u) ? 6u : 0u));
-            (void)write_mem_best_effort(uc, dst, &hw_half[i], sizeof(uint16_t));
-        }
-    }
-
-    static uint32_t seed_logs = 0;
-    if (seed_logs < 64u) {
-        uint32_t ra = read_gpr32(uc, UC_MIPS_REG_RA);
-        uint32_t sp = read_gpr32(uc, UC_MIPS_REG_SP);
-        fprintf(stderr,
-                "[WINCE_CTX_LIVE_SEED] pc=0x%08X ra=0x%08X sp=0x%08X"
-                " status=0x%08X cause=0x%08X entryhi=0x%08X\n",
-                pc32, ra, sp, status, m->pending_cause,
-                (uint32_t)(m->shadow_cp0_entryhi_live_valid
-                    ? m->shadow_cp0_entryhi_live
-                    : m->shadow_cp0_entryhi));
-        seed_logs++;
-    }
-}
-
 static void alias_coherence_probe(machine_t *m)
 {
     if (m->shared_alias_active) {
@@ -2990,6 +2857,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 {
     (void)size;
     machine_t *m = user_data;
+    m->cp0_count_ticks++;
     m->last_exec_pc = address;
     static uint32_t mfc0_cause_seen_log = 0;
     static uint32_t mfc0_epc_seen_log = 0;
@@ -4079,8 +3947,6 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         return;
     if (maybe_emulate_wince_objptr_init_call(m, uc, (uint32_t)address, insn))
         return;
-    maybe_seed_wince_live_ctx_block(m, uc, (uint32_t)address);
-
     if (is_wince_boot_machine(m) && !m->wince_nk_epoch_reset_done) {
         uint32_t pc32 = (uint32_t)address;
         if (pc32 >= WINCE_NK_TRACE_BASE && pc32 < WINCE_NK_TRACE_END) {
@@ -4413,7 +4279,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * from insn_count, scaling by 2 to approximate "one count tick per
      * two instructions" (roughly matching a single-issue pipeline). */
     if (op == 0x10u && rs == 0u && rd == 9u && sel == 0u) {
-        uint64_t count_val = (uint64_t)(uint32_t)(m->insn_count / 2u);
+        uint64_t count_val = (uint64_t)(uint32_t)(m->cp0_count_ticks / 2u);
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &count_val);
         uint64_t next_pc = address + 4u;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
@@ -8278,6 +8144,7 @@ void machine_run(machine_t *m)
 {
     m->running    = true;
     m->insn_count = 0;
+    m->cp0_count_ticks = 0;
     m->post_init_trace_window = false;
     m->post_init_trace_batches = 0;
     int write_unmapped_recoveries = 0;

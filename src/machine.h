@@ -129,7 +129,11 @@ struct machine_s {
     uint32_t fallback_timer_div;
     uint64_t irq_injected_count;
     uint64_t insn_count;
+    uint64_t cp0_count_ticks; /* per-instruction tick source for CP0 Count emulation */
     bool     running;
+    /* Byte-addressable latch for unimplemented internal I/O offsets. */
+    uint8_t  io_fallback_bytes[PA_IO_SIZE];
+    uint8_t  io_fallback_valid[PA_IO_SIZE];
     mmio_hist_entry_t mmio_hist[WINCE_MMIO_HISTORY_LEN];
     uint32_t mmio_hist_head;
     uint32_t mmio_hist_count;
@@ -137,6 +141,12 @@ struct machine_s {
     uint32_t wince_pa_watch_logs;
     wince_pa_watch_t wince_vec_watch;
     wince_pa_watch_t wince_ctx_watch;
+    uint32_t wince_cb_writes;
+    bool     wince_cb_nonzero;
+    uint32_t wince_objptr_writes;
+    bool     wince_objptr_nonzero;
+    uint32_t wince_obj_writes;
+    bool     wince_obj_nonzero;
     wince_ctrl_hist_entry_t wince_ctrl_hist[WINCE_CTRL_HISTORY_LEN];
     uint32_t wince_ctrl_hist_head;
     uint32_t wince_ctrl_hist_count;
@@ -144,6 +154,7 @@ struct machine_s {
     uint32_t wince_null_last_ra;
     uint32_t wince_null_last_intno;
     uint32_t wince_null_consecutive;
+    bool     wince_nk_epoch_reset_done;
 
     /* Manual MIPS exception-entry state (set by intr_hook / inject_hw_irq_if_pending) */
     uint64_t pending_epc;           /* EPC to return/restore via MFC0/ERET intercepts      */
