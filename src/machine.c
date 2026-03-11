@@ -33,6 +33,32 @@ static inline bool is_wince_boot_machine(const machine_t *m)
     return m != NULL && is_wince_boot_cfg(&m->cfg);
 }
 
+#define VR4131_PCLK_HZ      UINT64_C(166000000)
+#define VR4131_CP0_COUNT_HZ (VR4131_PCLK_HZ / 2u)
+#define VR4131_RTC_HZ       UINT64_C(32768)
+
+static inline uint32_t machine_cp0_count32(const machine_t *m)
+{
+    return m->cp0_count_base + (uint32_t)(m->cp0_count_ticks / 2u);
+}
+
+static void machine_advance_rtc_from_cp0(machine_t *m)
+{
+    uint32_t now = machine_cp0_count32(m);
+    uint32_t prev = (uint32_t)m->rtc_last_count_tick;
+    uint32_t delta = now - prev; /* wraps naturally as Count is 32-bit */
+
+    m->rtc_last_count_tick = now;
+    if (delta == 0u)
+        return;
+
+    m->rtc_tick_frac_num += (uint64_t)delta * VR4131_RTC_HZ;
+    uint64_t rtc_ticks = m->rtc_tick_frac_num / VR4131_CP0_COUNT_HZ;
+    m->rtc_tick_frac_num %= VR4131_CP0_COUNT_HZ;
+    if (rtc_ticks != 0u)
+        rtc_tick(&m->rtc, rtc_ticks);
+}
+
 static bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out);
 static uc_err write_mem_best_effort(uc_engine *uc, uint64_t address,
                                     const void *data, size_t size);
@@ -1324,25 +1350,15 @@ static void maybe_probe_wince_gate_path_hits(machine_t *m, uc_engine *uc,
         uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
         uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
 
-        const bool is_all_nand =
-            (m->cfg.nand_path != NULL &&
-             strstr(m->cfg.nand_path, "All_nand_300.bin") != NULL);
-        if (is_all_nand && (uint32_t)v0 == 0u && (uint32_t)t0 == 0xAA00A000u) {
-            uint64_t fixed_t0 = 0;
-            uc_reg_write(uc, UC_MIPS_REG_T0, &fixed_t0);
-            if (hit_795f0 <= 32u) {
-                fprintf(stderr,
-                        "[WINCE_GATE_FIX] pc=0x800795F0 count=%u forced_t0=0x00000000"
-                        " old_t0=0x%08X v0=0x%08X\n",
-                        hit_795f0, (uint32_t)t0, (uint32_t)v0);
-            }
-            t0 = fixed_t0;
-        }
-
         if (hit_795f0 <= 16u) {
             fprintf(stderr,
                     "[WINCE_GATE_HIT] pc=0x800795F0 count=%u t0=0x%08X v0=0x%08X\n",
                     hit_795f0, (uint32_t)t0, (uint32_t)v0);
+        }
+        if ((uint32_t)v0 == 0u && (uint32_t)t0 == 0xAA00A000u && hit_795f0 <= 32u) {
+            fprintf(stderr,
+                    "[WINCE_GATE_OBS] pc=0x800795F0 count=%u t0=0xAA00A000 v0=0x00000000\n",
+                    hit_795f0);
         }
         break;
     }
@@ -1372,47 +1388,19 @@ static void maybe_probe_wince_bootmode(machine_t *m, uc_engine *uc,
     if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
         return;
 
-    /*
-     * Diagnostic-only gate-force experiment for All_nand:
-     * if bootmode gate stays zero at the first 0x800780B8 visit, force
-     * A002D000=1 once and log the outcome.
-     */
+    /* Observe bootmode gate state without mutating guest memory/registers. */
     if (pc32 == 0x800780B8u) {
-        static bool gate_force_attempted = false;
-        static uint32_t gate_force_logs = 0;
-        const bool is_all_nand =
-            (m->cfg.nand_path != NULL &&
-             strstr(m->cfg.nand_path, "All_nand_300.bin") != NULL);
-        if (is_all_nand && !gate_force_attempted) {
-            gate_force_attempted = true;
-            uint32_t mode = 0, gate_before = 0, gate_after = 0;
-            const bool mode_ok = read_guest_u32(uc, 0xA001D004u, &mode);
-            const bool gate_ok = read_guest_u32(uc, 0xA002D000u, &gate_before);
-            if (gate_ok && gate_before == 0u) {
-                const uint32_t forced_gate = 1u;
-                uc_err werr = write_mem_best_effort(uc, mips_sext(0xA002D000u),
-                                                    &forced_gate, sizeof(forced_gate));
-                bool after_ok = read_guest_u32(uc, 0xA002D000u, &gate_after);
-                if (gate_force_logs < 8u) {
-                    fprintf(stderr,
-                            "[WINCE_GATE_FORCE] pc=0x%08X mode=%s0x%08X"
-                            " gate_before=%s0x%08X write_ok=%u gate_after=%s0x%08X\n",
-                            pc32,
-                            mode_ok ? "" : "ERR:", mode,
-                            gate_ok ? "" : "ERR:", gate_before,
-                            werr == UC_ERR_OK ? 1u : 0u,
-                            after_ok ? "" : "ERR:", gate_after);
-                    gate_force_logs++;
-                }
-            } else if (gate_force_logs < 8u) {
-                fprintf(stderr,
-                        "[WINCE_GATE_FORCE] pc=0x%08X skipped mode=%s0x%08X"
-                        " gate=%s0x%08X\n",
-                        pc32,
-                        mode_ok ? "" : "ERR:", mode,
-                        gate_ok ? "" : "ERR:", gate_before);
-                gate_force_logs++;
-            }
+        static uint32_t gate_obs_logs = 0;
+        uint32_t mode = 0, gate = 0;
+        bool mode_ok = read_guest_u32(uc, 0xA001D004u, &mode);
+        bool gate_ok = read_guest_u32(uc, 0xA002D000u, &gate);
+        if (gate_obs_logs < 8u) {
+            fprintf(stderr,
+                    "[WINCE_GATE_OBS] pc=0x%08X mode=%s0x%08X gate=%s0x%08X\n",
+                    pc32,
+                    mode_ok ? "" : "ERR:", mode,
+                    gate_ok ? "" : "ERR:", gate);
+            gate_obs_logs++;
         }
     }
 
@@ -1773,31 +1761,22 @@ static bool maybe_emulate_wince_objptr_init_call(machine_t *m, uc_engine *uc,
     if (!is_wince_boot_machine(m))
         return false;
 
-    /* Work around Unicorn mis-executing 0x80078BE0 -> 0x80077FE4 call entry. */
+    /* Diagnostics only: keep this site visible without forcing PC/register state. */
     if (pc32 != 0x80078BE0u || insn != 0x0C01DFF9u)
         return false;
 
-    uint64_t a0 = 0;
-    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
-    uint32_t a032 = (uint32_t)a0;
-    uint64_t ra = mips_sext(0x80078BE8u);
-    uint64_t target = mips_sext(0x80077FE4u);
-
-    /* Preserve the original delay slot effect at 0x80078BE4: sw a0, 0x80660000. */
-    (void)write_mem_best_effort(uc, mips_sext(0x80660000u), &a032, sizeof(a032));
-
-    uc_reg_write(uc, UC_MIPS_REG_RA, &ra);
-    uc_reg_write(uc, UC_MIPS_REG_PC, &target);
-
     static uint32_t fix_logs = 0;
     if (fix_logs < 16u) {
+        uint64_t a0 = 0, ra = 0;
+        uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+        uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
         fprintf(stderr,
-                "[WINCE_JAL_FIX] pc=0x80078BE0 emulated call target=0x80077FE4"
-                " ra=0x80078BE8 a0=0x%08X\n",
-                a032);
+                "[WINCE_ISA_GAP_DIAG] pc=0x80078BE0 observed_call target=0x80077FE4"
+                " ra=0x%08X a0=0x%08X\n",
+                (uint32_t)ra, (uint32_t)a0);
         fix_logs++;
     }
-    return true;
+    return false;
 }
 
 static bool maybe_skip_wince_bootmode_delay_call(machine_t *m, uc_engine *uc,
@@ -1808,22 +1787,18 @@ static bool maybe_skip_wince_bootmode_delay_call(machine_t *m, uc_engine *uc,
     if (pc32 != 0x80078038u || insn != 0x0C01DC84u)
         return false;
 
-    /* NK callback bring-up uses this as a short delay (a0=30000). */
-    uint64_t next_pc = mips_sext(0x80078040u);
-    uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
-
     static uint32_t skip_logs = 0;
     if (skip_logs < 16u) {
         uint64_t a0 = 0, ra = 0;
         uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
         uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
         fprintf(stderr,
-                "[WINCE_DELAY_SKIP] pc=0x80078038 target=0x80077210"
-                " next=0x80078040 a0=0x%08X ra=0x%08X\n",
+                "[WINCE_DELAY_DIAG] pc=0x80078038 target=0x80077210"
+                " a0=0x%08X ra=0x%08X\n",
                 (uint32_t)a0, (uint32_t)ra);
         skip_logs++;
     }
-    return true;
+    return false;
 }
 
 static void alias_coherence_probe(machine_t *m)
@@ -4074,13 +4049,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint32_t pc32 = (uint32_t)address;
         if (pc32 >= WINCE_NK_TRACE_BASE && pc32 < WINCE_NK_TRACE_END) {
             m->wince_nk_epoch_reset_done = true;
+            uint32_t old_step = m->rtc.etime_read_step;
+            m->rtc.etime_read_step = 0;
             if (m->cfg.log_wince_stall) {
                 fprintf(stderr,
-                        "[WINCE_RTC_MODE] nk_entry_keep_etime pc=0x%08X"
-                        " etime=0x%012" PRIX64 " step=%u\n",
+                        "[WINCE_RTC_MODE] nk_entry_disable_read_assist pc=0x%08X"
+                        " etime=0x%012" PRIX64 " step:%u->%u\n",
                         pc32,
                         (uint64_t)(m->rtc.etime & UINT64_C(0xFFFFFFFFFFFF)),
-                        m->rtc.etime_read_step);
+                        old_step, m->rtc.etime_read_step);
             }
         }
     }
@@ -4401,7 +4378,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * from insn_count, scaling by 2 to approximate "one count tick per
      * two instructions" (roughly matching a single-issue pipeline). */
     if (op == 0x10u && rs == 0u && rd == 9u && sel == 0u) {
-        uint64_t count_val = (uint64_t)(uint32_t)(m->cp0_count_ticks / 2u);
+        uint64_t count_val = (uint64_t)machine_cp0_count32(m);
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &count_val);
         uint64_t next_pc = address + 4u;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
@@ -4470,6 +4447,10 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     if (op == 0x10u && rs == 4u) {
         uint64_t val = 0;
         uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &val);
+        if (sel == 0u && rd == 11u) {
+            m->cp0_compare_shadow = (uint32_t)val;
+            m->cp0_compare_shadow_valid = true;
+        }
         /*
          * Execve scratch TLB rescue:
          * refill handlers can occasionally compute EntryLo0/1 == 0 for the
@@ -4629,6 +4610,35 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t prid = VR4131_PRID;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &prid);
+        uint64_t next_pc = address + 4;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
+    if (is_wince_boot_machine(m) && (insn & 0xFFE0FFFFu) == 0x40008000u) {
+        uint32_t rt = (insn >> 16) & 0x1F;
+        uint64_t config = VR4131_CONFIG;
+        uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &config);
+        uint64_t next_pc = address + 4;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
+    if (is_wince_boot_machine(m) && (insn & 0xFFE0FFFFu) == 0x40003000u) {
+        uint32_t rt = (insn >> 16) & 0x1F;
+        uint64_t wired = VR4131_WIRED;
+        uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &wired);
+        uint64_t next_pc = address + 4;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
+    if (is_wince_boot_machine(m) && (insn & 0xFFE0FFFFu) == 0x40005800u) {
+        uint32_t rt = (insn >> 16) & 0x1F;
+        uint64_t compare = m->cp0_compare_shadow_valid
+            ? (uint64_t)m->cp0_compare_shadow
+            : (uint64_t)(machine_cp0_count32(m) + UINT32_C(0x4000));
+        uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &compare);
         uint64_t next_pc = address + 4;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
         return;
@@ -7712,6 +7722,9 @@ machine_t *machine_create(const machine_config_t *cfg)
 
     m->cfg = *cfg;
     bool wince_boot = is_wince_boot_cfg(cfg);
+    m->cp0_count_base = wince_boot ? VR4131_COUNT_WARM : 0u;
+    m->cp0_compare_shadow = wince_boot ? VR4131_COMPARE_WARM : 0u;
+    m->cp0_compare_shadow_valid = wince_boot;
     if (m->cfg.sdram_size == 0)
         m->cfg.sdram_size = 16u * 1024u * 1024u;   /* 16 MB default */
 
@@ -7820,7 +7833,8 @@ machine_t *machine_create(const machine_config_t *cfg)
     siu_init(&m->siu);
     rtc_init(&m->rtc);
     if (wince_boot) {
-        m->rtc.etime_read_step = 64;
+        /* SPL uses ETIME polling loops; keep only a minimal read-assist. */
+        m->rtc.etime_read_step = 1;
     } else {
         /* Preserve pre-warm-seed Linux boot defaults for direct kernel boots. */
         m->cmu.clkmsk = 0xFFFFu;
@@ -8113,10 +8127,9 @@ machine_t *machine_create(const machine_config_t *cfg)
         nand_init(&m->nand, m->nand_data, m->nand_size);
 
         /*
-         * WinCE SPL boot state: kernel mode, BEV=1 (boot vectors),
-         * ERL=1 (reset state).  The SPL will reconfigure CP0 itself.
+         * WinCE SPL warm boot state from hardware snapshots.
          */
-        uint64_t wince_status = 0x00400004u; /* BEV=1, ERL=1 */
+        uint64_t wince_status = VR4131_STATUS_WARM;
         uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &wince_status);
 
         /*
@@ -8271,6 +8284,8 @@ void machine_run(machine_t *m)
     m->running    = true;
     m->insn_count = 0;
     m->cp0_count_ticks = 0;
+    m->rtc_last_count_tick = (uint64_t)machine_cp0_count32(m);
+    m->rtc_tick_frac_num = 0;
     m->post_init_trace_window = false;
     m->post_init_trace_batches = 0;
     int write_unmapped_recoveries = 0;
@@ -8297,7 +8312,8 @@ void machine_run(machine_t *m)
 
     while (m->running) {
         /* Advance simulated time and update peripheral interrupt state.
-         * The VR4131 RTC runs at ~32.768 kHz; 33 ticks ≈ 1 ms per batch. */
+         * RTC progression is coupled to emulated CP0 Count progression
+         * (target 32.768 kHz crystal equivalent). */
 
         if (ui_should_quit(m)) {
             m->running = false;
@@ -8314,7 +8330,7 @@ void machine_run(machine_t *m)
             break;
         }
         ui_update(m);
-        rtc_tick(&m->rtc, 33);
+        machine_advance_rtc_from_cp0(m);
         tick_jiffies_hack(m);
         update_irq_lines(m);
 
