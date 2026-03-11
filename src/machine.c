@@ -1320,10 +1320,26 @@ static void maybe_probe_wince_gate_path_hits(machine_t *m, uc_engine *uc,
         break;
     case 0x800795F0u: {
         hit_795f0++;
+        uint64_t t0 = 0, v0 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+
+        const bool is_all_nand =
+            (m->cfg.nand_path != NULL &&
+             strstr(m->cfg.nand_path, "All_nand_300.bin") != NULL);
+        if (is_all_nand && (uint32_t)v0 == 0u && (uint32_t)t0 == 0xAA00A000u) {
+            uint64_t fixed_t0 = 0;
+            uc_reg_write(uc, UC_MIPS_REG_T0, &fixed_t0);
+            if (hit_795f0 <= 32u) {
+                fprintf(stderr,
+                        "[WINCE_GATE_FIX] pc=0x800795F0 count=%u forced_t0=0x00000000"
+                        " old_t0=0x%08X v0=0x%08X\n",
+                        hit_795f0, (uint32_t)t0, (uint32_t)v0);
+            }
+            t0 = fixed_t0;
+        }
+
         if (hit_795f0 <= 16u) {
-            uint64_t t0 = 0, v0 = 0;
-            uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
-            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
             fprintf(stderr,
                     "[WINCE_GATE_HIT] pc=0x800795F0 count=%u t0=0x%08X v0=0x%08X\n",
                     hit_795f0, (uint32_t)t0, (uint32_t)v0);
@@ -1686,6 +1702,69 @@ static void maybe_probe_wince_bootmode_sp_flow(machine_t *m, uc_engine *uc,
     prev_sp = sp32;
     flow_logs++;
     flow_seq++;
+}
+
+static void maybe_probe_wince_spl_memcpy(machine_t *m, uc_engine *uc,
+                                         uint32_t pc32, uint32_t insn)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+    if (pc32 != 0x80F02850u || insn != 0x1006000Fu)
+        return;
+
+    static uint32_t logs = 0;
+    static uint32_t cb_logs = 0;
+    static uint32_t gate_logs = 0;
+    static uint32_t mode_logs = 0;
+
+    uint64_t a0 = 0, a1 = 0, a2 = 0, ra = 0;
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+
+    uint32_t dst = (uint32_t)a0;
+    uint32_t src = (uint32_t)a1;
+    uint32_t len = (uint32_t)a2;
+    uint32_t src_w0 = 0, src_w1 = 0;
+    bool src_ok0 = read_guest_u32(uc, src, &src_w0);
+    bool src_ok1 = read_guest_u32(uc, src + 4u, &src_w1);
+
+    bool dst_is_cb = (((dst & 0x1FFFFFFFu) >= WINCE_TRACE_CB_PA_START) &&
+                      ((dst & 0x1FFFFFFFu) < WINCE_TRACE_CB_PA_END));
+    bool dst_is_gate = (((dst & 0x1FFFFFFFu) >= WINCE_TRACE_GATE_PA_START) &&
+                        ((dst & 0x1FFFFFFFu) < WINCE_TRACE_GATE_PA_END));
+    bool dst_is_mode = (((dst & 0x1FFFFFFFu) >= 0x0001D000u) &&
+                        ((dst & 0x1FFFFFFFu) < 0x0001D100u));
+
+    bool should_log = false;
+    if (dst_is_cb && cb_logs < 32u) {
+        cb_logs++;
+        should_log = true;
+    } else if (dst_is_gate && gate_logs < 32u) {
+        gate_logs++;
+        should_log = true;
+    } else if (dst_is_mode && mode_logs < 32u) {
+        mode_logs++;
+        should_log = true;
+    } else if (logs < 32u) {
+        should_log = true;
+    }
+
+    if (!should_log)
+        return;
+
+    fprintf(stderr,
+            "[WINCE_SPL_MEMCPY] pc=0x%08X ra=0x%08X dst=0x%08X src=0x%08X len=0x%X"
+            " src_w0=%s0x%08X src_w1=%s0x%08X"
+            " flags=cb:%u gate:%u mode:%u\n",
+            pc32, (uint32_t)ra, dst, src, len,
+            src_ok0 ? "" : "ERR:", src_w0,
+            src_ok1 ? "" : "ERR:", src_w1,
+            dst_is_cb ? 1u : 0u,
+            dst_is_gate ? 1u : 0u,
+            dst_is_mode ? 1u : 0u);
+    logs++;
 }
 
 static bool maybe_emulate_wince_objptr_init_call(machine_t *m, uc_engine *uc,
@@ -4022,6 +4101,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     maybe_probe_wince_bootmode(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_obj_dispatch(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_bootmode_sp_flow(m, uc, (uint32_t)address, insn);
+    maybe_probe_wince_spl_memcpy(m, uc, (uint32_t)address, insn);
 
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */
@@ -5451,6 +5531,10 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             { 0x800A7640, "ctx_callee_0x800A7650" },
             { 0x800A7DC0, "ctx_callee_0x800A7DCC" },
             { 0xA0051680, "ctx_table_0xA0051680" },
+            { 0xA0060000, "ctx_all_nand_base_0xA0060000" },
+            { 0xA0061000, "ctx_all_nand_blk_0xA0061000" },
+            { 0xA0061680, "ctx_all_nand_tbl_0xA0061680" },
+            { 0xA0061900, "ctx_all_nand_ptr_0xA0061900" },
             { 0x007E9000, "ctx_src_0x007E9000" },
             { 0xA001D000, "ctx_bootparam_0xA001D000" },
             { 0xA002D000, "ctx_bootparam_0xA002D000" },
