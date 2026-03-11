@@ -119,6 +119,9 @@ static int nand_idx_log_count = 0;
 #define LEGACY_STATUS_IDLE_MASK    0xC0u
 #define UART_TX_CONSOLE_PC         UINT32_C(0x80F03308)
 #define UART_TX_CONSOLE_PC_CENET   UINT32_C(0x80F03350)
+static int nand_stream_start_log_count = 0;
+static int nand_stream_first_log_count = 0;
+#define NAND_STREAM_LOG_MAX 8192
 
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 uint64_t value, bool log, uint32_t pc)
@@ -179,6 +182,19 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 s->stream_base = row * NAND_PAGE_DATA + col;
                 s->stream_cursor = 0;
                 s->stream_active = true;
+                if (log && nand_stream_start_log_count < NAND_STREAM_LOG_MAX) {
+                    fprintf(stderr,
+                            "[NAND_STREAM_START] pc=0x%08X mode=0x%02X"
+                            " addr24=0x%06X bytes=[%02X %02X %02X]"
+                            " row=0x%04X col=0x%02X base=0x%08X\n",
+                            pc, data_byte,
+                            (unsigned)s->xfer_addr24,
+                            (unsigned)s->xfer_addr_bytes[0],
+                            (unsigned)s->xfer_addr_bytes[1],
+                            (unsigned)s->xfer_addr_bytes[2],
+                            row, col, s->stream_base);
+                    nand_stream_start_log_count++;
+                }
             }
             s->ready = true;
         }
@@ -357,8 +373,18 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
     if (offset >= NAND_STREAM_BASE && offset < NAND_STREAM_END) {
         if (!s->stream_active)
             val = (size >= 4) ? UINT32_C(0xFFFFFFFF) : UINT64_C(0xFF);
-        else
+        else {
             val = nand_stream_read(s, size);
+            if (log && s->stream_cursor == size && nand_stream_first_log_count < NAND_STREAM_LOG_MAX) {
+                uint32_t first_data_off = s->stream_page * NAND_PAGE_DATA + s->stream_col;
+                fprintf(stderr,
+                        "[NAND_STREAM_FIRST] pc=0x%08X page=0x%04X col=0x%02X"
+                        " first_data_off=0x%08X size=%u val=0x%08" PRIX64 "\n",
+                        pc, s->stream_page, s->stream_col,
+                        first_data_off, size, val);
+                nand_stream_first_log_count++;
+            }
+        }
         goto out;
     }
 
