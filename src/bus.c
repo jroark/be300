@@ -48,11 +48,20 @@ typedef struct {
 #define VRC4173_BOOT_ID_OFF    UINT32_C(0x0A0C0)
 #define VRC4173_BOOT_ID_VALUE  UINT32_C(0x00007100)
 #define VRC4173_NAND_C38_OFF   UINT32_C(0x00C38)
-#define VRC4173_NAND_C38_INIT  UINT32_C(0x00000006)
-#define VRC4173_NAND_C38_BUSY  UINT32_C(0x00000091)
-#define VRC4173_NAND_C38_DONE  UINT32_C(0x0000007C)
+#define VRC4173_NAND_C38_BOOT_INIT     UINT32_C(0x00000006)
+#define VRC4173_NAND_C38_BOOT_BUSY     UINT32_C(0x00000091)
+#define VRC4173_NAND_C38_BOOT_DONE     UINT32_C(0x0000007C)
+#define VRC4173_NAND_C38_POST_ACTIVE   UINT32_C(0x00000092)
+#define VRC4173_NAND_C38_POST_DONE     UINT32_C(0x000000C4)
+#define VRC4173_NAND_NON_SPL_PC_MAX    UINT32_C(0x80F00000)
 
-static uint32_t vrc4173_nand_c38 = VRC4173_NAND_C38_INIT;
+typedef enum {
+    VRC4173_NAND_C38_PHASE_BOOT = 0,
+    VRC4173_NAND_C38_PHASE_POSTBOOT = 1,
+} vrc4173_nand_c38_phase_t;
+
+static uint32_t vrc4173_nand_c38 = VRC4173_NAND_C38_BOOT_INIT;
+static vrc4173_nand_c38_phase_t vrc4173_nand_c38_phase = VRC4173_NAND_C38_PHASE_BOOT;
 
 static inline uint32_t read_pc32(uc_engine *uc)
 {
@@ -94,7 +103,57 @@ static inline uint32_t ne2k_cwin_idx(uint32_t off)
     return (off - 0x0C00u) >> 2;
 }
 
+static inline bool is_wince_nand_mode(const machine_t *m)
+{
+    return m != NULL && m->cfg.nand_path != NULL;
+}
+
 static inline void vrc4173_latch_write(uint32_t off, unsigned size, uint64_t value);
+
+static inline const char *vrc4173_nand_c38_phase_name(vrc4173_nand_c38_phase_t phase)
+{
+    return phase == VRC4173_NAND_C38_PHASE_POSTBOOT ? "POSTBOOT" : "BOOT";
+}
+
+static inline uint32_t vrc4173_nand_c38_phase_init_value(void)
+{
+    return (vrc4173_nand_c38_phase == VRC4173_NAND_C38_PHASE_POSTBOOT)
+        ? VRC4173_NAND_C38_POST_ACTIVE
+        : VRC4173_NAND_C38_BOOT_INIT;
+}
+
+static inline uint32_t vrc4173_nand_c38_phase_busy_value(void)
+{
+    return (vrc4173_nand_c38_phase == VRC4173_NAND_C38_PHASE_POSTBOOT)
+        ? VRC4173_NAND_C38_POST_ACTIVE
+        : VRC4173_NAND_C38_BOOT_BUSY;
+}
+
+static inline uint32_t vrc4173_nand_c38_phase_done_value(void)
+{
+    return (vrc4173_nand_c38_phase == VRC4173_NAND_C38_PHASE_POSTBOOT)
+        ? VRC4173_NAND_C38_POST_DONE
+        : VRC4173_NAND_C38_BOOT_DONE;
+}
+
+static inline void vrc4173_set_nand_c38_phase(machine_t *m,
+                                              vrc4173_nand_c38_phase_t new_phase,
+                                              uint32_t pc32, const char *reason)
+{
+    vrc4173_nand_c38_phase_t old_phase = vrc4173_nand_c38_phase;
+    if (old_phase == new_phase)
+        return;
+
+    vrc4173_nand_c38_phase = new_phase;
+    if (m != NULL &&
+        (m->cfg.log_mmio || m->cfg.log_nand_legacy || m->cfg.log_wince_stall)) {
+        fprintf(stderr,
+                "[VRC4173_NAND_C38_PHASE] pc=0x%08X reason=%s old=%s new=%s\n",
+                pc32, reason ? reason : "unknown",
+                vrc4173_nand_c38_phase_name(old_phase),
+                vrc4173_nand_c38_phase_name(new_phase));
+    }
+}
 
 static inline void vrc4173_set_nand_c38(machine_t *m, uint32_t val,
                                         uint32_t pc32, const char *reason)
@@ -106,7 +165,12 @@ static inline void vrc4173_set_nand_c38(machine_t *m, uint32_t val,
     if (m != NULL &&
         (m->cfg.log_mmio || m->cfg.log_nand_legacy || m->cfg.log_wince_stall) &&
         old != vrc4173_nand_c38) {
+        static bool c38_marker_logged = false;
         static uint32_t c38_logs = 0;
+        if (!c38_marker_logged) {
+            fprintf(stderr, "[VRC4173_NAND_C38_MARK] transition_logging=active\n");
+            c38_marker_logged = true;
+        }
         if (c38_logs < 512u) {
             fprintf(stderr,
                     "[VRC4173_NAND_C38] pc=0x%08X reason=%s old=0x%04X new=0x%04X\n",
@@ -120,19 +184,30 @@ static inline void vrc4173_set_nand_c38(machine_t *m, uint32_t val,
 static inline void vrc4173_nand_sideband_write(machine_t *m, uint32_t cs3_off,
                                                uint64_t value, uint32_t pc32)
 {
+    if (is_wince_nand_mode(m) &&
+        vrc4173_nand_c38_phase == VRC4173_NAND_C38_PHASE_BOOT &&
+        pc32 < VRC4173_NAND_NON_SPL_PC_MAX &&
+        (cs3_off == NAND_REG_XFER_CMD || cs3_off == NAND_REG_XFER_MODE)) {
+        vrc4173_set_nand_c38_phase(m, VRC4173_NAND_C38_PHASE_POSTBOOT,
+                                   pc32, "xfer_non_spl");
+    }
+
     if (cs3_off == NAND_REG_XFER_CMD) {
         uint8_t cmd = (uint8_t)(value & 0xFFu);
         if (cmd == 0x03u || cmd == 0x06u)
-            vrc4173_set_nand_c38(m, VRC4173_NAND_C38_INIT, pc32, "xfer_cmd");
+            vrc4173_set_nand_c38(m, vrc4173_nand_c38_phase_init_value(),
+                                 pc32, "xfer_cmd");
         return;
     }
 
     if (cs3_off == NAND_REG_XFER_MODE) {
         uint8_t mode = (uint8_t)(value & 0xFFu);
         if (mode == 0x05u)
-            vrc4173_set_nand_c38(m, VRC4173_NAND_C38_BUSY, pc32, "xfer_mode_busy");
+            vrc4173_set_nand_c38(m, vrc4173_nand_c38_phase_busy_value(),
+                                 pc32, "xfer_mode_busy");
         else if (mode == 0x04u)
-            vrc4173_set_nand_c38(m, VRC4173_NAND_C38_DONE, pc32, "xfer_mode_done");
+            vrc4173_set_nand_c38(m, vrc4173_nand_c38_phase_done_value(),
+                                 pc32, "xfer_mode_done");
     }
 }
 
@@ -176,7 +251,7 @@ static void vrc4173_seed_core_dump_once(void)
      * Warm-state VRC4173 snapshot seeds:
      *  - hardware_survey/HardwareDump 2.txt (legacy low-offset probes)
      *  - hardware_survey/HardwareDump6.txt (active pages 0x0A008000, 0x0A00A000)
-     * Seed non-zero words only.
+     *  - hardware_survey/BE300Probe_v1.txt (post-boot targeted 0x0A000Cxx words)
      */
     static const vrc4173_seed_word_t seed_words[] = {
         /* HardwareDump 2: low-offset companion core words. */
@@ -192,6 +267,17 @@ static void vrc4173_seed_core_dump_once(void)
         { 0x00A8u, 0x0000000Cu }, { 0x00ACu, 0x0000000Cu },
         { 0x00B0u, 0x0000000Cu }, { 0x00B4u, 0x0000003Cu },
         { 0x00C0u, 0x0000000Cu },
+
+        /* BE300Probe_v1 baseline: targeted C-window state near 0x0A000C00. */
+        { 0x00C00u, 0x00000020u }, { 0x00C04u, 0x00000002u },
+        { 0x00C08u, 0x00000050u }, { 0x00C0Cu, 0x000000F1u },
+        { 0x00C10u, 0x00000002u },
+        { 0x00C24u, 0x00000014u },
+        { 0x00C2Cu, 0x00000001u },
+        { 0x00C30u, 0x0000E000u }, { 0x00C34u, 0x000001FFu },
+        { 0x00C3Cu, 0x00001F1Fu },
+        { 0x00C40u, 0x00000500u },
+        { 0x00C48u, 0x0000030Fu }, { 0x00C4Cu, 0x00000000u },
 
         /* HardwareDump6: PA 0x0A008000 page (bridge/config identity). */
         { 0x08000u, 0x0000200Cu },
@@ -247,7 +333,8 @@ static void vrc4173_seed_core_dump_once(void)
         vrc4173_latch_write(seed_words[i].off, 4u, seed_words[i].val);
 
     /* NAND sideband latch observed in nand_sniff_v3.txt. */
-    vrc4173_set_nand_c38(NULL, VRC4173_NAND_C38_INIT, 0u, "seed");
+    vrc4173_nand_c38_phase = VRC4173_NAND_C38_PHASE_BOOT;
+    vrc4173_set_nand_c38(NULL, VRC4173_NAND_C38_BOOT_INIT, 0u, "seed");
 }
 
 static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
@@ -313,12 +400,14 @@ static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
 
     /* No onboard NE2000: deterministic no-card behavior for C-window probes. */
     if (is_ne2k_cwin_offset(cs3_off)) {
-        if (cs3_off == 0x0C48u)
-            val = UINT32_C(0x00000001);
-        else if (cs3_off == 0x0C4Cu)
+        if (!vrc4173_latch_read(cs3_off, size, &val)) {
+            if (size == 4 && (cs3_off & 3u) == 0u)
+                val = vrc4173_ne2k_cwin_latch[ne2k_cwin_idx(cs3_off)];
+            else
+                val = 0;
+        }
+        if (cs3_off == 0x0C4Cu)
             val = UINT32_C(0x00000000);
-        else if (size == 4 && (cs3_off & 3u) == 0u)
-            val = vrc4173_ne2k_cwin_latch[ne2k_cwin_idx(cs3_off)];
 
         if (m->cfg.log_mmio)
             fprintf(stderr, "[VRC4173_CWIN] R%u cs3_off=0x%05X -> 0x%" PRIX64 "\n",
@@ -381,6 +470,12 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
         /* Read-only identity probe on hardware; ignore writes. */
         break;
     case VRC4173_NAND_C38_OFF:
+        if (is_wince_nand_mode(m) &&
+            ((uint32_t)value == VRC4173_NAND_C38_POST_ACTIVE ||
+             (uint32_t)value == VRC4173_NAND_C38_POST_DONE)) {
+            vrc4173_set_nand_c38_phase(m, VRC4173_NAND_C38_PHASE_POSTBOOT,
+                                       pc32, "guest_write_postboot");
+        }
         vrc4173_set_nand_c38(m, (uint32_t)value, pc32, "guest_write");
         break;
     default:
@@ -388,6 +483,10 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
         if (is_ne2k_cwin_offset(cs3_off)) {
             if (size == 4 && (cs3_off & 3u) == 0u)
                 vrc4173_ne2k_cwin_latch[ne2k_cwin_idx(cs3_off)] = (uint32_t)value;
+            if (cs3_off == 0x0C4Cu)
+                vrc4173_latch_write(cs3_off, size, 0u);
+            else
+                vrc4173_latch_write(cs3_off, size, value);
             goto out;
         }
 
