@@ -57,3 +57,26 @@ The output includes fixed sections:
 - `--- POST SNAPSHOT ---`
 - `--- DIFF SUMMARY ---`
 - `--- DRIVER INVENTORY ---`
+
+---
+
+## Boot-ROM Survey Utility v1
+
+For post-boot ROM visibility data collection, use `be300_bootrom_v1.cpp`.
+
+### Build
+
+Use the same eVC3 project flow as above, but add `be300_bootrom_v1.cpp` instead of `main.cpp`.
+
+### Run / Output
+
+1. Copy the built EXE to the BE-300.
+2. Run it after WinCE fully boots.
+3. Copy back `\BE300BootROM_v1.txt`.
+
+The report includes:
+
+- Full capture of `PA 0x1FC00000..0x1FC03FFF` (16 KB) with per-page CRC32 fingerprints.
+- Explicit reset-window dump of `PA 0x1FC00000..0x1FC003FF`.
+- BCU readback dump of `PA 0x0F000000..0x0F00001F` with explicit `ROMSIZEREG` and `ROMSPEEDREG` lines.
+- Three in-run capture passes and pass-to-pass fingerprint/data change summaries.
