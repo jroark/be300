@@ -113,6 +113,23 @@ static void CopyWide(WCHAR *dst, DWORD dst_cch, const WCHAR *src)
     dst[i] = L'\0';
 }
 
+static void CopyAnsi(char *dst, DWORD dst_cch, const char *src)
+{
+    DWORD i = 0;
+    if (!dst || dst_cch == 0)
+        return;
+
+    dst[0] = '\0';
+    if (!src)
+        return;
+
+    while (i + 1 < dst_cch && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 static DWORD ReadLE32(const BYTE *p)
 {
     return ((DWORD)p[0]) |
@@ -467,7 +484,7 @@ static void DumpRegistryTree(const WCHAR *path, int depth)
 
         char value_name_a[256];
         if (value_name_len == 0)
-            lstrcpyA(value_name_a, "(Default)");
+            CopyAnsi(value_name_a, sizeof(value_name_a), "(Default)");
         else
             WideToAnsi(value_name, value_name_a, sizeof(value_name_a));
 
