@@ -528,6 +528,7 @@ typedef struct {
 
 #include "wince_probe_seed_data.h"
 #include "wince_kdata_probe_words.h"
+#include "wince_bootrom_words.h"
 
 static void write_pa_u32_all_aliases(machine_t *m, uint32_t pa, uint32_t val)
 {
@@ -611,6 +612,48 @@ static void seed_wince_probe_warm_state(machine_t *m)
     fprintf(stderr,
             "[WINCE_PROBE_SEED] seeded %u words into warm RAM callback/object regions\n",
             (unsigned)(sizeof(wince_probe_seed_words) / sizeof(wince_probe_seed_words[0])));
+}
+
+static void seed_wince_bootrom_window(machine_t *m)
+{
+    if (!m || !m->uc)
+        return;
+
+    for (uint32_t i = 0; i < WINCE_BOOTROM_WORD_COUNT; i++) {
+        uint32_t pa = PA_RESET_VECTOR + (i * 4u);
+        uc_mem_write(m->uc, pa, &wince_bootrom_words[i], sizeof(uint32_t));
+    }
+
+    fprintf(stderr,
+            "[WINCE_BOOTROM_SEED] seeded %u words at PA=0x%08X (CRC32=0xFA3B5582)\n",
+            (unsigned)WINCE_BOOTROM_WORD_COUNT, PA_RESET_VECTOR);
+}
+
+static void apply_wince_bcu_warm_profile(machine_t *m)
+{
+    if (!m)
+        return;
+
+    /*
+     * Post-boot core-page snapshot from BE300BootROM_v1.txt:
+     *   PA 0x0F000000: 0000000C 100C4444 26721242 00000000
+     *   PA 0x0F000010: 00005002 0883020C ...
+     */
+    m->bcu.bcucntreg1  = 0x000Cu;
+    m->bcu.bcucntreg2  = 0x0000u;
+    m->bcu.romsizereg  = 0x4444u;
+    m->bcu.romspeedreg = 0x100Cu;
+    m->bcu.io0sizereg  = 0x1242u;
+    m->bcu.io0speedreg = 0x2672u;
+    m->bcu.io1speedreg = 0x0000u;
+    m->bcu.revidreg    = 0x5002u;
+    m->bcu.clkspeedreg = 0x020Cu;
+
+    fprintf(stderr,
+            "[WINCE_BCU_WARM] BCUCNT1=0x%04X ROMSIZE=0x%04X ROMSPEED=0x%04X"
+            " REVID=0x%04X CLKSPEED=0x%04X\n",
+            m->bcu.bcucntreg1, m->bcu.romsizereg, m->bcu.romspeedreg,
+            m->bcu.revidreg, m->bcu.clkspeedreg);
 }
 
 #define WINCE_TRACE_VEC_PA_START UINT32_C(0x00000000)
@@ -8178,6 +8221,8 @@ machine_t *machine_create(const machine_config_t *cfg)
          */
         uint64_t wince_status = VR4131_STATUS_WARM;
         uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &wince_status);
+        apply_wince_bcu_warm_profile(m);
+        seed_wince_bootrom_window(m);
 
         /*
          * Seed warm-state exception vectors from hardware survey so WinCE
