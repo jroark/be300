@@ -1,6 +1,7 @@
 # CLAUDE.md — Working Rules for This Repository
 
-## Documentation
+## Reference & Documentation
+I have access to real be300 hardware and a Virtual machine with eMbedded Visual C++ 3.0 (with the be300 SDK).
 - docs/Vr4131-um_200203.pdf - NEC vr4131 SOC Users Manual
 - docs/U14579EJ2V0UM00.pdf - NEC vrc4173 Companion Chip Users Manual
 - docs/hardware.txt - notes from Linux4be project developers
