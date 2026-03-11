@@ -1,0 +1,30 @@
+BE-300 CPU Explorer v1
+Captured at: 27101399 ms
+
+--- MIPS CP0 Registers ---
+Index ($0):    0x00000008
+EntryLo0 ($2): 0x00000000
+EntryLo1 ($3): 0x000CEF1E
+Context ($4):  0x01FFFFE0
+PageMask ($5): 0x00001800
+Wired ($6):    0x00000002
+BadVAddr ($8): 0xFFFFF3EE
+Count ($9):    0x6FA5AFBF
+EntryHi ($10): 0x01F8B00C
+Compare ($11): 0x6FA5F0B5
+Status ($12):  0x00008401
+Cause ($13):   0x00000810
+EPC ($14):     0x00011150
+PRId ($15):    0x00000C80
+Config ($16):  0x10135923
+LLAddr ($17):  0x67811832
+WatchLo ($18): 0xFFFFFFF8
+WatchHi ($19): 0x00000000
+XContext ($20):0xFFFFFFE0
+TagLo ($28):   0x00000000
+TagHi ($29):   0x00000000
+ErrorEPC ($30):0x8007A178
+
+--- ICU Interrupt Status (PA 0x0F000080) ---
+SYSINT1 (0x80): 0x00000004
+MSYSINT1(0x98): 0x00000001
