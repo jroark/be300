@@ -96,6 +96,36 @@ static void WideToAnsi(const WCHAR *src, char *dst, int dst_size)
     dst[dst_size - 1] = '\0';
 }
 
+static void WideBytesToAnsi(const WCHAR *src, DWORD src_wchars_max, char *dst, int dst_size, BOOL *truncated)
+{
+    int out = 0;
+    DWORD wlen = 0;
+    if (truncated)
+        *truncated = FALSE;
+
+    if (!dst || dst_size <= 0) {
+        return;
+    }
+    dst[0] = '\0';
+
+    if (!src || src_wchars_max == 0)
+        return;
+
+    while (wlen < src_wchars_max && src[wlen] != L'\0')
+        wlen++;
+
+    if (wlen == src_wchars_max && truncated)
+        *truncated = TRUE;
+
+    out = WideCharToMultiByte(CP_ACP, 0, src, (int)wlen, dst, dst_size - 1, NULL, NULL);
+    if (out <= 0) {
+        _snprintf(dst, dst_size - 1, "<conv-failed>");
+        dst[dst_size - 1] = '\0';
+        return;
+    }
+    dst[out] = '\0';
+}
+
 static void CopyWide(WCHAR *dst, DWORD dst_cch, const WCHAR *src)
 {
     DWORD i = 0;
@@ -198,19 +228,69 @@ static BOOL ReadPhysicalBytes(DWORD phys_addr, BYTE *out, DWORD size)
             continue;
         }
 
-        __try {
-            memcpy(out + done, vptr + page_off, chunk);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            Log("[READ_FAULT] PA=0x%08X size=0x%lX\r\n", cur, chunk);
-            memset(out + done, 0, chunk);
-            g_had_error = TRUE;
-            ok = FALSE;
+        {
+            DWORD copied = 0;
+            BOOL chunk_fault = FALSE;
+
+            while (copied + 4u <= chunk) {
+                DWORD word = 0;
+                __try {
+                    word = *((volatile DWORD *)(vptr + page_off + copied));
+                    out[done + copied + 0] = (BYTE)((word >> 0) & 0xFF);
+                    out[done + copied + 1] = (BYTE)((word >> 8) & 0xFF);
+                    out[done + copied + 2] = (BYTE)((word >> 16) & 0xFF);
+                    out[done + copied + 3] = (BYTE)((word >> 24) & 0xFF);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    Log("[READ_FAULT] PA=0x%08X size=0x%lX code=0x%08lX\r\n",
+                        cur + copied, chunk - copied, GetExceptionCode());
+                    memset(out + done + copied, 0, chunk - copied);
+                    g_had_error = TRUE;
+                    ok = FALSE;
+                    chunk_fault = TRUE;
+                }
+
+                if (chunk_fault)
+                    break;
+
+                copied += 4u;
+            }
+
+            if (!chunk_fault) {
+                while (copied < chunk) {
+                    __try {
+                        out[done + copied] = *((volatile BYTE *)(vptr + page_off + copied));
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        Log("[READ_FAULT] PA=0x%08X size=0x%lX code=0x%08lX\r\n",
+                            cur + copied, chunk - copied, GetExceptionCode());
+                        memset(out + done + copied, 0, chunk - copied);
+                        g_had_error = TRUE;
+                        ok = FALSE;
+                        break;
+                    }
+                    copied++;
+                }
+            }
         }
 
         VirtualFree(vptr, 0, MEM_RELEASE);
         done += chunk;
     }
 
+    return ok;
+}
+
+static BOOL SafeReadPhysicalBytes(DWORD phys_addr, BYTE *out, DWORD size)
+{
+    BOOL ok = FALSE;
+    __try {
+        ok = ReadPhysicalBytes(phys_addr, out, size);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("[READ_FATAL] PA=0x%08X size=0x%lX code=0x%08lX\r\n",
+            phys_addr, size, GetExceptionCode());
+        memset(out, 0, size);
+        g_had_error = TRUE;
+        ok = FALSE;
+    }
     return ok;
 }
 
@@ -237,12 +317,21 @@ static void CaptureSnapshot(BOOL post_phase)
     for (i = 0; i < (int)(sizeof(g_regions) / sizeof(g_regions[0])); i++) {
         probe_region_t *r = &g_regions[i];
         BYTE *dst = post_phase ? r->post : r->baseline;
-        BOOL ok = ReadPhysicalBytes(r->base, dst, r->size);
+        BOOL ok = SafeReadPhysicalBytes(r->base, dst, r->size);
         if (post_phase)
             r->post_ok = ok;
         else
             r->baseline_ok = ok;
-        DumpRegionWords(r, dst, ok, post_phase ? "post" : "baseline");
+        __try {
+            DumpRegionWords(r, dst, ok, post_phase ? "post" : "baseline");
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            Log("[DUMP_FATAL] phase=%s name=%s PA=0x%08X code=0x%08lX\r\n",
+                post_phase ? "post" : "baseline",
+                r->name,
+                r->base,
+                GetExceptionCode());
+            g_had_error = TRUE;
+        }
     }
 }
 
@@ -419,19 +508,34 @@ static void LogValueData(DWORD type, const BYTE *data, DWORD cb_data)
 
     if ((type == REG_SZ || type == REG_EXPAND_SZ) && cb_data >= sizeof(WCHAR)) {
         char text[512];
-        WideToAnsi((const WCHAR *)data, text, sizeof(text));
-        Log("STR(\"%s\")", text);
+        BOOL trunc = FALSE;
+        WideBytesToAnsi((const WCHAR *)data, cb_data / sizeof(WCHAR), text, sizeof(text), &trunc);
+        Log("STR(\"%s\"%s)", text, trunc ? ",trunc" : "");
         return;
     }
 
     if (type == REG_MULTI_SZ && cb_data >= sizeof(WCHAR)) {
         const WCHAR *p = (const WCHAR *)data;
+        DWORD remain = cb_data / sizeof(WCHAR);
         char one[256];
         Log("MULTI(\"");
-        while (*p) {
-            WideToAnsi(p, one, sizeof(one));
-            Log("%s|", one);
-            p += lstrlen(p) + 1;
+        while (remain > 0 && *p) {
+            DWORD seg_len = 0;
+            int out = 0;
+            while (seg_len < remain && p[seg_len] != L'\0')
+                seg_len++;
+            out = WideCharToMultiByte(CP_ACP, 0, p, (int)seg_len, one, sizeof(one) - 1, NULL, NULL);
+            if (out <= 0) {
+                _snprintf(one, sizeof(one) - 1, "<conv-failed>");
+                one[sizeof(one) - 1] = '\0';
+            } else {
+                one[out] = '\0';
+            }
+            Log("%s%s|", one, (seg_len >= remain) ? "(trunc)" : "");
+            if (seg_len >= remain)
+                break;
+            p += seg_len + 1;
+            remain -= seg_len + 1;
         }
         Log("\")");
         return;
@@ -532,28 +636,33 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLin
         return 1;
     }
 
-    Log("BE-300 Post-Boot Probe Utility v1\r\n");
-    Log("tick_ms=%lu\r\n", GetTickCount());
+    __try {
+        Log("BE-300 Post-Boot Probe Utility v1\r\n");
+        Log("tick_ms=%lu\r\n", GetTickCount());
 
-    EnableKernelAccess();
+        EnableKernelAccess();
 
-    Log("\r\n--- BASELINE SNAPSHOT ---\r\n");
-    CaptureSnapshot(FALSE);
+        Log("\r\n--- BASELINE SNAPSHOT ---\r\n");
+        CaptureSnapshot(FALSE);
 
-    Log("\r\n--- NAND WORKLOAD ---\r\n");
-    if (!RunNandWorkload())
+        Log("\r\n--- NAND WORKLOAD ---\r\n");
+        if (!RunNandWorkload())
+            g_had_error = TRUE;
+
+        Log("\r\n--- POST SNAPSHOT ---\r\n");
+        CaptureSnapshot(TRUE);
+
+        Log("\r\n--- DIFF SUMMARY ---\r\n");
+        EmitWordDiffs();
+        EmitFocusSummary();
+
+        Log("\r\n--- DRIVER INVENTORY ---\r\n");
+        DumpRegistryTree(L"Drivers\\Active", 0);
+        DumpRegistryTree(L"Drivers\\BuiltIn", 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("[FATAL] code=0x%08lX\r\n", GetExceptionCode());
         g_had_error = TRUE;
-
-    Log("\r\n--- POST SNAPSHOT ---\r\n");
-    CaptureSnapshot(TRUE);
-
-    Log("\r\n--- DIFF SUMMARY ---\r\n");
-    EmitWordDiffs();
-    EmitFocusSummary();
-
-    Log("\r\n--- DRIVER INVENTORY ---\r\n");
-    DumpRegistryTree(L"Drivers\\Active", 0);
-    DumpRegistryTree(L"Drivers\\BuiltIn", 0);
+    }
 
     Log("\r\nprobe_complete status=%s\r\n", g_had_error ? "PARTIAL_ERROR" : "OK");
     CloseHandle(g_hFile);
