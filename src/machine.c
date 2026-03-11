@@ -1356,6 +1356,50 @@ static void maybe_probe_wince_bootmode(machine_t *m, uc_engine *uc,
     if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
         return;
 
+    /*
+     * Diagnostic-only gate-force experiment for All_nand:
+     * if bootmode gate stays zero at the first 0x800780B8 visit, force
+     * A002D000=1 once and log the outcome.
+     */
+    if (pc32 == 0x800780B8u) {
+        static bool gate_force_attempted = false;
+        static uint32_t gate_force_logs = 0;
+        const bool is_all_nand =
+            (m->cfg.nand_path != NULL &&
+             strstr(m->cfg.nand_path, "All_nand_300.bin") != NULL);
+        if (is_all_nand && !gate_force_attempted) {
+            gate_force_attempted = true;
+            uint32_t mode = 0, gate_before = 0, gate_after = 0;
+            const bool mode_ok = read_guest_u32(uc, 0xA001D004u, &mode);
+            const bool gate_ok = read_guest_u32(uc, 0xA002D000u, &gate_before);
+            if (gate_ok && gate_before == 0u) {
+                const uint32_t forced_gate = 1u;
+                uc_err werr = write_mem_best_effort(uc, mips_sext(0xA002D000u),
+                                                    &forced_gate, sizeof(forced_gate));
+                bool after_ok = read_guest_u32(uc, 0xA002D000u, &gate_after);
+                if (gate_force_logs < 8u) {
+                    fprintf(stderr,
+                            "[WINCE_GATE_FORCE] pc=0x%08X mode=%s0x%08X"
+                            " gate_before=%s0x%08X write_ok=%u gate_after=%s0x%08X\n",
+                            pc32,
+                            mode_ok ? "" : "ERR:", mode,
+                            gate_ok ? "" : "ERR:", gate_before,
+                            werr == UC_ERR_OK ? 1u : 0u,
+                            after_ok ? "" : "ERR:", gate_after);
+                    gate_force_logs++;
+                }
+            } else if (gate_force_logs < 8u) {
+                fprintf(stderr,
+                        "[WINCE_GATE_FORCE] pc=0x%08X skipped mode=%s0x%08X"
+                        " gate=%s0x%08X\n",
+                        pc32,
+                        mode_ok ? "" : "ERR:", mode,
+                        gate_ok ? "" : "ERR:", gate_before);
+                gate_force_logs++;
+            }
+        }
+    }
+
     /* All_nand + CE_Net path: jal 0x80077E28 (callback vector select). */
     if (insn == 0x0C01DF8Au) {
         static uint32_t sel_logs = 0;
@@ -3951,15 +3995,13 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint32_t pc32 = (uint32_t)address;
         if (pc32 >= WINCE_NK_TRACE_BASE && pc32 < WINCE_NK_TRACE_END) {
             m->wince_nk_epoch_reset_done = true;
-            m->rtc.etime = 0;
-            m->rtc.etime_latched = 0;
-            m->rtc.etime_reads = 0;
-            m->rtc.etime_read_step = 1;
             if (m->cfg.log_wince_stall) {
                 fprintf(stderr,
-                        "[WINCE_RTC_MODE] nk_epoch_reset pc=0x%08X"
-                        " etime=0 step=%u\n",
-                        pc32, m->rtc.etime_read_step);
+                        "[WINCE_RTC_MODE] nk_entry_keep_etime pc=0x%08X"
+                        " etime=0x%012" PRIX64 " step=%u\n",
+                        pc32,
+                        (uint64_t)(m->rtc.etime & UINT64_C(0xFFFFFFFFFFFF)),
+                        m->rtc.etime_read_step);
             }
         }
     }
