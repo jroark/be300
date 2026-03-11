@@ -1,5 +1,10 @@
 # CLAUDE.md — Working Rules for This Repository
 
+## Documentation
+- docs/Vr4131-um_200203.pdf - NEC vr4131 SOC Users Manual
+- docs/U14579EJ2V0UM00.pdf - NEC vrc4173 Companion Chip Users Manual
+- docs/hardware.txt - notes from Linux4be project developers
+
 ## Commit & Push Policy
 
 **After every attempt — regardless of success or failure — commit and push all changes with a detailed message covering:**
@@ -35,6 +40,7 @@ Push with: `git push -u origin <current branch>`
 - All kernels have been booted to userspace on real hardware
 - All kernels contain ramdisks
 - None of the linux kernels had much more than serial and framebuffer support, no NAND, no touchscreen, no compact flash support.
+- These kernels are from a project named Linux4be. They are development kernels and may contain mistakes.
 - `kernels/vmlinux-2.6`        — ELF32 MIPS LE, 2.6.8.1, built 2004-09-08.
 - `kernels/vmlinux`            - ELF 32-bit LSB executable, MIPS, MIPS-II version 1 (SYSV), statically linked, not stripped, too many notes (256)
   - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
@@ -94,7 +100,16 @@ Push with: `git push -u origin <current branch>`
    Base packages now include `gdb`, `gdb-multiarch`, `strace`, and `ltrace` for
    cross-debugging.
 
-2. **Logs & artifacts:**
+2. **MIPS PE (Windows CE) Toolchain:**
+   The Docker container includes a specialized `mipsel-pe` toolchain (Binutils 2.21.1 patched via 7shi/1374792) for analyzing Windows CE Portable Executable (PE) files.
+   - **Tools:** `mipsel-pe-objdump`, `mipsel-pe-nm`, `mipsel-pe-objcopy`, `mipsel-pe-ar`, etc.
+   - **Usage Example (Disassemble WinCE loader):**
+     ```bash
+     mipsel-pe-objdump -d linux4be20040908/loader.exe | head -n 50
+     ```
+   - **Target Names:** Supports `pe-mips` and `pei-mips`.
+
+3. **Logs & artifacts:**
    - Always capture both stdout and stderr from emulator runs (`docker_*.log`).
 
 ---
