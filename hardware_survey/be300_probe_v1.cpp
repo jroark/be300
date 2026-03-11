@@ -96,6 +96,23 @@ static void WideToAnsi(const WCHAR *src, char *dst, int dst_size)
     dst[dst_size - 1] = '\0';
 }
 
+static void CopyWide(WCHAR *dst, DWORD dst_cch, const WCHAR *src)
+{
+    DWORD i = 0;
+    if (!dst || dst_cch == 0)
+        return;
+
+    dst[0] = L'\0';
+    if (!src)
+        return;
+
+    while (i + 1 < dst_cch && src[i] != L'\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = L'\0';
+}
+
 static DWORD ReadLE32(const BYTE *p)
 {
     return ((DWORD)p[0]) |
@@ -227,7 +244,7 @@ static BOOL SelectNandFile(WCHAR *out_path, DWORD out_cch)
 {
     const WCHAR *preferred = L"\\Nand Disk\\hw_survey.exe";
     if (FileExistsRegular(preferred)) {
-        lstrcpyn(out_path, preferred, out_cch);
+        CopyWide(out_path, out_cch, preferred);
         return TRUE;
     }
 
@@ -241,7 +258,7 @@ static BOOL SelectNandFile(WCHAR *out_path, DWORD out_cch)
         if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
             WCHAR path_buf[MAX_PATH];
             wsprintf(path_buf, L"\\Nand Disk\\%s", fd.cFileName);
-            lstrcpyn(out_path, path_buf, out_cch);
+            CopyWide(out_path, out_cch, path_buf);
             found = TRUE;
             break;
         }
