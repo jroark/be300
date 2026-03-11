@@ -521,6 +521,14 @@ typedef struct {
     uint32_t val;
 } wince_vec_seed_word_t;
 
+typedef struct {
+    uint32_t pa;
+    uint32_t val;
+} wince_pa_seed_word_t;
+
+#include "wince_probe_seed_data.h"
+#include "wince_kdata_probe_words.h"
+
 static void write_pa_u32_all_aliases(machine_t *m, uint32_t pa, uint32_t val)
 {
     if (!m || !m->uc)
@@ -578,51 +586,31 @@ static void seed_wince_exception_vectors(machine_t *m)
 static void seed_wince_kdata(machine_t *m)
 {
     /*
-     * Warm-state KData snapshot from docs/introspection.txt
-     * (PA 0x00002000 .. 0x000023FF). WinCE context restore code
-     * consumes this region very early during NAND boot.
+     * Warm-state KData snapshot from hardware_survey/BE300Probe_v1.txt
+     * baseline (PA 0x00002000..0x000023FF).
      */
-    static const uint32_t kdata_words[] = {
-        0x00002000u, 0x0000011Bu, 0x00004000u, 0x00001800u, 0x00000001u, 0x0000011Fu, 0xFFFFC000u, 0x00001800u,
-        0x00000000u, 0x00053E1Au, 0x01A00003u, 0x00001800u, 0x0001F91Au, 0x000FD41Eu, 0x00016003u, 0x00001800u,
-        0x00053F1Au, 0x000FBB1Eu, 0x01A02003u, 0x00001800u, 0x0005751Au, 0x000F9F1Eu, 0x01926003u, 0x00001800u,
-        0x00A00A16u, 0x00A00B16u, 0x0006A003u, 0x00001800u, 0x000F1B1Eu, 0x000F191Eu, 0x000DC003u, 0x00001800u,
-        0x00000000u, 0x00056D1Au, 0x01930003u, 0x00001800u, 0x00A00016u, 0x00A00116u, 0x00060003u, 0x00001800u,
-        0x00000000u, 0x0001F41Au, 0x00010003u, 0x00001800u, 0x0005471Au, 0x0005481Au, 0x019A2003u, 0x00001800u,
-        0x000FAC1Au, 0x000FAD1Eu, 0x01842003u, 0x00001800u, 0x00000216u, 0x0FFFFFC0u, 0x000B0003u, 0x00001800u,
-        0x000FD61Eu, 0x00000000u, 0x01FE6003u, 0x00001800u, 0x00A00A16u, 0x0FFFFFC0u, 0x000C0003u, 0x00001800u,
-        0x000FD01Au, 0x000FD11Au, 0x0185C003u, 0x00001800u, 0x000EF81Eu, 0x000E761Eu, 0x000DE003u, 0x00001800u,
-        0x000FD21Au, 0x000FB81Eu, 0x0185E003u, 0x00001800u, 0x000FCE1Au, 0x000FCF1Au, 0x0185A003u, 0x00001800u,
-        0x000FC11Eu, 0x000F991Eu, 0x000D0003u, 0x00001800u, 0x0002A11Au, 0x000F6B1Eu, 0x01EB4003u, 0x00001800u,
-        0x00000000u, 0x0005971Au, 0x018A0003u, 0x00001800u, 0x000FBC1Eu, 0x00000000u, 0x01A04003u, 0x00001800u,
-        0x000FC61Au, 0x000FC71Au, 0x01852003u, 0x00001800u, 0x00F00016u, 0x0FFFFFC0u, 0x00080003u, 0x00001800u,
-        0x0005331Au, 0x000E861Eu, 0x01A44002u, 0x00001800u, 0x000F361Eu, 0x000F341Au, 0x0194A003u, 0x00001800u,
-        0x00000000u, 0x00029E1Au, 0x01EB0003u, 0x00001800u, 0x00000000u, 0x00053B1Au, 0x01A10003u, 0x00001800u,
-        0x00000000u, 0x000FC51Au, 0x01850003u, 0x00001800u, 0x0000C71Au, 0x0000C81Au, 0x01F8C003u, 0x00001800u,
-        0x01860000u, 0x00000000u, 0x001870AAu, 0x000D0090u, 0x00000000u, 0x000D0090u, 0x00000000u, 0x00000002u,
-        0x0185F124u, 0x00000001u, 0xFFFFD760u, 0x80000005u, 0x00000004u, 0x00000000u, 0xFFFFD800u, 0x062EFEC8u,
-        0x062EFECCu, 0x00000001u, 0x00000002u, 0xBDBDBDBDu, 0xBDBDBDBDu, 0xBDBDBDBDu, 0x00000005u, 0x80669A40u,
-        0x400FC71Au, 0x00000000u, 0xBDBDBDBDu, 0xFFFFD7B4u, 0xBDBDBDBDu, 0x80096894u, 0x00000000u, 0x00000009u,
-        0x00000002u, 0x0000001Cu, 0x000FC61Au, 0x000FC71Au, 0x00030A40u, 0x00001800u, 0x00000002u, 0xDE13B38Au,
-        0x01852003u, 0xDE13BCBFu, 0x00008400u, 0x00000808u, 0x01852014u, 0x10135923u, 0x67811832u, 0xFFFFFFF8u,
-        0x00030A40u, 0x000000D7u, 0x00000000u, 0x00000000u, 0x8007A178u, 0x00300307u, 0x00400000u, 0x00000E83u,
-        0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x40000000u, 0x20000000u, 0x00000000u, 0x00400000u,
-        0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00800000u, 0x00000000u, 0x40000000u, 0x00000000u,
-        0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
-        0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00400000u, 0x00000000u,
-        0x00400000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x80008000u, 0x00000000u, 0x00000000u, 0x00000000u,
-        0x40000000u, 0x00000000u, 0x00000000u, 0x00000020u, 0x00000000u, 0x00000020u, 0x00000000u, 0x00000000u,
-        0x00000040u, 0x00200010u, 0x00000000u, 0x20000000u, 0x00000000u, 0x00002000u, 0x00000000u, 0x00000000u,
-        0x00000000u, 0x00000000u, 0x00008000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00008000u, 0x00000000u,
-        0x00000000u, 0x00000010u, 0x80000000u, 0x00000000u, 0x10000000u, 0x00000000u, 0x80000000u, 0x10000000u,
-    };
-
-    for (uint32_t i = 0; i < (uint32_t)(sizeof(kdata_words) / sizeof(kdata_words[0])); i++) {
-        write_pa_u32_all_aliases(m, 0x00002000u + (i * 4u), kdata_words[i]);
+    for (uint32_t i = 0;
+         i < (uint32_t)(sizeof(wince_kdata_words) / sizeof(wince_kdata_words[0]));
+         i++) {
+        write_pa_u32_all_aliases(m, 0x00002000u + (i * 4u), wince_kdata_words[i]);
     }
 
     fprintf(stderr, "[WINCE_KDATA_SEED] seeded %u words at PA=0x00002000\n",
-            (unsigned)(sizeof(kdata_words) / sizeof(kdata_words[0])));
+            (unsigned)(sizeof(wince_kdata_words) / sizeof(wince_kdata_words[0])));
+}
+
+static void seed_wince_probe_warm_state(machine_t *m)
+{
+    for (uint32_t i = 0;
+         i < (uint32_t)(sizeof(wince_probe_seed_words) / sizeof(wince_probe_seed_words[0]));
+         i++) {
+        write_pa_u32_all_aliases(m, wince_probe_seed_words[i].pa,
+                                 wince_probe_seed_words[i].val);
+    }
+
+    fprintf(stderr,
+            "[WINCE_PROBE_SEED] seeded %u words into warm RAM callback/object regions\n",
+            (unsigned)(sizeof(wince_probe_seed_words) / sizeof(wince_probe_seed_words[0])));
 }
 
 #define WINCE_TRACE_VEC_PA_START UINT32_C(0x00000000)
@@ -8192,6 +8180,7 @@ machine_t *machine_create(const machine_config_t *cfg)
          */
         seed_wince_exception_vectors(m);
         seed_wince_kdata(m);
+        seed_wince_probe_warm_state(m);
 
         /* Set up a stack for the SPL in high SDRAM */
         uint64_t sp = mips_sext(0x80F00000u); /* below SPL load area */
