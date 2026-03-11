@@ -27,6 +27,11 @@
 
 /* VR4131 CP0 PRId (NEC, processor ID 0x0C, rev 0x80) */
 #define VR4131_PRID      UINT32_C(0x00000C80)
+#define VR4131_CONFIG    UINT32_C(0x10135923)
+#define VR4131_WIRED     UINT32_C(0x00000002)
+#define VR4131_STATUS_WARM UINT32_C(0x00008401)
+#define VR4131_COUNT_WARM  UINT32_C(0x6FA5AFBF)
+#define VR4131_COMPARE_WARM UINT32_C(0x6FA5F0B5)
 
 typedef struct machine_s machine_t;
 
@@ -130,6 +135,11 @@ struct machine_s {
     uint64_t irq_injected_count;
     uint64_t insn_count;
     uint64_t cp0_count_ticks; /* per-instruction tick source for CP0 Count emulation */
+    uint32_t cp0_count_base;
+    uint32_t cp0_compare_shadow;
+    bool     cp0_compare_shadow_valid;
+    uint64_t rtc_last_count_tick; /* previous CP0 Count value used for RTC coupling */
+    uint64_t rtc_tick_frac_num;   /* RTC fractional accumulator numerator */
     bool     running;
     /* Byte-addressable latch for unimplemented internal I/O offsets. */
     uint8_t  io_fallback_bytes[PA_IO_SIZE];

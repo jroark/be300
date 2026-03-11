@@ -47,6 +47,12 @@ typedef struct {
  */
 #define VRC4173_BOOT_ID_OFF    UINT32_C(0x0A0C0)
 #define VRC4173_BOOT_ID_VALUE  UINT32_C(0x00007100)
+#define VRC4173_NAND_C38_OFF   UINT32_C(0x00C38)
+#define VRC4173_NAND_C38_INIT  UINT32_C(0x00000006)
+#define VRC4173_NAND_C38_BUSY  UINT32_C(0x00000091)
+#define VRC4173_NAND_C38_DONE  UINT32_C(0x0000007C)
+
+static uint32_t vrc4173_nand_c38 = VRC4173_NAND_C38_INIT;
 
 static inline uint32_t read_pc32(uc_engine *uc)
 {
@@ -86,6 +92,48 @@ static inline bool is_ne2k_cwin_offset(uint32_t off)
 static inline uint32_t ne2k_cwin_idx(uint32_t off)
 {
     return (off - 0x0C00u) >> 2;
+}
+
+static inline void vrc4173_latch_write(uint32_t off, unsigned size, uint64_t value);
+
+static inline void vrc4173_set_nand_c38(machine_t *m, uint32_t val,
+                                        uint32_t pc32, const char *reason)
+{
+    uint32_t old = vrc4173_nand_c38;
+    vrc4173_nand_c38 = val;
+    vrc4173_latch_write(VRC4173_NAND_C38_OFF, 4u, vrc4173_nand_c38);
+
+    if (m != NULL &&
+        (m->cfg.log_mmio || m->cfg.log_nand_legacy || m->cfg.log_wince_stall) &&
+        old != vrc4173_nand_c38) {
+        static uint32_t c38_logs = 0;
+        if (c38_logs < 512u) {
+            fprintf(stderr,
+                    "[VRC4173_NAND_C38] pc=0x%08X reason=%s old=0x%04X new=0x%04X\n",
+                    pc32, reason ? reason : "unknown",
+                    old & 0xFFFFu, vrc4173_nand_c38 & 0xFFFFu);
+            c38_logs++;
+        }
+    }
+}
+
+static inline void vrc4173_nand_sideband_write(machine_t *m, uint32_t cs3_off,
+                                               uint64_t value, uint32_t pc32)
+{
+    if (cs3_off == NAND_REG_XFER_CMD) {
+        uint8_t cmd = (uint8_t)(value & 0xFFu);
+        if (cmd == 0x03u || cmd == 0x06u)
+            vrc4173_set_nand_c38(m, VRC4173_NAND_C38_INIT, pc32, "xfer_cmd");
+        return;
+    }
+
+    if (cs3_off == NAND_REG_XFER_MODE) {
+        uint8_t mode = (uint8_t)(value & 0xFFu);
+        if (mode == 0x05u)
+            vrc4173_set_nand_c38(m, VRC4173_NAND_C38_BUSY, pc32, "xfer_mode_busy");
+        else if (mode == 0x04u)
+            vrc4173_set_nand_c38(m, VRC4173_NAND_C38_DONE, pc32, "xfer_mode_done");
+    }
 }
 
 static inline void vrc4173_latch_write(uint32_t off, unsigned size, uint64_t value)
@@ -197,6 +245,9 @@ static void vrc4173_seed_core_dump_once(void)
 
     for (unsigned i = 0; i < (sizeof(seed_words) / sizeof(seed_words[0])); i++)
         vrc4173_latch_write(seed_words[i].off, 4u, seed_words[i].val);
+
+    /* NAND sideband latch observed in nand_sniff_v3.txt. */
+    vrc4173_set_nand_c38(NULL, VRC4173_NAND_C38_INIT, 0u, "seed");
 }
 
 static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
@@ -228,6 +279,11 @@ static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
                     size * 8, cs3_off, offset, pc32);
             boot_id_probe_logs++;
         }
+    }
+
+    if (cs3_off == VRC4173_NAND_C38_OFF) {
+        val = vrc4173_nand_c38;
+        goto out;
     }
 
     /* VRC4173 UART (NS16550-compatible, 4-byte register spacing) */
@@ -324,6 +380,9 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
     case VRC4173_BOOT_ID_OFF:
         /* Read-only identity probe on hardware; ignore writes. */
         break;
+    case VRC4173_NAND_C38_OFF:
+        vrc4173_set_nand_c38(m, (uint32_t)value, pc32, "guest_write");
+        break;
     default:
         /* No onboard NE2000: latch C-window writes, but never signal presence. */
         if (is_ne2k_cwin_offset(cs3_off)) {
@@ -337,6 +396,7 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
             nand_write(&m->nand, cs3_off, size, value,
                        m->cfg.log_mmio || m->cfg.log_nand_legacy,
                        pc32);
+            vrc4173_nand_sideband_write(m, cs3_off, value, pc32);
         } else {
             vrc4173_latch_write(cs3_off, size, value);
         }
@@ -531,6 +591,62 @@ static bool map_sdram_alias_ptr(machine_t *m, uint64_t base, const char *tag)
     return false;
 }
 
+typedef struct {
+    uint16_t off;
+    uint32_t val;
+} io_seed_word_t;
+
+static void seed_internal_io_fallback(machine_t *m)
+{
+    /*
+     * Warm-state core-page snapshot from hardware_survey/HardwareDump6.txt
+     * and docs/HARDWARE_GROUND_TRUTH.md (PA 0x0F000000 page).
+     * These values are only used for unmodeled internal-I/O offsets.
+     */
+    static const io_seed_word_t seed_words[] = {
+        { 0x000u, 0x0000000Cu }, { 0x004u, 0x100C4444u },
+        { 0x008u, 0x26721242u },
+        { 0x010u, 0x00005002u }, { 0x014u, 0x0883020Cu },
+        { 0x020u, 0x01FFF800u }, { 0x024u, 0x01FFF800u },
+        { 0x028u, 0x01FFF800u }, { 0x02Cu, 0x01FFF800u },
+        { 0x030u, 0x00003800u }, { 0x034u, 0x00003800u },
+        { 0x040u, 0x00010000u },
+        { 0x060u, 0x09020902u }, { 0x064u, 0x09020902u },
+        { 0x068u, 0x09020902u }, { 0x06Cu, 0x09020902u },
+        { 0x070u, 0x09020902u }, { 0x074u, 0x09020902u },
+        { 0x078u, 0x09020902u }, { 0x07Cu, 0x09020902u },
+        { 0x080u, 0x00000004u }, { 0x08Cu, 0x00000307u },
+        { 0x094u, 0x00000E83u }, { 0x098u, 0x00000001u },
+        { 0x0A0u, 0x00000001u }, { 0x0ACu, 0x00010000u },
+        { 0x0C0u, 0x10061400u }, { 0x0C8u, 0x00000148u },
+        { 0x0CCu, 0x00000002u }, { 0x0D0u, 0x020003FFu },
+        { 0x0D4u, 0x000007FFu },
+        { 0x100u, 0x7C124A74u }, { 0x104u, 0x0000A5B3u },
+        { 0x108u, 0x00011C2Fu },
+        { 0x110u, 0x00000021u }, { 0x114u, 0x00000004u },
+        { 0x118u, 0x0000FFFFu }, { 0x11Cu, 0x0000F7A1u },
+        { 0x130u, 0x00060000u },
+        { 0x140u, 0x00000070u }, { 0x144u, 0x0000AAE2u },
+        { 0x148u, 0xFFFF111Cu }, { 0x14Cu, 0x00000E83u },
+        { 0x154u, 0x00000401u }, { 0x158u, 0x0000BFFFu },
+        { 0x180u, 0x00200010u }, { 0x184u, 0x000014C8u },
+        { 0x188u, 0x04B00002u },
+        { 0x1E0u, 0x01FFF800u }, { 0x1E4u, 0x01FFF800u },
+        { 0x1E8u, 0x0A000000u }, { 0x1ECu, 0x0A000000u },
+    };
+
+    for (unsigned n = 0; n < (sizeof(seed_words) / sizeof(seed_words[0])); n++) {
+        uint32_t off = seed_words[n].off;
+        uint32_t val = seed_words[n].val;
+        if ((uint64_t)off + 4u > PA_IO_SIZE)
+            continue;
+        for (unsigned i = 0; i < 4u; i++) {
+            m->io_fallback_bytes[off + i] = (uint8_t)((val >> (i * 8u)) & 0xFFu);
+            m->io_fallback_valid[off + i] = 1u;
+        }
+    }
+}
+
 /* ------------------------------------------------------------------ */
 
 void bus_init(machine_t *m)
@@ -540,6 +656,7 @@ void bus_init(machine_t *m)
 
     m->shared_alias_active = false;
     m->alias_fallback_sync_active = false;
+    seed_internal_io_fallback(m);
 
     /* SDRAM — read/write/exec */
     if (m->sdram_backing != NULL &&
