@@ -131,6 +131,22 @@ typedef struct {
 } wince_div_hist_entry_t;
 
 typedef struct {
+    bool     active;
+    bool     completed;
+    bool     seen_target;
+    uint32_t call_pc;
+    uint32_t target_pc;
+    uint32_t return_pc;
+    uint32_t sp_before_call;
+    uint32_t sp_at_target;
+    uint32_t sp_at_return;
+    uint32_t sp_min;
+    uint32_t sp_max;
+    uint32_t events;
+    int32_t  sp_drift;
+} wince_div_call_trace_t;
+
+typedef struct {
     bool        trace;        /* log each instruction to stderr */
     bool        log_mmio;     /* log all MMIO register accesses */
     bool        sfb_5bit_green; /* true = apply 5-bit green expansion (2.6 sfb.c non-standard)
@@ -213,6 +229,7 @@ struct machine_s {
     uint32_t wince_div_hist_head;
     uint32_t wince_div_hist_count;
     uint32_t wince_div_logs;
+    wince_div_call_trace_t wince_div_call_trace;
     uint32_t wince_ctx_probe_logs;
     uint32_t wince_null_last_ra;
     uint32_t wince_null_last_intno;

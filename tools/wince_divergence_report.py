@@ -105,6 +105,8 @@ def main() -> int:
     div_events = collect_lines(err_lines, "[WINCE_DIV_EVENT]")
     div_summary = collect_lines(err_lines, "[WINCE_DIV_SUMMARY]")
     div_lines = collect_lines(err_lines, "[WINCE_DIV]")
+    div_call_returns = collect_lines(err_lines, "[WINCE_DIV_CALL_RETURN]")
+    div_call_summary = collect_lines(err_lines, "[WINCE_DIV_CALL_SUMMARY]")
     mmio_lines = collect_lines(err_lines, "[WINCE_STALL_MMIO]")
     null_mmio_lines = collect_lines(err_lines, "[WINCE_NULL_MMIO]")
 
@@ -188,6 +190,20 @@ def main() -> int:
             print(f"stderr:{lineno} {line}")
     else:
         print("latest_div_tail: none")
+
+    if div_call_returns:
+        print("latest_div_call_return:")
+        lineno, line = div_call_returns[-1]
+        print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_call_return: none")
+
+    if div_call_summary:
+        print("latest_div_call_summary:")
+        lineno, line = div_call_summary[-1]
+        print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_call_summary: none")
 
     print("--- KEY SNAPSHOT ---")
     for token in key_tokens:
