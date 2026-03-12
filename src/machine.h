@@ -153,6 +153,37 @@ typedef struct {
     int32_t  sp_drift;
 } wince_div_call_trace_t;
 
+#define WINCE_DIV_STACK_SLOT_COUNT 2u
+typedef struct {
+    uint32_t addr;
+    uint32_t writes;
+    bool     first_valid;
+    bool     first_old_valid;
+    uint32_t first_pc;
+    uint8_t  first_size;
+    uint64_t first_old;
+    uint64_t first_new;
+    bool     last_valid;
+    bool     last_old_valid;
+    uint32_t last_pc;
+    uint8_t  last_size;
+    uint64_t last_old;
+    uint64_t last_new;
+} wince_div_stack_slot_t;
+
+typedef struct {
+    bool     active;
+    bool     completed;
+    uint32_t arm_pc;
+    uint32_t arm_sp;
+    uint32_t window_start;
+    uint32_t window_end; /* exclusive */
+    uint32_t window_writes;
+    uint32_t slot_logs;
+    uint32_t window_logs;
+    wince_div_stack_slot_t slots[WINCE_DIV_STACK_SLOT_COUNT];
+} wince_div_stack_watch_t;
+
 typedef struct {
     bool        trace;        /* log each instruction to stderr */
     bool        log_mmio;     /* log all MMIO register accesses */
@@ -237,6 +268,7 @@ struct machine_s {
     uint32_t wince_div_hist_count;
     uint32_t wince_div_logs;
     wince_div_call_trace_t wince_div_call_trace;
+    wince_div_stack_watch_t wince_div_stack_watch;
     uint32_t wince_ctx_probe_logs;
     uint32_t wince_null_last_ra;
     uint32_t wince_null_last_intno;

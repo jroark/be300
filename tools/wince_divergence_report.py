@@ -109,6 +109,9 @@ def main() -> int:
     div_call_repeats = collect_lines(err_lines, "[WINCE_DIV_CALL_REPEAT]")
     div_call_returns = collect_lines(err_lines, "[WINCE_DIV_CALL_RETURN]")
     div_call_summary = collect_lines(err_lines, "[WINCE_DIV_CALL_SUMMARY]")
+    div_stack_arm = collect_lines(err_lines, "[WINCE_DIV_STACK_ARM]")
+    div_stack_summary = collect_lines(err_lines, "[WINCE_DIV_STACK_SUMMARY]")
+    div_stack_slot_summary = collect_lines(err_lines, "[WINCE_DIV_STACK_SLOT_SUMMARY]")
     mmio_lines = collect_lines(err_lines, "[WINCE_STALL_MMIO]")
     null_mmio_lines = collect_lines(err_lines, "[WINCE_NULL_MMIO]")
 
@@ -220,6 +223,27 @@ def main() -> int:
         print(f"stderr:{lineno} {line}")
     else:
         print("latest_div_call_summary: none")
+
+    if div_stack_arm:
+        print("latest_div_stack_arm:")
+        lineno, line = div_stack_arm[-1]
+        print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_stack_arm: none")
+
+    if div_stack_summary:
+        print("latest_div_stack_summary:")
+        lineno, line = div_stack_summary[-1]
+        print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_stack_summary: none")
+
+    if div_stack_slot_summary:
+        print("latest_div_stack_slots:")
+        for lineno, line in div_stack_slot_summary[-4:]:
+            print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_stack_slots: none")
 
     print("--- KEY SNAPSHOT ---")
     for token in key_tokens:
