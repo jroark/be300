@@ -143,6 +143,13 @@ typedef struct {
     uint32_t sp_min;
     uint32_t sp_max;
     uint32_t events;
+    uint32_t target_hits;
+    uint32_t nested_calls;
+    uint32_t repeat_hits;
+    uint32_t step_logs;
+    uint32_t last_pc;
+    uint32_t last_sp;
+    bool     last_valid;
     int32_t  sp_drift;
 } wince_div_call_trace_t;
 

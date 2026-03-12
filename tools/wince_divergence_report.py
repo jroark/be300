@@ -105,6 +105,8 @@ def main() -> int:
     div_events = collect_lines(err_lines, "[WINCE_DIV_EVENT]")
     div_summary = collect_lines(err_lines, "[WINCE_DIV_SUMMARY]")
     div_lines = collect_lines(err_lines, "[WINCE_DIV]")
+    div_call_steps = collect_lines(err_lines, "[WINCE_DIV_CALL_STEP]")
+    div_call_repeats = collect_lines(err_lines, "[WINCE_DIV_CALL_REPEAT]")
     div_call_returns = collect_lines(err_lines, "[WINCE_DIV_CALL_RETURN]")
     div_call_summary = collect_lines(err_lines, "[WINCE_DIV_CALL_SUMMARY]")
     mmio_lines = collect_lines(err_lines, "[WINCE_STALL_MMIO]")
@@ -190,6 +192,20 @@ def main() -> int:
             print(f"stderr:{lineno} {line}")
     else:
         print("latest_div_tail: none")
+
+    if div_call_steps:
+        print("latest_div_call_steps:")
+        for lineno, line in div_call_steps[-10:]:
+            print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_call_steps: none")
+
+    if div_call_repeats:
+        print("latest_div_call_repeats:")
+        for lineno, line in div_call_repeats[-4:]:
+            print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_call_repeats: none")
 
     if div_call_returns:
         print("latest_div_call_return:")
