@@ -102,7 +102,11 @@ def main() -> int:
     region_nz2z = collect_lines(err_lines, "[WINCE_REGION_NZ2Z]")
     region_summary = collect_lines(err_lines, "[WINCE_REGION_SUMMARY]")
     region_nz2z_summary = collect_lines(err_lines, "[WINCE_REGION_NZ2Z_SUMMARY]")
+    div_events = collect_lines(err_lines, "[WINCE_DIV_EVENT]")
+    div_summary = collect_lines(err_lines, "[WINCE_DIV_SUMMARY]")
+    div_lines = collect_lines(err_lines, "[WINCE_DIV]")
     mmio_lines = collect_lines(err_lines, "[WINCE_STALL_MMIO]")
+    null_mmio_lines = collect_lines(err_lines, "[WINCE_NULL_MMIO]")
 
     key_tokens = [
         "ctx_table_0xA0051680",
@@ -164,6 +168,27 @@ def main() -> int:
     else:
         print("first_null_bailout: not found")
 
+    print("--- DIVERGENCE CORRIDOR ---")
+    if div_events:
+        print("first_div_events:")
+        for lineno, line in div_events[:8]:
+            print(f"stderr:{lineno} {line}")
+    else:
+        print("first_div_events: none")
+
+    if div_summary:
+        lineno, line = div_summary[-1]
+        print(f"latest_div_summary: stderr:{lineno} {line}")
+    else:
+        print("latest_div_summary: none")
+
+    if div_lines:
+        print("latest_div_tail:")
+        for lineno, line in div_lines[-8:]:
+            print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_tail: none")
+
     print("--- KEY SNAPSHOT ---")
     for token in key_tokens:
         hit = key_hits[token]
@@ -203,7 +228,11 @@ def main() -> int:
         print("region_nz2z_summary: none")
 
     print("--- MMIO TAIL ---")
-    if mmio_lines:
+    if null_mmio_lines:
+        tail_count = max(args.mmio_tail, 0)
+        for lineno, line in null_mmio_lines[-tail_count:]:
+            print(f"stderr:{lineno} {line}")
+    elif mmio_lines:
         tail_count = max(args.mmio_tail, 0)
         for lineno, line in mmio_lines[-tail_count:]:
             print(f"stderr:{lineno} {line}")

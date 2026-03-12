@@ -113,6 +113,23 @@ typedef struct {
     uint16_t reserved;
 } wince_ctrl_hist_entry_t;
 
+#define WINCE_DIV_HISTORY_LEN 128u
+typedef struct {
+    uint32_t pc;
+    uint32_t insn;
+    uint32_t ra;
+    uint32_t sp;
+    uint32_t v0;
+    uint32_t t9;
+    uint32_t s0;
+    uint32_t status;
+    uint32_t stack20;
+    uint32_t stack24;
+    uint8_t  stack20_ok;
+    uint8_t  stack24_ok;
+    uint16_t reserved;
+} wince_div_hist_entry_t;
+
 typedef struct {
     bool        trace;        /* log each instruction to stderr */
     bool        log_mmio;     /* log all MMIO register accesses */
@@ -192,6 +209,10 @@ struct machine_s {
     wince_ctrl_hist_entry_t wince_ctrl_hist[WINCE_CTRL_HISTORY_LEN];
     uint32_t wince_ctrl_hist_head;
     uint32_t wince_ctrl_hist_count;
+    wince_div_hist_entry_t wince_div_hist[WINCE_DIV_HISTORY_LEN];
+    uint32_t wince_div_hist_head;
+    uint32_t wince_div_hist_count;
+    uint32_t wince_div_logs;
     uint32_t wince_ctx_probe_logs;
     uint32_t wince_null_last_ra;
     uint32_t wince_null_last_intno;
