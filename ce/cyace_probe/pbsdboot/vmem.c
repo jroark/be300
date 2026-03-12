@@ -1,0 +1,714 @@
+/*
+ *  $Id: vmem.c,v 1.7 2004/08/28 21:29:33 be300 Exp $
+ *
+ * Copyright (c) 1999 Shin Takemura.
+ * All rights reserved.
+ * Copyright (C) 2002 Filip Onkelinx <Filip@Linux4.BE>
+ *
+ * Modified for the Linux4.BE project by Filip Onkelinx <Filip@Linux4.BE>
+ * $Author: be300 $
+ * $Date: 2004/08/28 21:29:33 $
+ * $Revision: 1.7 $
+ *
+ *
+ * This code is a part of the PocketBSD.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by the PocketBSD project
+ *	and its contributors.
+ * 4. Neither the name of the project nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ */
+
+#define _TIME_T
+
+#include "pbsdboot.h"
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+
+#define MAX_MEMORY (1024*1024*32)	/* 32 MB */
+#define MEM_BLOCKS 8
+#define MEM_BLOCK_SIZE (1024*1024*4)
+
+	BOOL LockPages(LPVOID, DWORD, PDWORD, int);
+	BOOL UnlockPages(LPVOID, DWORD);
+
+#define LOCKFLAG_WRITE  0x001 // write access required
+#define LOCKFLAG_QUERY_ONLY 0x002 // query only, page in but don't lock
+#define LOCKFLAG_READ  0x004 // read access required (as opposed to page present but PAGE_NOACCESS)
+
+
+struct addr_s {
+  caddr_t addr;
+  int in_use;
+};
+
+struct page_header_s {
+  unsigned long magic0;
+  int pageno;
+  unsigned long magic1;
+};
+
+struct map_s *map = NULL;
+struct addr_s *phys_addrs = NULL;
+unsigned char* heap = NULL;
+int npages;
+caddr_t kernel_start;
+caddr_t kernel_end;
+static struct cyace_probe_block_s *probe_block = NULL;
+static caddr_t probe_block_pa = NULL;
+
+#define PROBE_MIN(a, b) ((a) < (b) ? (a) : (b))
+
+static const unsigned long probe_ram_word_pas[CYACE_PROBE_RAM_WORD_COUNT] = {
+  0x00002000u, 0x00006000u, 0x0001D000u, 0x0002D000u,
+  0x00051680u, 0x00660000u, 0x0066BFC0u, 0x0067BFC0u
+};
+
+static const unsigned long probe_mmio_word_pas[CYACE_PROBE_MMIO_WORD_COUNT] = {
+  0x0F000000u, 0x0F000004u, 0x0F000008u, 0x0F000010u,
+  0x0F000014u, 0x0F000020u, 0x0F000024u, 0x0F00008Cu,
+  0x0F000094u, 0x0F000100u, 0x0F000104u, 0x0F000108u,
+  0x0F000110u, 0x0F000114u, 0x0F000118u, 0x0F000130u
+};
+
+static unsigned long
+probe_crc32_update(unsigned long crc, unsigned char byte)
+{
+  int i;
+  crc ^= byte;
+  for (i = 0; i < 8; i++) {
+    if (crc & 1u)
+      crc = (crc >> 1) ^ 0xEDB88320u;
+    else
+      crc >>= 1;
+  }
+  return crc;
+}
+
+static unsigned long
+probe_crc32_bytes(const unsigned char *buf, unsigned long len)
+{
+  unsigned long i;
+  unsigned long crc = 0xFFFFFFFFu;
+  for (i = 0; i < len; i++)
+    crc = probe_crc32_update(crc, buf[i]);
+  return crc ^ 0xFFFFFFFFu;
+}
+
+static BOOL
+probe_read_phys_bytes(unsigned long pa, unsigned char *dst, unsigned long len)
+{
+  unsigned long page_size = getpagesize();
+
+  while (len > 0) {
+    unsigned long page_base = pa & ~(page_size - 1u);
+    unsigned long page_off = pa - page_base;
+    unsigned long chunk = PROBE_MIN(len, page_size - page_off);
+    unsigned char *mapped = (unsigned char*)VirtualAlloc(0, page_size,
+                                                         MEM_RESERVE, PAGE_NOACCESS);
+    if (mapped == NULL)
+      return FALSE;
+
+    if (!VirtualCopy((LPVOID)mapped,
+                     (LPVOID)((phys_start + page_base) >> 8),
+                     page_size,
+                     PAGE_READWRITE | PAGE_NOCACHE | PAGE_PHYSICAL)) {
+      VirtualFree(mapped, 0, MEM_RELEASE);
+      return FALSE;
+    }
+
+    memcpy(dst, mapped + page_off, chunk);
+    VirtualFree(mapped, 0, MEM_RELEASE);
+    dst += chunk;
+    pa += chunk;
+    len -= chunk;
+  }
+
+  return TRUE;
+}
+
+static BOOL
+probe_read_phys_u32(unsigned long pa, unsigned long *out)
+{
+  unsigned char raw[4];
+  if (!out)
+    return FALSE;
+  if (!probe_read_phys_bytes(pa, raw, sizeof(raw)))
+    return FALSE;
+
+  *out = ((unsigned long)raw[0]) |
+         ((unsigned long)raw[1] << 8) |
+         ((unsigned long)raw[2] << 16) |
+         ((unsigned long)raw[3] << 24);
+  return TRUE;
+}
+
+static BOOL
+probe_crc_phys_window(unsigned long pa, unsigned long len, unsigned long *crc_out)
+{
+  unsigned long off = 0;
+  unsigned long crc = 0xFFFFFFFFu;
+  unsigned char buf[128];
+
+  if (!crc_out)
+    return FALSE;
+  while (off < len) {
+    unsigned long chunk = PROBE_MIN((unsigned long)sizeof(buf), len - off);
+    unsigned long i;
+    if (!probe_read_phys_bytes(pa + off, buf, chunk))
+      return FALSE;
+    for (i = 0; i < chunk; i++)
+      crc = probe_crc32_update(crc, buf[i]);
+    off += chunk;
+  }
+
+  *crc_out = crc ^ 0xFFFFFFFFu;
+  return TRUE;
+}
+
+caddr_t
+vmem_probe_pa(void)
+{
+  return probe_block_pa;
+}
+
+int
+vmem_probe_prepare(char *arg, int arglen)
+{
+  if (!arg || arglen < 24)
+    return -1;
+  if (map == NULL)
+    return -1;
+
+  if (probe_block == NULL) {
+    probe_block = (struct cyace_probe_block_s *)vmem_alloc();
+    if (probe_block == NULL)
+      return -1;
+    memset(probe_block, 0, getpagesize());
+    probe_block_pa = vtophysaddr((caddr_t)probe_block);
+    if (probe_block_pa == NULL) {
+      probe_block = NULL;
+      probe_block_pa = NULL;
+      return -1;
+    }
+  }
+
+  memset(probe_block, 0, sizeof(*probe_block));
+  probe_block->magic = CYACE_PROBE_MAGIC;
+  probe_block->version = CYACE_PROBE_VERSION;
+  probe_block->size_bytes = CYACE_PROBE_BLOCK_SIZE;
+  probe_block->probe_pa = (unsigned long)probe_block_pa;
+  probe_block->cwin_base_pa = 0x0A000C00u;
+  probe_block->cwin_len_bytes = 0x50u;
+  probe_block->io_base_pa = 0x0F000000u;
+  probe_block->io_len_bytes = 0x1000u;
+
+  sprintf(arg, "be300_probe_pa=0x%08lX", (unsigned long)probe_block_pa);
+
+  debug_printf(TEXT("[CYACE_PROBE] prepare probe_pa=0x%08X size=0x%X"),
+               (unsigned long)probe_block_pa, (unsigned long)CYACE_PROBE_BLOCK_SIZE);
+  return 0;
+}
+
+static void
+vmem_probe_capture_preexec(caddr_t map_pa)
+{
+  int i;
+  if (probe_block == NULL || probe_block_pa == NULL || map == NULL)
+    return;
+
+  probe_block->entry_pa = (unsigned long)map->entry;
+  probe_block->argc = (unsigned long)map->arg0;
+  probe_block->argv_pa = (unsigned long)map->arg1;
+  probe_block->bootinfo_pa = (unsigned long)map->arg2;
+  probe_block->map_pa = (unsigned long)map_pa;
+  probe_block->map_base_pa = (unsigned long)map->base;
+  probe_block->pagesize = (unsigned long)map->pagesize;
+  probe_block->leafsize = (unsigned long)map->leafsize;
+  probe_block->nleaves = (unsigned long)map->nleaves;
+  probe_block->first_leaf_pa = (unsigned long)map->leaf[0];
+  probe_block->last_leaf_pa = (unsigned long)map->leaf[map->nleaves - 1];
+
+  probe_block->ram_word_ok_mask = 0u;
+  for (i = 0; i < CYACE_PROBE_RAM_WORD_COUNT; i++) {
+    unsigned long v = 0;
+    probe_block->ram_word_pa[i] = probe_ram_word_pas[i];
+    if (probe_read_phys_u32(probe_ram_word_pas[i], &v)) {
+      probe_block->ram_word_val[i] = v;
+      probe_block->ram_word_ok_mask |= (1u << i);
+    }
+  }
+
+  probe_block->mmio_word_ok_mask = 0u;
+  for (i = 0; i < CYACE_PROBE_MMIO_WORD_COUNT; i++) {
+    unsigned long v = 0;
+    probe_block->mmio_word_pa[i] = probe_mmio_word_pas[i];
+    if (probe_read_phys_u32(probe_mmio_word_pas[i], &v)) {
+      probe_block->mmio_word_val[i] = v;
+      probe_block->mmio_word_ok_mask |= (1u << i);
+    }
+  }
+
+  probe_block->cwin_ok_mask = 0u;
+  for (i = 0; i < CYACE_PROBE_CWIN_WORD_COUNT; i++) {
+    unsigned long v = 0;
+    unsigned long pa = 0x0A000C00u + (unsigned long)(i * 4u);
+    if (probe_read_phys_u32(pa, &v)) {
+      probe_block->cwin_word_val[i] = v;
+      probe_block->cwin_ok_mask |= (1u << i);
+    }
+  }
+
+  if (!probe_crc_phys_window(0x0F000000u, 0x1000u, &probe_block->crc_0f_page))
+    probe_block->flags |= 0x00000001u;
+  if (!probe_crc_phys_window(0x0A000C00u, 0x50u, &probe_block->crc_0a_cwin))
+    probe_block->flags |= 0x00000002u;
+
+  probe_block->preexec_ready = 0u;
+  probe_block->crc32 = 0u;
+  probe_block->crc32 = probe_crc32_bytes((const unsigned char*)probe_block,
+                                         CYACE_PROBE_BLOCK_SIZE);
+  probe_block->preexec_ready = 1u;
+
+  debug_printf(TEXT("[CYACE_PROBE] preexec map=0x%08X entry=0x%08X argc=%u arg3=0x%08X"),
+               (unsigned long)map_pa, (unsigned long)map->entry,
+               (unsigned long)map->arg0, (unsigned long)map->arg3);
+  debug_printf(TEXT("[CYACE_PROBE] crc io0f=0x%08X cwin=0x%08X block=0x%08X"),
+               probe_block->crc_0f_page, probe_block->crc_0a_cwin, probe_block->crc32);
+  debug_printf(TEXT("[CYACE_PROBE] ram2000=0x%08X ram6000=0x%08X ram1d000=0x%08X ram2d000=0x%08X"),
+               probe_block->ram_word_val[0], probe_block->ram_word_val[1],
+               probe_block->ram_word_val[2], probe_block->ram_word_val[3]);
+}
+
+int
+vmem_exec(caddr_t entry, int argc, char *argv[], struct bootinfo *bi)
+{
+  int i;
+  caddr_t p;
+  caddr_t map_pa;
+
+  if (map == NULL) {
+    debug_printf(TEXT("vmem is not initialized.\n"));
+    msg_printf(MSG_ERROR, whoami, TEXT("vmem is not initialized.\n"));
+    return (-1);
+  }
+
+//  debug_printf(TEXT("entry point=0x%x\n"), entry);
+
+  map->entry = entry;
+  map->base = kernel_start;
+
+  for (i = 0; i < argc; i++) {
+	  argv[i] = vtophysaddr(argv[i]);
+  }
+  map->arg0 = (caddr_t)argc;
+  map->arg1 = vtophysaddr((caddr_t)argv);
+  map->arg2 = vtophysaddr((caddr_t)bi);
+  map->arg3 = probe_block_pa;
+
+  if (map->arg1 == NULL || map->arg2 == NULL) {
+      debug_printf(TEXT("arg, vtophysaddr() failed\n"));
+      msg_printf(MSG_ERROR, whoami,
+		  TEXT("arg, vtophysaddr() failed\n"));
+      return (-1);
+  }
+
+  for (i = 0; p = map->leaf[i / map->leafsize][i % map->leafsize]; i++)  {
+    if ((p = vtophysaddr(p)) == NULL) {
+      debug_printf(TEXT("vtophysaddr() failed, page %d (addr=0x%x) \n"),
+		   i, map->leaf[i / map->leafsize][i % map->leafsize]);
+      msg_printf(MSG_ERROR, whoami,
+		  TEXT("vtophysaddr() failed, page %d (addr=0x%x) \n"),
+		   i, map->leaf[i / map->leafsize][i % map->leafsize]);
+      return (-1);
+    }
+    map->leaf[i / map->leafsize][i % map->leafsize] = p;
+  }
+
+  for (i = 0; i < map->nleaves; i++) {
+    if ((p = vtophysaddr((caddr_t)map->leaf[i])) == NULL) {
+      debug_printf(TEXT("vtophysaddr() failed, leaf %d (addr=0x%x) \n"),
+		   i, map->leaf[i / map->leafsize][i % map->leafsize]);
+      msg_printf(MSG_ERROR, whoami,
+		  TEXT("vtophysaddr() failed, leaf %d (addr=0x%x) \n"),
+		   i, map->leaf[i / map->leafsize][i % map->leafsize]);
+      return (-1);
+    }
+    map->leaf[i] = (caddr_t*)p;
+  }
+
+//  debug_printf(TEXT("execute startprog()\n"));
+  map_pa = vtophysaddr((caddr_t)map);
+  if (map_pa == NULL) {
+    debug_printf(TEXT("vtophysaddr() failed, map page\n"));
+    msg_printf(MSG_ERROR, whoami, TEXT("vtophysaddr() failed, map page\n"));
+    return (-1);
+  }
+
+  vmem_probe_capture_preexec(map_pa);
+  //return (-1);
+  return (startprog(map_pa));
+}
+
+DWORD
+getpagesize()
+{
+  static int init = 0;
+  static SYSTEM_INFO info;
+
+  if (!init) {
+    GetSystemInfo(&info);
+    init = 1;
+  }
+
+  return (info.dwPageSize);
+}
+
+caddr_t
+vmem_alloc()
+{
+  int i;
+  struct page_header_s *page;
+  for (i = 0; i < npages; i++) {
+    page = (struct page_header_s*)&heap[getpagesize() * i];
+    if (!phys_addrs[i].in_use &&
+	!(kernel_start <= phys_addrs[i].addr &&
+	  phys_addrs[i].addr < kernel_end)) {
+      phys_addrs[i].in_use = 1;
+      return ((caddr_t)page);
+    }
+  }
+  return (NULL);
+}
+
+static caddr_t
+alloc_kpage(caddr_t phys_addr)
+{
+  int i;
+  struct page_header_s *page;
+  for (i = 0; i < npages; i++) {
+    page = (struct page_header_s*)&heap[getpagesize() * i];
+    if (phys_addrs[i].addr == phys_addr) {
+      if (phys_addrs[i].in_use) {
+	debug_printf(TEXT("page %d (phys addr=0x%x) is already in use\n"),
+		     i, phys_addr);
+	msg_printf(MSG_ERROR, whoami,
+		TEXT("page %d (phys addr=0x%x) is already in use\n"),
+		     i, phys_addr);
+	return (NULL);
+      }
+      phys_addrs[i].in_use = 1;
+      return ((caddr_t)page);
+    }
+  }
+  return (vmem_alloc());
+}
+
+caddr_t
+vmem_get(caddr_t phys_addr, int *length)
+{
+  int pageno = (phys_addr - kernel_start) / getpagesize();
+  int offset = (phys_addr - kernel_start) % getpagesize();
+
+  if (map == NULL || pageno < 0 || npages <= pageno) {
+    return (NULL);
+  }
+  if (length) {
+    *length = getpagesize() - offset;
+  }
+  return (map->leaf[pageno / map->leafsize][pageno % map->leafsize] + offset);
+}
+
+caddr_t
+vtophysaddr(caddr_t page)
+{
+  int pageno = (page - heap) / getpagesize();
+  int offset = (page - heap) % getpagesize();
+
+  if (map == NULL || pageno < 0 || npages <= pageno) {
+    debug_printf(TEXT("*** vtophysaddr failed ***\n"));
+    return (NULL);
+  }
+  return (phys_addrs[pageno].addr + offset);
+}
+
+int
+vmem_init(caddr_t start, caddr_t end)
+{
+  int i;
+  unsigned long magic0;
+  unsigned long magic1;
+  struct page_header_s *page;
+  long size;
+  int nleaves;
+  ULONG  paBuffer = 0;
+  BOOL   fLocked;
+  PULONG pPFNs;
+  caddr_t start_save = start;  // for progress
+
+  /* align with page size */
+  start = (caddr_t)(((long)start / getpagesize()) * getpagesize());
+  end = (caddr_t)((((long)end + getpagesize() - 1) / getpagesize()) * getpagesize());
+
+  kernel_start = start;
+  kernel_end = end;
+  size = end - start;
+
+  /*
+   *  program image pages.
+   */
+  npages = (size + getpagesize() - 1) / getpagesize();
+
+  /*
+   *  map leaf pages.
+   *  npages plus one for end mark.
+   */
+  npages += (nleaves = ((npages * sizeof(caddr_t) + getpagesize()) / getpagesize()));
+
+  /*
+   *  map root page, startprg code page, argument page and bootinfo page.
+   */
+  npages += 4;
+
+  // allocate an array of page Physical Frame Numbers
+  // representing the CPU-dependent physical addresses of the pages.
+  //
+  pPFNs = (PULONG)LocalAlloc( LPTR, sizeof(ULONG) * npages );
+  if ( !pPFNs ) {
+         debug_printf( TEXT("CeAllocPhysMem - LocalAlloc Error:%d\n"),GetLastError() );
+         return (-1);
+  }
+
+  /*
+   *  allocate pages
+   */
+//  debug_printf(TEXT("allocate %d pages\n"), npages);
+  heap = (unsigned char*)
+    VirtualAlloc(0,
+		 npages * getpagesize(),
+		 MEM_COMMIT,
+		 PAGE_READWRITE | PAGE_NOCACHE);
+  if (heap == NULL) {
+    debug_printf(TEXT("can't allocate heap\n"));
+ 	msg_printf(MSG_ERROR, whoami, TEXT("can't allocate heap\n"));
+    goto error_cleanup;
+  }
+
+  
+  /*
+   *  allocate address table.
+   */
+  phys_addrs = (struct addr_s *)
+    VirtualAlloc(0,
+		 npages * sizeof(struct addr_s),
+		 MEM_COMMIT,
+		 PAGE_READWRITE);
+  if (phys_addrs == NULL) {
+    debug_printf(TEXT("can't allocate address table\n"));
+ 	msg_printf(MSG_ERROR, whoami, TEXT("can't allocate address table\n"));
+    goto error_cleanup;
+  }
+
+  /*
+   *  set magic number for each page in buffer.
+   */
+  magic0 = Random();
+  magic1 = Random();
+
+  for (i = 0; i < npages; i++) {
+    page = (struct page_header_s*)&heap[getpagesize() * i];
+    page->magic0 = magic0;
+    page->pageno = i;
+    page->magic1 = magic1;
+    phys_addrs[i].addr = 0;
+    phys_addrs[i].in_use = 0;
+  }
+
+  fLocked = LockPages( heap, npages*getpagesize(), pPFNs, LOCKFLAG_WRITE );
+
+  if ( fLocked ) {
+	//
+	// Right shift the returned values by UserKInfo[KINX_PFN_SHIFT] to get the actual physical address.
+	//
+	PULONG pPage;
+
+	//
+	// We want page numbers and NK gives us the physical address
+	// of each page, adjust the list.  Except on MIPS where NK
+	// gives us the physical address shifted right 6 bits.
+	//
+	for (i = 0, pPage = pPFNs; i < npages ; ++i )
+	{
+		unsigned char *mem;
+
+		mem = (unsigned char *)phys_start + ((*pPage) <<4 );
+		phys_addrs[i].addr = mem;
+
+//		*pPage >>= PAGE_SHIFT;
+//		if(i<3)
+//            debug_printf(TEXT("PAGE_SHIFT: %x \n"), *pPage);
+		++pPage;
+	}
+    UnlockPages(heap,npages*getpagesize());
+  }else{
+	debug_printf(TEXT("LockPages failed"));
+  }
+  
+  /*
+   *  Scan whole physical memory.
+   */
+/*
+  debug_printf(TEXT("here we go....\n"));
+  nfounds = 0;
+  for (N = 0; N < (MEM_BLOCKS) && (nfounds < npages); N++) {
+    unsigned char* mem;
+    int res;
+    mem = (unsigned char*) VirtualAlloc(0, MEM_BLOCK_SIZE, MEM_RESERVE, PAGE_NOACCESS);
+	if(!mem){
+		debug_printf(TEXT("***Error: VirtualAlloc failed\n"));
+		continue;
+	}
+    res = VirtualCopy((LPVOID)mem, (LPVOID)((phys_start + MEM_BLOCK_SIZE * N) >> 8),
+		      MEM_BLOCK_SIZE, PAGE_READWRITE | PAGE_NOCACHE | PAGE_PHYSICAL);
+	if(!res){
+		debug_printf(TEXT("***Error: VirtualCopy failed\n"));
+		continue;
+	}
+
+  debug_printf(TEXT("phys_start %x  MEM_BLOCK_SIZE %x  N %x  getpagesize() %x\n"),phys_start , MEM_BLOCK_SIZE , N ,getpagesize() );
+    for (i = 0; i < (int)(MEM_BLOCK_SIZE/getpagesize()); i++) {
+    page = (struct page_header_s*)&mem[getpagesize() * i];
+      if ((page->magic0 == magic0) &&  (page->magic1 == magic1)) {
+		if (0 <= pageno && pageno < npages && phys_addrs[pageno].addr == 0) {
+			phys_addrs[pageno].addr =
+					(unsigned char *)(phys_start + MEM_BLOCK_SIZE * N +getpagesize() * i);
+			if(nfounds<10){
+				debug_printf(TEXT("found (%d) i=%x , addr %x \n"), nfounds,i,phys_addrs[pageno].addr);
+			}
+			page->magic0 = 0;
+			page->magic1 = 0;
+			if (npages <= ++nfounds) {
+				break;
+			}
+		} else {
+			debug_printf(TEXT("invalid page header\n"));
+ 			msg_printf(MSG_ERROR, whoami, TEXT("invalid page header\n"));
+			goto error_cleanup;
+		}
+      }
+    }
+    VirtualFree(mem, 0, MEM_RELEASE);
+  }
+
+  if (nfounds < npages) {
+    debug_printf(TEXT("lost %d pages\n"), npages - nfounds);
+ 	msg_printf(MSG_ERROR, whoami, TEXT("lost %d pages\n"), npages - nfounds);
+    goto error_cleanup;
+  }
+*/
+
+  /*
+   *  allocate root page
+   */
+  if ((map = (struct map_s*)vmem_alloc()) == NULL) {
+    debug_printf(TEXT("can't allocate root page.\n"));
+ 	msg_printf(MSG_ERROR, whoami, TEXT("can't allocate root page.\n"));
+    goto error_cleanup;
+  }
+  map->nleaves = nleaves;
+  map->leafsize = getpagesize() / sizeof(caddr_t);
+  map->pagesize = getpagesize();
+
+  /*
+   *  allocate leaf pages
+   */
+  for (i = 0; i < nleaves; i++) {
+    if ((map->leaf[i] = (caddr_t*)vmem_alloc()) == NULL) {
+      debug_printf(TEXT("can't allocate leaf page.\n"));
+ 	  msg_printf(MSG_ERROR, whoami, TEXT("can't allocate leaf page.\n"));
+      goto error_cleanup;
+    }
+  }
+
+  /*
+   *  allocate kernel pages
+   */
+  for (i = 0; start < kernel_end; start += getpagesize(), i++) {
+    caddr_t *leaf = map->leaf[i / map->leafsize];
+    if ((leaf[i % map->leafsize] = alloc_kpage(start)) == NULL) {
+      debug_printf(TEXT("can't allocate page 0x%x.\n"), start);
+ 	  msg_printf(MSG_ERROR, whoami, TEXT("can't allocate page 0x%x.\n"), start);
+      goto error_cleanup;
+    }
+	if ( CheckCancel( ((start - start_save) * 100) / (kernel_end - start_save) ) )
+		return (-1);
+  }
+  map->leaf[i / map->leafsize][i % map->leafsize] = NULL; /* END MARK */
+
+  return (0);
+
+ error_cleanup:
+  vmem_free();
+
+  return (-1);
+}
+
+void
+vmem_free()
+{
+	map = NULL;
+	probe_block = NULL;
+	probe_block_pa = NULL;
+	if (heap) {
+		VirtualFree(heap, 0, MEM_RELEASE);
+		heap = NULL;
+	}
+	if (phys_addrs) {
+		VirtualFree(phys_addrs, 0, MEM_RELEASE);
+		phys_addrs = NULL;
+	}
+}
+
+void
+vmem_dump_map()
+{
+  caddr_t addr, page, paddr;
+
+  if (map == NULL) {
+    debug_printf(TEXT("no page map\n"));
+    return;
+  }
+
+  for (addr = kernel_start; addr < kernel_end; addr += getpagesize()) {
+    page = vmem_get(addr, NULL);
+    paddr = vtophysaddr(page);
+    debug_printf(TEXT("%08X: vaddr=%08X paddr=%08X %s\n"),
+		 addr, page, paddr, addr == paddr ? TEXT("*") : TEXT("reloc"));
+    
+  }
+}

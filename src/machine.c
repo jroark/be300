@@ -28,9 +28,19 @@ static inline bool is_wince_boot_cfg(const machine_config_t *cfg)
     return cfg != NULL && cfg->nand_path != NULL;
 }
 
+static inline bool use_warm_profile_cfg(const machine_config_t *cfg)
+{
+    return cfg != NULL && (cfg->nand_path != NULL || cfg->kernel_path != NULL);
+}
+
 static inline bool is_wince_boot_machine(const machine_t *m)
 {
     return m != NULL && is_wince_boot_cfg(&m->cfg);
+}
+
+static inline bool use_warm_profile_machine(const machine_t *m)
+{
+    return m != NULL && use_warm_profile_cfg(&m->cfg);
 }
 
 #define VR4131_PCLK_HZ      UINT64_C(166000000)
@@ -747,6 +757,27 @@ static void apply_wince_bcu_warm_profile(machine_t *m)
             " REVID=0x%04X CLKSPEED=0x%04X\n",
             m->bcu.bcucntreg1, m->bcu.romsizereg, m->bcu.romspeedreg,
             m->bcu.revidreg, m->bcu.clkspeedreg);
+}
+
+static void apply_wince_warm_profile(machine_t *m, const char *marker)
+{
+    if (!m || !m->uc)
+        return;
+
+    uint64_t status = VR4131_STATUS_WARM;
+    uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &status);
+    apply_wince_bcu_warm_profile(m);
+    seed_wince_bootrom_window(m);
+    seed_wince_exception_vectors(m);
+    seed_wince_kdata(m);
+    seed_wince_probe_boot_safe(m);
+
+    if (marker != NULL) {
+        fprintf(stderr,
+                "[%s] STATUS=0x%08X COUNT=0x%08X COMPARE=0x%08X\n",
+                marker, VR4131_STATUS_WARM, m->cp0_count_base,
+                m->cp0_compare_shadow);
+    }
 }
 
 #define WINCE_TRACE_VEC_PA_START UINT32_C(0x00000000)
@@ -5495,7 +5526,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         return;
     }
 
-    if (is_wince_boot_machine(m) && (insn & 0xFFE0FFFFu) == 0x40008000u) {
+    if (use_warm_profile_machine(m) && (insn & 0xFFE0FFFFu) == 0x40008000u) {
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t config = VR4131_CONFIG;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &config);
@@ -5504,7 +5535,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         return;
     }
 
-    if (is_wince_boot_machine(m) && (insn & 0xFFE0FFFFu) == 0x40003000u) {
+    if (use_warm_profile_machine(m) && (insn & 0xFFE0FFFFu) == 0x40003000u) {
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t wired = VR4131_WIRED;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &wired);
@@ -5513,7 +5544,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         return;
     }
 
-    if (is_wince_boot_machine(m) && (insn & 0xFFE0FFFFu) == 0x40005800u) {
+    if (use_warm_profile_machine(m) && (insn & 0xFFE0FFFFu) == 0x40005800u) {
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t compare = m->cp0_compare_shadow_valid
             ? (uint64_t)m->cp0_compare_shadow
@@ -8652,9 +8683,10 @@ machine_t *machine_create(const machine_config_t *cfg)
 
     m->cfg = *cfg;
     bool wince_boot = is_wince_boot_cfg(cfg);
-    m->cp0_count_base = wince_boot ? VR4131_COUNT_WARM : 0u;
-    m->cp0_compare_shadow = wince_boot ? VR4131_COMPARE_WARM : 0u;
-    m->cp0_compare_shadow_valid = wince_boot;
+    bool warm_profile = use_warm_profile_cfg(cfg);
+    m->cp0_count_base = warm_profile ? VR4131_COUNT_WARM : 0u;
+    m->cp0_compare_shadow = warm_profile ? VR4131_COMPARE_WARM : 0u;
+    m->cp0_compare_shadow_valid = warm_profile;
     if (m->cfg.sdram_size == 0)
         m->cfg.sdram_size = 16u * 1024u * 1024u;   /* 16 MB default */
 
@@ -9074,18 +9106,7 @@ machine_t *machine_create(const machine_config_t *cfg)
         /*
          * WinCE SPL warm boot state from hardware snapshots.
          */
-        uint64_t wince_status = VR4131_STATUS_WARM;
-        uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &wince_status);
-        apply_wince_bcu_warm_profile(m);
-        seed_wince_bootrom_window(m);
-
-        /*
-         * Seed warm-state exception vectors from hardware survey so WinCE
-         * has valid handler code at low vector addresses from first fault.
-         */
-        seed_wince_exception_vectors(m);
-        seed_wince_kdata(m);
-        seed_wince_probe_boot_safe(m);
+        apply_wince_warm_profile(m, NULL);
 
         /* Set up a stack for the SPL in high SDRAM */
         uint64_t sp = mips_sext(0x80F00000u); /* below SPL load area */
@@ -9121,6 +9142,8 @@ machine_t *machine_create(const machine_config_t *cfg)
             m->jiffies_pa = 0;
             m->has_jiffies_pa = false;
         }
+
+        apply_wince_warm_profile(m, "LINUX_WARM_PROFILE");
 
         /*
          * MIPS Linux prom_init() calling convention (linux4.be / arch/mips/vr41xx):
