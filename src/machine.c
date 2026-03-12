@@ -821,6 +821,22 @@ static inline uint64_t write_value_mask(unsigned size)
     return (UINT64_C(1) << (size * 8u)) - 1u;
 }
 
+static bool read_old_write_value_addr(uc_engine *uc, uint64_t address,
+                                      unsigned size, uint64_t *out)
+{
+    uint8_t bytes[8] = {0};
+    if (!out || size == 0u || size > sizeof(bytes))
+        return false;
+    if (uc_mem_read(uc, address, bytes, size) != UC_ERR_OK)
+        return false;
+
+    uint64_t v = 0;
+    for (unsigned i = 0; i < size; i++)
+        v |= (uint64_t)bytes[i] << (i * 8u);
+    *out = v;
+    return true;
+}
+
 static bool read_old_write_value(uc_engine *uc, uint32_t pa, unsigned size, uint64_t *out)
 {
     uint8_t bytes[8] = {0};
@@ -916,6 +932,180 @@ static void update_wince_region_tracks(machine_t *m, uc_engine *uc, uint32_t pa,
                     new_val);
             m->wince_pa_watch_logs++;
         }
+    }
+}
+
+static const char *wince_div_stack_slot_name(uint32_t idx)
+{
+    return (idx == 0u) ? "s0_slot_sp_plus_20" :
+           (idx == 1u) ? "ra_slot_sp_plus_24" : "slot_unknown";
+}
+
+static inline bool addr32_in_window(uint32_t addr, uint32_t start, uint32_t end)
+{
+    if (start <= end)
+        return addr >= start && addr < end;
+    return addr >= start || addr < end;
+}
+
+static void wince_div_stack_watch_arm(machine_t *m, uint32_t call_pc, uint32_t sp_before_call)
+{
+    if (!m || !is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+
+    wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
+    memset(w, 0, sizeof(*w));
+    w->active = true;
+    w->arm_pc = call_pc;
+    w->arm_sp = sp_before_call;
+    w->window_start = sp_before_call - 0x40u;
+    w->window_end = sp_before_call + 0x40u;
+    w->slots[0].addr = sp_before_call - 0x08u; /* SP return + 0x20 */
+    w->slots[1].addr = sp_before_call - 0x04u; /* SP return + 0x24 */
+
+    if (m->wince_div_logs < 256u) {
+        fprintf(stderr,
+                "[WINCE_DIV_STACK_ARM] call_pc=0x%08X arm_sp=0x%08X"
+                " window=[0x%08X,0x%08X)"
+                " s0_slot=0x%08X ra_slot=0x%08X\n",
+                w->arm_pc, w->arm_sp, w->window_start, w->window_end,
+                w->slots[0].addr, w->slots[1].addr);
+        m->wince_div_logs++;
+    }
+}
+
+static void wince_div_stack_watch_mark_completed(machine_t *m)
+{
+    if (!m)
+        return;
+    wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
+    if (!w->active)
+        return;
+    w->completed = true;
+}
+
+static void wince_div_stack_watch_record_write(machine_t *m, uc_engine *uc,
+                                               uint64_t address, uint32_t pc,
+                                               unsigned size, uint64_t value)
+{
+    if (!m || !uc || size == 0u || size > 8u)
+        return;
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+
+    wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
+    if (!w->active)
+        return;
+
+    uint32_t addr32 = (uint32_t)address;
+    if (!addr32_in_window(addr32, w->window_start, w->window_end))
+        return;
+
+    uint64_t mask = write_value_mask(size);
+    uint64_t old_value = 0;
+    bool old_valid = read_old_write_value_addr(uc, address, size, &old_value);
+    uint64_t new_value = value & mask;
+    w->window_writes++;
+
+    bool slot_hit = false;
+    for (uint32_t i = 0; i < WINCE_DIV_STACK_SLOT_COUNT; i++) {
+        wince_div_stack_slot_t *slot = &w->slots[i];
+        if (addr32 != slot->addr)
+            continue;
+        slot_hit = true;
+        slot->writes++;
+        if (!slot->first_valid) {
+            slot->first_valid = true;
+            slot->first_pc = pc;
+            slot->first_size = (uint8_t)size;
+            slot->first_old = old_value & mask;
+            slot->first_new = new_value;
+            slot->first_old_valid = old_valid;
+        }
+        slot->last_valid = true;
+        slot->last_pc = pc;
+        slot->last_size = (uint8_t)size;
+        slot->last_old = old_value & mask;
+        slot->last_new = new_value;
+        slot->last_old_valid = old_valid;
+
+        if (m->wince_div_logs < 320u && w->slot_logs < 48u) {
+            fprintf(stderr,
+                    "[WINCE_DIV_STACK_SLOT_WRITE] slot=%s addr=0x%08X"
+                    " pc=0x%08X size=%u old=%s0x%016" PRIX64
+                    " new=0x%016" PRIX64 " writes=%u\n",
+                    wince_div_stack_slot_name(i),
+                    addr32, pc, size,
+                    old_valid ? "" : "ERR:",
+                    old_valid ? (old_value & mask) : 0u,
+                    new_value, slot->writes);
+            m->wince_div_logs++;
+            w->slot_logs++;
+        }
+    }
+
+    if (!slot_hit && m->wince_div_logs < 320u && w->window_logs < 16u) {
+        fprintf(stderr,
+                "[WINCE_DIV_STACK_WRITE] addr=0x%08X pc=0x%08X size=%u"
+                " old=%s0x%016" PRIX64 " new=0x%016" PRIX64
+                " window_writes=%u\n",
+                addr32, pc, size,
+                old_valid ? "" : "ERR:",
+                old_valid ? (old_value & mask) : 0u,
+                new_value, w->window_writes);
+        m->wince_div_logs++;
+        w->window_logs++;
+    }
+}
+
+static void log_wince_div_stack_watch_summary(const machine_t *m, uc_engine *uc,
+                                              const char *reason)
+{
+    if (!m || !uc)
+        return;
+    const wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
+    if (!w->active)
+        return;
+
+    fprintf(stderr,
+            "[WINCE_DIV_STACK_SUMMARY] reason=%s active=%u completed=%u"
+            " call_pc=0x%08X arm_sp=0x%08X"
+            " window=[0x%08X,0x%08X) writes=%u\n",
+            reason, w->active ? 1u : 0u, w->completed ? 1u : 0u,
+            w->arm_pc, w->arm_sp,
+            w->window_start, w->window_end, w->window_writes);
+
+    for (uint32_t i = 0; i < WINCE_DIV_STACK_SLOT_COUNT; i++) {
+        const wince_div_stack_slot_t *slot = &w->slots[i];
+        uint32_t final_word = 0;
+        bool final_ok = read_guest_u32(uc, slot->addr, &final_word);
+        if (!slot->first_valid) {
+            fprintf(stderr,
+                    "[WINCE_DIV_STACK_SLOT_SUMMARY] reason=%s slot=%s"
+                    " addr=0x%08X writes=0 final=%s0x%08X\n",
+                    reason, wince_div_stack_slot_name(i), slot->addr,
+                    final_ok ? "" : "ERR:", final_ok ? final_word : 0u);
+            continue;
+        }
+
+        fprintf(stderr,
+                "[WINCE_DIV_STACK_SLOT_SUMMARY] reason=%s slot=%s"
+                " addr=0x%08X writes=%u"
+                " first(pc=0x%08X size=%u old=%s0x%016" PRIX64
+                " new=0x%016" PRIX64 ")"
+                " last(pc=0x%08X size=%u old=%s0x%016" PRIX64
+                " new=0x%016" PRIX64 ")"
+                " final=%s0x%08X\n",
+                reason, wince_div_stack_slot_name(i), slot->addr, slot->writes,
+                slot->first_pc, (unsigned)slot->first_size,
+                slot->first_old_valid ? "" : "ERR:",
+                slot->first_old_valid ? slot->first_old : 0u,
+                slot->first_new,
+                slot->last_pc, (unsigned)slot->last_size,
+                slot->last_old_valid ? "" : "ERR:",
+                slot->last_old_valid ? slot->last_old : 0u,
+                slot->last_new,
+                final_ok ? "" : "ERR:", final_ok ? final_word : 0u);
     }
 }
 
@@ -1018,6 +1208,7 @@ static bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
     uint32_t pc = (uint32_t)pc64;
     uint64_t uval = (uint64_t)value;
     update_wince_region_tracks(m, uc, pa, pc, (unsigned)size, uval);
+    wince_div_stack_watch_record_write(m, uc, address, pc, (unsigned)size, uval);
 
     if (pa < WINCE_TRACE_VEC_PA_END) {
         wince_pa_watch_update(m, &m->wince_vec_watch, "vectors",
@@ -1416,6 +1607,7 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
         t->last_valid = false;
         t->last_pc = 0u;
         t->last_sp = 0u;
+        wince_div_stack_watch_arm(m, t->call_pc, t->sp_before_call);
 
         if (m->wince_div_logs < 224u) {
             fprintf(stderr,
@@ -1483,6 +1675,7 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
         t->sp_drift = (int32_t)((int32_t)sp32 - (int32_t)t->sp_before_call);
         t->active = false;
         t->completed = true;
+        wince_div_stack_watch_mark_completed(m);
         if (m->wince_div_logs < 224u) {
             fprintf(stderr,
                     "[WINCE_DIV_CALL_RETURN] pc=0x%08X sp_before=0x%08X"
@@ -6160,6 +6353,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
     log_wince_ctrl_hist_summary(m, "NULL_POSTMORTEM", 128u);
     log_wince_div_hist_summary(m, "NULL_POSTMORTEM", 64u);
     log_wince_div_call_trace_summary(m, "NULL_POSTMORTEM");
+    log_wince_div_stack_watch_summary(m, uc, "NULL_POSTMORTEM");
     log_wince_null_mmio_tail(m, 24u);
 
     /* Dump code around last known execution PC for post-mortem analysis */
