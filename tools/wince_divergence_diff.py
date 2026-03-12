@@ -31,6 +31,10 @@ def extract_key_fields(lines: List[str]) -> Dict[str, str]:
             out["latest_div_call_return"] = line
         elif line.startswith("latest_div_call_summary:"):
             out["latest_div_call_summary"] = line
+        elif line.startswith("latest_div_call_steps:"):
+            out["latest_div_call_steps"] = line
+        elif line.startswith("latest_div_call_repeats:"):
+            out["latest_div_call_repeats"] = line
         elif line.startswith("Kernel loader core:"):
             out["progress_kernel_loader_core"] = line
         elif line.startswith("Start downloading...:"):

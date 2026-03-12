@@ -1296,6 +1296,96 @@ static inline bool pc_in_wince_div_corridor(uint32_t pc32)
     return pc32 >= UINT32_C(0x800968F0) && pc32 <= UINT32_C(0x80096934);
 }
 
+static void wince_div_call_step_log(machine_t *m, uc_engine *uc,
+                                    uint32_t pc32, uint32_t insn,
+                                    uint32_t sp32, uint32_t ra32)
+{
+    if (!m || !uc)
+        return;
+    if (!(pc32 >= UINT32_C(0x80096780) && pc32 <= UINT32_C(0x80096910)))
+        return;
+    if (m->wince_div_logs >= 320u)
+        return;
+
+    uint32_t op = (insn >> 26) & 0x3Fu;
+    uint32_t rs = (insn >> 21) & 0x1Fu;
+    uint32_t rt = (insn >> 16) & 0x1Fu;
+    const char *kind = "STEP";
+    char detail[128];
+    detail[0] = '\0';
+
+    if (op == 0x02u || op == 0x03u) {
+        uint32_t target = ((pc32 + 4u) & 0xF0000000u) | ((insn & 0x03FFFFFFu) << 2);
+        kind = (op == 0x03u) ? "JAL" : "J";
+        snprintf(detail, sizeof(detail), "target=0x%08X", target);
+    } else if (op == 0x04u || op == 0x05u || op == 0x14u || op == 0x15u) {
+        uint64_t vrs = 0, vrt = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rs, &vrs);
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &vrt);
+        int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+        uint32_t target = pc32 + 4u + (uint32_t)(imm << 2);
+        bool eq = ((uint32_t)vrs == (uint32_t)vrt);
+        bool taken = (op == 0x04u || op == 0x14u) ? eq : !eq;
+        kind = (op == 0x04u) ? "BEQ" :
+               (op == 0x05u) ? "BNE" :
+               (op == 0x14u) ? "BEQL" : "BNEL";
+        snprintf(detail, sizeof(detail),
+                 "taken=%u target=0x%08X rs=0x%08X rt=0x%08X",
+                 taken ? 1u : 0u, target, (uint32_t)vrs, (uint32_t)vrt);
+    } else if (op == 0x06u || op == 0x07u || op == 0x16u || op == 0x17u) {
+        uint64_t vrs = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rs, &vrs);
+        int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+        uint32_t target = pc32 + 4u + (uint32_t)(imm << 2);
+        int32_t sv = (int32_t)(uint32_t)vrs;
+        bool taken = (op == 0x06u || op == 0x16u) ? (sv <= 0) : (sv > 0);
+        kind = (op == 0x06u) ? "BLEZ" :
+               (op == 0x07u) ? "BGTZ" :
+               (op == 0x16u) ? "BLEZL" : "BGTZL";
+        snprintf(detail, sizeof(detail),
+                 "taken=%u target=0x%08X rs=0x%08X",
+                 taken ? 1u : 0u, target, (uint32_t)vrs);
+    } else if (op == 0x01u) {
+        uint64_t vrs = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rs, &vrs);
+        int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+        uint32_t target = pc32 + 4u + (uint32_t)(imm << 2);
+        int32_t sv = (int32_t)(uint32_t)vrs;
+        bool is_bltz = (rt == 0x00u);
+        bool is_bgez = (rt == 0x01u);
+        bool taken = false;
+        if (is_bltz)
+            taken = (sv < 0);
+        else if (is_bgez)
+            taken = (sv >= 0);
+        kind = is_bltz ? "BLTZ" : (is_bgez ? "BGEZ" : "REGIMM");
+        snprintf(detail, sizeof(detail),
+                 "taken=%u target=0x%08X rs=0x%08X rt=0x%02X",
+                 taken ? 1u : 0u, target, (uint32_t)vrs, rt);
+    } else if (op == 0x09u && rs == 29u && rt == 29u) {
+        int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+        kind = "ADDIU_SP";
+        snprintf(detail, sizeof(detail), "imm=%d next_sp=0x%08X",
+                 imm, (uint32_t)((int32_t)sp32 + imm));
+    } else if (op == 0x00u) {
+        uint32_t funct = insn & 0x3Fu;
+        if (funct == 0x08u || funct == 0x09u) {
+            uint64_t target = 0;
+            uc_reg_read(uc, UC_MIPS_REG_0 + (int)rs, &target);
+            kind = (funct == 0x09u) ? "JALR" : "JR";
+            snprintf(detail, sizeof(detail), "target=0x%08X rs=$%u",
+                     (uint32_t)target, rs);
+        }
+    }
+
+    fprintf(stderr,
+            "[WINCE_DIV_CALL_STEP] pc=0x%08X insn=0x%08X kind=%s"
+            " sp=0x%08X ra=0x%08X %s\n",
+            pc32, insn, kind, sp32, ra32, detail);
+    m->wince_div_logs++;
+    m->wince_div_call_trace.step_logs++;
+}
+
 static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint32_t insn)
 {
     wince_div_call_trace_t *t = &m->wince_div_call_trace;
@@ -1319,6 +1409,13 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
         t->sp_min = sp32;
         t->sp_max = sp32;
         t->events = 1u;
+        t->target_hits = 0u;
+        t->nested_calls = 0u;
+        t->repeat_hits = 0u;
+        t->step_logs = 0u;
+        t->last_valid = false;
+        t->last_pc = 0u;
+        t->last_sp = 0u;
 
         if (m->wince_div_logs < 224u) {
             fprintf(stderr,
@@ -1339,29 +1436,47 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
         t->sp_min = sp32;
     if (sp32 > t->sp_max)
         t->sp_max = sp32;
-
-    if (!t->seen_target && pc32 == t->target_pc) {
-        t->seen_target = true;
-        t->sp_at_target = sp32;
+    if (t->last_valid && t->last_pc == pc32) {
+        t->repeat_hits++;
         if (m->wince_div_logs < 224u) {
             fprintf(stderr,
-                    "[WINCE_DIV_CALL_TARGET] pc=0x%08X sp=0x%08X ra=0x%08X events=%u\n",
-                    pc32, sp32, ra32, t->events);
+                    "[WINCE_DIV_CALL_REPEAT] pc=0x%08X sp_prev=0x%08X sp_now=0x%08X"
+                    " repeats=%u events=%u\n",
+                    pc32, t->last_sp, sp32, t->repeat_hits, t->events);
             m->wince_div_logs++;
         }
     }
 
     uint32_t op = (insn >> 26) & 0x3Fu;
-    uint32_t rs = (insn >> 21) & 0x1Fu;
-    uint32_t rt = (insn >> 16) & 0x1Fu;
-    if (op == 0x09u && rs == 29u && rt == 29u && m->wince_div_logs < 224u) {
-        int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
-        uint32_t next_sp = (uint32_t)((int32_t)sp32 + imm);
-        fprintf(stderr,
-                "[WINCE_DIV_SP_ADJ] pc=0x%08X sp=0x%08X imm=%d next_sp=0x%08X\n",
-                pc32, sp32, imm, next_sp);
-        m->wince_div_logs++;
+    if (op == 0x03u) {
+        uint32_t target = ((pc32 + 4u) & 0xF0000000u) | ((insn & 0x03FFFFFFu) << 2);
+        if (target == t->target_pc) {
+            t->nested_calls++;
+            if (m->wince_div_logs < 224u) {
+                fprintf(stderr,
+                        "[WINCE_DIV_CALL_REENTER] pc=0x%08X target=0x%08X"
+                        " nested_calls=%u sp=0x%08X ra=0x%08X\n",
+                        pc32, target, t->nested_calls, sp32, ra32);
+                m->wince_div_logs++;
+            }
+        }
     }
+
+    if (pc32 == t->target_pc) {
+        t->target_hits++;
+        if (!t->seen_target) {
+            t->seen_target = true;
+            t->sp_at_target = sp32;
+        }
+        if (m->wince_div_logs < 224u) {
+            fprintf(stderr,
+                    "[WINCE_DIV_CALL_TARGET] pc=0x%08X sp=0x%08X ra=0x%08X"
+                    " events=%u hit=%u\n",
+                    pc32, sp32, ra32, t->events, t->target_hits);
+            m->wince_div_logs++;
+        }
+    }
+    wince_div_call_step_log(m, uc, pc32, insn, sp32, ra32);
 
     if (pc32 == t->return_pc) {
         t->sp_at_return = sp32;
@@ -1377,6 +1492,10 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
             m->wince_div_logs++;
         }
     }
+
+    t->last_pc = pc32;
+    t->last_sp = sp32;
+    t->last_valid = true;
 }
 
 static void wince_div_hist_record(machine_t *m, uc_engine *uc, uint32_t pc32, uint32_t insn)
@@ -1448,13 +1567,16 @@ static void log_wince_div_call_trace_summary(const machine_t *m, const char *rea
             "[WINCE_DIV_CALL_SUMMARY] reason=%s active=%u completed=%u"
             " call=0x%08X target=0x%08X return=0x%08X"
             " sp_before=0x%08X sp_target=0x%08X sp_return=0x%08X"
-            " drift=%d sp_min=0x%08X sp_max=0x%08X events=%u seen_target=%u\n",
+            " drift=%d sp_min=0x%08X sp_max=0x%08X"
+            " events=%u seen_target=%u target_hits=%u nested_calls=%u"
+            " repeat_hits=%u step_logs=%u\n",
             reason,
             t->active ? 1u : 0u, t->completed ? 1u : 0u,
             t->call_pc, t->target_pc, t->return_pc,
             t->sp_before_call, t->sp_at_target, t->sp_at_return,
             t->sp_drift, t->sp_min, t->sp_max, t->events,
-            t->seen_target ? 1u : 0u);
+            t->seen_target ? 1u : 0u,
+            t->target_hits, t->nested_calls, t->repeat_hits, t->step_logs);
 }
 
 static void log_wince_div_hist_summary(const machine_t *m,
