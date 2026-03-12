@@ -23,6 +23,10 @@ def extract_key_fields(lines: List[str]) -> Dict[str, str]:
             out["first_null_call"] = line
         elif line.startswith("first_null_bailout:"):
             out["first_null_bailout"] = line
+        elif line.startswith("first_div_events:"):
+            out["first_div_events"] = line
+        elif line.startswith("latest_div_summary:"):
+            out["latest_div_summary"] = line
         elif line.startswith("Kernel loader core:"):
             out["progress_kernel_loader_core"] = line
         elif line.startswith("Start downloading...:"):

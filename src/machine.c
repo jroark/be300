@@ -62,6 +62,7 @@ static void machine_advance_rtc_from_cp0(machine_t *m)
 static bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out);
 static uc_err write_mem_best_effort(uc_engine *uc, uint64_t address,
                                     const void *data, size_t size);
+static void log_wince_null_mmio_tail(const machine_t *m, uint32_t max_lines);
 
 static bool sdram_alias_pa_offset(const machine_t *m, uint64_t addr, uint64_t *off_out)
 {
@@ -1287,6 +1288,102 @@ static void log_wince_ctrl_hist_summary(const machine_t *m,
                     " ra=0x%08X sp=0x%08X a0=0x%08X\n",
                     i, kind, e->pc, e->target, e->ra, e->sp, e->a0);
         }
+    }
+}
+
+static inline bool pc_in_wince_div_corridor(uint32_t pc32)
+{
+    return pc32 >= UINT32_C(0x800968F0) && pc32 <= UINT32_C(0x80096934);
+}
+
+static void wince_div_hist_record(machine_t *m, uc_engine *uc, uint32_t pc32, uint32_t insn)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+    if (!pc_in_wince_div_corridor(pc32))
+        return;
+
+    uint64_t ra = 0, sp = 0, v0 = 0, t9 = 0, s0 = 0, status = 0;
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+    uint32_t stack20 = 0, stack24 = 0;
+    bool stack20_ok = read_guest_u32(uc, (uint32_t)sp + 0x20u, &stack20);
+    bool stack24_ok = read_guest_u32(uc, (uint32_t)sp + 0x24u, &stack24);
+
+    uint32_t idx = m->wince_div_hist_head % WINCE_DIV_HISTORY_LEN;
+    wince_div_hist_entry_t *e = &m->wince_div_hist[idx];
+    e->pc = pc32;
+    e->insn = insn;
+    e->ra = (uint32_t)ra;
+    e->sp = (uint32_t)sp;
+    e->v0 = (uint32_t)v0;
+    e->t9 = (uint32_t)t9;
+    e->s0 = (uint32_t)s0;
+    e->status = (uint32_t)status;
+    e->stack20 = stack20;
+    e->stack24 = stack24;
+    e->stack20_ok = stack20_ok ? 1u : 0u;
+    e->stack24_ok = stack24_ok ? 1u : 0u;
+    e->reserved = 0;
+
+    m->wince_div_hist_head = (m->wince_div_hist_head + 1u) % WINCE_DIV_HISTORY_LEN;
+    if (m->wince_div_hist_count < WINCE_DIV_HISTORY_LEN)
+        m->wince_div_hist_count++;
+
+    bool key_pc = (pc32 == 0x80096910u ||
+                   pc32 == 0x80096918u ||
+                   pc32 == 0x80096924u ||
+                   pc32 == 0x80096928u ||
+                   pc32 == 0x8009692Cu);
+    if (key_pc && m->wince_div_logs < 160u) {
+        fprintf(stderr,
+                "[WINCE_DIV_EVENT] pc=0x%08X insn=0x%08X"
+                " ra=0x%08X sp=0x%08X v0=0x%08X t9=0x%08X s0=0x%08X"
+                " stk20=%s0x%08X stk24=%s0x%08X status=0x%08X\n",
+                e->pc, e->insn, e->ra, e->sp, e->v0, e->t9, e->s0,
+                e->stack20_ok ? "" : "ERR:", e->stack20,
+                e->stack24_ok ? "" : "ERR:", e->stack24,
+                e->status);
+        m->wince_div_logs++;
+    }
+}
+
+static void log_wince_div_hist_summary(const machine_t *m,
+                                       const char *reason,
+                                       uint32_t max_lines)
+{
+    if (!m || m->wince_div_hist_count == 0)
+        return;
+
+    uint32_t emit = m->wince_div_hist_count;
+    if (emit > max_lines)
+        emit = max_lines;
+    uint32_t dropped = m->wince_div_hist_count - emit;
+    uint32_t start = (m->wince_div_hist_head + WINCE_DIV_HISTORY_LEN - emit)
+                   % WINCE_DIV_HISTORY_LEN;
+
+    fprintf(stderr,
+            "[WINCE_DIV_SUMMARY] reason=%s entries=%u emitted=%u dropped=%u"
+            " corridor=0x800968F0-0x80096934\n",
+            reason, m->wince_div_hist_count, emit, dropped);
+
+    for (uint32_t i = 0; i < emit; i++) {
+        uint32_t idx = (start + i) % WINCE_DIV_HISTORY_LEN;
+        const wince_div_hist_entry_t *e = &m->wince_div_hist[idx];
+        fprintf(stderr,
+                "[WINCE_DIV] %02u pc=0x%08X insn=0x%08X"
+                " ra=0x%08X sp=0x%08X v0=0x%08X t9=0x%08X s0=0x%08X"
+                " stk20=%s0x%08X stk24=%s0x%08X status=0x%08X\n",
+                i, e->pc, e->insn,
+                e->ra, e->sp, e->v0, e->t9, e->s0,
+                e->stack20_ok ? "" : "ERR:", e->stack20,
+                e->stack24_ok ? "" : "ERR:", e->stack24,
+                e->status);
     }
 }
 
@@ -4429,6 +4526,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t rd  = (insn >> 11) & 0x1Fu;
     uint32_t sel =  insn        & 0x07u;
 
+    wince_div_hist_record(m, uc, (uint32_t)address, insn);
     maybe_record_wince_ctrl_event(m, uc, (uint32_t)address,
                                   insn, op, rs, rt, rd, sel);
     maybe_probe_wince_ctx_path(m, uc, (uint32_t)address,
@@ -5740,6 +5838,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
                     WINCE_NULL_RECOVER_CAP, (uint64_t)(uint32_t)status);
             log_wince_pa_watch_nonzero(m, "NULL_BAILOUT");
             log_wince_region_track_summary(m, "NULL_BAILOUT");
+            log_wince_div_hist_summary(m, "NULL_BAILOUT", 32u);
             machine_stop(m);
             uc_emu_stop(uc);
             return true;
@@ -5831,6 +5930,8 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
     log_wince_pa_watch_summary(m, "NULL_POSTMORTEM");
     log_wince_region_track_summary(m, "NULL_POSTMORTEM");
     log_wince_ctrl_hist_summary(m, "NULL_POSTMORTEM", 128u);
+    log_wince_div_hist_summary(m, "NULL_POSTMORTEM", 64u);
+    log_wince_null_mmio_tail(m, 24u);
 
     /* Dump code around last known execution PC for post-mortem analysis */
     {
@@ -7976,6 +8077,36 @@ static inline bool is_wince_spl_pc(uint32_t pc32)
     return pc32 >= WINCE_SPL_VA_BASE && pc32 < WINCE_SPL_VA_END;
 }
 
+static void log_wince_null_mmio_tail(const machine_t *m, uint32_t max_lines)
+{
+    if (!m)
+        return;
+
+    if (m->mmio_hist_count == 0) {
+        fprintf(stderr, "[WINCE_NULL_MMIO] (empty)\n");
+        return;
+    }
+
+    uint32_t emit = m->mmio_hist_count;
+    if (emit > max_lines)
+        emit = max_lines;
+
+    uint32_t oldest = (m->mmio_hist_head + WINCE_MMIO_HISTORY_LEN - emit)
+                    % WINCE_MMIO_HISTORY_LEN;
+    for (uint32_t i = 0; i < emit; i++) {
+        uint32_t idx = (oldest + i) % WINCE_MMIO_HISTORY_LEN;
+        const mmio_hist_entry_t *e = &m->mmio_hist[idx];
+        fprintf(stderr,
+                "[WINCE_NULL_MMIO] %02u %c%u PA=0x%08X PC=0x%08X VAL=0x%08" PRIX64 "\n",
+                i,
+                e->is_write ? 'W' : 'R',
+                e->size_bits,
+                e->pa,
+                e->pc,
+                e->value);
+    }
+}
+
 static void log_wince_stall_dump(machine_t *m, uint32_t pc32)
 {
     uint32_t insn = 0xFFFFFFFFu;
@@ -8011,6 +8142,7 @@ static void log_wince_stall_dump(machine_t *m, uint32_t pc32)
             m->siu.lsr, m->siu.ier, m->siu.iir, m->siu.lcr, m->siu.mcr);
     log_wince_pa_watch_summary(m, "STALL");
     log_wince_region_track_summary(m, "STALL");
+    log_wince_div_hist_summary(m, "STALL", 24u);
     log_wince_ctrl_hist_summary(m, "STALL", 24u);
 
     if (m->mmio_hist_count == 0) {
@@ -8220,6 +8352,9 @@ machine_t *machine_create(const machine_config_t *cfg)
     init_wince_region_tracks(m);
     m->wince_region_nz2z_logs = 0;
     m->wince_deferred_seed_done = false;
+    m->wince_div_hist_head = 0;
+    m->wince_div_hist_count = 0;
+    m->wince_div_logs = 0;
 
     /* Always install the invalid-instruction hook (for MACC) */
     uc_hook hk;
