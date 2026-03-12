@@ -549,6 +549,48 @@ static void write_pa_u32_all_aliases(machine_t *m, uint32_t pa, uint32_t val)
     }
 }
 
+static bool read_pa_u32_all_aliases(machine_t *m, uint32_t pa, uint32_t *out)
+{
+    if (!m || !m->uc || !out)
+        return false;
+
+    uint64_t off = (uint64_t)pa;
+    const uint64_t aliases[] = {
+        off,
+        UINT64_C(0x0000000080000000) + off,
+        UINT64_C(0x00000000A0000000) + off,
+        UINT64_C(0xFFFFFFFF80000000) + off,
+        UINT64_C(0xFFFFFFFFA0000000) + off,
+    };
+
+    for (unsigned i = 0; i < (sizeof(aliases) / sizeof(aliases[0])); i++) {
+        uint32_t val = 0;
+        if (uc_mem_read(m->uc, aliases[i], &val, sizeof(val)) == UC_ERR_OK) {
+            *out = val;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static inline bool is_wince_probe_deferred_pa(uint32_t pa)
+{
+    if (pa >= UINT32_C(0x00006000) && pa < UINT32_C(0x00007000))
+        return true;
+    if (pa >= UINT32_C(0x0001D000) && pa < UINT32_C(0x0001E000))
+        return true;
+    if (pa >= UINT32_C(0x0002D000) && pa < UINT32_C(0x0002E000))
+        return true;
+    if (pa >= UINT32_C(0x00051680) && pa < UINT32_C(0x00051B00))
+        return true;
+    if (pa >= UINT32_C(0x00660000) && pa < UINT32_C(0x00660040))
+        return true;
+    if (pa >= UINT32_C(0x0066BFC0) && pa < UINT32_C(0x00680000))
+        return true;
+    return false;
+}
+
 static void seed_wince_exception_vectors(machine_t *m)
 {
     /*
@@ -600,18 +642,68 @@ static void seed_wince_kdata(machine_t *m)
             (unsigned)(sizeof(wince_kdata_words) / sizeof(wince_kdata_words[0])));
 }
 
-static void seed_wince_probe_warm_state(machine_t *m)
+static void seed_wince_probe_boot_safe(machine_t *m)
 {
+    uint32_t applied = 0;
+    uint32_t deferred = 0;
+
     for (uint32_t i = 0;
          i < (uint32_t)(sizeof(wince_probe_seed_words) / sizeof(wince_probe_seed_words[0]));
          i++) {
+        if (is_wince_probe_deferred_pa(wince_probe_seed_words[i].pa)) {
+            deferred++;
+            continue;
+        }
         write_pa_u32_all_aliases(m, wince_probe_seed_words[i].pa,
                                  wince_probe_seed_words[i].val);
+        applied++;
     }
 
     fprintf(stderr,
-            "[WINCE_PROBE_SEED] seeded %u words into warm RAM callback/object regions\n",
+            "[WINCE_PROBE_SEED_BOOT] applied=%u deferred=%u total=%u\n",
+            applied, deferred,
             (unsigned)(sizeof(wince_probe_seed_words) / sizeof(wince_probe_seed_words[0])));
+}
+
+static void seed_wince_probe_deferred(machine_t *m, uint32_t pc32)
+{
+    if (!m || m->wince_deferred_seed_done)
+        return;
+
+    uint32_t considered = 0;
+    uint32_t applied = 0;
+    uint32_t skipped_nonzero = 0;
+    uint32_t skipped_read_fail = 0;
+
+    for (uint32_t i = 0;
+         i < (uint32_t)(sizeof(wince_probe_seed_words) / sizeof(wince_probe_seed_words[0]));
+         i++) {
+        uint32_t pa = wince_probe_seed_words[i].pa;
+        uint32_t seed_val = wince_probe_seed_words[i].val;
+        uint32_t cur = 0;
+
+        if (!is_wince_probe_deferred_pa(pa))
+            continue;
+        considered++;
+
+        if (!read_pa_u32_all_aliases(m, pa, &cur)) {
+            skipped_read_fail++;
+            continue;
+        }
+        if (cur != 0u) {
+            skipped_nonzero++;
+            continue;
+        }
+
+        write_pa_u32_all_aliases(m, pa, seed_val);
+        applied++;
+    }
+
+    m->wince_deferred_seed_done = true;
+    fprintf(stderr,
+            "[WINCE_PROBE_SEED_DEFERRED] pc=0x%08X applied=%u"
+            " skip_nonzero=%u skip_unreadable=%u considered=%u\n",
+            pc32, applied, skipped_nonzero, skipped_read_fail, considered);
 }
 
 static void seed_wince_bootrom_window(machine_t *m)
@@ -672,6 +764,46 @@ static void apply_wince_bcu_warm_profile(machine_t *m)
 #define WINCE_TRACE_GATE_SRC_PA_END   UINT32_C(0x00E19000)
 #define WINCE_TRACE_STACK_PA_START UINT32_C(0x00003780)
 #define WINCE_TRACE_STACK_PA_END   UINT32_C(0x00003820)
+#define WINCE_TRACE_BOOTCTX_PA_START UINT32_C(0x00006000)
+#define WINCE_TRACE_BOOTCTX_PA_END   UINT32_C(0x00007000)
+#define WINCE_TRACE_BOOTPARAM0_PA_START UINT32_C(0x0001D000)
+#define WINCE_TRACE_BOOTPARAM0_PA_END   UINT32_C(0x0001E000)
+#define WINCE_TRACE_BOOTPARAM1_PA_START UINT32_C(0x0002D000)
+#define WINCE_TRACE_BOOTPARAM1_PA_END   UINT32_C(0x0002E000)
+
+#define WINCE_FAIL_CORRIDOR_START UINT32_C(0x80077FE4)
+#define WINCE_FAIL_CORRIDOR_END   UINT32_C(0x80078C0C)
+
+typedef struct {
+    const char *name;
+    uint32_t start_pa;
+    uint32_t end_pa; /* exclusive */
+} wince_region_track_desc_t;
+
+static const wince_region_track_desc_t wince_region_track_descs[WINCE_REGION_TRACK_COUNT] = {
+    { "cb_tbl_0x00051680",   WINCE_TRACE_CB_PA_START,         WINCE_TRACE_CB_PA_END },
+    { "bootparam_0x0001D000", WINCE_TRACE_BOOTPARAM0_PA_START, WINCE_TRACE_BOOTPARAM0_PA_END },
+    { "bootparam_0x0002D000", WINCE_TRACE_BOOTPARAM1_PA_START, WINCE_TRACE_BOOTPARAM1_PA_END },
+    { "bootctx_0x00006000",   WINCE_TRACE_BOOTCTX_PA_START,    WINCE_TRACE_BOOTCTX_PA_END },
+};
+
+static inline bool pc_in_wince_fail_corridor(uint32_t pc32)
+{
+    return pc32 >= WINCE_FAIL_CORRIDOR_START && pc32 <= WINCE_FAIL_CORRIDOR_END;
+}
+
+static void init_wince_region_tracks(machine_t *m)
+{
+    if (!m)
+        return;
+
+    for (uint32_t i = 0; i < WINCE_REGION_TRACK_COUNT; i++) {
+        wince_region_track_t *t = &m->wince_region_tracks[i];
+        memset(t, 0, sizeof(*t));
+        t->start_pa = wince_region_track_descs[i].start_pa;
+        t->end_pa = wince_region_track_descs[i].end_pa;
+    }
+}
 
 static inline bool write_value_is_zero(unsigned size, uint64_t value)
 {
@@ -679,6 +811,152 @@ static inline bool write_value_is_zero(unsigned size, uint64_t value)
         return value == 0u;
     uint64_t mask = (UINT64_C(1) << (size * 8u)) - 1u;
     return (value & mask) == 0u;
+}
+
+static inline uint64_t write_value_mask(unsigned size)
+{
+    if (size >= 8u)
+        return UINT64_MAX;
+    return (UINT64_C(1) << (size * 8u)) - 1u;
+}
+
+static bool read_old_write_value(uc_engine *uc, uint32_t pa, unsigned size, uint64_t *out)
+{
+    uint8_t bytes[8] = {0};
+    if (!out || size == 0u || size > sizeof(bytes))
+        return false;
+
+    uc_err err = uc_mem_read(uc, (uint64_t)pa, bytes, size);
+    if (err != UC_ERR_OK) {
+        uint64_t kseg0 = mips_sext(UINT32_C(0x80000000) + pa);
+        err = uc_mem_read(uc, kseg0, bytes, size);
+    }
+    if (err != UC_ERR_OK)
+        return false;
+
+    uint64_t v = 0;
+    for (unsigned i = 0; i < size; i++)
+        v |= (uint64_t)bytes[i] << (i * 8u);
+    *out = v;
+    return true;
+}
+
+static void update_wince_region_tracks(machine_t *m, uc_engine *uc, uint32_t pa, uint32_t pc,
+                                       unsigned size, uint64_t value)
+{
+    if (!m || size == 0u || size > 8u)
+        return;
+
+    uint64_t mask = write_value_mask(size);
+    uint64_t new_val = value & mask;
+    uint64_t old_val = 0;
+    bool old_valid = read_old_write_value(uc, pa, size, &old_val);
+    bool old_nonzero = old_valid && ((old_val & mask) != 0u);
+    bool new_zero = (new_val == 0u);
+
+    for (uint32_t i = 0; i < WINCE_REGION_TRACK_COUNT; i++) {
+        wince_region_track_t *t = &m->wince_region_tracks[i];
+        if (pa < t->start_pa || pa >= t->end_pa)
+            continue;
+
+        t->writes++;
+        if (!t->first_valid) {
+            t->first_valid = true;
+            t->first_pa = pa;
+            t->first_pc = pc;
+            t->first_size = (uint8_t)size;
+            t->first_value = new_val;
+        }
+
+        t->last_valid = true;
+        t->last_pa = pa;
+        t->last_pc = pc;
+        t->last_size = (uint8_t)size;
+        t->last_value = new_val;
+
+        if (old_nonzero && new_zero) {
+            t->nz_to_zero_count++;
+            if (!t->first_nz_to_zero_valid) {
+                t->first_nz_to_zero_valid = true;
+                t->first_nz_to_zero_pa = pa;
+                t->first_nz_to_zero_pc = pc;
+                t->first_nz_to_zero_size = (uint8_t)size;
+                t->first_nz_to_zero_old = old_val & mask;
+                t->first_nz_to_zero_new = new_val;
+            }
+
+            t->last_nz_to_zero_valid = true;
+            t->last_nz_to_zero_pa = pa;
+            t->last_nz_to_zero_pc = pc;
+            t->last_nz_to_zero_size = (uint8_t)size;
+            t->last_nz_to_zero_old = old_val & mask;
+            t->last_nz_to_zero_new = new_val;
+
+            if (m->cfg.log_wince_stall && m->wince_region_nz2z_logs < 128u) {
+                fprintf(stderr,
+                        "[WINCE_REGION_NZ2Z] region=%s pa=0x%08X pc=0x%08X size=%u"
+                        " old=0x%016" PRIX64 " new=0x%016" PRIX64 "\n",
+                        wince_region_track_descs[i].name,
+                        pa, pc, size,
+                        t->last_nz_to_zero_old, t->last_nz_to_zero_new);
+                m->wince_region_nz2z_logs++;
+            }
+        }
+
+        if (m->cfg.log_wince_stall &&
+            pc_in_wince_fail_corridor(pc) &&
+            m->wince_pa_watch_logs < 320u) {
+            fprintf(stderr,
+                    "[WINCE_REGION_WRITE] region=%s pa=0x%08X pc=0x%08X size=%u"
+                    " old=%s0x%016" PRIX64 " new=0x%016" PRIX64 "\n",
+                    wince_region_track_descs[i].name, pa, pc, size,
+                    old_valid ? "" : "ERR:",
+                    old_valid ? (old_val & mask) : 0u,
+                    new_val);
+            m->wince_pa_watch_logs++;
+        }
+    }
+}
+
+static void log_wince_region_track_summary(const machine_t *m, const char *reason)
+{
+    if (!m)
+        return;
+
+    for (uint32_t i = 0; i < WINCE_REGION_TRACK_COUNT; i++) {
+        const wince_region_track_t *t = &m->wince_region_tracks[i];
+        const char *name = wince_region_track_descs[i].name;
+        if (!t->first_valid) {
+            fprintf(stderr,
+                    "[WINCE_REGION_SUMMARY] reason=%s region=%s writes=0 nz2z=0\n",
+                    reason, name);
+            continue;
+        }
+
+        fprintf(stderr,
+                "[WINCE_REGION_SUMMARY] reason=%s region=%s writes=%u nz2z=%u"
+                " first(pc=0x%08X pa=0x%08X size=%u val=0x%016" PRIX64 ")"
+                " last(pc=0x%08X pa=0x%08X size=%u val=0x%016" PRIX64 ")\n",
+                reason, name, t->writes, t->nz_to_zero_count,
+                t->first_pc, t->first_pa, (unsigned)t->first_size, t->first_value,
+                t->last_pc, t->last_pa, (unsigned)t->last_size, t->last_value);
+
+        if (t->first_nz_to_zero_valid) {
+            fprintf(stderr,
+                    "[WINCE_REGION_NZ2Z_SUMMARY] reason=%s region=%s"
+                    " first(pc=0x%08X pa=0x%08X size=%u old=0x%016" PRIX64
+                    " new=0x%016" PRIX64 ")"
+                    " last(pc=0x%08X pa=0x%08X size=%u old=0x%016" PRIX64
+                    " new=0x%016" PRIX64 ")\n",
+                    reason, name,
+                    t->first_nz_to_zero_pc, t->first_nz_to_zero_pa,
+                    (unsigned)t->first_nz_to_zero_size,
+                    t->first_nz_to_zero_old, t->first_nz_to_zero_new,
+                    t->last_nz_to_zero_pc, t->last_nz_to_zero_pa,
+                    (unsigned)t->last_nz_to_zero_size,
+                    t->last_nz_to_zero_old, t->last_nz_to_zero_new);
+        }
+    }
 }
 
 static void wince_pa_watch_update(machine_t *m, wince_pa_watch_t *watch,
@@ -738,6 +1016,7 @@ static bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
     uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
     uint32_t pc = (uint32_t)pc64;
     uint64_t uval = (uint64_t)value;
+    update_wince_region_tracks(m, uc, pa, pc, (unsigned)size, uval);
 
     if (pa < WINCE_TRACE_VEC_PA_END) {
         wince_pa_watch_update(m, &m->wince_vec_watch, "vectors",
@@ -4130,6 +4409,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         uint32_t pc32 = (uint32_t)address;
         if (pc32 >= WINCE_NK_TRACE_BASE && pc32 < WINCE_NK_TRACE_END) {
             m->wince_nk_epoch_reset_done = true;
+            seed_wince_probe_deferred(m, pc32);
             uint32_t old_step = m->rtc.etime_read_step;
             m->rtc.etime_read_step = 0;
             if (m->cfg.log_wince_stall) {
@@ -4181,14 +4461,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     /*
      * WinCE SPL uses COP0 WAIT (0x42000023) in early boot.
      * Unicorn's MIPS core traps this path and lands at PC=0.
-     * Treat it as a low-power hint (NOP) so execution advances.
+     * Explicit ISA-gap shim: treat WAIT as a low-power hint (NOP) so
+     * execution advances.
      */
     if (is_wince_boot_machine(m) && insn == 0x42000023u) {
         uint64_t next_pc = address + 4u;
         static uint32_t wince_wait_skip_log = 0;
         if (wince_wait_skip_log < 32u) {
             fprintf(stderr,
-                    "[WINCE_WAIT_SKIP] PC=0x%08" PRIX64 " -> 0x%08" PRIX64 "\n",
+                    "[WINCE_ISA_GAP_WAIT] PC=0x%08" PRIX64 " -> 0x%08" PRIX64 "\n",
                     (uint64_t)(uint32_t)address, (uint64_t)(uint32_t)next_pc);
             wince_wait_skip_log++;
         }
@@ -5458,6 +5739,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
                     intno, ra32, m->wince_null_consecutive,
                     WINCE_NULL_RECOVER_CAP, (uint64_t)(uint32_t)status);
             log_wince_pa_watch_nonzero(m, "NULL_BAILOUT");
+            log_wince_region_track_summary(m, "NULL_BAILOUT");
             machine_stop(m);
             uc_emu_stop(uc);
             return true;
@@ -5547,6 +5829,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             (uint64_t)(uint32_t)m->last_exec_pc);
     log_wince_pa_watch_nonzero(m, "NULL_POSTMORTEM");
     log_wince_pa_watch_summary(m, "NULL_POSTMORTEM");
+    log_wince_region_track_summary(m, "NULL_POSTMORTEM");
     log_wince_ctrl_hist_summary(m, "NULL_POSTMORTEM", 128u);
 
     /* Dump code around last known execution PC for post-mortem analysis */
@@ -7727,6 +8010,7 @@ static void log_wince_stall_dump(machine_t *m, uint32_t pc32)
             " LCR=0x%02X MCR=0x%02X\n",
             m->siu.lsr, m->siu.ier, m->siu.iir, m->siu.lcr, m->siu.mcr);
     log_wince_pa_watch_summary(m, "STALL");
+    log_wince_region_track_summary(m, "STALL");
     log_wince_ctrl_hist_summary(m, "STALL", 24u);
 
     if (m->mmio_hist_count == 0) {
@@ -7933,6 +8217,9 @@ machine_t *machine_create(const machine_config_t *cfg)
     }
     gpio_init(&m->gpio);
     nand_init(&m->nand, NULL, 0);
+    init_wince_region_tracks(m);
+    m->wince_region_nz2z_logs = 0;
+    m->wince_deferred_seed_done = false;
 
     /* Always install the invalid-instruction hook (for MACC) */
     uc_hook hk;
@@ -7966,6 +8253,9 @@ machine_t *machine_create(const machine_config_t *cfg)
             const char *name;
         } watch_ranges[] = {
             { WINCE_TRACE_VEC_PA_START, WINCE_TRACE_CTX_PA_END - 1u, "vec_ctx" },
+            { WINCE_TRACE_BOOTCTX_PA_START, WINCE_TRACE_BOOTCTX_PA_END - 1u, "bootctx" },
+            { WINCE_TRACE_BOOTPARAM0_PA_START, WINCE_TRACE_BOOTPARAM0_PA_END - 1u, "bootparam0" },
+            { WINCE_TRACE_BOOTPARAM1_PA_START, WINCE_TRACE_BOOTPARAM1_PA_END - 1u, "bootparam1" },
             { WINCE_TRACE_CB_PA_START,  WINCE_TRACE_CB_PA_END - 1u,  "cb_tbl" },
             { WINCE_TRACE_OBJPTR_PA_START, WINCE_TRACE_OBJPTR_PA_END - 1u, "obj_ptr" },
             { WINCE_TRACE_OBJ_PA_START, WINCE_TRACE_OBJ_PA_END - 1u, "obj" },
@@ -7997,10 +8287,15 @@ machine_t *machine_create(const machine_config_t *cfg)
             fprintf(stderr,
                     "[WINCE_PA_WATCH] enabled ranges"
                     " vec=0x%08X-0x%08X ctx=0x%08X-0x%08X"
+                    " bootctx=0x%08X-0x%08X bootparam0=0x%08X-0x%08X"
+                    " bootparam1=0x%08X-0x%08X"
                     " cb=0x%08X-0x%08X objptr=0x%08X-0x%08X obj=0x%08X-0x%08X gate=0x%08X-0x%08X"
                     " gate_src=0x%08X-0x%08X stack=0x%08X-0x%08X aliases=5\n",
                     WINCE_TRACE_VEC_PA_START, WINCE_TRACE_VEC_PA_END - 1u,
                     WINCE_TRACE_CTX_PA_START, WINCE_TRACE_CTX_PA_END - 1u,
+                    WINCE_TRACE_BOOTCTX_PA_START, WINCE_TRACE_BOOTCTX_PA_END - 1u,
+                    WINCE_TRACE_BOOTPARAM0_PA_START, WINCE_TRACE_BOOTPARAM0_PA_END - 1u,
+                    WINCE_TRACE_BOOTPARAM1_PA_START, WINCE_TRACE_BOOTPARAM1_PA_END - 1u,
                     WINCE_TRACE_CB_PA_START, WINCE_TRACE_CB_PA_END - 1u,
                     WINCE_TRACE_OBJPTR_PA_START, WINCE_TRACE_OBJPTR_PA_END - 1u,
                     WINCE_TRACE_OBJ_PA_START, WINCE_TRACE_OBJ_PA_END - 1u,
@@ -8230,7 +8525,7 @@ machine_t *machine_create(const machine_config_t *cfg)
          */
         seed_wince_exception_vectors(m);
         seed_wince_kdata(m);
-        seed_wince_probe_warm_state(m);
+        seed_wince_probe_boot_safe(m);
 
         /* Set up a stack for the SPL in high SDRAM */
         uint64_t sp = mips_sext(0x80F00000u); /* below SPL load area */

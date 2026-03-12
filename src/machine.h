@@ -70,6 +70,36 @@ typedef struct {
     uint64_t last_value;
 } wince_pa_watch_t;
 
+#define WINCE_REGION_TRACK_COUNT 4u
+typedef struct {
+    uint32_t start_pa;
+    uint32_t end_pa; /* exclusive */
+    uint32_t writes;
+    bool     first_valid;
+    uint32_t first_pa;
+    uint32_t first_pc;
+    uint8_t  first_size;
+    uint64_t first_value;
+    bool     last_valid;
+    uint32_t last_pa;
+    uint32_t last_pc;
+    uint8_t  last_size;
+    uint64_t last_value;
+    uint32_t nz_to_zero_count;
+    bool     first_nz_to_zero_valid;
+    uint32_t first_nz_to_zero_pa;
+    uint32_t first_nz_to_zero_pc;
+    uint8_t  first_nz_to_zero_size;
+    uint64_t first_nz_to_zero_old;
+    uint64_t first_nz_to_zero_new;
+    bool     last_nz_to_zero_valid;
+    uint32_t last_nz_to_zero_pa;
+    uint32_t last_nz_to_zero_pc;
+    uint8_t  last_nz_to_zero_size;
+    uint64_t last_nz_to_zero_old;
+    uint64_t last_nz_to_zero_new;
+} wince_region_track_t;
+
 #define WINCE_CTRL_HISTORY_LEN 128u
 typedef struct {
     uint32_t pc;
@@ -157,6 +187,8 @@ struct machine_s {
     bool     wince_objptr_nonzero;
     uint32_t wince_obj_writes;
     bool     wince_obj_nonzero;
+    wince_region_track_t wince_region_tracks[WINCE_REGION_TRACK_COUNT];
+    uint32_t wince_region_nz2z_logs;
     wince_ctrl_hist_entry_t wince_ctrl_hist[WINCE_CTRL_HISTORY_LEN];
     uint32_t wince_ctrl_hist_head;
     uint32_t wince_ctrl_hist_count;
@@ -165,6 +197,7 @@ struct machine_s {
     uint32_t wince_null_last_intno;
     uint32_t wince_null_consecutive;
     bool     wince_nk_epoch_reset_done;
+    bool     wince_deferred_seed_done;
 
     /* Manual MIPS exception-entry state (set by intr_hook / inject_hw_irq_if_pending) */
     uint64_t pending_epc;           /* EPC to return/restore via MFC0/ERET intercepts      */
