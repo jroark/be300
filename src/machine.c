@@ -1296,6 +1296,89 @@ static inline bool pc_in_wince_div_corridor(uint32_t pc32)
     return pc32 >= UINT32_C(0x800968F0) && pc32 <= UINT32_C(0x80096934);
 }
 
+static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint32_t insn)
+{
+    wince_div_call_trace_t *t = &m->wince_div_call_trace;
+    bool arm_site = (pc32 == 0x80096900u && insn == 0x0C0259E4u);
+    if (!arm_site && !t->active)
+        return;
+
+    uint64_t sp = 0, ra = 0;
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uint32_t sp32 = (uint32_t)sp;
+    uint32_t ra32 = (uint32_t)ra;
+
+    if (arm_site) {
+        memset(t, 0, sizeof(*t));
+        t->active = true;
+        t->call_pc = pc32;
+        t->target_pc = 0x80096790u;
+        t->return_pc = 0x80096908u;
+        t->sp_before_call = sp32;
+        t->sp_min = sp32;
+        t->sp_max = sp32;
+        t->events = 1u;
+
+        if (m->wince_div_logs < 224u) {
+            fprintf(stderr,
+                    "[WINCE_DIV_CALL_ARM] pc=0x%08X target=0x%08X return=0x%08X"
+                    " sp_before=0x%08X ra=0x%08X\n",
+                    t->call_pc, t->target_pc, t->return_pc,
+                    t->sp_before_call, ra32);
+            m->wince_div_logs++;
+        }
+        return;
+    }
+
+    if (!t->active)
+        return;
+
+    t->events++;
+    if (sp32 < t->sp_min)
+        t->sp_min = sp32;
+    if (sp32 > t->sp_max)
+        t->sp_max = sp32;
+
+    if (!t->seen_target && pc32 == t->target_pc) {
+        t->seen_target = true;
+        t->sp_at_target = sp32;
+        if (m->wince_div_logs < 224u) {
+            fprintf(stderr,
+                    "[WINCE_DIV_CALL_TARGET] pc=0x%08X sp=0x%08X ra=0x%08X events=%u\n",
+                    pc32, sp32, ra32, t->events);
+            m->wince_div_logs++;
+        }
+    }
+
+    uint32_t op = (insn >> 26) & 0x3Fu;
+    uint32_t rs = (insn >> 21) & 0x1Fu;
+    uint32_t rt = (insn >> 16) & 0x1Fu;
+    if (op == 0x09u && rs == 29u && rt == 29u && m->wince_div_logs < 224u) {
+        int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+        uint32_t next_sp = (uint32_t)((int32_t)sp32 + imm);
+        fprintf(stderr,
+                "[WINCE_DIV_SP_ADJ] pc=0x%08X sp=0x%08X imm=%d next_sp=0x%08X\n",
+                pc32, sp32, imm, next_sp);
+        m->wince_div_logs++;
+    }
+
+    if (pc32 == t->return_pc) {
+        t->sp_at_return = sp32;
+        t->sp_drift = (int32_t)((int32_t)sp32 - (int32_t)t->sp_before_call);
+        t->active = false;
+        t->completed = true;
+        if (m->wince_div_logs < 224u) {
+            fprintf(stderr,
+                    "[WINCE_DIV_CALL_RETURN] pc=0x%08X sp_before=0x%08X"
+                    " sp_after=0x%08X drift=%d seen_target=%u events=%u\n",
+                    pc32, t->sp_before_call, t->sp_at_return,
+                    t->sp_drift, t->seen_target ? 1u : 0u, t->events);
+            m->wince_div_logs++;
+        }
+    }
+}
+
 static void wince_div_hist_record(machine_t *m, uc_engine *uc, uint32_t pc32, uint32_t insn)
 {
     if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
@@ -1351,6 +1434,27 @@ static void wince_div_hist_record(machine_t *m, uc_engine *uc, uint32_t pc32, ui
                 e->status);
         m->wince_div_logs++;
     }
+}
+
+static void log_wince_div_call_trace_summary(const machine_t *m, const char *reason)
+{
+    if (!m)
+        return;
+    const wince_div_call_trace_t *t = &m->wince_div_call_trace;
+    if (!t->active && !t->completed)
+        return;
+
+    fprintf(stderr,
+            "[WINCE_DIV_CALL_SUMMARY] reason=%s active=%u completed=%u"
+            " call=0x%08X target=0x%08X return=0x%08X"
+            " sp_before=0x%08X sp_target=0x%08X sp_return=0x%08X"
+            " drift=%d sp_min=0x%08X sp_max=0x%08X events=%u seen_target=%u\n",
+            reason,
+            t->active ? 1u : 0u, t->completed ? 1u : 0u,
+            t->call_pc, t->target_pc, t->return_pc,
+            t->sp_before_call, t->sp_at_target, t->sp_at_return,
+            t->sp_drift, t->sp_min, t->sp_max, t->events,
+            t->seen_target ? 1u : 0u);
 }
 
 static void log_wince_div_hist_summary(const machine_t *m,
@@ -4526,6 +4630,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t rd  = (insn >> 11) & 0x1Fu;
     uint32_t sel =  insn        & 0x07u;
 
+    wince_div_call_trace_step(m, uc, (uint32_t)address, insn);
     wince_div_hist_record(m, uc, (uint32_t)address, insn);
     maybe_record_wince_ctrl_event(m, uc, (uint32_t)address,
                                   insn, op, rs, rt, rd, sel);
@@ -5839,6 +5944,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
             log_wince_pa_watch_nonzero(m, "NULL_BAILOUT");
             log_wince_region_track_summary(m, "NULL_BAILOUT");
             log_wince_div_hist_summary(m, "NULL_BAILOUT", 32u);
+            log_wince_div_call_trace_summary(m, "NULL_BAILOUT");
             machine_stop(m);
             uc_emu_stop(uc);
             return true;
@@ -5931,6 +6037,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
     log_wince_region_track_summary(m, "NULL_POSTMORTEM");
     log_wince_ctrl_hist_summary(m, "NULL_POSTMORTEM", 128u);
     log_wince_div_hist_summary(m, "NULL_POSTMORTEM", 64u);
+    log_wince_div_call_trace_summary(m, "NULL_POSTMORTEM");
     log_wince_null_mmio_tail(m, 24u);
 
     /* Dump code around last known execution PC for post-mortem analysis */
@@ -8143,6 +8250,7 @@ static void log_wince_stall_dump(machine_t *m, uint32_t pc32)
     log_wince_pa_watch_summary(m, "STALL");
     log_wince_region_track_summary(m, "STALL");
     log_wince_div_hist_summary(m, "STALL", 24u);
+    log_wince_div_call_trace_summary(m, "STALL");
     log_wince_ctrl_hist_summary(m, "STALL", 24u);
 
     if (m->mmio_hist_count == 0) {
@@ -8355,6 +8463,7 @@ machine_t *machine_create(const machine_config_t *cfg)
     m->wince_div_hist_head = 0;
     m->wince_div_hist_count = 0;
     m->wince_div_logs = 0;
+    memset(&m->wince_div_call_trace, 0, sizeof(m->wince_div_call_trace));
 
     /* Always install the invalid-instruction hook (for MACC) */
     uc_hook hk;
