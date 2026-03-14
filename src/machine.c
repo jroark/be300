@@ -786,6 +786,8 @@ static void apply_wince_warm_profile(machine_t *m, const char *marker)
 #define WINCE_TRACE_GATE_SRC_PA_END   UINT32_C(0x00E19000)
 #define WINCE_TRACE_STACK_PA_START UINT32_C(0x00003780)
 #define WINCE_TRACE_STACK_PA_END   UINT32_C(0x00003820)
+#define WINCE_TRACE_CALLER_FRAME_PA_START UINT32_C(0x00001728)
+#define WINCE_TRACE_CALLER_FRAME_PA_END   UINT32_C(0x000017A8)
 #define WINCE_TRACE_BOOTCTX_PA_START UINT32_C(0x00006000)
 #define WINCE_TRACE_BOOTCTX_PA_END   UINT32_C(0x00007000)
 #define WINCE_TRACE_BOOTPARAM0_PA_START UINT32_C(0x0001D000)
@@ -1879,6 +1881,18 @@ static bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
                     "[WINCE_STACK_WATCH] pa=0x%08X pc=0x%08X size=%u val=0x%016" PRIX64 "\n",
                     pa, pc, (unsigned)size, uval);
             stack_logs++;
+        }
+    } else if (pa >= WINCE_TRACE_CALLER_FRAME_PA_START && pa < WINCE_TRACE_CALLER_FRAME_PA_END) {
+        static uint32_t caller_frame_logs = 0;
+        if (m->cfg.log_wince_stall && caller_frame_logs < 64u) {
+            const char *tag = "";
+            if (pc == 0x80096800u) tag = " EXPECTED_S0_STORE";
+            else if (pc == 0x80096808u) tag = " EXPECTED_RA_STORE";
+            fprintf(stderr,
+                    "[WINCE_DIV_CALLER_FRAME_WRITE] pa=0x%08X pc=0x%08X size=%u"
+                    " val=0x%016" PRIX64 "%s\n",
+                    pa, pc, (unsigned)size, uval, tag);
+            caller_frame_logs++;
         }
     }
 
@@ -9483,6 +9497,7 @@ machine_t *machine_create(const machine_config_t *cfg)
             { WINCE_TRACE_GATE_PA_START, WINCE_TRACE_GATE_PA_END - 1u, "gate" },
             { WINCE_TRACE_GATE_SRC_PA_START, WINCE_TRACE_GATE_SRC_PA_END - 1u, "gate_src" },
             { WINCE_TRACE_STACK_PA_START, WINCE_TRACE_STACK_PA_END - 1u, "stack" },
+            { WINCE_TRACE_CALLER_FRAME_PA_START, WINCE_TRACE_CALLER_FRAME_PA_END - 1u, "caller_frame" },
         };
         bool watch_ok = true;
         for (unsigned r = 0; r < sizeof(watch_ranges) / sizeof(watch_ranges[0]); r++) {
@@ -9511,7 +9526,8 @@ machine_t *machine_create(const machine_config_t *cfg)
                     " bootctx=0x%08X-0x%08X bootparam0=0x%08X-0x%08X"
                     " bootparam1=0x%08X-0x%08X"
                     " cb=0x%08X-0x%08X objptr=0x%08X-0x%08X obj=0x%08X-0x%08X gate=0x%08X-0x%08X"
-                    " gate_src=0x%08X-0x%08X stack=0x%08X-0x%08X aliases=5\n",
+                    " gate_src=0x%08X-0x%08X stack=0x%08X-0x%08X"
+                    " caller_frame=0x%08X-0x%08X aliases=5\n",
                     WINCE_TRACE_VEC_PA_START, WINCE_TRACE_VEC_PA_END - 1u,
                     WINCE_TRACE_CTX_PA_START, WINCE_TRACE_CTX_PA_END - 1u,
                     WINCE_TRACE_BOOTCTX_PA_START, WINCE_TRACE_BOOTCTX_PA_END - 1u,
@@ -9522,7 +9538,8 @@ machine_t *machine_create(const machine_config_t *cfg)
                     WINCE_TRACE_OBJ_PA_START, WINCE_TRACE_OBJ_PA_END - 1u,
                     WINCE_TRACE_GATE_PA_START, WINCE_TRACE_GATE_PA_END - 1u,
                     WINCE_TRACE_GATE_SRC_PA_START, WINCE_TRACE_GATE_SRC_PA_END - 1u,
-                    WINCE_TRACE_STACK_PA_START, WINCE_TRACE_STACK_PA_END - 1u);
+                    WINCE_TRACE_STACK_PA_START, WINCE_TRACE_STACK_PA_END - 1u,
+                    WINCE_TRACE_CALLER_FRAME_PA_START, WINCE_TRACE_CALLER_FRAME_PA_END - 1u);
         }
     }
 

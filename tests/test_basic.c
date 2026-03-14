@@ -361,7 +361,157 @@ static void test_siu_putchar(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 7: MACC instruction emulation (direct API test)                  */
+/* Test 7: BEQL taken — callee prologue must execute exactly once        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Hook callback context for counting visits to key PCs.
+ */
+typedef struct {
+    uint32_t callee_entry;    /* +0x10 */
+    uint32_t beql_site;       /* +0x20 */
+    uint32_t epilogue;        /* +0x70 */
+    uint32_t return_point;    /* +0x08 */
+    uint32_t body_marker;     /* +0x28 */
+} beql_hook_counts_t;
+
+static void beql_code_hook(uc_engine *uc, uint64_t address, uint32_t size,
+                           void *user_data)
+{
+    (void)uc; (void)size;
+    beql_hook_counts_t *c = user_data;
+    uint32_t pc = (uint32_t)address;
+
+    if (pc == VA_START + 0x10) c->callee_entry++;
+    else if (pc == VA_START + 0x20) c->beql_site++;
+    else if (pc == VA_START + 0x70) c->epilogue++;
+    else if (pc == VA_START + 0x08) c->return_point++;
+    else if (pc == VA_START + 0x28) c->body_marker++;
+}
+
+/*
+ * Build the test program with either BEQL (opcode=0x50) or BEQ (opcode=0x10)
+ * at the branch site.  Layout mirrors the NK callee at 0x80096790.
+ *
+ * +0x00: jal callee       +0x04: nop (delay)   +0x08: nop (return point)
+ * +0x0C: nop (pad)
+ * +0x10: addiu sp,sp,-0x28  (callee_entry)
+ * +0x14: sw s0,0x18(sp)   +0x18: or s0,a0,zero  +0x1C: sw ra,0x1C(sp)
+ * +0x20: beql/beq a3,zero,+0x13  (→ +0x70)
+ * +0x24: lw s0,0x18(sp)   (delay slot)
+ * +0x28: ori v0,zero,0xBAD (body — should not execute if branch taken)
+ * +0x2C..+0x6C: nops
+ * +0x70: lw ra,0x1C(sp)   (epilogue)
+ * +0x74: jr ra             +0x78: addiu sp,sp,+0x28
+ */
+static void run_branch_likely_test(const char *name, uint32_t branch_opcode)
+{
+    /*
+     * JAL target = 0xBFC00010.  instr_index = (0xBFC00010 & 0x0FFFFFFF)/4
+     *            = 0x0FC00010/4 = 0x03F00004.  JAL = (3<<26)|0x03F00004
+     */
+    uint32_t prog[31]; /* +0x00 .. +0x78  = 31 words */
+    memset(prog, 0, sizeof(prog));
+
+    prog[0]  = 0x0FF00004u;            /* +0x00: jal 0xBFC00010           */
+    prog[1]  = 0x00000000u;            /* +0x04: nop (delay slot)         */
+    prog[2]  = 0x00000000u;            /* +0x08: nop (return point/stop)  */
+    prog[3]  = 0x00000000u;            /* +0x0C: nop (pad)                */
+    prog[4]  = 0x27BDFFD8u;            /* +0x10: addiu sp,sp,-0x28        */
+    prog[5]  = 0xAFB00018u;            /* +0x14: sw s0,0x18(sp)           */
+    prog[6]  = 0x00808025u;            /* +0x18: or s0,a0,zero            */
+    prog[7]  = 0xAFBF001Cu;            /* +0x1C: sw ra,0x1C(sp)           */
+    /* +0x20: beql/beq a3,zero,+0x13.  Encoding: [op(6)|rs=a3=7(5)|rt=0(5)|imm16=0x0013] */
+    prog[8]  = (branch_opcode << 26) | (7u << 21) | (0u << 16) | 0x0013u;
+    prog[9]  = 0x8FB00018u;            /* +0x24: lw s0,0x18(sp) (delay)   */
+    prog[10] = 0x3402BADu;             /* +0x28: ori v0,zero,0xBAD (body) */
+    /* +0x2C..+0x6C: nops (indices 11..27, already zero) */
+    prog[28] = 0x8FBF001Cu;            /* +0x70: lw ra,0x1C(sp) (epilogue)*/
+    prog[29] = 0x03E00008u;            /* +0x74: jr ra                    */
+    prog[30] = 0x27BD0028u;            /* +0x78: addiu sp,sp,+0x28        */
+
+    uc_engine *uc = make_uc();
+    if (!uc) { FAIL(name, "uc_open"); return; }
+
+    uc_mem_write(uc, PA_ROM, prog, sizeof(prog));
+
+    /* Set a3 = 0 (branch taken), sp to a sane value in mapped RAM */
+    uint32_t a3_val = 0;
+    uint32_t sp_val = 0xA0008000u;  /* kseg1, well within mapped 64KB RAM */
+    uc_reg_write(uc, UC_MIPS_REG_A3, &a3_val);
+    uc_reg_write(uc, UC_MIPS_REG_SP, &sp_val);
+
+    /* Install code hook */
+    beql_hook_counts_t counts = {0};
+    uc_hook hk;
+    uc_hook_add(uc, &hk, UC_HOOK_CODE, beql_code_hook, &counts,
+                VA_START, VA_START + sizeof(prog));
+
+    /* Run until return point +0x08 */
+    uint64_t until = VA_START + 0x08;
+    uc_err err = uc_emu_start(uc, VA_START, until, 0, 0);
+    if (err != UC_ERR_OK) {
+        FAIL(name, "uc_emu_start: %s", uc_strerror(err));
+        uc_close(uc);
+        return;
+    }
+
+    /* Read back SP, RA, and PC */
+    uint32_t sp_after = 0, ra_after = 0, pc_after = 0;
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp_after);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra_after);
+    uc_reg_read(uc, UC_MIPS_REG_PC, &pc_after);
+
+    bool ok = true;
+    if (counts.callee_entry != 1) {
+        FAIL(name, "callee_entry_count=%u (expected 1) — prologue replayed!",
+             counts.callee_entry);
+        ok = false;
+    }
+    if (counts.beql_site != 1) {
+        FAIL(name, "beql_site_count=%u (expected 1)", counts.beql_site);
+        ok = false;
+    }
+    if (counts.epilogue != 1) {
+        FAIL(name, "epilogue_count=%u (expected 1)", counts.epilogue);
+        ok = false;
+    }
+    /* uc_emu_start stops before executing 'until', so check PC instead */
+    if (pc_after != (VA_START + 0x08)) {
+        FAIL(name, "PC after return=0x%08X (expected 0x%08X)", pc_after, VA_START + 0x08);
+        ok = false;
+    }
+    if (counts.body_marker != 0) {
+        FAIL(name, "body_marker_count=%u (expected 0 — body should be skipped)",
+             counts.body_marker);
+        ok = false;
+    }
+    if (sp_after != sp_val) {
+        FAIL(name, "SP drift: before=0x%08X after=0x%08X", sp_val, sp_after);
+        ok = false;
+    }
+    if (ra_after != (VA_START + 0x08)) {
+        FAIL(name, "RA=0x%08X (expected 0x%08X)", ra_after, VA_START + 0x08);
+        ok = false;
+    }
+    if (ok)
+        PASS(name);
+
+    uc_close(uc);
+}
+
+static void test_beql_taken(void)
+{
+    run_branch_likely_test("beql_taken", 0x14);  /* BEQL opcode = 010100 = 0x14 */
+}
+
+static void test_beq_taken(void)
+{
+    run_branch_likely_test("beq_taken_control", 0x04);  /* BEQ opcode = 000100 = 0x04 */
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 8: MACC instruction emulation (direct API test)                  */
 /* ------------------------------------------------------------------ */
 
 #include "macc.h"
@@ -449,6 +599,8 @@ int main(void)
     test_mmio_bcu();
     test_siu_putchar();
     test_macc();
+    test_beql_taken();
+    test_beq_taken();
 
     printf("\n=== Results: %d passed, %d failed ===\n",
            pass_count, fail_count);
