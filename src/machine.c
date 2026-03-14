@@ -2077,13 +2077,16 @@ static inline bool pc_in_wince_div_corridor(uint32_t pc32)
     return pc32 >= UINT32_C(0x800968F0) && pc32 <= UINT32_C(0x80096934);
 }
 
-static void wince_div_call_step_log(machine_t *m, uc_engine *uc,
-                                    uint32_t pc32, uint32_t insn,
-                                    uint32_t sp32, uint32_t ra32)
+static void wince_div_step_log(machine_t *m, uc_engine *uc,
+                               uint32_t pc32, uint32_t insn,
+                               uint32_t sp32, uint32_t ra32,
+                               const char *prefix,
+                               uint32_t range_start, uint32_t range_end,
+                               bool count_step_log)
 {
     if (!m || !uc)
         return;
-    if (!(pc32 >= UINT32_C(0x80096780) && pc32 <= UINT32_C(0x80096910)))
+    if (!(pc32 >= range_start && pc32 <= range_end))
         return;
     if (m->wince_div_logs >= 320u)
         return;
@@ -2160,11 +2163,44 @@ static void wince_div_call_step_log(machine_t *m, uc_engine *uc,
     }
 
     fprintf(stderr,
-            "[WINCE_DIV_CALL_STEP] pc=0x%08X insn=0x%08X kind=%s"
+            "[%s] pc=0x%08X insn=0x%08X kind=%s"
             " sp=0x%08X ra=0x%08X %s\n",
-            pc32, insn, kind, sp32, ra32, detail);
+            prefix, pc32, insn, kind, sp32, ra32, detail);
     m->wince_div_logs++;
-    m->wince_div_call_trace.step_logs++;
+    if (count_step_log)
+        m->wince_div_call_trace.step_logs++;
+}
+
+static void wince_div_call_step_log(machine_t *m, uc_engine *uc,
+                                    uint32_t pc32, uint32_t insn,
+                                    uint32_t sp32, uint32_t ra32)
+{
+    wince_div_step_log(m, uc, pc32, insn, sp32, ra32,
+                       "WINCE_DIV_CALL_STEP",
+                       UINT32_C(0x80096780), UINT32_C(0x80096910), true);
+}
+
+static void wince_div_prearm_step_log(machine_t *m, uc_engine *uc,
+                                      uint32_t pc32, uint32_t insn,
+                                      uint32_t sp32, uint32_t ra32)
+{
+    bool caller_seed_window = (pc32 >= UINT32_C(0x8007965C) &&
+                               pc32 <= UINT32_C(0x80079668));
+    bool helper_window = (pc32 >= UINT32_C(0x8007A65C) &&
+                          pc32 <= UINT32_C(0x8007A770));
+    bool midbody_window = (pc32 >= UINT32_C(0x80096884) &&
+                           pc32 <= UINT32_C(0x80096904));
+    static uint32_t prearm_logs = 0;
+
+    if (!caller_seed_window && !helper_window && !midbody_window)
+        return;
+    if (prearm_logs >= 128u)
+        return;
+
+    wince_div_step_log(m, uc, pc32, insn, sp32, ra32,
+                       "WINCE_DIV_PREARM_STEP",
+                       0u, UINT32_MAX, false);
+    prearm_logs++;
 }
 
 static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint32_t insn)
@@ -2375,6 +2411,9 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
             }
         }
     }
+
+    if (!t->active)
+        wince_div_prearm_step_log(m, uc, pc32, insn, sp32, ra32);
 
     if (!t->active)
         return;
