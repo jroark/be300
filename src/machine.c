@@ -1117,6 +1117,29 @@ static bool wince_diag_read_va_via_shadow_tlb(machine_t *m, uc_engine *uc,
     return true;
 }
 
+static void wince_diag_format_va_word(machine_t *m, uc_engine *uc, uint32_t va,
+                                      char *buf, size_t buf_size)
+{
+    uint32_t value = 0;
+    uint32_t pa = 0;
+
+    if (!buf || buf_size == 0u)
+        return;
+
+    if (wince_diag_read_va_via_shadow_tlb(m, uc, va, &value, &pa)) {
+        snprintf(buf, buf_size, "0x%08X(pa=0x%08X,val=0x%08X)",
+                 va, pa, value);
+        return;
+    }
+
+    if (read_guest_u32_direct(uc, va, &value)) {
+        snprintf(buf, buf_size, "0x%08X(pa=RAW,val=0x%08X)", va, value);
+        return;
+    }
+
+    snprintf(buf, buf_size, "0x%08X(pa=MISS,val=MISS)", va);
+}
+
 static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t phase)
 {
     if (!m || !uc || phase >= WINCE_DIV_STACK_PHASE_COUNT)
@@ -2184,8 +2207,8 @@ static void wince_div_prearm_step_log(machine_t *m, uc_engine *uc,
                                       uint32_t pc32, uint32_t insn,
                                       uint32_t sp32, uint32_t ra32)
 {
-    bool caller_seed_window = (pc32 >= UINT32_C(0x8007965C) &&
-                               pc32 <= UINT32_C(0x80079668));
+    bool caller_seed_window = (pc32 >= UINT32_C(0x80079640) &&
+                               pc32 <= UINT32_C(0x80079894));
     bool helper_window = (pc32 >= UINT32_C(0x8007A65C) &&
                           pc32 <= UINT32_C(0x8007A770));
     bool midbody_window = (pc32 >= UINT32_C(0x80096884) &&
@@ -2209,7 +2232,7 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
     bool arm_site = (pc32 == 0x80096900u && insn == 0x0C0259E4u);
     bool caller_body_pc = (pc32 >= 0x800967FCu && pc32 <= 0x8009692Cu);
     bool upstream_pc =
-        (pc32 >= 0x80079650u && pc32 <= 0x80079670u) ||
+        (pc32 >= 0x80079640u && pc32 <= 0x80079894u) ||
         (pc32 >= 0x8007A640u && pc32 <= 0x8007A780u) ||
         (pc32 >= 0x800A7DCCu && pc32 <= 0x800A7E10u);
     if (!arm_site && !t->active && !caller_body_pc && !upstream_pc)
@@ -2285,7 +2308,84 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
 
     /* Pre-arm caller provenance logging for the full caller body. */
     if (m->cfg.log_wince_stall) {
+        if (pc32 == 0x800797DCu) {
+            static uint32_t ctx_restore_logs = 0;
+            if (ctx_restore_logs < 16u) {
+                uint64_t t0 = 0;
+                uint32_t ctx_va = 0;
+                uint32_t ctx_pa = 0;
+                uint32_t saved_sp = 0;
+                uint32_t saved_ra = 0;
+                bool ctx_pa_ok = false;
+                bool saved_sp_ok = false;
+                bool saved_ra_ok = false;
+                char ctx_pa_desc[32];
+                char stack0_desc[64];
+                char future_s0_desc[64];
+                char future_ra_desc[64];
+                char saved_sp_desc[64];
+                char saved_ra_desc[64];
+
+                uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+                ctx_va = (uint32_t)t0;
+                ctx_pa_ok = wince_diag_read_va_via_shadow_tlb(m, uc, ctx_va, NULL, &ctx_pa);
+                if (ctx_pa_ok)
+                    snprintf(ctx_pa_desc, sizeof(ctx_pa_desc), "0x%08X", ctx_pa);
+                else
+                    snprintf(ctx_pa_desc, sizeof(ctx_pa_desc), "MISS");
+                saved_sp_ok = wince_diag_read_va_via_shadow_tlb(m, uc, ctx_va + 0x6Cu,
+                                                                &saved_sp, NULL);
+                saved_ra_ok = wince_diag_read_va_via_shadow_tlb(m, uc, ctx_va + 0x74u,
+                                                                &saved_ra, NULL);
+                wince_diag_format_va_word(m, uc, ctx_va + 0x6Cu,
+                                          saved_sp_desc, sizeof(saved_sp_desc));
+                wince_diag_format_va_word(m, uc, ctx_va + 0x74u,
+                                          saved_ra_desc, sizeof(saved_ra_desc));
+                if (saved_sp_ok) {
+                    wince_diag_format_va_word(m, uc, saved_sp,
+                                              stack0_desc, sizeof(stack0_desc));
+                    wince_diag_format_va_word(m, uc, saved_sp - 0x54u,
+                                              future_s0_desc, sizeof(future_s0_desc));
+                    wince_diag_format_va_word(m, uc, saved_sp - 0x50u,
+                                              future_ra_desc, sizeof(future_ra_desc));
+                } else {
+                    snprintf(stack0_desc, sizeof(stack0_desc), "unknown");
+                    snprintf(future_s0_desc, sizeof(future_s0_desc), "unknown");
+                    snprintf(future_ra_desc, sizeof(future_ra_desc), "unknown");
+                }
+
+                fprintf(stderr,
+                        "[WINCE_DIV_CTX_RESTORE] pc=0x%08X ctx_va=0x%08X"
+                        " ctx_pa=%s sp=0x%08X ra=0x%08X"
+                        " saved_sp=%s saved_ra=%s stack0=%s"
+                        " future_s0=%s future_ra=%s"
+                        " saved_sp_rt=%s saved_ra_rt=%s\n",
+                        pc32, ctx_va,
+                        ctx_pa_desc,
+                        sp32, ra32,
+                        saved_sp_desc, saved_ra_desc, stack0_desc,
+                        future_s0_desc, future_ra_desc,
+                        saved_sp_ok ? "ok" : "miss",
+                        saved_ra_ok ? "ok" : "miss");
+                ctx_restore_logs++;
+            }
+        }
+
+        if (pc32 == 0x800797E0u) {
+            static uint32_t ctx_jump_logs = 0;
+            if (ctx_jump_logs < 16u) {
+                uint64_t t0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+                fprintf(stderr,
+                        "[WINCE_DIV_CTX_JUMP] pc=0x%08X sp=0x%08X next_sp=0x%08X"
+                        " ra=0x%08X t0=0x%08X\n",
+                        pc32, sp32, sp32 + 4u, ra32, (uint32_t)t0);
+                ctx_jump_logs++;
+            }
+        }
+
         if (pc32 == 0x80079660u ||
+            pc32 == 0x80096894u ||
             pc32 == 0x8007A660u ||
             pc32 == 0x8007A680u ||
             pc32 == 0x8007A76Cu ||
@@ -2295,7 +2395,7 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
             pc32 == 0x800968E4u) {
             static uint32_t upstream_logs = 0;
             if (upstream_logs < 64u) {
-                uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, s0 = 0;
+                uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, s0 = 0, t0 = 0;
                 const char *tag = "WINCE_DIV_UPSTREAM";
                 uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
                 uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
@@ -2303,8 +2403,11 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
                 uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
                 uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
                 uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
                 if (pc32 == 0x80079660u)
                     tag = "WINCE_DIV_UPSTREAM_CALLER";
+                else if (pc32 == 0x80096894u)
+                    tag = "WINCE_DIV_ALT_ENTRY";
                 else if (pc32 == 0x8007A660u)
                     tag = "WINCE_DIV_UPSTREAM_SEED";
                 else if (pc32 == 0x8007A680u)
@@ -2322,10 +2425,10 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
                 fprintf(stderr,
                         "[%s] pc=0x%08X insn=0x%08X sp=0x%08X ra=0x%08X"
                         " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
-                        " v0=0x%08X s0=0x%08X events=%u\n",
+                        " v0=0x%08X s0=0x%08X t0=0x%08X events=%u\n",
                         tag, pc32, insn, sp32, ra32,
                         (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
-                        (uint32_t)v0, (uint32_t)s0, t->events);
+                        (uint32_t)v0, (uint32_t)s0, (uint32_t)t0, t->events);
                 upstream_logs++;
             }
         }
