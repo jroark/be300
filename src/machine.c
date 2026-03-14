@@ -629,39 +629,69 @@ static void seed_wince_exception_vectors(machine_t *m)
 
 static void seed_wince_kdata(machine_t *m)
 {
-    uint32_t applied = 0;
-    uint32_t skipped_volatile = 0;
-
     /*
      * Warm-state KData snapshot from hardware_survey/BE300Probe_v1.txt
      * baseline (PA 0x00002000..0x000023FF).
-     *
-     * The subrange PA 0x00002200..0x000022FF contains a live post-boot
-     * scheduler/context record, including saved sp/ra values such as
-     * 0xFFFFD7B4 / 0x80096894 from BE300Probe_v1.txt. Seeding that block
-     * into early NAND boot injects a half-valid resumed thread context
-     * without the matching kernel stack contents, which drives NK into
-     * the alternate mid-body path ending at 0x8009692C.
-     *
-     * Keep the rest of KData warm-seeded, but leave this volatile context
-     * window unseeded until we have grounded early-boot values for it.
      */
     for (uint32_t i = 0;
          i < (uint32_t)(sizeof(wince_kdata_words) / sizeof(wince_kdata_words[0]));
          i++) {
         uint32_t pa = 0x00002000u + (i * 4u);
-        if (pa >= UINT32_C(0x00002200) && pa < UINT32_C(0x00002300)) {
-            skipped_volatile++;
-            continue;
-        }
         write_pa_u32_all_aliases(m, pa, wince_kdata_words[i]);
-        applied++;
+    }
+
+    /*
+     * The post-boot KData snapshot includes a live context record at
+     * PA 0x00002200 whose saved sp/ra restore into the alternate entry
+     * path at 0x80096894. That resumed path later expects the function's
+     * saved s0/ra slots to exist at PA 0x1760/0x1764, but the post-boot
+     * probe did not capture that stack window. Reconstruct the two slots
+     * the skipped prologue would have written from the same context:
+     *   sw s0, 0x20(sp)
+     *   sw ra, 0x24(sp)
+     *
+     * Keep this narrowly gated to the observed context values from the
+     * hardware probe so it does not become a broad behavior-forcing path.
+     */
+    {
+        uint32_t ctx_s0 = 0;
+        uint32_t ctx_sp = 0;
+        uint32_t ctx_ra = 0;
+        bool ok_s0 = read_pa_u32_all_aliases(m, UINT32_C(0x00002238), &ctx_s0);
+        bool ok_sp = read_pa_u32_all_aliases(m, UINT32_C(0x0000226C), &ctx_sp);
+        bool ok_ra = read_pa_u32_all_aliases(m, UINT32_C(0x00002274), &ctx_ra);
+
+        if (ok_s0 && ok_sp && ok_ra &&
+            ctx_sp == UINT32_C(0xFFFFD7B4) &&
+            ctx_ra == UINT32_C(0x80096894) &&
+            ctx_sp >= UINT32_C(0x00000054)) {
+            uint32_t frame_s0_pa = ctx_sp - UINT32_C(0x54);
+            uint32_t frame_ra_pa = ctx_sp - UINT32_C(0x50);
+            if (frame_ra_pa < m->cfg.sdram_size) {
+                write_pa_u32_all_aliases(m, frame_s0_pa, ctx_s0);
+                write_pa_u32_all_aliases(m, frame_ra_pa, ctx_ra);
+                fprintf(stderr,
+                        "[WINCE_KDATA_CTX_FRAME_SEED] ctx_s0=0x%08X"
+                        " ctx_sp=0x%08X ctx_ra=0x%08X"
+                        " frame_s0_pa=0x%08X frame_ra_pa=0x%08X\n",
+                        ctx_s0, ctx_sp, ctx_ra, frame_s0_pa, frame_ra_pa);
+            } else {
+                fprintf(stderr,
+                        "[WINCE_KDATA_CTX_FRAME_SEED] skipped ctx_sp=0x%08X"
+                        " ctx_ra=0x%08X frame_ra_pa=0x%08X out_of_range\n",
+                        ctx_sp, ctx_ra, frame_ra_pa);
+            }
+        } else {
+            fprintf(stderr,
+                    "[WINCE_KDATA_CTX_FRAME_SEED] skipped"
+                    " ok=[%u %u %u] ctx_s0=0x%08X ctx_sp=0x%08X ctx_ra=0x%08X\n",
+                    ok_s0 ? 1u : 0u, ok_sp ? 1u : 0u, ok_ra ? 1u : 0u,
+                    ctx_s0, ctx_sp, ctx_ra);
+        }
     }
 
     fprintf(stderr,
-            "[WINCE_KDATA_SEED] applied=%u skipped_volatile=%u"
-            " total=%u volatile_pa=0x00002200..0x000022FF\n",
-            applied, skipped_volatile,
+            "[WINCE_KDATA_SEED] seeded %u words at PA=0x00002000\n",
             (unsigned)(sizeof(wince_kdata_words) / sizeof(wince_kdata_words[0])));
 }
 
