@@ -1043,6 +1043,78 @@ static wince_div_stack_window_trace_t *wince_div_stack_find_window(
     return NULL;
 }
 
+/* Diagnostic-only VA→PA read for kseg2/kseg3 addresses via the shadow TLB.
+ * This is separate from shadow_tlb_lookup() which intentionally rejects VA >= 0x80000000.
+ * Returns true on success and writes the value and translated PA through out pointers. */
+static bool wince_diag_read_va_via_shadow_tlb(machine_t *m, uc_engine *uc,
+                                               uint32_t va, uint32_t *out_value,
+                                               uint32_t *out_pa)
+{
+    if (!m || !uc)
+        return false;
+
+    uint32_t pa = 0;
+
+    if (va >= 0x80000000u && va < 0xA0000000u) {
+        /* kseg0: unmapped, cached */
+        pa = va - 0x80000000u;
+    } else if (va >= 0xA0000000u && va < 0xC0000000u) {
+        /* kseg1: unmapped, uncached */
+        pa = va - 0xA0000000u;
+    } else if (va >= 0xC0000000u) {
+        /* kseg2/kseg3: TLB-mapped — search shadow TLB */
+        uint32_t best_idx = 0xFFFFFFFFu;
+        uint32_t best_seq = 0u;
+        for (uint32_t i = 0; i < 64u; i++) {
+            if (!m->shadow_tlb_valid[i])
+                continue;
+            uint32_t hi = m->shadow_tlb_entryhi[i];
+            uint32_t pm = m->shadow_tlb_pagemask[i];
+            if (!tlb_entry_matches_va(va, hi, pm))
+                continue;
+            if (m->shadow_tlb_seq[i] >= best_seq) {
+                best_seq = m->shadow_tlb_seq[i];
+                best_idx = i;
+            }
+        }
+        if (best_idx == 0xFFFFFFFFu)
+            return false;  /* no TLB match */
+
+        uint32_t pm = m->shadow_tlb_pagemask[best_idx];
+        uint64_t page_bytes = tlb_leaf_bytes_from_pagemask(pm);
+        if (page_bytes < 0x1000u)
+            return false;
+
+        bool odd_page = (((uint64_t)va & page_bytes) != 0u);
+        uint32_t lo = odd_page ? m->shadow_tlb_lo1[best_idx]
+                               : m->shadow_tlb_lo0[best_idx];
+        if ((lo & 0x2u) == 0u)
+            return false;  /* entry not valid */
+
+        uint64_t pfn = (uint64_t)((lo >> 6) & 0xFFFFFu);
+        uint64_t pa_page = (pfn << 10) & ~(page_bytes - 1u);
+        uint64_t page_offset = (uint64_t)va & (page_bytes - 1u);
+        pa = (uint32_t)(pa_page + page_offset);
+    } else {
+        /* kuseg: use standard shadow_tlb_lookup via existing path */
+        return false;
+    }
+
+    if (pa >= m->cfg.sdram_size)
+        return false;
+
+    uint32_t word = 0;
+    uc_err err = uc_mem_read(uc, (uint64_t)pa, &word, sizeof(word));
+    if (err != UC_ERR_OK)
+        return false;
+
+    if (out_value)
+        *out_value = word;
+    if (out_pa)
+        *out_pa = pa;
+    return true;
+}
+
 static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t phase)
 {
     if (!m || !uc || phase >= WINCE_DIV_STACK_PHASE_COUNT)
@@ -1066,7 +1138,13 @@ static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t 
         uint32_t hash = UINT32_C(2166136261);
         for (uint32_t off = 0; off < snap->size; off += 4u) {
             uint32_t word = 0;
-            bool ok = read_guest_u32_direct(uc, window->base + off, &word);
+            uint32_t va_addr = window->base + off;
+            bool ok = read_guest_u32_direct(uc, va_addr, &word);
+            if (!ok) {
+                /* TLB fallback for kseg2/kseg3 VAs */
+                uint32_t tlb_pa = 0;
+                ok = wince_diag_read_va_via_shadow_tlb(m, uc, va_addr, &word, &tlb_pa);
+            }
             uint8_t valid_flag = ok ? 1u : 0u;
             hash = fnv1a32_update(hash, &valid_flag, sizeof(valid_flag));
             hash = fnv1a32_update(hash, &word, sizeof(word));
@@ -1081,9 +1159,36 @@ static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t 
 
     for (uint32_t i = 0; i < WINCE_DIV_STACK_SLOT_COUNT; i++) {
         uint32_t value = 0;
-        bool ok = read_guest_u32_direct(uc, w->slots[i].addr, &value);
+        uint32_t slot_va = w->slots[i].addr;
+        bool ok = read_guest_u32_direct(uc, slot_va, &value);
+        uint32_t tlb_pa = 0;
+        bool tlb_hit = false;
+        if (!ok) {
+            /* TLB fallback for kseg2/kseg3 stack slot VAs */
+            tlb_hit = wince_diag_read_va_via_shadow_tlb(m, uc, slot_va, &value, &tlb_pa);
+            if (tlb_hit)
+                ok = true;
+        }
         w->slots[i].phase_valid[phase] = ok;
         w->slots[i].phase_value[phase] = value;
+
+        /* Log TLB-aware read result for diagnostics */
+        static uint32_t tlb_read_logs = 0;
+        if (tlb_read_logs < 128u) {
+            const char *slot_name = (i == 0) ? "s0_slot" : "ra_slot";
+            if (tlb_hit) {
+                fprintf(stderr,
+                        "[WINCE_DIV_STACK_TLB_READ] phase=%u slot=%s va=0x%08X"
+                        " tlb_hit=1 pa=0x%08X value=0x%08X\n",
+                        phase, slot_name, slot_va, tlb_pa, value);
+            } else if (slot_va >= 0xC0000000u) {
+                fprintf(stderr,
+                        "[WINCE_DIV_STACK_TLB_READ] phase=%u slot=%s va=0x%08X"
+                        " tlb_hit=0 reason=no_match\n",
+                        phase, slot_name, slot_va);
+            }
+            tlb_read_logs++;
+        }
     }
 
     w->phase_captured[phase] = true;
@@ -2060,6 +2165,38 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
                     t->sp_before_call, ra32);
             m->wince_div_logs++;
         }
+
+        /* Step 1: One-shot NK corridor byte dump at the call arm site.
+         * Dump PA 0x00096780..0x00096940 (VA 0x80096780..0x80096940) as hex
+         * words to stderr for offline disassembly comparison. */
+        {
+            static bool corridor_dumped = false;
+            if (!corridor_dumped) {
+                corridor_dumped = true;
+                const uint32_t corr_pa_start = 0x00096780u;
+                const uint32_t corr_pa_end   = 0x00096940u;
+                fprintf(stderr, "[NK_CORRIDOR_DUMP] pa_range=0x%08X..0x%08X bytes=",
+                        corr_pa_start, corr_pa_end);
+                for (uint32_t pa = corr_pa_start; pa < corr_pa_end; pa += 4u) {
+                    uint32_t word = 0;
+                    uc_err err = uc_mem_read(uc, (uint64_t)pa, &word, sizeof(word));
+                    if (err == UC_ERR_OK)
+                        fprintf(stderr, "%08X", word);
+                    else
+                        fprintf(stderr, "XXXXXXXX");
+                }
+                fprintf(stderr, "\n");
+                /* Also dump as individual words for readability */
+                for (uint32_t pa = corr_pa_start; pa < corr_pa_end; pa += 4u) {
+                    uint32_t word = 0;
+                    uc_err err = uc_mem_read(uc, (uint64_t)pa, &word, sizeof(word));
+                    fprintf(stderr, "[NK_CORRIDOR_DUMP] VA=0x%08X PA=0x%08X insn=0x%08X%s\n",
+                            0x80000000u + pa, pa, (err == UC_ERR_OK) ? word : 0u,
+                            (err != UC_ERR_OK) ? " ERR" : "");
+                }
+            }
+        }
+
         return;
     }
 
