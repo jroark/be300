@@ -962,6 +962,20 @@ static const char *wince_div_stack_slot_name(uint32_t idx)
            (idx == 1u) ? "ra_slot_sp_plus_24" : "slot_unknown";
 }
 
+static const char *wince_div_stack_window_name(uint32_t idx)
+{
+    return (idx == 0u) ? "caller" :
+           (idx == 1u) ? "callee" : "window_unknown";
+}
+
+static const char *wince_div_stack_phase_name(uint32_t idx)
+{
+    return (idx == 0u) ? "arm" :
+           (idx == 1u) ? "entry" :
+           (idx == 2u) ? "return" :
+           (idx == 3u) ? "crash" : "phase_unknown";
+}
+
 static inline bool addr32_in_window(uint32_t addr, uint32_t start, uint32_t end)
 {
     if (start <= end)
@@ -969,9 +983,116 @@ static inline bool addr32_in_window(uint32_t addr, uint32_t start, uint32_t end)
     return addr >= start || addr < end;
 }
 
-static void wince_div_stack_watch_arm(machine_t *m, uint32_t call_pc, uint32_t sp_before_call)
+static bool read_guest_va_bytes_direct(uc_engine *uc, uint32_t va32,
+                                       void *buf, size_t size)
 {
-    if (!m || !is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+    if (!uc || !buf || size == 0u)
+        return false;
+    if (uc_mem_read(uc, (uint64_t)va32, buf, size) == UC_ERR_OK)
+        return true;
+    if (uc_mem_read(uc, mips_sext(va32), buf, size) == UC_ERR_OK)
+        return true;
+    return false;
+}
+
+static bool read_guest_u32_direct(uc_engine *uc, uint32_t va32, uint32_t *out)
+{
+    return out != NULL && read_guest_va_bytes_direct(uc, va32, out, sizeof(*out));
+}
+
+static bool read_guest_va_value_direct(uc_engine *uc, uint32_t va32,
+                                       unsigned size, uint64_t *out)
+{
+    uint8_t bytes[8] = {0};
+    if (!out || size == 0u || size > sizeof(bytes))
+        return false;
+    if (!read_guest_va_bytes_direct(uc, va32, bytes, size))
+        return false;
+
+    uint64_t value = 0;
+    for (unsigned i = 0; i < size; i++)
+        value |= (uint64_t)bytes[i] << (i * 8u);
+    *out = value;
+    return true;
+}
+
+static uint32_t fnv1a32_update(uint32_t hash, const void *buf, size_t size)
+{
+    const uint8_t *p = buf;
+    for (size_t i = 0; i < size; i++) {
+        hash ^= p[i];
+        hash *= UINT32_C(16777619);
+    }
+    return hash;
+}
+
+static wince_div_stack_window_trace_t *wince_div_stack_find_window(
+    wince_div_stack_watch_t *w, uint32_t addr, uint32_t *out_idx)
+{
+    if (!w)
+        return NULL;
+    for (uint32_t i = 0; i < WINCE_DIV_STACK_WINDOW_COUNT; i++) {
+        if (w->windows[i].base == w->windows[i].end)
+            continue;
+        if (!addr32_in_window(addr, w->windows[i].base, w->windows[i].end))
+            continue;
+        if (out_idx)
+            *out_idx = i;
+        return &w->windows[i];
+    }
+    return NULL;
+}
+
+static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t phase)
+{
+    if (!m || !uc || phase >= WINCE_DIV_STACK_PHASE_COUNT)
+        return;
+
+    wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
+    if (!w->active || w->phase_captured[phase])
+        return;
+
+    for (uint32_t window_idx = 0; window_idx < WINCE_DIV_STACK_WINDOW_COUNT; window_idx++) {
+        const wince_div_stack_window_trace_t *window = &w->windows[window_idx];
+        wince_div_frame_snapshot_t *snap = &w->snapshots[phase][window_idx];
+        memset(snap, 0, sizeof(*snap));
+        snap->base = window->base;
+        snap->size = window->end - window->base;
+        snap->valid = snap->size != 0u;
+        if (!snap->valid)
+            continue;
+
+        snap->words = snap->size / 4u;
+        uint32_t hash = UINT32_C(2166136261);
+        for (uint32_t off = 0; off < snap->size; off += 4u) {
+            uint32_t word = 0;
+            bool ok = read_guest_u32_direct(uc, window->base + off, &word);
+            uint8_t valid_flag = ok ? 1u : 0u;
+            hash = fnv1a32_update(hash, &valid_flag, sizeof(valid_flag));
+            hash = fnv1a32_update(hash, &word, sizeof(word));
+            if (ok) {
+                snap->valid_words++;
+                if (word != 0u)
+                    snap->nonzero_words++;
+            }
+        }
+        snap->hash = hash;
+    }
+
+    for (uint32_t i = 0; i < WINCE_DIV_STACK_SLOT_COUNT; i++) {
+        uint32_t value = 0;
+        bool ok = read_guest_u32_direct(uc, w->slots[i].addr, &value);
+        w->slots[i].phase_valid[phase] = ok;
+        w->slots[i].phase_value[phase] = value;
+    }
+
+    w->phase_captured[phase] = true;
+}
+
+static void wince_div_stack_watch_arm(machine_t *m, uc_engine *uc,
+                                      uint32_t call_pc, uint32_t sp_before_call)
+{
+    if (!m || !uc || !is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
         return;
 
     wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
@@ -979,17 +1100,27 @@ static void wince_div_stack_watch_arm(machine_t *m, uint32_t call_pc, uint32_t s
     w->active = true;
     w->arm_pc = call_pc;
     w->arm_sp = sp_before_call;
-    w->window_start = sp_before_call - 0x40u;
-    w->window_end = sp_before_call + 0x40u;
+    w->caller_window_start = sp_before_call - 0x40u;
+    w->caller_window_end = sp_before_call + 0x40u;
+    w->callee_window_start = sp_before_call - 0x50u;
+    w->callee_window_end = sp_before_call - 0x28u;
+    w->callee_window_valid = true;
+    w->windows[0].base = w->caller_window_start;
+    w->windows[0].end = w->caller_window_end;
+    w->windows[1].base = w->callee_window_start;
+    w->windows[1].end = w->callee_window_end;
     w->slots[0].addr = sp_before_call - 0x08u; /* SP return + 0x20 */
     w->slots[1].addr = sp_before_call - 0x04u; /* SP return + 0x24 */
+    wince_div_stack_capture_phase(m, uc, 0u);
 
     if (m->wince_div_logs < 256u) {
         fprintf(stderr,
                 "[WINCE_DIV_STACK_ARM] call_pc=0x%08X arm_sp=0x%08X"
-                " window=[0x%08X,0x%08X)"
+                " caller=[0x%08X,0x%08X) callee=[0x%08X,0x%08X)"
                 " s0_slot=0x%08X ra_slot=0x%08X\n",
-                w->arm_pc, w->arm_sp, w->window_start, w->window_end,
+                w->arm_pc, w->arm_sp,
+                w->caller_window_start, w->caller_window_end,
+                w->callee_window_start, w->callee_window_end,
                 w->slots[0].addr, w->slots[1].addr);
         m->wince_div_logs++;
     }
@@ -1006,7 +1137,7 @@ static void wince_div_stack_watch_mark_completed(machine_t *m)
 }
 
 static void wince_div_stack_watch_record_write(machine_t *m, uc_engine *uc,
-                                               uint64_t address, uint32_t pc,
+                                               uint32_t addr32, uint32_t pc,
                                                unsigned size, uint64_t value)
 {
     if (!m || !uc || size == 0u || size > 8u)
@@ -1018,15 +1149,33 @@ static void wince_div_stack_watch_record_write(machine_t *m, uc_engine *uc,
     if (!w->active)
         return;
 
-    uint32_t addr32 = (uint32_t)address;
-    if (!addr32_in_window(addr32, w->window_start, w->window_end))
-        return;
-
     uint64_t mask = write_value_mask(size);
     uint64_t old_value = 0;
-    bool old_valid = read_old_write_value_addr(uc, address, size, &old_value);
+    bool old_valid = read_guest_va_value_direct(uc, addr32, size, &old_value);
     uint64_t new_value = value & mask;
-    w->window_writes++;
+    uint32_t window_idx = 0;
+    wince_div_stack_window_trace_t *window =
+        wince_div_stack_find_window(w, addr32, &window_idx);
+    if (!window)
+        return;
+
+    window->writes++;
+    if (!window->first_write_valid) {
+        window->first_write_valid = true;
+        window->first_write_old_valid = old_valid;
+        window->first_write_pc = pc;
+        window->first_write_addr = addr32;
+        window->first_write_size = (uint8_t)size;
+        window->first_write_old = old_value & mask;
+        window->first_write_new = new_value;
+    }
+    window->last_write_valid = true;
+    window->last_write_old_valid = old_valid;
+    window->last_write_pc = pc;
+    window->last_write_addr = addr32;
+    window->last_write_size = (uint8_t)size;
+    window->last_write_old = old_value & mask;
+    window->last_write_new = new_value;
 
     bool slot_hit = false;
     for (uint32_t i = 0; i < WINCE_DIV_STACK_SLOT_COUNT; i++) {
@@ -1038,6 +1187,7 @@ static void wince_div_stack_watch_record_write(machine_t *m, uc_engine *uc,
         if (!slot->first_valid) {
             slot->first_valid = true;
             slot->first_pc = pc;
+            slot->first_addr = addr32;
             slot->first_size = (uint8_t)size;
             slot->first_old = old_value & mask;
             slot->first_new = new_value;
@@ -1045,6 +1195,7 @@ static void wince_div_stack_watch_record_write(machine_t *m, uc_engine *uc,
         }
         slot->last_valid = true;
         slot->last_pc = pc;
+        slot->last_addr = addr32;
         slot->last_size = (uint8_t)size;
         slot->last_old = old_value & mask;
         slot->last_new = new_value;
@@ -1067,66 +1218,337 @@ static void wince_div_stack_watch_record_write(machine_t *m, uc_engine *uc,
 
     if (!slot_hit && m->wince_div_logs < 320u && w->window_logs < 16u) {
         fprintf(stderr,
-                "[WINCE_DIV_STACK_WRITE] addr=0x%08X pc=0x%08X size=%u"
+                "[WINCE_DIV_STACK_WRITE] frame=%s addr=0x%08X pc=0x%08X size=%u"
                 " old=%s0x%016" PRIX64 " new=0x%016" PRIX64
                 " window_writes=%u\n",
+                wince_div_stack_window_name(window_idx),
                 addr32, pc, size,
                 old_valid ? "" : "ERR:",
                 old_valid ? (old_value & mask) : 0u,
-                new_value, w->window_writes);
+                new_value, window->writes);
         m->wince_div_logs++;
         w->window_logs++;
     }
 }
 
-static void log_wince_div_stack_watch_summary(const machine_t *m, uc_engine *uc,
+static void wince_div_stack_watch_record_read(machine_t *m, uint32_t pc,
+                                              uint32_t addr32, unsigned size,
+                                              uint32_t reg_idx, uint64_t value)
+{
+    if (!m || size == 0u || size > 8u)
+        return;
+    wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
+    if (!w->active)
+        return;
+
+    uint32_t window_idx = 0;
+    wince_div_stack_window_trace_t *window =
+        wince_div_stack_find_window(w, addr32, &window_idx);
+    if (!window)
+        return;
+
+    window->reads++;
+    if (!window->first_read_valid) {
+        window->first_read_valid = true;
+        window->first_read_pc = pc;
+        window->first_read_addr = addr32;
+        window->first_read_size = (uint8_t)size;
+        window->first_read_reg = (uint8_t)reg_idx;
+        window->first_read_value = value;
+    }
+    window->last_read_valid = true;
+    window->last_read_pc = pc;
+    window->last_read_addr = addr32;
+    window->last_read_size = (uint8_t)size;
+    window->last_read_reg = (uint8_t)reg_idx;
+    window->last_read_value = value;
+
+    bool slot_hit = false;
+    for (uint32_t i = 0; i < WINCE_DIV_STACK_SLOT_COUNT; i++) {
+        wince_div_stack_slot_t *slot = &w->slots[i];
+        if (addr32 != slot->addr)
+            continue;
+        slot_hit = true;
+        slot->reads++;
+        if (!slot->first_read_valid) {
+            slot->first_read_valid = true;
+            slot->first_read_pc = pc;
+            slot->first_read_addr = addr32;
+            slot->first_read_size = (uint8_t)size;
+            slot->first_read_reg = (uint8_t)reg_idx;
+            slot->first_read_value = value;
+        }
+        slot->last_read_valid = true;
+        slot->last_read_pc = pc;
+        slot->last_read_addr = addr32;
+        slot->last_read_size = (uint8_t)size;
+        slot->last_read_reg = (uint8_t)reg_idx;
+        slot->last_read_value = value;
+
+        if (m->wince_div_logs < 320u && w->slot_logs < 64u) {
+            fprintf(stderr,
+                    "[WINCE_DIV_STACK_SLOT_READ] slot=%s addr=0x%08X"
+                    " pc=0x%08X size=%u reg=$%u val=0x%016" PRIX64
+                    " reads=%u\n",
+                    wince_div_stack_slot_name(i),
+                    addr32, pc, size, reg_idx, value, slot->reads);
+            m->wince_div_logs++;
+            w->slot_logs++;
+        }
+    }
+
+    if (!slot_hit && m->wince_div_logs < 320u && w->window_logs < 24u) {
+        fprintf(stderr,
+                "[WINCE_DIV_STACK_READ] frame=%s addr=0x%08X pc=0x%08X size=%u"
+                " reg=$%u val=0x%016" PRIX64 " window_reads=%u\n",
+                wince_div_stack_window_name(window_idx),
+                addr32, pc, size, reg_idx, value, window->reads);
+        m->wince_div_logs++;
+        w->window_logs++;
+    }
+}
+
+static void wince_div_stack_watch_complete_pending_load(machine_t *m, uc_engine *uc)
+{
+    if (!m || !uc)
+        return;
+    wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
+    if (!w->active || !w->pending_load.active)
+        return;
+
+    uint64_t reg_value = 0;
+    uc_reg_read(uc, UC_MIPS_REG_0 + (int)w->pending_load.reg_idx, &reg_value);
+    wince_div_stack_watch_record_read(m, w->pending_load.pc,
+                                      w->pending_load.addr,
+                                      w->pending_load.size,
+                                      w->pending_load.reg_idx,
+                                      reg_value & write_value_mask(w->pending_load.size));
+    memset(&w->pending_load, 0, sizeof(w->pending_load));
+}
+
+static void wince_div_stack_watch_step(machine_t *m, uc_engine *uc,
+                                       uint32_t pc32, uint32_t insn)
+{
+    if (!m || !uc || !is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+
+    wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
+    if (!w->active)
+        return;
+
+    wince_div_stack_watch_complete_pending_load(m, uc);
+    if (pc32 == 0x80096790u)
+        wince_div_stack_capture_phase(m, uc, 1u);
+    else if (pc32 == 0x80096908u)
+        wince_div_stack_capture_phase(m, uc, 2u);
+
+    uint32_t op = (insn >> 26) & 0x3Fu;
+    uint32_t rs = (insn >> 21) & 0x1Fu;
+    uint32_t rt = (insn >> 16) & 0x1Fu;
+    int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+    unsigned size = 0u;
+    bool is_load = false;
+    bool is_store = false;
+
+    switch (op) {
+    case 0x20u: /* LB */
+    case 0x24u: /* LBU */
+        size = 1u;
+        is_load = true;
+        break;
+    case 0x21u: /* LH */
+    case 0x25u: /* LHU */
+        size = 2u;
+        is_load = true;
+        break;
+    case 0x23u: /* LW */
+        size = 4u;
+        is_load = true;
+        break;
+    case 0x28u: /* SB */
+        size = 1u;
+        is_store = true;
+        break;
+    case 0x29u: /* SH */
+        size = 2u;
+        is_store = true;
+        break;
+    case 0x2Bu: /* SW */
+        size = 4u;
+        is_store = true;
+        break;
+    default:
+        return;
+    }
+
+    uint64_t base = 0;
+    uc_reg_read(uc, UC_MIPS_REG_0 + (int)rs, &base);
+    uint32_t addr32 = (uint32_t)((uint32_t)base + (uint32_t)imm);
+    if (!wince_div_stack_find_window(w, addr32, NULL))
+        return;
+
+    if (is_store) {
+        uint64_t rt_value = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &rt_value);
+        wince_div_stack_watch_record_write(m, uc, addr32, pc32, size, rt_value);
+        return;
+    }
+
+    w->pending_load.active = true;
+    w->pending_load.pc = pc32;
+    w->pending_load.addr = addr32;
+    w->pending_load.size = (uint8_t)size;
+    w->pending_load.reg_idx = (uint8_t)rt;
+    w->pending_load.slot_idx = UINT8_C(0xFF);
+    w->pending_load.window_idx = UINT8_C(0xFF);
+}
+
+static const char *wince_div_stack_slot_origin(const wince_div_stack_slot_t *slot)
+{
+    if (!slot)
+        return "unknown";
+    if (!slot->phase_valid[0])
+        return "invalid_at_arm";
+    if (slot->phase_value[0] == 0u)
+        return "zero_at_arm";
+    if (slot->phase_valid[1] && slot->phase_value[1] == 0u)
+        return "zero_by_entry";
+    if (slot->phase_valid[2] && slot->phase_value[2] == 0u)
+        return "zero_on_return";
+    if (slot->phase_valid[3] && slot->phase_value[3] == 0u)
+        return "zero_before_crash";
+    return "nonzero_through_crash";
+}
+
+static void log_wince_div_stack_watch_summary(machine_t *m, uc_engine *uc,
                                               const char *reason)
 {
     if (!m || !uc)
         return;
-    const wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
+    wince_div_stack_watch_t *w = &m->wince_div_stack_watch;
     if (!w->active)
         return;
+
+    wince_div_stack_watch_complete_pending_load(m, uc);
+    wince_div_stack_capture_phase(m, uc, 3u);
 
     fprintf(stderr,
             "[WINCE_DIV_STACK_SUMMARY] reason=%s active=%u completed=%u"
             " call_pc=0x%08X arm_sp=0x%08X"
-            " window=[0x%08X,0x%08X) writes=%u\n",
+            " caller=[0x%08X,0x%08X) callee=[0x%08X,0x%08X)\n",
             reason, w->active ? 1u : 0u, w->completed ? 1u : 0u,
             w->arm_pc, w->arm_sp,
-            w->window_start, w->window_end, w->window_writes);
+            w->caller_window_start, w->caller_window_end,
+            w->callee_window_start, w->callee_window_end);
+
+    for (uint32_t window_idx = 0; window_idx < WINCE_DIV_STACK_WINDOW_COUNT; window_idx++) {
+        const wince_div_stack_window_trace_t *window = &w->windows[window_idx];
+        const wince_div_frame_snapshot_t *arm = &w->snapshots[0][window_idx];
+        const wince_div_frame_snapshot_t *entry = &w->snapshots[1][window_idx];
+        const wince_div_frame_snapshot_t *ret = &w->snapshots[2][window_idx];
+        const wince_div_frame_snapshot_t *crash = &w->snapshots[3][window_idx];
+        fprintf(stderr,
+                "[WINCE_DIV_STACK_WINDOW_SUMMARY] reason=%s frame=%s"
+                " base=0x%08X end=0x%08X reads=%u writes=%u"
+                " arm(hash=0x%08X valid=%u nz=%u)"
+                " entry(hash=0x%08X valid=%u nz=%u)"
+                " return(hash=0x%08X valid=%u nz=%u)"
+                " crash(hash=0x%08X valid=%u nz=%u)"
+                " first_read=%s(pc=0x%08X addr=0x%08X size=%u reg=$%u val=0x%016" PRIX64 ")"
+                " last_read=%s(pc=0x%08X addr=0x%08X size=%u reg=$%u val=0x%016" PRIX64 ")"
+                " first_write=%s(pc=0x%08X addr=0x%08X size=%u old=%s0x%016" PRIX64 " new=0x%016" PRIX64 ")"
+                " last_write=%s(pc=0x%08X addr=0x%08X size=%u old=%s0x%016" PRIX64 " new=0x%016" PRIX64 ")\n",
+                reason, wince_div_stack_window_name(window_idx),
+                window->base, window->end, window->reads, window->writes,
+                arm->hash, arm->valid_words, arm->nonzero_words,
+                entry->hash, entry->valid_words, entry->nonzero_words,
+                ret->hash, ret->valid_words, ret->nonzero_words,
+                crash->hash, crash->valid_words, crash->nonzero_words,
+                window->first_read_valid ? "" : "none",
+                window->first_read_pc, window->first_read_addr,
+                (unsigned)window->first_read_size, (unsigned)window->first_read_reg,
+                window->first_read_value,
+                window->last_read_valid ? "" : "none",
+                window->last_read_pc, window->last_read_addr,
+                (unsigned)window->last_read_size, (unsigned)window->last_read_reg,
+                window->last_read_value,
+                window->first_write_valid ? "" : "none",
+                window->first_write_pc, window->first_write_addr,
+                (unsigned)window->first_write_size,
+                window->first_write_old_valid ? "" : "ERR:",
+                window->first_write_old_valid ? window->first_write_old : 0u,
+                window->first_write_new,
+                window->last_write_valid ? "" : "none",
+                window->last_write_pc, window->last_write_addr,
+                (unsigned)window->last_write_size,
+                window->last_write_old_valid ? "" : "ERR:",
+                window->last_write_old_valid ? window->last_write_old : 0u,
+                window->last_write_new);
+    }
 
     for (uint32_t i = 0; i < WINCE_DIV_STACK_SLOT_COUNT; i++) {
         const wince_div_stack_slot_t *slot = &w->slots[i];
-        uint32_t final_word = 0;
-        bool final_ok = read_guest_u32(uc, slot->addr, &final_word);
-        if (!slot->first_valid) {
-            fprintf(stderr,
-                    "[WINCE_DIV_STACK_SLOT_SUMMARY] reason=%s slot=%s"
-                    " addr=0x%08X writes=0 final=%s0x%08X\n",
-                    reason, wince_div_stack_slot_name(i), slot->addr,
-                    final_ok ? "" : "ERR:", final_ok ? final_word : 0u);
-            continue;
-        }
+        bool final_ok = slot->phase_valid[3];
+        uint32_t final_word = slot->phase_value[3];
 
         fprintf(stderr,
                 "[WINCE_DIV_STACK_SLOT_SUMMARY] reason=%s slot=%s"
-                " addr=0x%08X writes=%u"
-                " first(pc=0x%08X size=%u old=%s0x%016" PRIX64
+                " addr=0x%08X reads=%u writes=%u zero_origin=%s"
+                " first_read=%s(pc=0x%08X addr=0x%08X size=%u reg=$%u val=0x%016" PRIX64 ")"
+                " last_read=%s(pc=0x%08X addr=0x%08X size=%u reg=$%u val=0x%016" PRIX64 ")"
+                " first_write=%s(pc=0x%08X addr=0x%08X size=%u old=%s0x%016" PRIX64
                 " new=0x%016" PRIX64 ")"
-                " last(pc=0x%08X size=%u old=%s0x%016" PRIX64
+                " last_write=%s(pc=0x%08X addr=0x%08X size=%u old=%s0x%016" PRIX64
                 " new=0x%016" PRIX64 ")"
                 " final=%s0x%08X\n",
-                reason, wince_div_stack_slot_name(i), slot->addr, slot->writes,
-                slot->first_pc, (unsigned)slot->first_size,
+                reason, wince_div_stack_slot_name(i), slot->addr,
+                slot->reads, slot->writes, wince_div_stack_slot_origin(slot),
+                slot->first_read_valid ? "" : "none",
+                slot->first_read_pc, slot->first_read_addr,
+                (unsigned)slot->first_read_size, (unsigned)slot->first_read_reg,
+                slot->first_read_value,
+                slot->last_read_valid ? "" : "none",
+                slot->last_read_pc, slot->last_read_addr,
+                (unsigned)slot->last_read_size, (unsigned)slot->last_read_reg,
+                slot->last_read_value,
+                slot->first_valid ? "" : "none",
+                slot->first_pc, slot->first_addr,
+                (unsigned)slot->first_size,
                 slot->first_old_valid ? "" : "ERR:",
                 slot->first_old_valid ? slot->first_old : 0u,
                 slot->first_new,
-                slot->last_pc, (unsigned)slot->last_size,
+                slot->last_valid ? "" : "none",
+                slot->last_pc, slot->last_addr,
+                (unsigned)slot->last_size,
                 slot->last_old_valid ? "" : "ERR:",
                 slot->last_old_valid ? slot->last_old : 0u,
                 slot->last_new,
                 final_ok ? "" : "ERR:", final_ok ? final_word : 0u);
+
+        fprintf(stderr,
+                "[WINCE_DIV_STACK_SLOT_TIMELINE] reason=%s slot=%s"
+                " addr=0x%08X zero_origin=%s"
+                " arm=%s0x%08X entry=%s0x%08X return=%s0x%08X crash=%s0x%08X\n",
+                reason, wince_div_stack_slot_name(i), slot->addr,
+                wince_div_stack_slot_origin(slot),
+                slot->phase_valid[0] ? "" : "ERR:", slot->phase_value[0],
+                slot->phase_valid[1] ? "" : "ERR:", slot->phase_value[1],
+                slot->phase_valid[2] ? "" : "ERR:", slot->phase_value[2],
+                slot->phase_valid[3] ? "" : "ERR:", slot->phase_value[3]);
+    }
+
+    for (uint32_t phase = 0; phase < WINCE_DIV_STACK_PHASE_COUNT; phase++) {
+        fprintf(stderr,
+                "[WINCE_DIV_STACK_PHASE_SUMMARY] reason=%s phase=%s"
+                " caller_hash=0x%08X caller_valid=%u caller_nz=%u"
+                " callee_hash=0x%08X callee_valid=%u callee_nz=%u\n",
+                reason, wince_div_stack_phase_name(phase),
+                w->snapshots[phase][0].hash,
+                w->snapshots[phase][0].valid_words,
+                w->snapshots[phase][0].nonzero_words,
+                w->snapshots[phase][1].hash,
+                w->snapshots[phase][1].valid_words,
+                w->snapshots[phase][1].nonzero_words);
     }
 }
 
@@ -1229,7 +1651,7 @@ static bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
     uint32_t pc = (uint32_t)pc64;
     uint64_t uval = (uint64_t)value;
     update_wince_region_tracks(m, uc, pa, pc, (unsigned)size, uval);
-    wince_div_stack_watch_record_write(m, uc, address, pc, (unsigned)size, uval);
+    wince_div_stack_watch_record_write(m, uc, (uint32_t)address, pc, (unsigned)size, uval);
 
     if (pa < WINCE_TRACE_VEC_PA_END) {
         wince_pa_watch_update(m, &m->wince_vec_watch, "vectors",
@@ -1628,7 +2050,7 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
         t->last_valid = false;
         t->last_pc = 0u;
         t->last_sp = 0u;
-        wince_div_stack_watch_arm(m, t->call_pc, t->sp_before_call);
+        wince_div_stack_watch_arm(m, uc, t->call_pc, t->sp_before_call);
 
         if (m->wince_div_logs < 224u) {
             fprintf(stderr,
@@ -4967,6 +5389,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     uint32_t sel =  insn        & 0x07u;
 
     wince_div_call_trace_step(m, uc, (uint32_t)address, insn);
+    wince_div_stack_watch_step(m, uc, (uint32_t)address, insn);
     wince_div_hist_record(m, uc, (uint32_t)address, insn);
     maybe_record_wince_ctrl_event(m, uc, (uint32_t)address,
                                   insn, op, rs, rt, rd, sel);
