@@ -629,17 +629,39 @@ static void seed_wince_exception_vectors(machine_t *m)
 
 static void seed_wince_kdata(machine_t *m)
 {
+    uint32_t applied = 0;
+    uint32_t skipped_volatile = 0;
+
     /*
      * Warm-state KData snapshot from hardware_survey/BE300Probe_v1.txt
      * baseline (PA 0x00002000..0x000023FF).
+     *
+     * The subrange PA 0x00002200..0x000022FF contains a live post-boot
+     * scheduler/context record, including saved sp/ra values such as
+     * 0xFFFFD7B4 / 0x80096894 from BE300Probe_v1.txt. Seeding that block
+     * into early NAND boot injects a half-valid resumed thread context
+     * without the matching kernel stack contents, which drives NK into
+     * the alternate mid-body path ending at 0x8009692C.
+     *
+     * Keep the rest of KData warm-seeded, but leave this volatile context
+     * window unseeded until we have grounded early-boot values for it.
      */
     for (uint32_t i = 0;
          i < (uint32_t)(sizeof(wince_kdata_words) / sizeof(wince_kdata_words[0]));
          i++) {
-        write_pa_u32_all_aliases(m, 0x00002000u + (i * 4u), wince_kdata_words[i]);
+        uint32_t pa = 0x00002000u + (i * 4u);
+        if (pa >= UINT32_C(0x00002200) && pa < UINT32_C(0x00002300)) {
+            skipped_volatile++;
+            continue;
+        }
+        write_pa_u32_all_aliases(m, pa, wince_kdata_words[i]);
+        applied++;
     }
 
-    fprintf(stderr, "[WINCE_KDATA_SEED] seeded %u words at PA=0x00002000\n",
+    fprintf(stderr,
+            "[WINCE_KDATA_SEED] applied=%u skipped_volatile=%u"
+            " total=%u volatile_pa=0x00002200..0x000022FF\n",
+            applied, skipped_volatile,
             (unsigned)(sizeof(wince_kdata_words) / sizeof(wince_kdata_words[0])));
 }
 
