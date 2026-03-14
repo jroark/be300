@@ -786,8 +786,8 @@ static void apply_wince_warm_profile(machine_t *m, const char *marker)
 #define WINCE_TRACE_GATE_SRC_PA_END   UINT32_C(0x00E19000)
 #define WINCE_TRACE_STACK_PA_START UINT32_C(0x00003780)
 #define WINCE_TRACE_STACK_PA_END   UINT32_C(0x00003820)
-#define WINCE_TRACE_CALLER_FRAME_PA_START UINT32_C(0x00001728)
-#define WINCE_TRACE_CALLER_FRAME_PA_END   UINT32_C(0x000017A8)
+#define WINCE_TRACE_CALLER_FRAME_PA_START UINT32_C(0x00001700)
+#define WINCE_TRACE_CALLER_FRAME_PA_END   UINT32_C(0x000017C0)
 #define WINCE_TRACE_BOOTCTX_PA_START UINT32_C(0x00006000)
 #define WINCE_TRACE_BOOTCTX_PA_END   UINT32_C(0x00007000)
 #define WINCE_TRACE_BOOTPARAM0_PA_START UINT32_C(0x0001D000)
@@ -1884,7 +1884,7 @@ static bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
         }
     } else if (pa >= WINCE_TRACE_CALLER_FRAME_PA_START && pa < WINCE_TRACE_CALLER_FRAME_PA_END) {
         static uint32_t caller_frame_logs = 0;
-        if (m->cfg.log_wince_stall && caller_frame_logs < 64u) {
+        if (m->cfg.log_wince_stall && caller_frame_logs < 128u) {
             const char *tag = "";
             if (pc == 0x80096800u) tag = " EXPECTED_S0_STORE";
             else if (pc == 0x80096808u) tag = " EXPECTED_RA_STORE";
@@ -2171,7 +2171,8 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
 {
     wince_div_call_trace_t *t = &m->wince_div_call_trace;
     bool arm_site = (pc32 == 0x80096900u && insn == 0x0C0259E4u);
-    if (!arm_site && !t->active)
+    bool caller_body_pc = (pc32 >= 0x800967FCu && pc32 <= 0x8009692Cu);
+    if (!arm_site && !t->active && !caller_body_pc)
         return;
 
     uint64_t sp = 0, ra = 0;
@@ -2240,6 +2241,90 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
         }
 
         return;
+    }
+
+    /* Pre-arm caller provenance logging for the full caller body. */
+    if (m->cfg.log_wince_stall) {
+        if (pc32 == 0x800967FCu) {
+            static uint32_t caller_push_logs = 0;
+            if (caller_push_logs < 32u) {
+                fprintf(stderr,
+                        "[WINCE_DIV_CALLER_PUSH] pc=0x%08X sp=0x%08X"
+                        " next_sp=0x%08X ra=0x%08X events=%u\n",
+                        pc32, sp32, sp32 - 0x28u, ra32, t->events);
+                caller_push_logs++;
+            }
+        }
+
+        if (pc32 == 0x80096800u) {
+            static uint32_t s0_store_logs = 0;
+            if (s0_store_logs < 32u) {
+                uint64_t s0_val = 0;
+                uint32_t store_va = sp32 + 0x20u;
+                uint32_t store_pa = 0;
+                char pa_desc[32];
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0_val);
+                if (wince_diag_read_va_via_shadow_tlb(m, uc, store_va, NULL, &store_pa))
+                    snprintf(pa_desc, sizeof(pa_desc), "0x%08X", store_pa);
+                else
+                    snprintf(pa_desc, sizeof(pa_desc), "TLB_MISS");
+                fprintf(stderr,
+                        "[WINCE_DIV_CALLER_S0_STORE] pc=0x%08X sp=0x%08X"
+                        " store_va=0x%08X store_pa=%s s0=0x%08X\n",
+                        pc32, sp32, store_va, pa_desc, (uint32_t)s0_val);
+                s0_store_logs++;
+            }
+        }
+
+        if (pc32 == 0x80096808u) {
+            static uint32_t ra_store_logs = 0;
+            if (ra_store_logs < 32u) {
+                uint32_t store_va = sp32 + 0x24u;
+                uint32_t store_pa = 0;
+                char pa_desc[32];
+                if (wince_diag_read_va_via_shadow_tlb(m, uc, store_va, NULL, &store_pa))
+                    snprintf(pa_desc, sizeof(pa_desc), "0x%08X", store_pa);
+                else
+                    snprintf(pa_desc, sizeof(pa_desc), "TLB_MISS");
+                fprintf(stderr,
+                        "[WINCE_DIV_CALLER_RA_STORE] pc=0x%08X sp=0x%08X"
+                        " store_va=0x%08X store_pa=%s ra=0x%08X\n",
+                        pc32, sp32, store_va, pa_desc, ra32);
+                ra_store_logs++;
+            }
+        }
+
+        if (pc32 == 0x8009680Cu) {
+            static uint32_t body_logs = 0;
+            if (body_logs < 32u) {
+                fprintf(stderr,
+                        "[WINCE_DIV_CALLER_BODY] pc=0x%08X sp=0x%08X ra=0x%08X\n",
+                        pc32, sp32, ra32);
+                body_logs++;
+            }
+        }
+
+        if (pc32 == 0x8009692Cu) {
+            static uint32_t caller_pop_logs = 0;
+            if (caller_pop_logs < 32u) {
+                fprintf(stderr,
+                        "[WINCE_DIV_CALLER_POP] pc=0x%08X sp=0x%08X"
+                        " next_sp=0x%08X ra=0x%08X events=%u\n",
+                        pc32, sp32, sp32 + 0x28u, ra32, t->events);
+                caller_pop_logs++;
+            }
+        }
+
+        if (insn == 0x0C0259E4u && pc32 != 0x80096900u) {
+            static uint32_t other_jal_logs = 0;
+            if (other_jal_logs < 32u) {
+                fprintf(stderr,
+                        "[WINCE_DIV_CALLER_JAL_CALLEE] pc=0x%08X sp=0x%08X"
+                        " ra=0x%08X events=%u\n",
+                        pc32, sp32, ra32, t->events);
+                other_jal_logs++;
+            }
+        }
     }
 
     if (!t->active)
