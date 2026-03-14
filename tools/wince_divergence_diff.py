@@ -41,6 +41,12 @@ def extract_key_fields(lines: List[str]) -> Dict[str, str]:
             out["latest_div_stack_summary"] = line
         elif line.startswith("latest_div_stack_slots:"):
             out["latest_div_stack_slots"] = line
+        elif line.startswith("latest_div_stack_timeline:"):
+            out["latest_div_stack_timeline"] = line
+        elif line.startswith("latest_div_stack_windows:"):
+            out["latest_div_stack_windows"] = line
+        elif line.startswith("latest_div_stack_phases:"):
+            out["latest_div_stack_phases"] = line
         elif line.startswith("Kernel loader core:"):
             out["progress_kernel_loader_core"] = line
         elif line.startswith("Start downloading...:"):
@@ -51,6 +57,15 @@ def extract_key_fields(lines: List[str]) -> Dict[str, str]:
         elif "[WINCE_REGION_NZ2Z_SUMMARY]" in line:
             key = line.split("region=", 1)[1].split()[0]
             out[f"region_nz2z_summary:{key}"] = line
+        elif "[WINCE_DIV_STACK_SLOT_TIMELINE]" in line:
+            key = line.split("slot=", 1)[1].split()[0]
+            out[f"stack_slot_timeline:{key}"] = line
+        elif "[WINCE_DIV_STACK_WINDOW_SUMMARY]" in line:
+            key = line.split("frame=", 1)[1].split()[0]
+            out[f"stack_window_summary:{key}"] = line
+        elif "[WINCE_DIV_STACK_PHASE_SUMMARY]" in line:
+            key = line.split("phase=", 1)[1].split()[0]
+            out[f"stack_phase_summary:{key}"] = line
     return out
 
 

@@ -153,34 +153,112 @@ typedef struct {
     int32_t  sp_drift;
 } wince_div_call_trace_t;
 
+#define WINCE_DIV_STACK_WINDOW_COUNT 2u
+#define WINCE_DIV_STACK_PHASE_COUNT 4u
 #define WINCE_DIV_STACK_SLOT_COUNT 2u
 typedef struct {
     uint32_t addr;
+    uint32_t reads;
     uint32_t writes;
+    bool     phase_valid[WINCE_DIV_STACK_PHASE_COUNT];
+    uint32_t phase_value[WINCE_DIV_STACK_PHASE_COUNT];
+    bool     first_read_valid;
+    uint32_t first_read_pc;
+    uint32_t first_read_addr;
+    uint8_t  first_read_size;
+    uint8_t  first_read_reg;
+    uint64_t first_read_value;
+    bool     last_read_valid;
+    uint32_t last_read_pc;
+    uint32_t last_read_addr;
+    uint8_t  last_read_size;
+    uint8_t  last_read_reg;
+    uint64_t last_read_value;
     bool     first_valid;
     bool     first_old_valid;
     uint32_t first_pc;
+    uint32_t first_addr;
     uint8_t  first_size;
     uint64_t first_old;
     uint64_t first_new;
     bool     last_valid;
     bool     last_old_valid;
     uint32_t last_pc;
+    uint32_t last_addr;
     uint8_t  last_size;
     uint64_t last_old;
     uint64_t last_new;
 } wince_div_stack_slot_t;
 
 typedef struct {
+    uint32_t base;
+    uint32_t end; /* exclusive */
+    uint32_t reads;
+    uint32_t writes;
+    bool     first_read_valid;
+    uint32_t first_read_pc;
+    uint32_t first_read_addr;
+    uint8_t  first_read_size;
+    uint8_t  first_read_reg;
+    uint64_t first_read_value;
+    bool     last_read_valid;
+    uint32_t last_read_pc;
+    uint32_t last_read_addr;
+    uint8_t  last_read_size;
+    uint8_t  last_read_reg;
+    uint64_t last_read_value;
+    bool     first_write_valid;
+    bool     first_write_old_valid;
+    uint32_t first_write_pc;
+    uint32_t first_write_addr;
+    uint8_t  first_write_size;
+    uint64_t first_write_old;
+    uint64_t first_write_new;
+    bool     last_write_valid;
+    bool     last_write_old_valid;
+    uint32_t last_write_pc;
+    uint32_t last_write_addr;
+    uint8_t  last_write_size;
+    uint64_t last_write_old;
+    uint64_t last_write_new;
+} wince_div_stack_window_trace_t;
+
+typedef struct {
+    bool     valid;
+    uint32_t base;
+    uint32_t size;
+    uint32_t hash;
+    uint32_t words;
+    uint32_t valid_words;
+    uint32_t nonzero_words;
+} wince_div_frame_snapshot_t;
+
+typedef struct {
+    bool     active;
+    uint32_t pc;
+    uint32_t addr;
+    uint8_t  size;
+    uint8_t  reg_idx;
+    uint8_t  slot_idx;
+    uint8_t  window_idx;
+} wince_div_pending_load_t;
+
+typedef struct {
     bool     active;
     bool     completed;
     uint32_t arm_pc;
     uint32_t arm_sp;
-    uint32_t window_start;
-    uint32_t window_end; /* exclusive */
-    uint32_t window_writes;
+    uint32_t caller_window_start;
+    uint32_t caller_window_end; /* exclusive */
+    uint32_t callee_window_start;
+    uint32_t callee_window_end; /* exclusive */
+    bool     callee_window_valid;
     uint32_t slot_logs;
     uint32_t window_logs;
+    bool     phase_captured[WINCE_DIV_STACK_PHASE_COUNT];
+    wince_div_frame_snapshot_t snapshots[WINCE_DIV_STACK_PHASE_COUNT][WINCE_DIV_STACK_WINDOW_COUNT];
+    wince_div_stack_window_trace_t windows[WINCE_DIV_STACK_WINDOW_COUNT];
+    wince_div_pending_load_t pending_load;
     wince_div_stack_slot_t slots[WINCE_DIV_STACK_SLOT_COUNT];
 } wince_div_stack_watch_t;
 

@@ -112,6 +112,9 @@ def main() -> int:
     div_stack_arm = collect_lines(err_lines, "[WINCE_DIV_STACK_ARM]")
     div_stack_summary = collect_lines(err_lines, "[WINCE_DIV_STACK_SUMMARY]")
     div_stack_slot_summary = collect_lines(err_lines, "[WINCE_DIV_STACK_SLOT_SUMMARY]")
+    div_stack_slot_timeline = collect_lines(err_lines, "[WINCE_DIV_STACK_SLOT_TIMELINE]")
+    div_stack_window_summary = collect_lines(err_lines, "[WINCE_DIV_STACK_WINDOW_SUMMARY]")
+    div_stack_phase_summary = collect_lines(err_lines, "[WINCE_DIV_STACK_PHASE_SUMMARY]")
     mmio_lines = collect_lines(err_lines, "[WINCE_STALL_MMIO]")
     null_mmio_lines = collect_lines(err_lines, "[WINCE_NULL_MMIO]")
 
@@ -244,6 +247,27 @@ def main() -> int:
             print(f"stderr:{lineno} {line}")
     else:
         print("latest_div_stack_slots: none")
+
+    if div_stack_slot_timeline:
+        print("latest_div_stack_timeline:")
+        for lineno, line in div_stack_slot_timeline[-4:]:
+            print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_stack_timeline: none")
+
+    if div_stack_window_summary:
+        print("latest_div_stack_windows:")
+        for lineno, line in div_stack_window_summary[-4:]:
+            print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_stack_windows: none")
+
+    if div_stack_phase_summary:
+        print("latest_div_stack_phases:")
+        for lineno, line in div_stack_phase_summary[-4:]:
+            print(f"stderr:{lineno} {line}")
+    else:
+        print("latest_div_stack_phases: none")
 
     print("--- KEY SNAPSHOT ---")
     for token in key_tokens:
