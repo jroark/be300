@@ -663,24 +663,16 @@ static void seed_wince_kdata(machine_t *m)
 
         if (ok_s0 && ok_sp && ok_ra &&
             ctx_sp == UINT32_C(0xFFFFD7B4) &&
-            ctx_ra == UINT32_C(0x80096894) &&
-            ctx_sp >= UINT32_C(0x00000054)) {
-            uint32_t frame_s0_pa = ctx_sp - UINT32_C(0x54);
-            uint32_t frame_ra_pa = ctx_sp - UINT32_C(0x50);
-            if (frame_ra_pa < m->cfg.sdram_size) {
-                write_pa_u32_all_aliases(m, frame_s0_pa, ctx_s0);
-                write_pa_u32_all_aliases(m, frame_ra_pa, ctx_ra);
-                fprintf(stderr,
-                        "[WINCE_KDATA_CTX_FRAME_SEED] ctx_s0=0x%08X"
-                        " ctx_sp=0x%08X ctx_ra=0x%08X"
-                        " frame_s0_pa=0x%08X frame_ra_pa=0x%08X\n",
-                        ctx_s0, ctx_sp, ctx_ra, frame_s0_pa, frame_ra_pa);
-            } else {
-                fprintf(stderr,
-                        "[WINCE_KDATA_CTX_FRAME_SEED] skipped ctx_sp=0x%08X"
-                        " ctx_ra=0x%08X frame_ra_pa=0x%08X out_of_range\n",
-                        ctx_sp, ctx_ra, frame_ra_pa);
-            }
+            ctx_ra == UINT32_C(0x80096894)) {
+            uint32_t frame_s0_pa = UINT32_C(0x00001760);
+            uint32_t frame_ra_pa = UINT32_C(0x00001764);
+            write_pa_u32_all_aliases(m, frame_s0_pa, ctx_s0);
+            write_pa_u32_all_aliases(m, frame_ra_pa, ctx_ra);
+            fprintf(stderr,
+                    "[WINCE_KDATA_CTX_FRAME_SEED] ctx_s0=0x%08X"
+                    " ctx_sp=0x%08X ctx_ra=0x%08X"
+                    " frame_s0_pa=0x%08X frame_ra_pa=0x%08X\n",
+                    ctx_s0, ctx_sp, ctx_ra, frame_s0_pa, frame_ra_pa);
         } else {
             fprintf(stderr,
                     "[WINCE_KDATA_CTX_FRAME_SEED] skipped"
