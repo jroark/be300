@@ -1191,6 +1191,34 @@ static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t 
         }
     }
 
+    /* Step 2: Verify caller's correct save slots at arm_sp + 0x20 (s0) and + 0x24 (ra) */
+    if (phase == 0u || phase == 3u) {
+        static uint32_t correct_slot_logs = 0;
+        const struct { const char *name; uint32_t offset; } cslots[] = {
+            { "caller_s0", 0x20u },
+            { "caller_ra", 0x24u },
+        };
+        for (uint32_t ci = 0; ci < 2u; ci++) {
+            uint32_t cva = w->arm_sp + cslots[ci].offset;
+            uint32_t cval = 0;
+            uint32_t cpa = 0;
+            bool c_direct = read_guest_u32_direct(uc, cva, &cval);
+            bool c_tlb = false;
+            if (!c_direct)
+                c_tlb = wince_diag_read_va_via_shadow_tlb(m, uc, cva, &cval, &cpa);
+            bool c_ok = c_direct || c_tlb;
+            if (correct_slot_logs < 32u) {
+                fprintf(stderr,
+                        "[WINCE_DIV_CORRECT_SLOT_READ] phase=%u name=%s"
+                        " va=0x%08X tlb_hit=%u pa=0x%08X value=0x%08X ok=%u\n",
+                        phase, cslots[ci].name, cva,
+                        c_tlb ? 1u : 0u, c_tlb ? cpa : (cva & 0x1FFFFFFFu),
+                        c_ok ? cval : 0u, c_ok ? 1u : 0u);
+                correct_slot_logs++;
+            }
+        }
+    }
+
     w->phase_captured[phase] = true;
 }
 
@@ -2240,14 +2268,66 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
             t->seen_target = true;
             t->sp_at_target = sp32;
         }
-        if (m->wince_div_logs < 224u) {
+
+        /* Step 1+3: Enhanced callee entry logging with a3, CP0, insn_count */
+        uint64_t a3_val = 0, cp0_status = 0;
+        uc_reg_read(uc, UC_MIPS_REG_A3, &a3_val);
+        uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &cp0_status);
+        const char *path = ((uint32_t)a3_val == 0) ? "beql_exit" : "full_body";
+
+        if (m->wince_div_logs < 256u) {
             fprintf(stderr,
-                    "[WINCE_DIV_CALL_TARGET] pc=0x%08X sp=0x%08X ra=0x%08X"
-                    " events=%u hit=%u\n",
-                    pc32, sp32, ra32, t->events, t->target_hits);
+                    "[WINCE_DIV_CALLEE_ENTRY] count=%u insn_count=%llu"
+                    " sp=0x%08X ra=0x%08X a3=0x%08X path=%s"
+                    " pending_cause=0x%08X status=0x%08X"
+                    " pending_excode=0x%08X events=%u\n",
+                    t->target_hits, (unsigned long long)m->insn_count,
+                    sp32, ra32, (uint32_t)a3_val, path,
+                    m->pending_cause, (uint32_t)cp0_status,
+                    m->pending_excode, t->events);
+            m->wince_div_logs++;
+        }
+
+        /* On replay (second+ entry), dump last 8 ctrl_hist entries */
+        if (t->target_hits >= 2u && m->wince_div_logs < 256u) {
+            uint32_t dump_count = m->wince_ctrl_hist_count < 8u
+                                    ? m->wince_ctrl_hist_count : 8u;
+            fprintf(stderr,
+                    "[WINCE_DIV_CALLEE_REPLAY] count=%u pending_excode=0x%08X"
+                    " ctrl_hist_last_%u:\n",
+                    t->target_hits, m->pending_excode, dump_count);
+            m->wince_div_logs++;
+            for (uint32_t i = 0; i < dump_count && m->wince_div_logs < 256u; i++) {
+                uint32_t idx = (m->wince_ctrl_hist_head + WINCE_CTRL_HISTORY_LEN
+                                - dump_count + i) % WINCE_CTRL_HISTORY_LEN;
+                wince_ctrl_hist_entry_t *e = &m->wince_ctrl_hist[idx];
+                static const char *kind_names[] = {
+                    "?", "JAL", "JALR", "JR_RA", "MTC0_STATUS"
+                };
+                const char *kn = (e->kind <= 4) ? kind_names[e->kind] : "?";
+                fprintf(stderr,
+                        "  [CTRL_HIST %u] pc=0x%08X target=0x%08X"
+                        " sp=0x%08X ra=0x%08X kind=%s value=0x%08X\n",
+                        i, e->pc, e->target, e->sp, e->ra, kn, e->value);
+                m->wince_div_logs++;
+            }
+        }
+    }
+
+    /* Step 1: Log callee epilogue/return path (lw ra at 0x800967F0, jr ra at 0x800967F4) */
+    if (pc32 == 0x800967F0u || pc32 == 0x800967F4u) {
+        if (m->wince_div_logs < 256u) {
+            const char *tag = (pc32 == 0x800967F0u)
+                ? "WINCE_DIV_CALLEE_EPILOGUE" : "WINCE_DIV_CALLEE_JR";
+            fprintf(stderr,
+                    "[%s] pc=0x%08X insn=0x%08X sp=0x%08X ra=0x%08X"
+                    " target_hits=%u events=%u\n",
+                    tag, pc32, insn, sp32, ra32,
+                    t->target_hits, t->events);
             m->wince_div_logs++;
         }
     }
+
     wince_div_call_step_log(m, uc, pc32, insn, sp32, ra32);
 
     if (pc32 == t->return_pc) {
