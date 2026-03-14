@@ -2496,7 +2496,8 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
             pc32 == 0x800A7DCCu ||
             pc32 == 0x8009689Cu ||
             pc32 == 0x800968C0u ||
-            pc32 == 0x800968E4u) {
+            pc32 == 0x800968E4u ||
+            pc32 == 0x800962B0u) {
             static uint32_t upstream_logs = 0;
             if (upstream_logs < 64u) {
                 uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, s0 = 0, t0 = 0;
@@ -2526,6 +2527,8 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
                     tag = "WINCE_DIV_MIDBODY_ENTRY_C0";
                 else if (pc32 == 0x800968E4u)
                     tag = "WINCE_DIV_MIDBODY_ENTRY_E4";
+                else if (pc32 == 0x800962B0u)
+                    tag = "WINCE_DIV_PRODUCER_FUNC";
                 fprintf(stderr,
                         "[%s] pc=0x%08X insn=0x%08X sp=0x%08X ra=0x%08X"
                         " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
@@ -2534,6 +2537,77 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
                         (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
                         (uint32_t)v0, (uint32_t)s0, (uint32_t)t0, t->events);
                 upstream_logs++;
+            }
+        }
+
+        /* --- Producer function 0x800962B0 reachability instrumentation --- */
+        if (pc32 == 0x800962B0u) {
+            /* One-shot live byte dump of producer window */
+            static bool producer_dump_done = false;
+            if (!producer_dump_done && m->cfg.log_wince_stall) {
+                producer_dump_done = true;
+                fprintf(stderr, "[NK_PRODUCER_DUMP] VA=0x800962B0..0x80096310:");
+                for (uint32_t va = 0x800962B0u; va < 0x80096310u; va += 4u) {
+                    uint32_t w = 0;
+                    uc_mem_read(uc, mips_sext(va), &w, sizeof(w));
+                    fprintf(stderr, " %08X", w);
+                }
+                fprintf(stderr, "\n");
+            }
+            /* Producer entry log */
+            static uint32_t producer_entry_logs = 0;
+            if (m->cfg.log_wince_stall && producer_entry_logs < 32u) {
+                uint64_t a0 = 0, v1 = 0, s0 = 0, t7 = 0, at = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                uc_reg_read(uc, UC_MIPS_REG_T7, &t7);
+                uc_reg_read(uc, UC_MIPS_REG_AT, &at);
+                fprintf(stderr,
+                        "[WINCE_DIV_PRODUCER_ENTRY] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " a0=0x%08X v1=0x%08X s0=0x%08X t7=0x%08X at=0x%08X"
+                        " branch_pred=%s\n",
+                        pc32, sp32, ra32,
+                        (uint32_t)a0, (uint32_t)v1, (uint32_t)s0,
+                        (uint32_t)t7, (uint32_t)at,
+                        ((uint32_t)t7 != (uint32_t)at) ? "SKIP(bne)" : "FALL");
+                producer_entry_logs++;
+            }
+        }
+
+        if (pc32 == 0x800962B8u) {
+            static uint32_t b8_logs = 0;
+            if (m->cfg.log_wince_stall && b8_logs < 32u) {
+                uint64_t t8 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_T8, &t8);
+                fprintf(stderr,
+                        "[WINCE_DIV_PRODUCER_PAST_BNE] pc=0x%08X t8(g9510)=0x%08X"
+                        " second_branch=%s\n",
+                        pc32, (uint32_t)t8,
+                        ((uint32_t)t8 != 0) ? "SKIP(bnezl)" : "FALL_TO_STORES");
+                b8_logs++;
+            }
+        }
+
+        if (pc32 == 0x800962D4u) {
+            static uint32_t store_logs = 0;
+            if (m->cfg.log_wince_stall && store_logs < 32u) {
+                uint64_t t0 = 0, a0 = 0, v1 = 0, at = 0;
+                uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+                uc_reg_read(uc, UC_MIPS_REG_AT, &at);
+                uint32_t a1_target = (uint32_t)at + 0x9508u;
+                fprintf(stderr,
+                        "[WINCE_DIV_PRODUCER_STORE] pc=0x%08X at=0x%08X"
+                        " t0(a1_arg)=0x%08X->0x%08X"
+                        " a0(a3_arg)=0x%08X->0x806794EC"
+                        " v1(obj)=0x%08X\n",
+                        pc32, (uint32_t)at,
+                        (uint32_t)t0, a1_target,
+                        (uint32_t)a0,
+                        (uint32_t)v1);
+                store_logs++;
             }
         }
 
