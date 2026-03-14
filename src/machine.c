@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <inttypes.h>
 #include "machine.h"
 #include "bus.h"
@@ -834,6 +835,8 @@ static void apply_wince_warm_profile(machine_t *m, const char *marker)
 #define WINCE_TRACE_STACK_PA_END   UINT32_C(0x00003820)
 #define WINCE_TRACE_CALLER_FRAME_PA_START UINT32_C(0x00001700)
 #define WINCE_TRACE_CALLER_FRAME_PA_END   UINT32_C(0x000017C0)
+#define WINCE_TRACE_S0_OBJ_PA_START UINT32_C(0x00001A80)
+#define WINCE_TRACE_S0_OBJ_PA_END   UINT32_C(0x00001B00)
 #define WINCE_TRACE_BOOTCTX_PA_START UINT32_C(0x00006000)
 #define WINCE_TRACE_BOOTCTX_PA_END   UINT32_C(0x00007000)
 #define WINCE_TRACE_BOOTPARAM0_PA_START UINT32_C(0x0001D000)
@@ -2009,6 +2012,15 @@ static bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
                     pa, pc, (unsigned)size, uval, tag);
             caller_frame_logs++;
         }
+    } else if (pa >= WINCE_TRACE_S0_OBJ_PA_START && pa < WINCE_TRACE_S0_OBJ_PA_END) {
+        static uint32_t s0_obj_logs = 0;
+        if (m->cfg.log_wince_stall && s0_obj_logs < 64u) {
+            fprintf(stderr,
+                    "[WINCE_DIV_S0_OBJ_WRITE] pa=0x%08X pc=0x%08X size=%u"
+                    " val=0x%016" PRIX64 "\n",
+                    pa, pc, (unsigned)size, uval);
+            s0_obj_logs++;
+        }
     }
 
     return true;
@@ -2527,10 +2539,42 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
 
         if (pc32 == 0x800968E4u) {
             static uint32_t e4_state_logs = 0;
+            static bool nk_dump_done = false;
             if (e4_state_logs < 32u) {
                 wince_div_log_resume_globals(m, uc, "WINCE_DIV_E4_STATE",
                                              pc32, sp32, ra32);
                 e4_state_logs++;
+            }
+            /* One-shot NK code/data dump for offline producer scan */
+            if (!nk_dump_done) {
+                nk_dump_done = true;
+                const uint32_t nk_dump_pa_start = UINT32_C(0x00060000);
+                const uint32_t nk_dump_pa_end   = UINT32_C(0x006A0000);
+                const uint32_t nk_dump_size = nk_dump_pa_end - nk_dump_pa_start;
+                uint8_t *nk_buf = malloc(nk_dump_size);
+                if (nk_buf) {
+                    uc_err de = uc_mem_read(uc, (uint64_t)nk_dump_pa_start + UINT64_C(0x80000000),
+                                            nk_buf, nk_dump_size);
+                    if (de == UC_ERR_OK) {
+                        FILE *fp = fopen("nk_code_dump.bin", "wb");
+                        if (fp) {
+                            fwrite(nk_buf, 1, nk_dump_size, fp);
+                            fclose(fp);
+                            fprintf(stderr,
+                                    "[NK_CODE_DUMP] dumped PA 0x%08X-0x%08X (%u bytes)"
+                                    " to nk_code_dump.bin\n",
+                                    nk_dump_pa_start, nk_dump_pa_end, nk_dump_size);
+                        } else {
+                            fprintf(stderr, "[NK_CODE_DUMP] fopen failed: %s\n",
+                                    strerror(errno));
+                        }
+                    } else {
+                        fprintf(stderr,
+                                "[NK_CODE_DUMP] uc_mem_read failed: %s\n",
+                                uc_strerror(de));
+                    }
+                    free(nk_buf);
+                }
             }
         }
 
@@ -9900,6 +9944,8 @@ machine_t *machine_create(const machine_config_t *cfg)
             { WINCE_TRACE_GATE_SRC_PA_START, WINCE_TRACE_GATE_SRC_PA_END - 1u, "gate_src" },
             { WINCE_TRACE_STACK_PA_START, WINCE_TRACE_STACK_PA_END - 1u, "stack" },
             { WINCE_TRACE_CALLER_FRAME_PA_START, WINCE_TRACE_CALLER_FRAME_PA_END - 1u, "caller_frame" },
+            { WINCE_TRACE_RESUME_GLOBAL_PA_START, WINCE_TRACE_RESUME_GLOBAL_PA_END - 1u, "resume_global" },
+            { WINCE_TRACE_S0_OBJ_PA_START, WINCE_TRACE_S0_OBJ_PA_END - 1u, "s0_obj" },
         };
         bool watch_ok = true;
         for (unsigned r = 0; r < sizeof(watch_ranges) / sizeof(watch_ranges[0]); r++) {
@@ -9929,7 +9975,8 @@ machine_t *machine_create(const machine_config_t *cfg)
                     " bootparam1=0x%08X-0x%08X"
                     " cb=0x%08X-0x%08X objptr=0x%08X-0x%08X obj=0x%08X-0x%08X gate=0x%08X-0x%08X"
                     " gate_src=0x%08X-0x%08X stack=0x%08X-0x%08X"
-                    " caller_frame=0x%08X-0x%08X aliases=5\n",
+                    " caller_frame=0x%08X-0x%08X"
+                    " resume_global=0x%08X-0x%08X s0_obj=0x%08X-0x%08X aliases=5\n",
                     WINCE_TRACE_VEC_PA_START, WINCE_TRACE_VEC_PA_END - 1u,
                     WINCE_TRACE_CTX_PA_START, WINCE_TRACE_CTX_PA_END - 1u,
                     WINCE_TRACE_BOOTCTX_PA_START, WINCE_TRACE_BOOTCTX_PA_END - 1u,
@@ -9941,7 +9988,9 @@ machine_t *machine_create(const machine_config_t *cfg)
                     WINCE_TRACE_GATE_PA_START, WINCE_TRACE_GATE_PA_END - 1u,
                     WINCE_TRACE_GATE_SRC_PA_START, WINCE_TRACE_GATE_SRC_PA_END - 1u,
                     WINCE_TRACE_STACK_PA_START, WINCE_TRACE_STACK_PA_END - 1u,
-                    WINCE_TRACE_CALLER_FRAME_PA_START, WINCE_TRACE_CALLER_FRAME_PA_END - 1u);
+                    WINCE_TRACE_CALLER_FRAME_PA_START, WINCE_TRACE_CALLER_FRAME_PA_END - 1u,
+                    WINCE_TRACE_RESUME_GLOBAL_PA_START, WINCE_TRACE_RESUME_GLOBAL_PA_END - 1u,
+                    WINCE_TRACE_S0_OBJ_PA_START, WINCE_TRACE_S0_OBJ_PA_END - 1u);
         }
     }
 
