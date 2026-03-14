@@ -824,6 +824,8 @@ static void apply_wince_warm_profile(machine_t *m, const char *marker)
 #define WINCE_TRACE_OBJPTR_PA_END   UINT32_C(0x00660040)
 #define WINCE_TRACE_OBJ_PA_START UINT32_C(0x0066BFC0)
 #define WINCE_TRACE_OBJ_PA_END   UINT32_C(0x00680000)
+#define WINCE_TRACE_RESUME_GLOBAL_PA_START UINT32_C(0x006794EC)
+#define WINCE_TRACE_RESUME_GLOBAL_PA_END   UINT32_C(0x00679514)
 #define WINCE_TRACE_GATE_PA_START UINT32_C(0x000795E8)
 #define WINCE_TRACE_GATE_PA_END   UINT32_C(0x00079604)
 #define WINCE_TRACE_GATE_SRC_PA_START UINT32_C(0x00E18C00)
@@ -1182,6 +1184,42 @@ static void wince_diag_format_va_word(machine_t *m, uc_engine *uc, uint32_t va,
     }
 
     snprintf(buf, buf_size, "0x%08X(pa=MISS,val=MISS)", va);
+}
+
+static void wince_div_log_resume_globals(machine_t *m, uc_engine *uc,
+                                         const char *tag,
+                                         uint32_t pc32, uint32_t sp32, uint32_t ra32)
+{
+    uint64_t s0 = 0, v0 = 0;
+    uint32_t g94ec = 0, g94f0 = 0, g9508 = 0, g9510 = 0;
+    bool ok94ec = false, ok94f0 = false, ok9508 = false, ok9510 = false;
+    char obj_desc[64];
+
+    if (!m || !uc || !tag)
+        return;
+
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    ok94ec = read_pa_u32_all_aliases(m, UINT32_C(0x006794EC), &g94ec);
+    ok94f0 = read_pa_u32_all_aliases(m, UINT32_C(0x006794F0), &g94f0);
+    ok9508 = read_pa_u32_all_aliases(m, UINT32_C(0x00679508), &g9508);
+    ok9510 = read_pa_u32_all_aliases(m, UINT32_C(0x00679510), &g9510);
+    wince_diag_format_va_word(m, uc, (uint32_t)s0 + UINT32_C(0x000002C0),
+                              obj_desc, sizeof(obj_desc));
+
+    fprintf(stderr,
+            "[%s] pc=0x%08X sp=0x%08X ra=0x%08X s0=0x%08X"
+            " s0_2c0=%s"
+            " g94ec=%s0x%08X g94f0=%s0x%08X"
+            " g9508=%s0x%08X g9510=%s0x%08X"
+            " v0=0x%08X\n",
+            tag, pc32, sp32, ra32, (uint32_t)s0,
+            obj_desc,
+            ok94ec ? "" : "ERR:", g94ec,
+            ok94f0 ? "" : "ERR:", g94f0,
+            ok9508 ? "" : "ERR:", g9508,
+            ok9510 ? "" : "ERR:", g9510,
+            (uint32_t)v0);
 }
 
 static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t phase)
@@ -1889,6 +1927,16 @@ static bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
                     pa, pc, (unsigned)size, uval);
             m->wince_pa_watch_logs++;
         }
+    } else if (pa >= WINCE_TRACE_RESUME_GLOBAL_PA_START &&
+               pa < WINCE_TRACE_RESUME_GLOBAL_PA_END) {
+        static uint32_t resume_global_logs = 0;
+        if (m->cfg.log_wince_stall && resume_global_logs < 64u) {
+            fprintf(stderr,
+                    "[WINCE_DIV_RESUME_GLOBAL_WRITE] pa=0x%08X pc=0x%08X"
+                    " size=%u val=0x%016" PRIX64 "\n",
+                    pa, pc, (unsigned)size, uval);
+            resume_global_logs++;
+        }
     } else if (pa >= WINCE_TRACE_OBJ_PA_START && pa < WINCE_TRACE_OBJ_PA_END) {
         bool is_zero = write_value_is_zero((unsigned)size, uval);
         m->wince_obj_writes++;
@@ -2474,6 +2522,40 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
                         (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
                         (uint32_t)v0, (uint32_t)s0, (uint32_t)t0, t->events);
                 upstream_logs++;
+            }
+        }
+
+        if (pc32 == 0x800968E4u) {
+            static uint32_t e4_state_logs = 0;
+            if (e4_state_logs < 32u) {
+                wince_div_log_resume_globals(m, uc, "WINCE_DIV_E4_STATE",
+                                             pc32, sp32, ra32);
+                e4_state_logs++;
+            }
+        }
+
+        if (pc32 == 0x80096908u) {
+            static uint32_t postcall_state_logs = 0;
+            if (postcall_state_logs < 32u) {
+                wince_div_log_resume_globals(m, uc, "WINCE_DIV_POSTCALL_STATE",
+                                             pc32, sp32, ra32);
+                postcall_state_logs++;
+            }
+        }
+
+        if (pc32 == 0x80096910u) {
+            static uint32_t callback_branch_logs = 0;
+            if (callback_branch_logs < 32u) {
+                uint64_t v0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                wince_div_log_resume_globals(m, uc, "WINCE_DIV_CALLBACK_STATE",
+                                             pc32, sp32, ra32);
+                fprintf(stderr,
+                        "[WINCE_DIV_CALLBACK_BRANCH] pc=0x%08X sp=0x%08X"
+                        " ra=0x%08X v0=0x%08X beql_taken=%u target=0x80096924\n",
+                        pc32, sp32, ra32, (uint32_t)v0,
+                        ((uint32_t)v0 == 0u) ? 1u : 0u);
+                callback_branch_logs++;
             }
         }
 
