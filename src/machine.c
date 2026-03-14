@@ -28,19 +28,9 @@ static inline bool is_wince_boot_cfg(const machine_config_t *cfg)
     return cfg != NULL && cfg->nand_path != NULL;
 }
 
-static inline bool use_warm_profile_cfg(const machine_config_t *cfg)
-{
-    return cfg != NULL && (cfg->nand_path != NULL || cfg->kernel_path != NULL);
-}
-
 static inline bool is_wince_boot_machine(const machine_t *m)
 {
     return m != NULL && is_wince_boot_cfg(&m->cfg);
-}
-
-static inline bool use_warm_profile_machine(const machine_t *m)
-{
-    return m != NULL && use_warm_profile_cfg(&m->cfg);
 }
 
 #define VR4131_PCLK_HZ      UINT64_C(166000000)
@@ -5526,7 +5516,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         return;
     }
 
-    if (use_warm_profile_machine(m) && (insn & 0xFFE0FFFFu) == 0x40008000u) {
+    if (is_wince_boot_machine(m) && (insn & 0xFFE0FFFFu) == 0x40008000u) {
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t config = VR4131_CONFIG;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &config);
@@ -5535,7 +5525,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         return;
     }
 
-    if (use_warm_profile_machine(m) && (insn & 0xFFE0FFFFu) == 0x40003000u) {
+    if (is_wince_boot_machine(m) && (insn & 0xFFE0FFFFu) == 0x40003000u) {
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t wired = VR4131_WIRED;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &wired);
@@ -5544,7 +5534,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         return;
     }
 
-    if (use_warm_profile_machine(m) && (insn & 0xFFE0FFFFu) == 0x40005800u) {
+    if (is_wince_boot_machine(m) && (insn & 0xFFE0FFFFu) == 0x40005800u) {
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t compare = m->cp0_compare_shadow_valid
             ? (uint64_t)m->cp0_compare_shadow
@@ -8683,10 +8673,9 @@ machine_t *machine_create(const machine_config_t *cfg)
 
     m->cfg = *cfg;
     bool wince_boot = is_wince_boot_cfg(cfg);
-    bool warm_profile = use_warm_profile_cfg(cfg);
-    m->cp0_count_base = warm_profile ? VR4131_COUNT_WARM : 0u;
-    m->cp0_compare_shadow = warm_profile ? VR4131_COMPARE_WARM : 0u;
-    m->cp0_compare_shadow_valid = warm_profile;
+    m->cp0_count_base = wince_boot ? VR4131_COUNT_WARM : 0u;
+    m->cp0_compare_shadow = wince_boot ? VR4131_COMPARE_WARM : 0u;
+    m->cp0_compare_shadow_valid = wince_boot;
     if (m->cfg.sdram_size == 0)
         m->cfg.sdram_size = 16u * 1024u * 1024u;   /* 16 MB default */
 
@@ -9143,7 +9132,9 @@ machine_t *machine_create(const machine_config_t *cfg)
             m->has_jiffies_pa = false;
         }
 
-        apply_wince_warm_profile(m, "LINUX_WARM_PROFILE");
+        fprintf(stderr,
+                "[LINUX_LEGACY_PROFILE] STATUS=0x00400004 COUNT=0x%08X COMPARE_VALID=%u\n",
+                m->cp0_count_base, m->cp0_compare_shadow_valid ? 1u : 0u);
 
         /*
          * MIPS Linux prom_init() calling convention (linux4.be / arch/mips/vr41xx):
