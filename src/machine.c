@@ -647,12 +647,18 @@ static void seed_wince_kdata(machine_t *m)
      * path at 0x80096894. That resumed path later expects the function's
      * saved s0/ra slots to exist at PA 0x1760/0x1764, but the post-boot
      * probe did not capture that stack window. Reconstruct the two slots
-     * the skipped prologue would have written from the same context:
-     *   sw s0, 0x20(sp)
-     *   sw ra, 0x24(sp)
+     * the skipped prologue would have written:
+     *   sw s0, 0x20(sp)   → frame_s0_pa = ctx_s0
+     *   sw ra, 0x24(sp)   → frame_ra_pa = real caller return address
      *
-     * Keep this narrowly gated to the observed context values from the
-     * hardware probe so it does not become a broad behavior-forcing path.
+     * The ctx_ra from the KData context (0x80096894) is the resume PC
+     * within the function — NOT the function's saved return address.
+     * The actual caller is at VA 0x8008B6B8 (JAL 0x800967FC), so the
+     * correct frame ra is the return address 0x8008B6C0.
+     *
+     * Previously, seeding ctx_ra into the frame caused the function to
+     * "return" into its own mid-body, creating an infinite loop that
+     * consumed stack until ra=0 → crash.
      */
     {
         uint32_t ctx_s0 = 0;
@@ -667,13 +673,18 @@ static void seed_wince_kdata(machine_t *m)
             ctx_ra == UINT32_C(0x80096894)) {
             uint32_t frame_s0_pa = UINT32_C(0x00001760);
             uint32_t frame_ra_pa = UINT32_C(0x00001764);
+            /* Use the real caller's return address, not the context resume PC.
+             * VA 0x8008B6B8: JAL 0x800967FC  → return addr = 0x8008B6C0 */
+            uint32_t real_caller_ra = UINT32_C(0x8008B6C0);
             write_pa_u32_all_aliases(m, frame_s0_pa, ctx_s0);
-            write_pa_u32_all_aliases(m, frame_ra_pa, ctx_ra);
+            write_pa_u32_all_aliases(m, frame_ra_pa, real_caller_ra);
             fprintf(stderr,
                     "[WINCE_KDATA_CTX_FRAME_SEED] ctx_s0=0x%08X"
                     " ctx_sp=0x%08X ctx_ra=0x%08X"
-                    " frame_s0_pa=0x%08X frame_ra_pa=0x%08X\n",
-                    ctx_s0, ctx_sp, ctx_ra, frame_s0_pa, frame_ra_pa);
+                    " frame_s0_pa=0x%08X frame_ra_pa=0x%08X"
+                    " real_caller_ra=0x%08X\n",
+                    ctx_s0, ctx_sp, ctx_ra,
+                    frame_s0_pa, frame_ra_pa, real_caller_ra);
         } else {
             fprintf(stderr,
                     "[WINCE_KDATA_CTX_FRAME_SEED] skipped"
@@ -2716,6 +2727,112 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
                         (uint32_t)t6r, (uint32_t)t7r);
                 twin_entry_logs++;
             }
+        }
+
+        /* --- Corridor outer function entry at 0x800967FC --- */
+        if (pc32 == 0x800967FCu) {
+            static uint32_t outer_call_count = 0;
+            outer_call_count++;
+            static uint32_t outer_entry_logs = 0;
+            if (outer_entry_logs < 32u) {
+                uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                fprintf(stderr,
+                        "[CORRIDOR_FUNC_ENTRY] call#%u pc=0x%08X ra=0x%08X sp=0x%08X"
+                        " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X\n",
+                        outer_call_count, pc32, ra32, sp32,
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3);
+                outer_entry_logs++;
+            }
+        }
+
+        /* --- Corridor ra restore at 0x80096924 (lw ra, 0x24(sp)) --- */
+        if (pc32 == 0x80096924u) {
+            static uint32_t ra_restore_logs = 0;
+            if (ra_restore_logs < 32u) {
+                /* Read the value that will be loaded into ra from sp+0x24 */
+                uint32_t saved_ra = 0;
+                bool saved_ra_ok = (uc_mem_read(uc, mips_sext(sp32 + 0x24u), &saved_ra, 4) == UC_ERR_OK);
+                uint32_t saved_s0 = 0;
+                bool saved_s0_ok = (uc_mem_read(uc, mips_sext(sp32 + 0x20u), &saved_s0, 4) == UC_ERR_OK);
+                fprintf(stderr,
+                        "[CORRIDOR_RA_RESTORE] pc=0x%08X sp=0x%08X"
+                        " [sp+0x24]=%s0x%08X [sp+0x20]=%s0x%08X"
+                        " current_ra=0x%08X\n",
+                        pc32, sp32,
+                        saved_ra_ok ? "" : "ERR:", saved_ra,
+                        saved_s0_ok ? "" : "ERR:", saved_s0,
+                        ra32);
+                ra_restore_logs++;
+                /* If saved ra is zero, dump the full stack frame */
+                if (saved_ra == 0u) {
+                    fprintf(stderr, "[CORRIDOR_RA_RESTORE_ZERO] sp=0x%08X:", sp32);
+                    for (uint32_t off = 0; off < 64u; off += 4u) {
+                        uint32_t w = 0;
+                        if (uc_mem_read(uc, mips_sext(sp32 + off), &w, 4) == UC_ERR_OK)
+                            fprintf(stderr, " [+%02X]=0x%08X", off, w);
+                        else
+                            fprintf(stderr, " [+%02X]=ERR", off);
+                    }
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
+
+        /* --- Corridor jr $ra at 0x80096928 --- */
+        if (pc32 == 0x80096928u) {
+            static uint32_t jr_ra_logs = 0;
+            if (jr_ra_logs < 32u) {
+                fprintf(stderr,
+                        "[CORRIDOR_JR_RA] pc=0x%08X ra=0x%08X sp=0x%08X%s\n",
+                        pc32, ra32, sp32,
+                        (ra32 == 0u) ? " *** RA IS ZERO — WILL CRASH ***" : "");
+                jr_ra_logs++;
+            }
+        }
+
+        /* --- Corridor 0x800968E4 inner return point tracker --- */
+        if (pc32 == 0x800968E4u) {
+            static uint32_t corridor_call_count = 0;
+            corridor_call_count++;
+
+            /* Read caller instruction at ra-8 (JAL/JALR site) and ra-4 (delay slot) */
+            uint32_t caller_insn = 0, delay_insn = 0;
+            bool caller_insn_ok = false, delay_insn_ok = false;
+            if (ra32 >= 8u && ra32 >= 0x80000000u) {
+                caller_insn_ok = (uc_mem_read(uc, mips_sext(ra32 - 8u), &caller_insn, 4) == UC_ERR_OK);
+                delay_insn_ok  = (uc_mem_read(uc, mips_sext(ra32 - 4u), &delay_insn, 4) == UC_ERR_OK);
+            }
+
+            /* Always log first 16 calls; after that, log only when ra changes or ra==0 */
+            static uint32_t corridor_ra_prev = 0xDEADBEEF;
+            bool should_log = (corridor_call_count <= 16u) ||
+                              (ra32 == 0u) ||
+                              (ra32 != corridor_ra_prev);
+            static uint32_t corridor_entry_logs = 0;
+            if (should_log && corridor_entry_logs < 128u) {
+                uint64_t a0 = 0, a1 = 0, v0 = 0, s0 = 0, s1 = 0, t9 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+                uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
+                fprintf(stderr,
+                        "[CORRIDOR_ENTRY] call#%u pc=0x%08X ra=0x%08X sp=0x%08X"
+                        " a0=0x%08X a1=0x%08X v0=0x%08X s0=0x%08X s1=0x%08X t9=0x%08X"
+                        " caller_insn=%s0x%08X delay=%s0x%08X\n",
+                        corridor_call_count, pc32, ra32, sp32,
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)v0,
+                        (uint32_t)s0, (uint32_t)s1, (uint32_t)t9,
+                        caller_insn_ok ? "" : "ERR:", caller_insn,
+                        delay_insn_ok ? "" : "ERR:", delay_insn);
+                corridor_entry_logs++;
+            }
+            corridor_ra_prev = ra32;
         }
 
         /* --- One-shot function pointer table dump + callback ptr check --- */
