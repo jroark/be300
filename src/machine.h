@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
 #include <unicorn/unicorn.h>
 
 #include "hw/bcu.h"
@@ -617,6 +619,27 @@ static inline bool va_to_pa_kseg(uint64_t va, uint64_t *pa_out)
         return true;
     }
     return false;
+}
+
+static inline void format_hex_bytes(const uint8_t *buf, size_t len,
+                                    char *out, size_t out_sz)
+{
+    size_t pos = 0;
+    if (out_sz == 0)
+        return;
+    out[0] = '\0';
+    for (size_t i = 0; i < len; i++) {
+        if (pos + 4 >= out_sz)
+            break;
+        int n = snprintf(out + pos, out_sz - pos, "%02X", buf[i]);
+        if (n <= 0)
+            break;
+        pos += (size_t)n;
+        if (i + 1 < len && pos + 2 < out_sz)
+            out[pos++] = ' ';
+    }
+    if (pos < out_sz)
+        out[pos] = '\0';
 }
 
 static inline bool is_wince_boot_cfg(const machine_config_t *cfg)
