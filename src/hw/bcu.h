@@ -30,6 +30,7 @@ typedef struct {
     uint16_t io0sizereg;
     uint16_t io0speedreg;
     uint16_t io1speedreg;
+    uint16_t revidreg;
     uint16_t clkspeedreg;
 } bcu_state_t;
 

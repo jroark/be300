@@ -1,0 +1,1 @@
+#define CONFIG_CPU_VR41XX 1

@@ -1,0 +1,25 @@
+/Kconfig/1.9/Fri Apr 23 15:54:11 2004/-ko/D2004.08.13.07.00.00
+/Kconfig_block/1.2/Mon Jun  2 13:54:09 2003/-ko/D2004.08.13.07.00.00
+/Kconfig_char/1.2/Mon Jun  2 13:54:09 2003/-ko/D2004.08.13.07.00.00
+/Kconfig_net/1.2/Mon Jun  2 13:54:09 2003/-ko/D2004.08.13.07.00.00
+/Kconfig_scsi/1.1/Sat Nov  2 20:01:56 2002/-ko/D2004.08.13.07.00.00
+/Makefile/1.10/Fri Aug 15 15:14:32 2003/-ko/D2004.08.13.07.00.00
+/Makefile-i386/1.4/Mon Jun  2 13:54:09 2003/-ko/D2004.08.13.07.00.00
+/Makefile-ia64/1.1/Thu Oct 31 20:59:34 2002/-ko/D2004.08.13.07.00.00
+/Makefile-os-Linux/1.2/Fri Nov  1 19:20:32 2002/-ko/D2004.08.13.07.00.00
+/Makefile-ppc/1.1/Thu Oct 31 20:59:34 2002/-ko/D2004.08.13.07.00.00
+/Makefile-skas/1.1/Wed Jun  4 14:05:41 2003/-ko/D2004.08.13.07.00.00
+/Makefile-tt/1.1/Wed Jun  4 14:05:41 2003/-ko/D2004.08.13.07.00.00
+/config.release/1.2/Fri Aug 15 15:14:32 2003/-ko/D2004.08.13.07.00.00
+/defconfig/1.6/Fri Aug 15 15:14:32 2003/-ko/D2004.08.13.07.00.00
+/dyn.lds.S/1.1/Wed Jun  4 14:05:41 2003/-ko/D2004.08.13.07.00.00
+/main.c/1.4/Wed Jun  4 14:05:41 2003/-ko/D2004.08.13.07.00.00
+/uml.lds.S/1.6/Wed Jun  4 14:05:41 2003/-ko/D2004.08.13.07.00.00
+D/drivers////
+D/include////
+D/kernel////
+D/os-Linux////
+D/sys-i386////
+D/sys-ia64////
+D/sys-ppc////
+D/util////

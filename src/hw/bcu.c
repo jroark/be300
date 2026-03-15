@@ -1,5 +1,45 @@
 #include <stdio.h>
+#include <string.h>
 #include "bcu.h"
+
+#define BCU_WINDOW_SIZE 0x20u
+
+static inline void bcu_put_u16(uint8_t *buf, uint32_t off, uint16_t v)
+{
+    buf[off + 0u] = (uint8_t)(v & 0xFFu);
+    buf[off + 1u] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+static inline uint16_t bcu_get_u16(const uint8_t *buf, uint32_t off)
+{
+    return (uint16_t)(buf[off + 0u] | ((uint16_t)buf[off + 1u] << 8));
+}
+
+static void bcu_serialize_window(const bcu_state_t *s, uint8_t *buf)
+{
+    memset(buf, 0, BCU_WINDOW_SIZE);
+    bcu_put_u16(buf, BCU_BCUCNTREG1,  s->bcucntreg1);
+    bcu_put_u16(buf, BCU_BCUCNTREG2,  s->bcucntreg2);
+    bcu_put_u16(buf, BCU_ROMSIZEREG,  s->romsizereg);
+    bcu_put_u16(buf, BCU_ROMSPEEDREG, s->romspeedreg);
+    bcu_put_u16(buf, BCU_IO0SIZEREG,  s->io0sizereg);
+    bcu_put_u16(buf, BCU_IO0SPEEDREG, s->io0speedreg);
+    bcu_put_u16(buf, BCU_IO1SPEEDREG, s->io1speedreg);
+    bcu_put_u16(buf, BCU_REVIDREG,    s->revidreg);
+    bcu_put_u16(buf, BCU_CLKSPEEDREG, s->clkspeedreg);
+}
+
+static void bcu_apply_window_writes(bcu_state_t *s, const uint8_t *buf)
+{
+    s->bcucntreg1  = bcu_get_u16(buf, BCU_BCUCNTREG1);
+    s->bcucntreg2  = bcu_get_u16(buf, BCU_BCUCNTREG2);
+    s->romsizereg  = bcu_get_u16(buf, BCU_ROMSIZEREG);
+    s->romspeedreg = bcu_get_u16(buf, BCU_ROMSPEEDREG);
+    s->io0sizereg  = bcu_get_u16(buf, BCU_IO0SIZEREG);
+    s->io0speedreg = bcu_get_u16(buf, BCU_IO0SPEEDREG);
+    s->io1speedreg = bcu_get_u16(buf, BCU_IO1SPEEDREG);
+    s->clkspeedreg = bcu_get_u16(buf, BCU_CLKSPEEDREG);
+}
 
 void bcu_init(bcu_state_t *s)
 {
@@ -10,44 +50,39 @@ void bcu_init(bcu_state_t *s)
     s->io0sizereg  = 0x0000;
     s->io0speedreg = 0x00FF;
     s->io1speedreg = 0x00FF;
-    s->clkspeedreg = 0x0000;
+    s->revidreg    = BCU_REVID_VR4131;
+    /* CLKSPEEDREG reflects hardware pin strapping. */
+    s->clkspeedreg = 0x020F;
 }
 
 uint32_t bcu_read(bcu_state_t *s, uint32_t offset, unsigned size)
 {
-    (void)size;
-    switch (offset) {
-    case BCU_BCUCNTREG1:  return s->bcucntreg1;
-    case BCU_BCUCNTREG2:  return s->bcucntreg2;
-    case BCU_ROMSIZEREG:  return s->romsizereg;
-    case BCU_ROMSPEEDREG: return s->romspeedreg;
-    case BCU_IO0SIZEREG:  return s->io0sizereg;
-    case BCU_IO0SPEEDREG: return s->io0speedreg;
-    case BCU_IO1SPEEDREG: return s->io1speedreg;
-    case BCU_REVIDREG:    return BCU_REVID_VR4131;
-    case BCU_CLKSPEEDREG: return s->clkspeedreg;
-    default:
-        fprintf(stderr, "[BCU] Unhandled read offset 0x%02X\n", offset);
+    uint8_t window[BCU_WINDOW_SIZE];
+    uint32_t val = 0;
+
+    if (size == 0u || size > 4u || (uint64_t)offset + size > BCU_WINDOW_SIZE)
         return 0;
-    }
+
+    bcu_serialize_window(s, window);
+    for (unsigned i = 0; i < size; i++)
+        val |= (uint32_t)window[offset + i] << (i * 8u);
+    return val;
 }
 
 void bcu_write(bcu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
 {
-    (void)size;
-    switch (offset) {
-    case BCU_BCUCNTREG1:  s->bcucntreg1  = (uint16_t)val; break;
-    case BCU_BCUCNTREG2:  s->bcucntreg2  = (uint16_t)val; break;
-    case BCU_ROMSIZEREG:  s->romsizereg  = (uint16_t)val; break;
-    case BCU_ROMSPEEDREG: s->romspeedreg = (uint16_t)val; break;
-    case BCU_IO0SIZEREG:  s->io0sizereg  = (uint16_t)val; break;
-    case BCU_IO0SPEEDREG: s->io0speedreg = (uint16_t)val; break;
-    case BCU_IO1SPEEDREG: s->io1speedreg = (uint16_t)val; break;
-    case BCU_REVIDREG:    /* read-only */ break;
-    case BCU_CLKSPEEDREG: s->clkspeedreg = (uint16_t)val; break;
-    default:
-        fprintf(stderr, "[BCU] Unhandled write offset 0x%02X = 0x%04X\n",
-                offset, val);
-        break;
-    }
+    uint8_t window[BCU_WINDOW_SIZE];
+    uint16_t old_revid;
+
+    if (size == 0u || size > 4u || (uint64_t)offset + size > BCU_WINDOW_SIZE)
+        return;
+
+    bcu_serialize_window(s, window);
+    old_revid = s->revidreg;
+    for (unsigned i = 0; i < size; i++)
+        window[offset + i] = (uint8_t)((val >> (i * 8u)) & 0xFFu);
+
+    /* REVIDREG is read-only. */
+    bcu_put_u16(window, BCU_REVIDREG, old_revid);
+    bcu_apply_window_writes(s, window);
 }
