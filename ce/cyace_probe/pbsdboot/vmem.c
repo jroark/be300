@@ -478,9 +478,10 @@ vmem_init(caddr_t start, caddr_t end)
   npages += (nleaves = ((npages * sizeof(caddr_t) + getpagesize()) / getpagesize()));
 
   /*
-   *  map root page, startprg code page, argument page and bootinfo page.
+   *  map root page, startprg code page, argument page, bootinfo page,
+   *  and the fixed probe block page used by cyace_probe.
    */
-  npages += 4;
+  npages += 5;
 
   // allocate an array of page Physical Frame Numbers
   // representing the CPU-dependent physical addresses of the pages.
