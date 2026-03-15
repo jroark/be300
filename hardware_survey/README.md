@@ -85,7 +85,7 @@ Use the same eVC3 project flow as above, but add `be300_probe_v3.cpp` instead of
    - `Yes` = `Cold battery boot`
    - `No` = `Warm retained boot`
    - `Cancel` = `Unknown`
-4. Wait for the completion message box.
+4. If the system remains responsive, wait for the completion message box.
 5. Copy back the generated report from the same directory as the EXE.
 
 The output file is no longer hardcoded to root. It is created beside the EXE with a unique name per run:
@@ -126,6 +126,79 @@ The v3 report uses a hybrid logging model so it completes in practice on hardwar
 2. Warm-retained boot, then run `BE300Probe_v3` once.
 3. Repeat each mode multiple times and keep the boot tag with each returned report.
 4. You can leave multiple runs in the same directory; each run generates a distinct filename instead of overwriting the previous result.
+
+`be300_probe_v3.cpp` is now the heavier legacy probe. Returned runs showed that it still tends to:
+
+- fault on the broad `0x0F000000..0x0F000FFF` capture at `0x0F000200`
+- finish as `PARTIAL_ERROR`
+- leave low-value shell-facing overhead in the storage-manager / filesystem sections
+
+Use it only if you specifically want the older broader behavior.
+
+---
+
+## Post-Boot Probe Utility v4
+
+For the recommended stock-shell hardware survey pass, use `be300_probe_v4.cpp`.
+
+### Build
+
+Use the same eVC3 project flow as above, but add `be300_probe_v4.cpp` instead of `main.cpp`.
+
+### Run / Output
+
+1. Copy the built EXE to the BE-300.
+2. Run it as early as practical after WinCE becomes usable.
+3. At startup, choose the boot tag:
+   - `Yes` = `Cold battery boot`
+   - `No` = `Warm retained boot`
+   - `Cancel` = `Unknown`
+4. The report is written beside the EXE with a unique name per run:
+   - `BE300Probe_v4_cold_<tick>.txt`
+   - `BE300Probe_v4_warm_<tick>.txt`
+   - `BE300Probe_v4_unknown_<tick>.txt`
+5. On success, the probe exits without a completion message box. A message box is only used for the startup prompt and hard file-creation failure.
+
+The output includes the same fixed sections as v3:
+
+- `--- RUN METADATA ---`
+- `--- EARLY SNAPSHOT ---`
+- `--- SETTLE SNAPSHOT ---`
+- `--- NAND WORKLOAD ---`
+- `--- STORAGE WORKLOAD ---`
+- `--- POST SNAPSHOT ---`
+- `--- DIFF SUMMARY ---`
+- `--- DRIVER INVENTORY ---`
+- `--- STORAGE MANAGER ---`
+- `--- FILESYSTEM ROOTS ---`
+
+### Why v4 is the recommended stock-shell probe
+
+`be300_probe_v4.cpp` trims the behaviors that proved noisy or destabilizing in v3:
+
+- replaces the faulting full `0x0F000000 size=0x1000` capture with two targeted safe windows:
+  - `0x0F000000 size=0x0020`
+  - `0x0F000080 size=0x00A0`
+- flushes output incrementally so a hang is more likely to leave a readable partial text report
+- reduces both NAND and storage workloads to 3 loops
+- searches `\Nand Disk`, `\Storage Card`, `\CF Card`, and `\PC Card` recursively up to depth 3 for the first regular file
+- keeps filesystem listings shallow:
+  - root existence
+  - first 8 entries only
+- keeps registry inventory shallow:
+  - key names
+  - value names
+  - DWORD/string data
+  - one subkey level
+
+### Intended Use
+
+`be300_probe_v4.cpp` is the supported baseline for stock WinCE shell runs and cold-vs-warm comparison. The preferred workflow is:
+
+1. Run v4 on battery-disconnect boots.
+2. Run v4 on warm-retained boots.
+3. Preserve each returned report separately.
+4. Treat BE Shell or other community shell environments as best-effort only.
 
 ---
 
