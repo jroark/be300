@@ -20,6 +20,7 @@ typedef DWORD (*SETPROCPERMISSIONS)(DWORD);
 #define STORAGE_READ_LOOPS       10
 #define MAX_REG_DUMP_DEPTH       4
 #define MAX_DIR_ENTRIES          128
+#define LARGE_DIFF_LOG_LIMIT     32
 #define UTF16_HINT_PA            0x006794E0u
 #define UTF16_HINT_SIZE          0x40u
 
@@ -44,6 +45,12 @@ typedef struct {
     const char *alias;
 } focus_word_t;
 
+typedef struct {
+    DWORD base;
+    DWORD size;
+    const char *label;
+} focus_dump_t;
+
 static const char *g_phase_names[SNAP_COUNT] = {
     "early",
     "settle",
@@ -53,6 +60,9 @@ static const char *g_phase_names[SNAP_COUNT] = {
 static HANDLE g_hFile = INVALID_HANDLE_VALUE;
 static BOOL g_had_error = FALSE;
 static char g_boot_tag[64] = "Unknown";
+static WCHAR g_output_path[MAX_PATH];
+static char g_output_path_a[MAX_PATH];
+static BOOL g_output_fallback_root = FALSE;
 
 static probe_region_t g_regions[] = {
     { "kdata_page",                0x00002000, 0x1000, {FALSE, FALSE, FALSE}, {{0}, {0}, {0}} },
@@ -102,6 +112,12 @@ static const focus_word_t g_focus_words[] = {
     { 0x00679510, "g9510",                    "0x80679510" }
 };
 
+static const focus_dump_t g_focus_dumps[] = {
+    { 0x0A000C00, 0x0050, "nand_c_window" },
+    { 0x0F000080, 0x00A0, "vr4131_icu_pmu_window" },
+    { 0x006794E0, 0x0040, "callback_utf16_window" }
+};
+
 static void Log(const char *fmt, ...)
 {
     if (g_hFile == INVALID_HANDLE_VALUE)
@@ -142,6 +158,16 @@ static void CopyWide(WCHAR *dst, DWORD dst_cch, const WCHAR *src)
     dst[i] = L'\0';
 }
 
+static DWORD WideLen(const WCHAR *src)
+{
+    DWORD len = 0;
+    if (!src)
+        return 0;
+    while (src[len] != L'\0')
+        len++;
+    return len;
+}
+
 static void CopyAnsi(char *dst, DWORD dst_cch, const char *src)
 {
     DWORD i = 0;
@@ -173,6 +199,24 @@ static void WideToAnsi(const WCHAR *src, char *dst, int dst_size)
             _snprintf(dst, dst_size - 1, "<conv-failed>");
     }
     dst[dst_size - 1] = '\0';
+}
+
+static const char *GetBootTagShortAnsi(void)
+{
+    if (strcmp(g_boot_tag, "Cold battery boot") == 0)
+        return "cold";
+    if (strcmp(g_boot_tag, "Warm retained boot") == 0)
+        return "warm";
+    return "unknown";
+}
+
+static const WCHAR *GetBootTagShortWide(void)
+{
+    if (strcmp(g_boot_tag, "Cold battery boot") == 0)
+        return L"cold";
+    if (strcmp(g_boot_tag, "Warm retained boot") == 0)
+        return L"warm";
+    return L"unknown";
 }
 
 static void WideBytesToAnsi(const WCHAR *src, DWORD src_wchars_max, char *dst, int dst_size, BOOL *truncated)
@@ -243,6 +287,89 @@ static DWORD Crc32(const BYTE *data, DWORD size)
         }
     }
     return ~crc;
+}
+
+static BOOL DeriveExeDirectory(const WCHAR *exe_path, WCHAR *out_dir, DWORD out_cch)
+{
+    DWORD len = 0;
+    DWORD last_sep = (DWORD)-1;
+    DWORD i = 0;
+
+    if (!exe_path || !out_dir || out_cch == 0 || exe_path[0] == L'\0')
+        return FALSE;
+
+    len = WideLen(exe_path);
+    for (i = 0; i < len; i++) {
+        if (exe_path[i] == L'\\' || exe_path[i] == L'/')
+            last_sep = i;
+    }
+
+    if (last_sep == (DWORD)-1)
+        return FALSE;
+
+    if (last_sep == 0) {
+        CopyWide(out_dir, out_cch, L"\\");
+        return TRUE;
+    }
+
+    if (last_sep + 1 > out_cch)
+        return FALSE;
+
+    for (i = 0; i < last_sep; i++)
+        out_dir[i] = exe_path[i];
+    out_dir[last_sep] = L'\0';
+    return TRUE;
+}
+
+static BOOL OpenOutputFile(void)
+{
+    WCHAR exe_path[MAX_PATH];
+    WCHAR out_dir[MAX_PATH];
+    WCHAR candidate[MAX_PATH];
+    DWORD exe_len = 0;
+    DWORD tick = 0;
+    int suffix = 0;
+    const WCHAR *tag_w = GetBootTagShortWide();
+
+    g_output_path[0] = L'\0';
+    g_output_path_a[0] = '\0';
+    g_output_fallback_root = FALSE;
+
+    exe_len = GetModuleFileName(NULL, exe_path, MAX_PATH);
+    if (exe_len == 0 || exe_len >= MAX_PATH || !DeriveExeDirectory(exe_path, out_dir, MAX_PATH)) {
+        CopyWide(out_dir, MAX_PATH, L"\\");
+        g_output_fallback_root = TRUE;
+    }
+
+    tick = GetTickCount();
+    for (suffix = 0; suffix < 100; suffix++) {
+        if (out_dir[0] == L'\\' && out_dir[1] == L'\0') {
+            if (suffix == 0)
+                wsprintf(candidate, L"\\BE300Probe_v3_%s_%lu.txt", tag_w, tick);
+            else
+                wsprintf(candidate, L"\\BE300Probe_v3_%s_%lu_%02d.txt", tag_w, tick, suffix);
+        } else {
+            if (suffix == 0)
+                wsprintf(candidate, L"%s\\BE300Probe_v3_%s_%lu.txt", out_dir, tag_w, tick);
+            else
+                wsprintf(candidate, L"%s\\BE300Probe_v3_%s_%lu_%02d.txt", out_dir, tag_w, tick, suffix);
+        }
+
+        g_hFile = CreateFile(candidate, GENERIC_WRITE, 0, NULL,
+                             CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (g_hFile != INVALID_HANDLE_VALUE) {
+            CopyWide(g_output_path, MAX_PATH, candidate);
+            WideToAnsi(g_output_path, g_output_path_a, sizeof(g_output_path_a));
+            return TRUE;
+        }
+
+        if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS)
+            break;
+    }
+
+    CopyWide(g_output_path, MAX_PATH, candidate);
+    WideToAnsi(g_output_path, g_output_path_a, sizeof(g_output_path_a));
+    return FALSE;
 }
 
 static void EnableKernelAccess(void)
@@ -377,25 +504,47 @@ static BOOL SafeReadPhysicalBytes(DWORD phys_addr, BYTE *out, DWORD size)
     return ok;
 }
 
+static void DumpWordWindow(const BYTE *data, DWORD window_base, DWORD window_size)
+{
+    DWORD off = 0;
+    while (off + 16u <= window_size) {
+        DWORD w0 = ReadLE32(data + off + 0);
+        DWORD w1 = ReadLE32(data + off + 4);
+        DWORD w2 = ReadLE32(data + off + 8);
+        DWORD w3 = ReadLE32(data + off + 12);
+        Log("0x%08X: %08X %08X %08X %08X\r\n",
+            window_base + off, w0, w1, w2, w3);
+        off += 16u;
+    }
+}
+
+static void DumpFocusedWindows(const probe_region_t *r, snapshot_phase_t phase)
+{
+    int i = 0;
+    const BYTE *data = r->data[phase];
+    for (i = 0; i < (int)(sizeof(g_focus_dumps) / sizeof(g_focus_dumps[0])); i++) {
+        const focus_dump_t *f = &g_focus_dumps[i];
+        if (f->base < r->base || f->base + f->size > r->base + r->size)
+            continue;
+        Log("[FOCUS_DUMP] phase=%s region=%s label=%s PA=0x%08X size=0x%04X\r\n",
+            g_phase_names[phase], r->name, f->label, f->base, f->size);
+        DumpWordWindow(data + (f->base - r->base), f->base, f->size);
+    }
+}
+
 static void DumpRegionWords(const probe_region_t *r, snapshot_phase_t phase)
 {
     const BYTE *data = r->data[phase];
-    DWORD off = 0;
     DWORD crc = Crc32(data, r->size);
 
     Log("[REGION] phase=%s name=%s PA=0x%08X size=0x%04X status=%s crc32=0x%08X\r\n",
         g_phase_names[phase], r->name, r->base, r->size,
         r->ok[phase] ? "OK" : "PARTIAL", crc);
 
-    while (off + 16u <= r->size) {
-        DWORD w0 = ReadLE32(data + off + 0);
-        DWORD w1 = ReadLE32(data + off + 4);
-        DWORD w2 = ReadLE32(data + off + 8);
-        DWORD w3 = ReadLE32(data + off + 12);
-        Log("0x%08X: %08X %08X %08X %08X\r\n",
-            r->base + off, w0, w1, w2, w3);
-        off += 16u;
-    }
+    if (r->size <= 0x0200u)
+        DumpWordWindow(data, r->base, r->size);
+    else
+        DumpFocusedWindows(r, phase);
 }
 
 static void CaptureSnapshot(snapshot_phase_t phase)
@@ -503,7 +652,9 @@ static void EmitPairDiffs(const char *pair_name, snapshot_phase_t from_phase, sn
     for (i = 0; i < (int)(sizeof(g_regions) / sizeof(g_regions[0])); i++) {
         probe_region_t *r = &g_regions[i];
         DWORD changed = 0;
+        DWORD logged = 0;
         DWORD off = 0;
+        BOOL truncated = FALSE;
 
         if (!r->ok[from_phase] || !r->ok[to_phase]) {
             Log("[DIFF_REGION] pair=%s name=%s skipped from_ok=%u to_ok=%u\r\n",
@@ -517,18 +668,26 @@ static void EmitPairDiffs(const char *pair_name, snapshot_phase_t from_phase, sn
             DWORD before = ReadLE32(r->data[from_phase] + off);
             DWORD after = ReadLE32(r->data[to_phase] + off);
             if (before != after) {
-                Log("[DIFF_WORD] pair=%s name=%s PA=0x%08X before=0x%08X after=0x%08X\r\n",
-                    pair_name, r->name, r->base + off, before, after);
                 changed++;
                 total_changed++;
+                if (r->size <= 0x0200u || logged < LARGE_DIFF_LOG_LIMIT) {
+                    Log("[DIFF_WORD] pair=%s name=%s PA=0x%08X before=0x%08X after=0x%08X\r\n",
+                        pair_name, r->name, r->base + off, before, after);
+                    logged++;
+                } else if (!truncated) {
+                    Log("[DIFF_TRUNCATED] pair=%s name=%s limit=%u\r\n",
+                        pair_name, r->name, (unsigned)LARGE_DIFF_LOG_LIMIT);
+                    truncated = TRUE;
+                }
             }
             off += 4u;
         }
 
-        Log("[DIFF_REGION] pair=%s name=%s changed_words=%lu\r\n", pair_name, r->name, changed);
+        Log("[DIFF_REGION] pair=%s name=%s changed_words_total=%lu detailed_words_logged=%lu\r\n",
+            pair_name, r->name, changed, logged);
     }
 
-    Log("[DIFF_TOTAL] pair=%s changed_words=%lu\r\n", pair_name, total_changed);
+    Log("[DIFF_TOTAL] pair=%s changed_words_total=%lu\r\n", pair_name, total_changed);
 }
 
 static BOOL FileExistsRegular(const WCHAR *path)
@@ -897,8 +1056,11 @@ static void LogRunMetadata(void)
 
     Log("BE-300 Post-Boot Probe Utility v3\r\n");
     Log("boot_tag=\"%s\"\r\n", g_boot_tag);
+    Log("boot_tag_short=\"%s\"\r\n", GetBootTagShortAnsi());
     Log("tick_ms=%lu\r\n", GetTickCount());
     Log("exe_path=\"%s\"\r\n", exe_path_a);
+    Log("output_path=\"%s\"\r\n", g_output_path_a[0] ? g_output_path_a : "<unavailable>");
+    Log("output_path_source=%s\r\n", g_output_fallback_root ? "fallback_root" : "exe_directory");
     Log("sysinfo processor_type=%lu level=%u revision=0x%04X page_size=%lu\r\n",
         si.dwProcessorType,
         (unsigned)si.wProcessorLevel,
@@ -927,10 +1089,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLin
 
     SelectBootTag();
 
-    g_hFile = CreateFile(L"\\BE300Probe_v3.txt", GENERIC_WRITE, 0, NULL,
-                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (g_hFile == INVALID_HANDLE_VALUE) {
-        MessageBox(NULL, L"Could not create \\BE300Probe_v3.txt", L"BE300 Probe v3", MB_OK | MB_ICONHAND);
+    if (!OpenOutputFile()) {
+        WCHAR msg[512];
+        wsprintf(msg, L"Could not create output file.\nPath: %s", g_output_path[0] ? g_output_path : L"<unavailable>");
+        MessageBox(NULL, msg, L"BE300 Probe v3", MB_OK | MB_ICONHAND);
         return 1;
     }
 
@@ -992,16 +1154,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLin
     g_hFile = INVALID_HANDLE_VALUE;
 
     if (g_had_error) {
-        MessageBox(NULL,
-                   L"BE300Probe v3 completed with partial errors.\nSee \\BE300Probe_v3.txt",
-                   L"BE300 Probe v3",
-                   MB_OK | MB_ICONEXCLAMATION);
+        WCHAR msg[512];
+        wsprintf(msg, L"BE300Probe v3 completed with partial errors.\nSee %s", g_output_path);
+        MessageBox(NULL, msg, L"BE300 Probe v3", MB_OK | MB_ICONEXCLAMATION);
         return 2;
     }
 
-    MessageBox(NULL,
-               L"BE300Probe v3 complete.\nSee \\BE300Probe_v3.txt",
-               L"BE300 Probe v3",
-               MB_OK | MB_ICONASTERISK);
+    {
+        WCHAR msg[512];
+        wsprintf(msg, L"BE300Probe v3 complete.\nSee %s", g_output_path);
+        MessageBox(NULL, msg, L"BE300 Probe v3", MB_OK | MB_ICONASTERISK);
+    }
     return 0;
 }
