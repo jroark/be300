@@ -327,10 +327,92 @@ static void vrc4173_seed_core_dump_once(void)
         { 0x0A1A4u, 0x00000001u },
         { 0x0A1C8u, 0x00000001u },
         { 0x0A1CCu, 0x00000040u },
+
+        /*
+         * BE300Probe_v2: VRC4173 page 0x1000 baseline (PA 0x0A001000..0x0A001FFF).
+         * Non-0x01 values only; 0x01 fills done programmatically below.
+         */
+        /*
+         * NOTE: offsets 0x1000-0x10FF skipped — CF status stub returns
+         * 0x0C unconditionally; probe CIS data is post-boot state only.
+         */
+        /* 0x1300 area: misc config/status */
+        { 0x0131Cu, 0x0000001Cu }, { 0x01320u, 0x00009F80u },
+        { 0x0132Cu, 0x0000001Eu }, { 0x01330u, 0x00000030u },
+        { 0x01334u, 0x00000003u }, { 0x01378u, 0x0000003Fu },
+        /* 0x1460-0x1620: CIS tuples / CF config registers */
+        { 0x01464u, 0x0000004Cu }, { 0x01468u, 0x00000028u },
+        { 0x01470u, 0x0000007Du }, { 0x01474u, 0x00000038u },
+        { 0x01478u, 0x00000009u }, { 0x0147Cu, 0x000000FFu },
+        { 0x01480u, 0x000000FFu }, { 0x01484u, 0x000000FFu },
+        { 0x01490u, 0x00000010u }, { 0x01494u, 0x00000002u },
+        { 0x014C0u, 0x0000003Eu }, { 0x014C4u, 0x000000D1u },
+        { 0x014CCu, 0x00000021u }, { 0x014D4u, 0x0000007Eu },
+        { 0x01530u, 0x00000008u }, { 0x0153Cu, 0x00000012u },
+        { 0x0154Cu, 0x000000FFu }, { 0x01550u, 0x000000FFu },
+        { 0x01554u, 0x000000FFu }, { 0x01558u, 0x00000010u },
+        { 0x0155Cu, 0x000000CFu }, { 0x01560u, 0x00000007u },
+        { 0x01564u, 0x00000002u }, { 0x01568u, 0x00000020u },
+        { 0x01584u, 0x00000009u }, { 0x01588u, 0x00000002u },
+        { 0x0158Cu, 0x00000027u }, { 0x015A0u, 0x00000040u },
+        { 0x015A8u, 0x00000009u }, { 0x015ACu, 0x00000004u },
+        { 0x015B8u, 0x00000003u }, { 0x015BCu, 0x000000FFu },
+        { 0x015C0u, 0x000000FFu }, { 0x015C4u, 0x000000FFu },
+        { 0x015CCu, 0x00000007u }, { 0x015D0u, 0x00000005u },
+        { 0x015D4u, 0x00000081u }, { 0x015D8u, 0x00000002u },
+        { 0x015DCu, 0x00000040u }, { 0x015E8u, 0x00000007u },
+        { 0x015ECu, 0x00000005u }, { 0x015F0u, 0x00000002u },
+        { 0x015F4u, 0x00000002u }, { 0x015F8u, 0x00000040u },
+        { 0x01604u, 0x00000007u }, { 0x01608u, 0x00000005u },
+        { 0x0160Cu, 0x00000083u }, { 0x01610u, 0x00000003u },
+        { 0x01614u, 0x00000008u },
+        /* 0x1B10: critical — NK reads & branches on bit 6 (0x40) */
+        { 0x01B10u, 0x00000048u },
+        { 0x01B34u, 0x000000FFu }, { 0x01B58u, 0x0000000Fu },
+        { 0x01B74u, 0x00000004u }, { 0x01B90u, 0x00000008u },
+        /* 0x1C00-0x1CDC: DMA / bus master config */
+        { 0x01C04u, 0x00000100u }, { 0x01C08u, 0x00001000u },
+        { 0x01C18u, 0x00000004u }, { 0x01C44u, 0x00000100u },
+        { 0x01C48u, 0x00001000u }, { 0x01C58u, 0x00000004u },
+        { 0x01C84u, 0x00000100u }, { 0x01C88u, 0x00001000u },
+        { 0x01C98u, 0x00000004u }, { 0x01CC4u, 0x00000201u },
+        { 0x01CC8u, 0x00001000u }, { 0x01CD4u, 0x00000004u },
+        { 0x01CD8u, 0x00000008u }, { 0x01CDCu, 0x00052000u },
     };
 
     for (unsigned i = 0; i < (sizeof(seed_words) / sizeof(seed_words[0])); i++)
         vrc4173_latch_write(seed_words[i].off, 4u, seed_words[i].val);
+
+    /*
+     * BE300Probe_v2 page 0x1000: 445 words read as 0x01 on hardware.
+     * Fill programmatically instead of listing individually.
+     * Pattern: every-other-word (stride 8) in most ranges, with some
+     * contiguous sub-ranges.  Two large blocks dominate:
+     *   0x1100-0x1310, 0x1328-0x13FC, 0x1800-0x1AFC, 0x1D00-0x1FFC
+     */
+    static const struct { uint32_t start, end; } one_fill_ranges[] = {
+        /* 0x1100-0x1310: interrupt status / enable bitmap */
+        { 0x01100u, 0x01310u },
+        /* 0x1328, 0x133C-0x135C, 0x1374-0x13FC */
+        { 0x01328u, 0x013FCu },
+        /* 0x1534, 0x1540-0x1548, 0x1580, 0x1594-0x1598, 0x15A4, 0x161C */
+        { 0x01534u, 0x0161Cu },
+        /* 0x1800-0x1AFC: large status bitmap */
+        { 0x01800u, 0x01AFCu },
+        /* 0x1B14, 0x1B20, 0x1B2C, 0x1B64, 0x1CC0 */
+        { 0x01B14u, 0x01CC0u },
+        /* 0x1D00-0x1FFC: extended status */
+        { 0x01D00u, 0x01FFCu },
+    };
+    for (unsigned r = 0; r < sizeof(one_fill_ranges)/sizeof(one_fill_ranges[0]); r++) {
+        for (uint32_t off = one_fill_ranges[r].start;
+             off <= one_fill_ranges[r].end; off += 4u) {
+            /* Only write 0x01 if the latch wasn't already set by seed_words */
+            uint64_t existing;
+            if (!vrc4173_latch_read(off, 4u, &existing))
+                vrc4173_latch_write(off, 4u, 0x00000001u);
+        }
+    }
 
     /* NAND sideband latch observed in nand_sniff_v3.txt. */
     vrc4173_nand_c38_phase = VRC4173_NAND_C38_PHASE_BOOT;

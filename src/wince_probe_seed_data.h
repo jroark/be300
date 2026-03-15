@@ -13,6 +13,13 @@
 static const wince_pa_seed_word_t wince_probe_seed_words[] = {
 
     /* bootctx_alias_A0006000 */
+    /*
+     * PA 0x6020-0x6028: integrity-check triple used by nested function at
+     * 0x80079CE4.  When both PA 0x6020 and VA 0x800748F0 are zero (uninitialized),
+     * the check passes and code jumps through [PA 0x6028] = null → crash.
+     * Seed 0x6020 with a sentinel so the bne check FAILS and returns safely.
+     */
+    { 0x00006020u, 0xDEADBEEFu },
     { 0x00006030u, 0x3C04AA01u },
     { 0x00006034u, 0x2484A000u },
     { 0x00006038u, 0x8C8500E8u },

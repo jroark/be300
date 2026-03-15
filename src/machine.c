@@ -6411,108 +6411,6 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     maybe_probe_wince_bootmode_sp_flow(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_spl_memcpy(m, uc, (uint32_t)address, insn);
 
-    /* Stall-path instrumentation: log entry to 0x80079898 and its nested
-     * call at 0x80079CE4, plus the scheduler dispatch at 0x8008B4F8.
-     * These are the functions that lead to the null-call crash with
-     * ra=0x8007A480.  Capture GPR context on first entry. */
-    if (is_wince_boot_machine(m) && m->cfg.log_wince_stall) {
-        uint32_t pc32 = (uint32_t)address;
-        static uint32_t stall_fn_log = 0;
-        static uint32_t nested_fn_log = 0;
-        static uint32_t sched_disp_log = 0;
-        static uint32_t caller_fn_log = 0;
-
-        if (pc32 == UINT32_C(0x80079898) && stall_fn_log < 8u) {
-            uint64_t ra = 0, a0 = 0, sp = 0, s0 = 0, t9 = 0;
-            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
-            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
-            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-            uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
-            uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
-            uint64_t status = 0;
-            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
-            fprintf(stderr,
-                    "[WINCE_STALL_FN] pc=0x%08X ra=0x%08X a0=0x%08X"
-                    " sp=0x%08X s0=0x%08X t9=0x%08X status=0x%08X\n",
-                    pc32, (uint32_t)ra, (uint32_t)a0,
-                    (uint32_t)sp, (uint32_t)s0, (uint32_t)t9,
-                    (uint32_t)status);
-            /* One-shot code dump of the stall function body */
-            if (stall_fn_log == 0u) {
-                uint32_t dump_pa = UINT32_C(0x80079898) & UINT32_C(0x1FFFFFFF);
-                for (uint32_t doff = 0; doff < 256; doff += 4) {
-                    uint32_t word = 0;
-                    if (uc_mem_read(uc, (uint64_t)(dump_pa + doff),
-                                    &word, 4) == UC_ERR_OK) {
-                        fprintf(stderr,
-                                "[WINCE_STALL_DISASM] 0x%08X: 0x%08X\n",
-                                UINT32_C(0x80079898) + doff, word);
-                    }
-                }
-                /* Also dump nested function 0x80079CE4 */
-                dump_pa = UINT32_C(0x80079CE4) & UINT32_C(0x1FFFFFFF);
-                for (uint32_t doff = 0; doff < 256; doff += 4) {
-                    uint32_t word = 0;
-                    if (uc_mem_read(uc, (uint64_t)(dump_pa + doff),
-                                    &word, 4) == UC_ERR_OK) {
-                        fprintf(stderr,
-                                "[WINCE_STALL_DISASM] 0x%08X: 0x%08X\n",
-                                UINT32_C(0x80079CE4) + doff, word);
-                    }
-                }
-                /* Scheduler dispatch 0x8008B4F8 */
-                dump_pa = UINT32_C(0x8008B4F8) & UINT32_C(0x1FFFFFFF);
-                for (uint32_t doff = 0; doff < 256; doff += 4) {
-                    uint32_t word = 0;
-                    if (uc_mem_read(uc, (uint64_t)(dump_pa + doff),
-                                    &word, 4) == UC_ERR_OK) {
-                        fprintf(stderr,
-                                "[WINCE_STALL_DISASM] 0x%08X: 0x%08X\n",
-                                UINT32_C(0x8008B4F8) + doff, word);
-                    }
-                }
-            }
-            stall_fn_log++;
-        }
-        if (pc32 == UINT32_C(0x80079CE4) && nested_fn_log < 8u) {
-            uint64_t ra = 0, a0 = 0, sp = 0;
-            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
-            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
-            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-            fprintf(stderr,
-                    "[WINCE_STALL_NESTED] pc=0x%08X ra=0x%08X"
-                    " a0=0x%08X sp=0x%08X\n",
-                    pc32, (uint32_t)ra, (uint32_t)a0, (uint32_t)sp);
-            nested_fn_log++;
-        }
-        if (pc32 == UINT32_C(0x8008B4F8) && sched_disp_log < 8u) {
-            uint64_t ra = 0, k0 = 0, sp = 0, t0 = 0;
-            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
-            uc_reg_read(uc, UC_MIPS_REG_K0, &k0);
-            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-            uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
-            fprintf(stderr,
-                    "[WINCE_SCHED_DISPATCH] pc=0x%08X ra=0x%08X"
-                    " k0=0x%08X sp=0x%08X t0=0x%08X\n",
-                    pc32, (uint32_t)ra, (uint32_t)k0,
-                    (uint32_t)sp, (uint32_t)t0);
-            sched_disp_log++;
-        }
-        if (pc32 == UINT32_C(0x8007A478) && caller_fn_log < 8u) {
-            uint64_t ra = 0, a0 = 0, sp = 0, t9 = 0;
-            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
-            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
-            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-            uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
-            fprintf(stderr,
-                    "[WINCE_STALL_CALLER] pc=0x%08X ra=0x%08X"
-                    " a0=0x%08X sp=0x%08X t9=0x%08X\n",
-                    pc32, (uint32_t)ra, (uint32_t)a0,
-                    (uint32_t)sp, (uint32_t)t9);
-            caller_fn_log++;
-        }
-    }
-
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */
     if (is_wince_boot_machine(m) && m->cfg.log_wince_stall) {
@@ -7339,6 +7237,34 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     }
 
     /*
+     * VR4131 power management: STANDBY / SUSPEND / HIBERNATE.
+     * Encodings: 0x42000021 / 0x42000022 / 0x42000023
+     *
+     * On real hardware, these halt the CPU until an interrupt fires.
+     * In the emulator we treat them as NOPs: the CPU "wakes up" immediately
+     * and continues at the next instruction.  The idle function will loop
+     * back and re-check interrupt sources on the next scheduler pass.
+     */
+    if (insn == UINT32_C(0x42000021) ||   /* standby */
+        insn == UINT32_C(0x42000022) ||   /* suspend */
+        insn == UINT32_C(0x42000023)) {   /* hibernate */
+        static uint32_t pm_log = 0;
+        if (pm_log < 8) {
+            const char *name = (insn == UINT32_C(0x42000021)) ? "STANDBY" :
+                               (insn == UINT32_C(0x42000022)) ? "SUSPEND" :
+                                                                "HIBERNATE";
+            fprintf(stderr,
+                    "[VR4131_PM] %s at PC=0x%08" PRIX64 " — NOP'd\n",
+                    name, address);
+            pm_log++;
+        }
+        /* Skip past the instruction: advance PC by 4 */
+        uint64_t next_pc = address + 4;
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        return;
+    }
+
+    /*
      * ERET  — return from exception.
      * Encoding: 0x42000018
      *
@@ -7839,10 +7765,14 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
 
         /* One-shot code dump around the null-call site for NK addresses.
          * JALR is at RA-8, delay slot at RA-4, return at RA. */
-        static bool null_call_code_dumped = false;
-        if (!null_call_code_dumped &&
+        static uint32_t null_call_dumped_ras[8] = {0};
+        static unsigned null_call_dump_count = 0;
+        bool already_dumped = false;
+        for (unsigned dd = 0; dd < null_call_dump_count; dd++)
+            if (null_call_dumped_ras[dd] == ra32) { already_dumped = true; break; }
+        if (!already_dumped && null_call_dump_count < 8 &&
             !(ra32 >= UINT32_C(0x80F00000) && ra32 < UINT32_C(0x80F10000))) {
-            null_call_code_dumped = true;
+            null_call_dumped_ras[null_call_dump_count++] = ra32;
             uint32_t dump_base = (ra32 - 64u) & ~UINT32_C(0x3);
             fprintf(stderr, "[WINCE_NULL_CODE] dumping 128 bytes around RA=0x%08X:\n", ra32);
             for (uint32_t off = 0; off < 128; off += 64) {
@@ -7881,7 +7811,7 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
                     fprintf(stderr, "[WINCE_NULL_CODE] JAL target=0x%08X, dumping:\n",
                             jal_target);
                     uint32_t tgt_pa = jal_target & 0x1FFFFFFFu;
-                    for (uint32_t off = 0; off < 128; off += 64) {
+                    for (uint32_t off = 0; off < 512; off += 64) {
                         uint8_t tc[64];
                         if (uc_mem_read(uc, (uint64_t)(tgt_pa + off), tc, 64) == UC_ERR_OK) {
                             fprintf(stderr, "[WINCE_NULL_CODE] tgt=0x%08X off=0x%02X hex=",
@@ -7892,6 +7822,31 @@ static bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
                         }
                     }
                 }
+            }
+
+            /* Also dump nested function at 0x80079CE4 (integrity check) */
+            {
+                uint32_t nested_pa = UINT32_C(0x00079CE4);
+                fprintf(stderr, "[WINCE_NULL_CODE] nested func 0x80079CE4:\n");
+                for (uint32_t off = 0; off < 128; off += 64) {
+                    uint8_t nc[64];
+                    if (uc_mem_read(uc, (uint64_t)(nested_pa + off), nc, 64) == UC_ERR_OK) {
+                        fprintf(stderr, "[WINCE_NULL_CODE] 0x%08X off=0x%02X hex=",
+                                0x80079CE4u + off, off);
+                        for (int b = 0; b < 64; b++)
+                            fprintf(stderr, "%02X", nc[b]);
+                        fprintf(stderr, "\n");
+                    }
+                }
+                /* Also dump PA 0x6020 area and VA 0x800748F0 area */
+                uint32_t ctx_area[4] = {0};
+                uint32_t const_area[4] = {0};
+                uc_mem_read(uc, UINT64_C(0x00006020), ctx_area, 16);
+                uc_mem_read(uc, UINT64_C(0x000748F0), const_area, 16);
+                fprintf(stderr, "[WINCE_NULL_CODE] PA_6020: %08X %08X %08X %08X\n",
+                        ctx_area[0], ctx_area[1], ctx_area[2], ctx_area[3]);
+                fprintf(stderr, "[WINCE_NULL_CODE] PA_748F0: %08X %08X %08X %08X\n",
+                        const_area[0], const_area[1], const_area[2], const_area[3]);
             }
         }
         return true;
