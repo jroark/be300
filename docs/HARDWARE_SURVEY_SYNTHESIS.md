@@ -185,6 +185,91 @@ The current `BE300Probe_v3_*.txt` runs materially refine the next hardware-colle
 8. The two aborted NUL-only files show that end-of-run flush/close is still not enough if the system hangs before enough text is written.
    - Future probe versions should flush incrementally after each major section and avoid success-path UI that is not needed for data capture.
 
+## Post-Boot Probe v4 Integration
+
+The first stock-shell `BE300Probe_v4` batch is materially better than v3 and is now good enough to use as the fixed collection baseline.
+
+### Current v4 batch summary
+
+- Dataset:
+  - `BE300Probe_v4_cold_22664.txt`
+  - `BE300Probe_v4_cold_26319.txt`
+  - `BE300Probe_v4_warm_11583.txt`
+  - `BE300Probe_v4_warm_81147.txt`
+  - `BE300Probe_v4_warm_9550.txt`
+  - `BE300Probe_v4_unknown_112248.txt`
+- All six reports are readable text and end with `probe_complete status=OK`.
+- The old v3 fault is gone:
+  - no v4 run contains `[READ_FAULT] PA=0x0F000200 ...`
+- The narrowed `0x0F000000` / `0x0F000080` windows are sufficient to capture the BCU and ICU/PMU words we care about.
+- NAND workload is now real:
+  - every current v4 run selected `\Nand Disk\Program Files\ieceext.dll.cpk`
+  - selection method is `found_by=recursive`
+- Storage workload is stable on the current setup:
+  - current v4 runs selected the EXE path on `\Storage Card\Program Files`
+
+### Stable enough in the current one-device stock-shell sample
+
+The current v4 clustering report (`hardware_survey/BE300Probe_v4_cluster_report.md`) shows these fields are stable across all current runs and all three phases:
+
+- `vr4131_bcu_window` CRC
+- `callback_table_51600` CRC
+- `icu_0080`
+- `nand_c30`
+- `nand_c34`
+- `nand_c48`
+- `nand_c4c`
+- `stack_1760`
+- `stack_1764`
+- `stack_179C`
+- `stack_17B4`
+
+Only the first six items above are currently attractive emulator readback targets. The stable `0x1700` words are still live stack-frame values and should not be promoted into warm seeds just because they happened to stay constant in this small batch.
+
+### Phase-varying in the current one-device stock-shell sample
+
+These fields change within a run and are therefore dynamic by construction:
+
+- `nand_sideband_c38`
+- `pmu_0100`
+- `stack_frame_1700` CRC
+- `vrc4173_base` CRC
+- `vr4131_icu_pmu_window` CRC
+
+For `nand_sideband_c38`, that confirms the earlier conclusion that it needs a phase model rather than a fixed seed. For `pmu_0100` and the two CRC windows, the current sample shows per-run uniqueness rather than a reusable cold/warm family.
+
+### Multi-family but not yet cold/warm-correlated
+
+The current v4 clustering report shows the following fields already split into multiple stable families across runs, but the families do **not** yet correlate cleanly with the current `cold` vs `warm` labels:
+
+- `resume_context_2200` CRC
+- `callback_globals_80679400` CRC
+- `ctx_2220`
+- `ctx_2228`
+- `ctx_2274`
+- `g94EC`
+- `g94F0`
+- `g9508`
+- `g9510`
+
+Current families overlap across cold and warm runs. Example:
+
+- `resume_context_2200`
+  - one family appears in both `BE300Probe_v4_cold_26319.txt` and the warm runs `BE300Probe_v4_warm_81147.txt` / `BE300Probe_v4_warm_9550.txt`
+  - another family appears in `BE300Probe_v4_warm_11583.txt` and the `unknown` run
+
+That means these are still reset-sensitive or runtime-sensitive candidates, but not yet safe to map directly onto a simple cold/warm emulator profile.
+
+### Post-boot textual/object evidence remains confirmed
+
+`0x006794E0..0x0067951F` continues to decode to module-name or record-like text in v4:
+
+- `imodem.dll`
+- `FileCalendar.exe` fragments
+- other short text-like variants such as `X?`
+
+This reinforces that `g94EC/g94F0/g9508/g9510` should still be treated as structured post-boot data, not as primitive callback-pointer slots.
+
 ## Corrections to Prior Assumptions
 
 1. `0x0A000C38` is **phase-sensitive / non-stable**, not a fixed full-word seed candidate.
@@ -201,6 +286,7 @@ The current `BE300Probe_v3_*.txt` runs materially refine the next hardware-colle
 - VR4131 ICU words at `0x0F000080..0x0F00009F`
 - Post-boot VRC4173 C-window words at `0x0A000C00..0x0A000C4C`, **excluding `0x0A000C38`**
 - Boot ROM visibility / reset window bytes rooted at `0x1FC00000`
+- The currently stable v4 `callback_table_51600` page, if later emulator work needs a post-boot callback table reference rather than a boot-time seed
 
 These have cross-artifact agreement strong enough to use as emulator readback targets, provided the boot path being modeled is compatible with post-boot state.
 
@@ -252,12 +338,15 @@ These are useful for identifying what WinCE drivers and services are alive, but 
    - If later cold-vs-retained captures show stable differences in ICU/RTC/PMU or companion-chip windows, those should become explicit emulator profile inputs rather than being inferred indirectly from Linux outcomes.
 
 5. **Immediate action for the next hardware pass**
-   - Use a stock-shell-oriented follow-up probe that:
-     - keeps the boot tag (`Cold battery boot`, `Warm retained boot`, `Unknown`)
-     - keeps early / settled / post snapshots
-     - replaces the faulting full `0x0F000000` page read with safe targeted windows
-     - searches `\Nand Disk` recursively so NAND workload actually runs
-     - flushes incrementally so hangs leave readable partial reports
-     - trims filesystem and registry enumeration to shallow summaries
+   - Keep `hardware_survey/be300_probe_v4.cpp` unchanged and collect one more controlled same-device batch:
+     - same device only
+     - stock WinCE 3.0 shell only
+     - same EXE location, ideally `\Storage Card\Program Files`
+     - 3 additional cold battery-disconnect boots
+     - 3 additional warm-retained boots
+     - run once per boot as early as practical after the shell is usable
+     - keep original filenames after copy-back
+     - keep `unknown` runs as extra evidence but do not use them as primary cold/warm labels
+   - Re-run the host-side clustering tool on the expanded set and only then decide whether the family-sensitive fields belong in an emulator reset profile or should be classified as post-boot/runtime-only state.
 
-That is the purpose of `hardware_survey/be300_probe_v4.cpp`.
+That is the purpose of `tools/cluster_probe_v4.py` plus the unchanged `hardware_survey/be300_probe_v4.cpp`.
