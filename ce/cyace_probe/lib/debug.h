@@ -43,6 +43,7 @@ extern "C" {
 int debug_printf(LPCTSTR lpszFmt, ...);
 
 int debug_open();
+void debug_close();
 //----------------------------------------------------------------------
 // Print debug string to a message box on the target.
 //

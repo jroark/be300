@@ -31,11 +31,14 @@
 #include "debug.h"
 #include "winbase.h"
 
-static HANDLE hSerial;
+static HANDLE hSerial = INVALID_HANDLE_VALUE;
 
 int debug_open()
 {
 	DCB dcb;
+
+	if (hSerial != INVALID_HANDLE_VALUE)
+		return 0;
 
 	const TCHAR szSerialPort[] = _T("COM1:");
 	hSerial = CreateFile(szSerialPort, GENERIC_READ | GENERIC_WRITE,
@@ -49,6 +52,15 @@ int debug_open()
 	}
 	
 	return(0);
+}
+
+void debug_close()
+{
+	if (hSerial != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(hSerial);
+		hSerial = INVALID_HANDLE_VALUE;
+	}
 }
 
 //----------------------------------------------------------------------
@@ -68,7 +80,7 @@ int debug_printf(LPCTSTR lpszFmt, ...)
 	va_end (ap);
 
 	// If there is at least one text string, output it.
-	if (count > 0){
+	if (count > 0 && hSerial != INVALID_HANDLE_VALUE){
 		wcstombs(szMessage, buffer, 512);
 		strcat(szMessage, "\r\n");
 		WriteFile(hSerial, szMessage, strlen(szMessage), &dwActual, 0);
