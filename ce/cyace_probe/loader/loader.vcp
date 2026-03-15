@@ -106,7 +106,7 @@ BSC32=bscmake.exe
 LINK32=link.exe
 # ADD BASE LINK32 commctrl.lib coredll.lib /nologo /stack:0x10000,0x1000 /debug /nodefaultlib:"$(CENoDefaultLib)" /machine:MIPS /subsystem:$(CESubsystem)
 # SUBTRACT BASE LINK32 /pdb:none /nodefaultlib
-# ADD LINK32 commctrl.lib coredll.lib /nologo /stack:0x10000,0x1000 /debug /nodefaultlib:"$(CENoDefaultLib)" /machine:MIPS /subsystem:$(CESubsystem)
+# ADD LINK32 commctrl.lib coredll.lib winsock.lib wininet.lib /nologo /stack:0x10000,0x1000 /debug /nodefaultlib:"$(CENoDefaultLib)" /machine:MIPS /subsystem:$(CESubsystem)
 # SUBTRACT LINK32 /pdb:none /nodefaultlib
 
 !ELSEIF  "$(CFG)" == "loader - Win32 (WCE SH4) Release"
