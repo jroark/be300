@@ -15,7 +15,7 @@ typedef unsigned int __SIZE_TYPE__;				// From gcc compiler
 typedef unsigned int __SSIZE_TYPE__;			// From gcc compiler
 #define __signed__ signed						// More hacks against gcc
 #define __inline__ __inline						// More hacks against gcc
-#define __builtin_constant_p(x) 0				// More hacks against gcc#include "fileops.h"
+#define __builtin_constant_p(x) 0				// More hacks against gcc
 
 #include <linux/types.h>
 #include <linux/elf.h>
@@ -98,7 +98,7 @@ struct cyace_probe_block_s {
   unsigned long cwin_len_bytes;
   unsigned long io_base_pa;
   unsigned long io_len_bytes;
-  unsigned long reserved_tail[151];
+  unsigned long reserved_tail[150];
 };
 typedef char cyace_probe_block_size_check[
   (sizeof(struct cyace_probe_block_s) == CYACE_PROBE_BLOCK_SIZE) ? 1 : -1
