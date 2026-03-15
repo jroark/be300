@@ -36,9 +36,10 @@ The most important sections for us right now are:
 
 ---
 
-## Post-Boot Probe Utility v1
+## Post-Boot Probe Utility v1 / v2
 
-For post-boot-only data collection, use `be300_probe_v1.cpp`.
+For the existing post-boot-only data collection utility, use `be300_probe_v1.cpp`.
+That source now corresponds to the v2 report format and writes `\BE300Probe_v2.txt`.
 
 ### Build
 
@@ -48,7 +49,7 @@ Use the same eVC3 project flow as above, but add `be300_probe_v1.cpp` instead of
 
 1. Copy the built EXE to the BE-300.
 2. Run it after WinCE fully boots.
-3. Copy back `\BE300Probe_v1.txt`.
+3. Copy back `\BE300Probe_v2.txt`.
 
 The output includes fixed sections:
 
@@ -57,6 +58,56 @@ The output includes fixed sections:
 - `--- POST SNAPSHOT ---`
 - `--- DIFF SUMMARY ---`
 - `--- DRIVER INVENTORY ---`
+
+The current checked-in source writes `\BE300Probe_v2.txt` and includes the v2 focus regions around:
+
+- `0x00002200`
+- `0x00001700`
+- `0x00679400`
+- `0x0A000C00`
+- `0x0F000000`
+
+---
+
+## Post-Boot Probe Utility v3
+
+For the cold-vs-warm comparison and retained-state survey, use `be300_probe_v3.cpp`.
+
+### Build
+
+Use the same eVC3 project flow as above, but add `be300_probe_v3.cpp` instead of `main.cpp`.
+
+### Run / Output
+
+1. Copy the built EXE to the BE-300.
+2. Run it as early as practical after WinCE becomes usable.
+3. At startup, choose the boot tag:
+   - `Yes` = `Cold battery boot`
+   - `No` = `Warm retained boot`
+   - `Cancel` = `Unknown`
+4. Wait for the completion message box.
+5. Copy back `\BE300Probe_v3.txt`.
+
+The output includes fixed sections:
+
+- `--- RUN METADATA ---`
+- `--- EARLY SNAPSHOT ---`
+- `--- SETTLE SNAPSHOT ---`
+- `--- NAND WORKLOAD ---`
+- `--- STORAGE WORKLOAD ---`
+- `--- POST SNAPSHOT ---`
+- `--- DIFF SUMMARY ---`
+- `--- DRIVER INVENTORY ---`
+- `--- STORAGE MANAGER ---`
+- `--- FILESYSTEM ROOTS ---`
+
+### Intended Use
+
+`be300_probe_v3.cpp` is intended for cold-vs-warm comparison for emulator targeting. The highest-value runs are:
+
+1. Battery-disconnect boot, then run `BE300Probe_v3` once.
+2. Warm-retained boot, then run `BE300Probe_v3` once.
+3. Repeat each mode multiple times and keep the boot tag with each returned report.
 
 ---
 
