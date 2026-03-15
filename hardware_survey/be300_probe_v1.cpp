@@ -47,6 +47,8 @@ static probe_region_t g_regions[] = {
     { "objptr_table_80660000",     0x00660000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
     { "obj_table_8066BFC0",        0x0066BFC0, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
     { "obj_table_8067BFC0",        0x0067BFC0, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
+    { "callback_globals_80679400", 0x00679400, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
+    { "fptr_table_80075580",       0x00075400, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
     { "vrc4173_base",              0x0A000000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
     { "vrc4173_page_A000",         0x0A00A000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
     { "vrc4173_page_C000",         0x0A00C000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
@@ -61,6 +63,12 @@ static const focus_word_t g_focus_words[] = {
     { 0x00660000, "objptr_word0",           "0x80660000" },
     { 0x0066BFC0, "obj_table0_word0",       "0x8066BFC0" },
     { 0x0067BFC0, "obj_table1_word0",       "0x8067BFC0" },
+    { 0x006794EC, "callback_g94EC",        "0x806794EC" },
+    { 0x006794F0, "callback_g94F0",        "0x806794F0" },
+    { 0x00679508, "callback_g9508",        "0x80679508" },
+    { 0x00679510, "callback_g9510",        "0x80679510" },
+    { 0x00075580, "fptr_table_slot0",      "0x80075580" },
+    { 0x00075590, "fptr_table_slot4",      "0x80075590" },
 };
 
 static void Log(const char *fmt, ...)
