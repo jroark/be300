@@ -2497,7 +2497,9 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
             pc32 == 0x8009689Cu ||
             pc32 == 0x800968C0u ||
             pc32 == 0x800968E4u ||
-            pc32 == 0x800962B0u) {
+            pc32 == 0x800962B0u ||
+            pc32 == 0x800962A0u ||
+            pc32 == 0x80096244u) {
             static uint32_t upstream_logs = 0;
             if (upstream_logs < 64u) {
                 uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, s0 = 0, t0 = 0;
@@ -2529,6 +2531,10 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
                     tag = "WINCE_DIV_MIDBODY_ENTRY_E4";
                 else if (pc32 == 0x800962B0u)
                     tag = "WINCE_DIV_PRODUCER_FUNC";
+                else if (pc32 == 0x800962A0u)
+                    tag = "WINCE_DIV_PRODUCER_ENTRY_A0";
+                else if (pc32 == 0x80096244u)
+                    tag = "WINCE_DIV_PRODUCER_TWIN_44";
                 fprintf(stderr,
                         "[%s] pc=0x%08X insn=0x%08X sp=0x%08X ra=0x%08X"
                         " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
@@ -2608,6 +2614,76 @@ static void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32
                         (uint32_t)a0,
                         (uint32_t)v1);
                 store_logs++;
+            }
+        }
+
+        /* --- Init reachability: actual function entries + fptr table dump --- */
+        if (pc32 == 0x800962A0u) {
+            static uint32_t a0_entry_logs = 0;
+            if (m->cfg.log_wince_stall && a0_entry_logs < 16u) {
+                uint64_t a0r = 0, v1r = 0, t6r = 0, t7r = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0r);
+                uc_reg_read(uc, UC_MIPS_REG_V1, &v1r);
+                uc_reg_read(uc, UC_MIPS_REG_T6, &t6r);
+                uc_reg_read(uc, UC_MIPS_REG_T7, &t7r);
+                fprintf(stderr,
+                        "[INIT_REACH_ENTRY_A0] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " a0=0x%08X v1=0x%08X t6=0x%08X t7=0x%08X\n",
+                        pc32, sp32, ra32,
+                        (uint32_t)a0r, (uint32_t)v1r,
+                        (uint32_t)t6r, (uint32_t)t7r);
+                a0_entry_logs++;
+            }
+        }
+
+        if (pc32 == 0x80096244u) {
+            static uint32_t twin_entry_logs = 0;
+            if (m->cfg.log_wince_stall && twin_entry_logs < 16u) {
+                uint64_t a0r = 0, v1r = 0, t6r = 0, t7r = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0r);
+                uc_reg_read(uc, UC_MIPS_REG_V1, &v1r);
+                uc_reg_read(uc, UC_MIPS_REG_T6, &t6r);
+                uc_reg_read(uc, UC_MIPS_REG_T7, &t7r);
+                fprintf(stderr,
+                        "[INIT_REACH_TWIN_ENTRY_44] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " a0=0x%08X v1=0x%08X t6=0x%08X t7=0x%08X\n",
+                        pc32, sp32, ra32,
+                        (uint32_t)a0r, (uint32_t)v1r,
+                        (uint32_t)t6r, (uint32_t)t7r);
+                twin_entry_logs++;
+            }
+        }
+
+        /* --- One-shot function pointer table dump + callback ptr check --- */
+        if (pc32 == 0x800968E4u) {
+            /* Dump fptr table at 0x80075580..0x800755A0 */
+            static bool fptr_table_dumped = false;
+            if (!fptr_table_dumped && m->cfg.log_wince_stall) {
+                fptr_table_dumped = true;
+                fprintf(stderr, "[INIT_REACH_FPTR_TABLE] 0x80075580..0x800755A0:");
+                for (uint32_t va = 0x80075580u; va < 0x800755A0u; va += 4u) {
+                    uint32_t w = 0;
+                    uc_mem_read(uc, mips_sext(va), &w, sizeof(w));
+                    fprintf(stderr, " %08X", w);
+                }
+                fprintf(stderr, "\n");
+
+                /* Check callback pointer global at 0x806794F0 */
+                uint32_t cbptr = 0;
+                uc_mem_read(uc, mips_sext(0x806794F0u), &cbptr, sizeof(cbptr));
+                fprintf(stderr,
+                        "[INIT_REACH_CBPTR_CHECK] 0x806794F0 = 0x%08X (%s)\n",
+                        cbptr, cbptr ? "SET" : "ZERO/UNSET");
+
+                /* Also check nearby callback globals */
+                uint32_t g94EC = 0, g9508 = 0, g9510 = 0;
+                uc_mem_read(uc, mips_sext(0x806794ECu), &g94EC, sizeof(g94EC));
+                uc_mem_read(uc, mips_sext(0x80679508u), &g9508, sizeof(g9508));
+                uc_mem_read(uc, mips_sext(0x80679510u), &g9510, sizeof(g9510));
+                fprintf(stderr,
+                        "[INIT_REACH_GLOBALS] g94EC=0x%08X g94F0=0x%08X"
+                        " g9508=0x%08X g9510=0x%08X\n",
+                        g94EC, cbptr, g9508, g9510);
             }
         }
 
