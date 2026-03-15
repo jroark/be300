@@ -654,13 +654,17 @@ vmem_init(caddr_t start, caddr_t end)
       goto error_cleanup;
     }
 	if ( CheckCancel( ((start - start_save) * 100) / (kernel_end - start_save) ) )
-		return (-1);
+		goto error_cleanup;
   }
   map->leaf[i / map->leafsize][i % map->leafsize] = NULL; /* END MARK */
+
+  LocalFree(pPFNs);
 
   return (0);
 
  error_cleanup:
+  if (pPFNs)
+    LocalFree(pPFNs);
   vmem_free();
 
   return (-1);
