@@ -55,6 +55,7 @@ endif()
 set(BE300_CORE_SOURCES
     src/machine.c
     src/wince_diag.c
+    src/wince_init.c
     src/bus.c
     src/loader.c
     src/macc.c
