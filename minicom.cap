@@ -1,0 +1,62 @@
+Serial port opened.
+
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] prepare probe_pa=0x80D42000 size=0x400
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] preexec map=0x80AA3000 entry=0x80272018 argc=1 arg3=0x80D42000
+[CYACE_PROBE] ram-only preexec block=0x285CB377
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+<4>Linux version 2.6.8.1 (filip@build.linux4.be) (gcc version 2.96-sdelinuxmips-040127) #39 Wed Sep 8 16:15:43 CEST 2004
+Serial port opened.
+
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] prepare probe_pa=0x80D41000 size=0x400
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] preexec map=0x80A94000 entry=0x8000146C argc=4 arg3=0x80D41000
+[CYACE_PROBE] ram-only preexec block=0x6F85427B
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+<4>Cache error exception:
+<4>cp0_errorepc == 8007a178
+<4>cp0_cacheerr == 00000000
+<4>Decoded CP0_CACHEERR: primary cache fault in insn reference.
+<4>Error bits: 
+<4>IDX: 0x00000000
+<0>Kernel panic: Can't handle the cache error!
+<0>In idle task - not syncing
+<4> Serial port opened.
+
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] prepare probe_pa=0x80D43000 size=0x400
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] preexec map=0x80AA4000 entry=0x80272018 argc=1 arg3=0x80D43000
+[CYACE_PROBE] ram-only preexec block=0xB156D2B9
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+<4>Linux version 2.6.8.1 (filip@build.linux4.be) (gcc version 2.96-sdelinuxmips-040127) #39 Wed Sep 8 16:15:43 CEST 2004
+Serial port opened.
+
+entry=8000146c  addr=80001000-80260ce0
+
+[CYACE_PROBE] prepare probe_pa=0x80D42000 size=0x400
+entry=8000146c  addr=80001000-80260ce0
+
+[CYACE_PROBE] preexec map=0x80AE0000 entry=0x8000146C argc=1 arg3=0x80D42000
+[CYACE_PROBE] ram-only preexec block=0x0C778814
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+Serial port opened.
+
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] prepare probe_pa=0x80D64000 size=0x400
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] preexec map=0x80AC5000 entry=0x80272018 argc=1 arg3=0x80D64000
+[CYACE_PROBE] ram-only preexec block=0x362B8DC8
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+<4>Linux version 2.6.8.1 (filip@build.linux4.be) (gcc version 2.96-sdelinuxmips-040127) #39 Wed Sep 8 16:15:43 CEST 2004
+<4>Calibrating delay loop... 
