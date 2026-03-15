@@ -498,3 +498,13 @@ void       machine_run(machine_t *m);
 void       machine_stop(machine_t *m);
 void       machine_mmio_history_record(machine_t *m, bool is_write, uint32_t pa,
                                        unsigned size, uint64_t value, uint32_t pc);
+
+static inline bool is_wince_boot_cfg(const machine_config_t *cfg)
+{
+    return cfg != NULL && cfg->nand_path != NULL;
+}
+
+static inline bool is_wince_boot_machine(const machine_t *m)
+{
+    return m != NULL && is_wince_boot_cfg(&m->cfg);
+}
