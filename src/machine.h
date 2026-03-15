@@ -13,6 +13,52 @@
 #include "hw/gpio.h"
 #include "hw/nand.h"
 
+/* Kernel symbol addresses (vmlinux-pgui-demo 2.4.18, vmlinux-2.6) */
+#define RUN_INIT_SYSCALL_EPC      0x8000181Cu
+#define RUN_INIT_SYSCALL_RET_PC   0x80001820u
+#define RUN_INIT_SYSCALL_EPC_26   0x800015B0u
+#define RUN_INIT_SYSCALL_RET_PC_26 0x800015B4u
+#define INIT_ARGV_KPTR            0x80171244u
+#define INIT_ENVP_KPTR            0x8017126Cu
+#define EXECVE_SCRATCH_BASE       0x01020000u
+#define EXECVE_SCRATCH_END        0x01021000u
+#define DO_EXECVE_START_PC        0x8004A9D0u
+#define DO_EXECVE_END_PC          0x8004ACA4u
+#define TLB_DEFER_RETRY_LIMIT     32u
+#define TLB_EXL_DROP_DEFER_LIMIT  64u
+#define EXECVE_HANDOFF_STATE_DONE          0u
+#define EXECVE_HANDOFF_STATE_ARMED         1u
+#define EXECVE_HANDOFF_STATE_USER_FETCH_SEEN 2u
+#define USER_HANDOFF_ENTRY_WINDOW_START    0x2AAA8A00u
+#define USER_HANDOFF_ENTRY_WINDOW_END      0x2AAA8A40u
+
+#define K24_DO_PAGE_FAULT         0x8000AFA8u
+#define K24_HANDLE_TLBL           0x800133E0u
+#define K24_NOPAGE_TLBL           0x80013464u
+#define K24_HANDLE_TLBL_PTE_LOAD  0x80013410u
+#define K24_HANDLE_TLBL_PTE_STORE 0x80013430u
+#define K24_HANDLE_TLBS           0x80013560u
+#define K24_DO_NO_PAGE            0x800283A4u
+#define K24_FILEMAP_NOPAGE        0x8002DAB8u
+#define K24_FILEMAP_FIND_GET_PAGE_RET   0x8002DBB4u
+#define K24_FILEMAP_PAGE_CACHE_READ_RET 0x8002DBECu
+#define K24_FILEMAP_READ_CLUSTER_RET    0x8002DC40u
+#define K24_FILEMAP_UPTODATE_CHECK      0x8002DC48u
+#define K24_FILEMAP_UPTODATE_BRANCH     0x8002DC54u
+#define K24_FILEMAP_READPAGE_RET        0x8002DC94u
+#define K24_FILEMAP_LOCKPAGE_CALL       0x8002DC5Cu
+#define K24_FILEMAP_MAPPING_CHECK       0x8002DC64u
+#define K24_FILEMAP_UPTODATE_RECHECK    0x8002DC7Cu
+#define K24_FILEMAP_READPAGE_CALL       0x8002DC8Cu
+#define K24_FILEMAP_SKIP_READPAGE       0x8002DCC4u
+#define K24_BLOCK_READ_SUBMIT_BH_CALL   0x80042ED8u
+#define K24_BLOCK_READ_SUBMIT_BH_RET    0x80042EE0u
+#define K24_BLOCK_READ_GET_BLOCK_CALL   0x80042FB0u
+#define K24_BLOCK_READ_GET_BLOCK_RET    0x80042FB8u
+#define K24_BLOCK_READ_MEMSET_HOLE      0x80042FE8u
+#define K24_BLOCK_READ_RET              0x80042EECu
+#define K24_EXT2_GET_BLOCK_RET          0x8006E730u
+
 /* Physical address map (VR4131 hardware manual §3.1) */
 #define PA_SDRAM_BASE    UINT32_C(0x00000000)
 #define PA_SDRAM_SIZE    (64u * 1024u * 1024u)   /* 64 MB max */
@@ -506,6 +552,12 @@ bool read_pa_u32_all_aliases(machine_t *m, uint32_t pa, uint32_t *out);
 /* Shared utility: read a 32-bit word from guest VA (tries both 32-bit and sign-extended). */
 bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out);
 
+/* Shared utility: read an instruction with PA fallback. */
+bool read_insn_best_effort(uc_engine *uc, uint64_t address, uint32_t *insn);
+
+/* Shared utility: read a NUL-terminated string from guest memory. */
+int read_guest_string(uc_engine *uc, uint64_t va, char *buf, int bufsz);
+
 /* ------------------------------------------------------------------ */
 /* Shared inline helpers (used by machine.c and extracted modules)      */
 /* ------------------------------------------------------------------ */
@@ -549,6 +601,22 @@ static inline bool tlb_entry_matches_va(uint32_t va, uint32_t entryhi, uint32_t 
     uint64_t pair_bytes = tlb_pair_bytes_from_pagemask(pagemask);
     uint32_t mask = ~((uint32_t)(pair_bytes - 1u));
     return ((va & mask) == (entryhi & mask));
+}
+
+static inline bool tlb_trace_window_active(const machine_t *m)
+{
+    return m->tlb_trace_window;
+}
+
+static inline bool va_to_pa_kseg(uint64_t va, uint64_t *pa_out)
+{
+    uint32_t va32 = (uint32_t)va;
+    if ((va32 >= 0x80000000u && va32 <= 0xBFFFFFFFu) ||
+        ((uint64_t)(int64_t)(int32_t)va32) == va) {
+        *pa_out = (uint64_t)(va32 & 0x1FFFFFFFu);
+        return true;
+    }
+    return false;
 }
 
 static inline bool is_wince_boot_cfg(const machine_config_t *cfg)
