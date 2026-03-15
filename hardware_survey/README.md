@@ -86,7 +86,15 @@ Use the same eVC3 project flow as above, but add `be300_probe_v3.cpp` instead of
    - `No` = `Warm retained boot`
    - `Cancel` = `Unknown`
 4. Wait for the completion message box.
-5. Copy back `\BE300Probe_v3.txt`.
+5. Copy back the generated report from the same directory as the EXE.
+
+The output file is no longer hardcoded to root. It is created beside the EXE with a unique name per run:
+
+- `BE300Probe_v3_cold_<tick>.txt`
+- `BE300Probe_v3_warm_<tick>.txt`
+- `BE300Probe_v3_unknown_<tick>.txt`
+
+If a file with that name already exists, the probe appends `_01`, `_02`, and so on until it finds a free filename.
 
 The output includes fixed sections:
 
@@ -101,6 +109,15 @@ The output includes fixed sections:
 - `--- STORAGE MANAGER ---`
 - `--- FILESYSTEM ROOTS ---`
 
+The v3 report uses a hybrid logging model so it completes in practice on hardware:
+
+- Small regions (`<= 0x0200`) keep full raw word dumps.
+- Large regions (`0x1000`) log region status + CRC32 and only keep focused raw subwindow dumps for:
+  - `0x0A000C00..0x0A000C4F`
+  - `0x0F000080..0x0F00011F`
+  - `0x006794E0..0x0067951F`
+- Diff sections keep all small-region word diffs, but cap large-region detailed diffs to the first 32 changed words per region/pair while still reporting total changed-word counts.
+
 ### Intended Use
 
 `be300_probe_v3.cpp` is intended for cold-vs-warm comparison for emulator targeting. The highest-value runs are:
@@ -108,6 +125,7 @@ The output includes fixed sections:
 1. Battery-disconnect boot, then run `BE300Probe_v3` once.
 2. Warm-retained boot, then run `BE300Probe_v3` once.
 3. Repeat each mode multiple times and keep the boot tag with each returned report.
+4. You can leave multiple runs in the same directory; each run generates a distinct filename instead of overwriting the previous result.
 
 ---
 
