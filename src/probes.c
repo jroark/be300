@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include "probes.h"
 #include "machine.h"
+#include "macc.h"
 
 /*
  * Invalid instruction hook — handles VR4131 MACC instructions
