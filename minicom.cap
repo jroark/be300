@@ -59,4 +59,628 @@ entry=80272018  addr=80001000-8029dec8
 [CYACE_PROBE] ram-only preexec block=0x362B8DC8
 [CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
 <4>Linux version 2.6.8.1 (filip@build.linux4.be) (gcc version 2.96-sdelinuxmips-040127) #39 Wed Sep 8 16:15:43 CEST 2004
-<4>Calibrating delay loop... 
+<4>Calibrating delay loop... Serial port opened.
+
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] prepare probe_pa=0x80CDB000 size=0x400
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] preexec map=0x80A3E000 entry=0x80272018 argc=1 arg3=0x80CDB000
+[CYACE_PROBE] ram-only preexec block=0xF4859C11
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+<4>Linux version 2.6.8.1 (filip@build.linux4.be) (gcc version 2.96-sdelinuxmips-040127) #39 Wed Sep 8 16:15:43 CEST 2004
+Serial port opened.
+
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] prepare probe_pa=0x80D68000 size=0x400
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] preexec map=0x80ABB000 entry=0x8000146C argc=4 arg3=0x80D68000
+[CYACE_PROBE] ram-only preexec block=0xBEC12283
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+Serial port opened.
+
+entry=8000146c  addr=80001000-80260ce0
+
+[CYACE_PROBE] prepare probe_pa=0x80D69000 size=0x400
+entry=8000146c  addr=80001000-80260ce0
+
+[CYACE_PROBE] preexec map=0x80B07000 entry=0x8000146C argc=4 arg3=0x80D69000
+[CYACE_PROBE] ram-only preexec block=0x02507563
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+Serial port opened.
+
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] prepare probe_pa=0x80D7A000 size=0x400
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] preexec map=0x80ADB000 entry=0x80272018 argc=1 arg3=0x80D7A000
+[CYACE_PROBE] ram-only preexec block=0xD7ABC5D6
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+<4>Linux version 2.6.8.1 (filip@build.linux4.be) (gcc version 2.96-sdelinuxmips-040127) #39 Wed Sep 8 16:15:43 CEST 2004
+<4>CPU revision is: 00000c80
+<6>PClock: 165888000Hz
+<6>VTClock: 82944000Hz
+<6>TClock: 41472000Hz
+<4>Determined physical RAM map:
+<4> memory: 00fff000 @ 00000000 (usable)
+<4>Initial ramdisk at: 0x801fa000 (483328 bytes)
+<7>On node 0 totalpages: 4095
+<7>  DMA zone: 4095 pages, LIFO batch:1
+<7>  Normal zone: 0 pages, LIFO batch:1
+<7>  HighMem zone: 0 pages, LIFO batch:1
+<4>Built 1 zonelists
+<4>Kernel command line: 
+<4>Primary instruction cache 16kB, physically tagged, 2-way, linesize 16 bytes.
+<4>Primary data cache 16kB 2-way, linesize 16 bytes.
+<4>PID hash table entries: 64 (order 6: 512 bytes)
+<4>Using 0.033 MHz high precision timer.
+<4>Console: colour dummy device 80x25
+<4>Dentry cache hash table entries: 4096 (order: 2, 16384 bytes)
+<4>Inode-cache hash table entries: 2048 (order: 1, 8192 bytes)
+<6>Memory: 13040k/16380k available (1714k kernel code, 3320k reserved, 782k data, 112k init, 0k highmem)
+<4>Calibrating delay loop... 98.04 BogoMIPS
+<4>Mount-cache hash table entries: 512 (order: 0, 4096 bytes)
+<4>Checking for 'wait' instruction...  unavailable.
+<6>checking if image is initramfs...it isn't (no cpio magic); looks like an initrd
+<6>Freeing initrd memory: 472k freed
+<6>NET: Registered protocol family 16
+<4>Can't analyze prologue code at 801aacb8
+<6>fb0: Casio BE-x00 frame buffer device, using 160K of video memory
+<4>Console: switching to colour frame buffer device 30x40
+<4>RAMDISK driver initialized: 16 RAM disks of 4096K size 1024 blocksize
+<6>PPP generic driver version 2.4.2
+<6>PPP Deflate Compression module registered
+<6>PPP BSD Compression module registered
+<6>NFTL driver: nftlcore.c $Revision: 1.96 $, nftlmount.c $Revision: 1.36 $
+<4>Using anticipatory io scheduler
+<6>NET: Registered protocol family 2
+Serial port opened.
+
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] prepare probe_pa=0x80D85000 size=0x400
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] preexec map=0x80AD8000 entry=0x8000146C argc=4 arg3=0x80D85000
+[CYACE_PROBE] ram-only preexec block=0xB9E08776
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+Serial port opened.
+
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] prepare probe_pa=0x80D7B000 size=0x400
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] preexec map=0x80ACE000 entry=0x8000146C argc=4 arg3=0x80D7B000
+[CYACE_PROBE] ram-only preexec block=0xF67D9426
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+<4>CPU revision is: 00000c80
+<4>Primary instruction cache 16kb, linesize 16 bytes.
+<4>Primary data cache 16kb, linesize 16 bytes.
+<4>Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
+<6>PClock: 165888000Hz
+<6>VTClock: 82944000Hz
+<6>TClock: 41472000Hz
+<4>Determined physical RAM map:
+<4> memory: 00fff000 @ 00000000 (usable)
+<4>Initial ramdisk at: 0x8014a000 (1283122 bytes)
+<4>On node 0 totalpages: 4095
+<4>zone(0): 4095 pages.
+<4>zone(1): 0 pages.
+<4>zone(2): 0 pages.
+<4>Kernel command line: console=tty0 console=ttyS0,9600 root=/dev/ram
+<4>Console: colour dummy device 80x25
+CPU revision is: 00000c80
+Primary instruction cache 16kb, linesize 16 bytes.
+Primary data cache 16kb, linesize 16 bytes.
+Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
+PClock: 165888000Hz
+VTClock: 82944000Hz
+TClock: 41472000Hz
+Determined physical RAM map:
+ memory: 00fff000 @ 00000000 (usable)
+Initial ramdisk at: 0x8014a000 (1283122 bytes)
+On node 0 totalpages: 4095
+zone(0): 4095 pages.
+zone(1): 0 pages.
+zone(2): 0 pages.
+Kernel command line: console=tty0 console=ttyS0,9600 root=/dev/ram
+Console: colour dummy device 80x25
+<4>Calibrating delay loop... Calibrating delay loop... 104.85 BogoMIPS
+104.85 BogoMIPS
+<4>Memory: 12136k/16380k available (1137k kernel code, 4244k reserved, 1348k data, 68k init, 0k highmem)
+Memory: 12136k/16380k available (1137k kernel code, 4244k reserved, 1348k data, 68k init, 0k highmem)
+<4>Dentry-cache hash table entries: 2048 (order: 2, 16384 bytes)
+Dentry-cache hash table entries: 2048 (order: 2, 16384 bytes)
+<4>Inode-cache hash table entries: 1024 (order: 1, 8192 bytes)
+Inode-cache hash table entries: 1024 (order: 1, 8192 bytes)
+<4>Mount-cache hash table entries: 512 (order: 0, 4096 bytes)
+Mount-cache hash table entries: 512 (order: 0, 4096 bytes)
+<4>Buffer-cache hash table entries: 1024 (order: 0, 4096 bytes)
+Buffer-cache hash table entries: 1024 (order: 0, 4096 bytes)
+<4>Page-cache hash table entries: 4096 (order: 2, 16384 bytes)
+Page-cache hash table entries: 4096 (order: 2, 16384 bytes)
+<4>Checking for 'wait' instruction... Checking for 'wait' instruction...  unavailable.
+ unavailable.
+<4>POSIX conformance testing by UNIFIX
+POSIX conformance testing by UNIFIX
+<6>Linux NET4.0 for Linux 2.4
+Linux NET4.0 for Linux 2.4
+<6>Based upon Swansea University Computer Society NET3.039
+Based upon Swansea University Computer Society NET3.039
+<4>Initializing RT netlink socket
+Initializing RT netlink socket
+<4>Starting kswapd
+Starting kswapd
+<4>Console: switching Console: switching to colour frame buffer device 30x40
+to colour frame buffer device 30x40
+<6>fb0: Simple frame buffer device, using 160K of video memory
+fb0: Simple frame buffer device, using 160K of video memory
+<6>Generic scan keyboard driver initialized
+Generic scan keyboard driver initialized
+<4>Casio Cassiopeia BE-300 Serial Driver version 0.01
+Casio Cassiopeia BE-300 Serial Driver version 0.01
+<4>ttyS0 at 0xAA008680 (irq = 19) is a NEC D89041F1001 UART
+ttyS0 at 0xAA008680 (irq = 19) is a NEC D89041F1001 UART
+<4>pty: 256 Unix98 ptys configured
+pty: 256 Unix98 ptys configured
+<4>block: 64 slots per queue, batch=16
+block: 64 slots per queue, batch=16
+<4>RAMDISK driver initialized: 16 RAM disks of 4096K size 1024 blocksize
+RAMDISK driver initialized: 16 RAM disks of 4096K size 1024 blocksize
+<6>NET4: Linux TCP/IP 1.0 for NET4.0
+NET4: Linux TCP/IP 1.0 for NET4.0
+<6>IP Protocols: IP Protocols: ICMP, ICMP, UDP, UDP, TCP
+TCP
+<4>IP: routing cache hash table of 512 buckets, 4Kbytes
+IP: routing cache hash table of 512 buckets, 4Kbytes
+<4>TCP: Hash tables configured (established 512 bind 1024)
+TCP: Hash tables configured (established 512 bind 1024)
+<6>NET4: Unix domain sockets 1.0/SMP for Linux NET4.0.
+NET4: Unix domain sockets 1.0/SMP for Linux NET4.0.
+<5>RAMDISK: Compressed image found at block 0
+RAMDISK: Compressed image found at block 0
+<4>Freeing initrd memory: 1253k freed
+Freeing initrd memory: 1253k freed
+<4>VFS: Mounted root (ext2 filesystem).
+VFS: Mounted root (ext2 filesystem).
+<4>Freeing unused kernel memory: 68k freed
+Freeing unused kernel memory: 68k freed
+<4>* open *
+* open *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: TIOCGSERIAL *
+* ioctl: TIOCGSERIAL *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* open *
+* open *
+<4>* ioctl: TIOCGSERIAL *
+* ioctl: TIOCGSERIAL *
+<4>* open *
+* open *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* open *
+* open *
+init started:  BusyBox v0.60.5 (2003.05.11-09:27+0000) multi-call binary<4>* open *
+* open *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>Algorithmics/MIPS FPU Emulator v1.5
+Algorithmics/MIPS FPU Emulator v1.5
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+Welcome to Linux4BE<4>* open *
+* open *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* open *
+* open *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* open *
+* open *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<1>Unable to handle kernSerial port opened.
+
+entry=8000146c  addr=80001000-80260ce0
+
+[CYACE_PROBE] prepare probe_pa=0x80D7B000 size=0x400
+entry=8000146c  addr=80001000-80260ce0
+
+[CYACE_PROBE] preexec map=0x80B19000 entry=0x8000146C argc=4 arg3=0x80D7B000
+[CYACE_PROBE] ram-only preexec block=0xE9F0EDD9
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+CPU revision is: 00000c80
+Primary instruction cache 16kb, linesize 16 bytes.
+Primary data cache 16kb, linesize 16 bytes.
+Linux version 2.4.18-mips (johnbot@localhost.localdomain) (gcc version 3.0.1) #80 Tue Nov 19 02:47:31 EST 2002
+PClock: 165888000Hz
+VTClock: 82944000Hz
+TClock: 41472000Hz
+Determined physical RAM map:
+ memory: 00fff000 @ 00000000 (usable)
+Initial ramdisk at: 0x80182000 (743992 bytes)
+On node 0 totalpages: 4095
+zone(0): 4095 pages.
+zone(1): 0 pages.
+zone(2): 0 pages.
+Kernel command line: console=tty0 console=ttyS0,9600 root=/dev/ram
+Console: colour dummy device 80x25
+Calibrating delay loop... 104.85 BogoMIPS
+Memory: 12960k/16380k available (1360k kernel code, 3420k reserved, 820k data, 68k init, 0k highmem)
+Dentry-cache hash table entries: 2048 (order: 2, 16384 bytes)
+Inode-cache hash table entries: 1024 (order: 1, 8192 bytes)
+Mount-cache hash table entries: 512 (order: 0, 4096 bytes)
+Buffer-cache hash table entries: 1024 (order: 0, 4096 bytes)
+Page-cache hash table entries: 4096 (order: 2, 16384 bytes)
+Checking for 'wait' instruction...  unavailable.
+POSIX conformance testing by UNIFIX
+Linux NET4.0 for Linux 2.4
+Based upon Swansea University Computer Society NET3.039
+Initializing RT netlink socket
+Starting kswapd
+Console: switching to colour frame buffer device 30x40
+fb0: Simple frame buffer device, using 160K of video memory
+Dummy keyboard driver installed.
+Casio Cassiopeia BE-300 Serial Driver version 0.01
+ttyS0 at 0xAA008680 (irq = 19) is a NEC D89041F1001 UART
+pty: 256 Unix98 ptys configured
+block: 64 slots per queue, batch=16
+RAMDISK driver initialized: 16 RAM disks of 4096K size 1024 blocksize
+NET4: Linux TCP/IP 1.0 for NET4.0
+IP Protocols: ICMP, UDP, TCP
+IP: routing cache hash table of 512 buckets, 4Kbytes
+TCP: Hash tables configured (established 512 bind 1024)
+NET4: Unix domain sockets 1.0/SMP for Linux NET4.0.
+RAMDISK: Compressed image found at block 0
+Freeing initrd memory: 726k freed
+EXT2-fs warning: maximal mount count reached, running e2fsck is recommended
+VFS: Mounted root (ext2 filesystem).
+Freeing unused kernel memory: 68k freed
+init started:  BusyBox v0.60.4 (2002.11.04-17:21+0000) multi-call binaryAlgorithmics/MIPS FPU Emulator v1.5
+Serial port opened.
+
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] prepare probe_pa=0x80CBF000 size=0x400
+entry=80272018  addr=80001000-8029dec8
+
+[CYACE_PROBE] preexec map=0x80A33000 entry=0x80272018 argc=1 arg3=0x00000000
+[CYACE_PROBE] ram-only preexec block=0xA971E1F7
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+<4>Linux version 2.6.8.1 (filip@build.linux4.be) (gcc version 2.96-sdelinuxmips-040127) #39 Wed Sep 8 16:15:43 CEST 2004
+<4>CPU revision is: 00000c80
+<6>PClock: 165888000Hz
+<6>VTClock: 82944000Hz
+<6>TClock: 41472000Hz
+<4>Determined physical RAM map:
+<4> memory: 00fff000 @ 00000000 (usable)
+<4>Initial ramdisk at: 0x801fa000 (483328 bytes)
+<7>On node 0 totalpages: 4095
+<7>  DMA zone: 4095 pages, LIFO batch:1
+<7>  Normal zone: 0 pages, LIFO batch:1
+<7>  HighMem zone: 0 pages, LIFO batch:1
+<4>Built 1 zonelists
+<4>Kernel command line: 
+<4>Primary instruction cache 16kB, physically tagged, 2-way, linesize 16 bytes.
+<4>Primary data cache 16kB 2-way, linesize 16 bytes.
+<4>PID hash table entries: 64 (order 6: 512 bytes)
+<4>Using 0.033 MHz high precision timer.
+<4>Console: colour dummy device 80x25
+<4>Dentry cache hash table entries: 4096 (order: 2, 16384 bytes)
+<4>Inode-cache hash table entries: 2048 (order: 1, 8192 bytes)
+<6>Memory: 13040k/16380k available (1714k kernel code, 3320k reserved, 782k data, 112k init, 0k highmem)
+<4>Calibrating delay loop... 98.04 BogoMIPS
+<4>Mount-cache hash table entries: 512 (order: 0, 4096 bytes)
+<4>Checking for 'wait' instruction...  unavailable.
+<6>checking if image is initramfs...it isn't (no cpio magic); looks like an initrd
+<6>Freeing initrd memory: 472k freed
+<6>NET: Registered protocol family 16
+<4>Can't analyze prologue code at 801aacb8
+<6>fb0: Casio BE-x00 frame buffer device, using 160K of video memory
+<4>Console: switching to colour frame buffer device 30x40
+<4>RAMDISK driver initialized: 16 RAM disks of 4096K size 1024 blocksize
+<6>PPP generic driver version 2.4.2
+<6>PPP Deflate Compression module registered
+<6>PPP BSD Compression module registered
+<6>NFTL driver: nftlcore.c $Revision: 1.96 $, nftlmount.c $Revision: 1.36 $
+<4>Using anticipatory io scheduler
+<6>NET: Registered protocol family 2
+Serial port opened.
+
+entry=8000146c  addr=80001000-80260ce0
+
+[CYACE_PROBE] prepare probe_pa=0x80D6A000 size=0x400
+entry=8000146c  addr=80001000-80260ce0
+
+[CYACE_PROBE] preexec map=0x80B08000 entry=0x8000146C argc=4 arg3=0x00000000
+[CYACE_PROBE] ram-only preexec block=0xD17D4AD9
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+CPU revision is: 00000c80
+Primary instruction cache 16kb, linesize 16 bytes.
+Primary data cache 16kb, linesize 16 bytes.
+Linux version 2.4.18-mips (johnbot@localhost.localdomain) (gcc version 3.0.1) #80 Tue Nov 19 02:47:31 EST 2002
+PClock: 165888000Hz
+VTClock: 82944000Hz
+TClock: 41472000Hz
+Determined physical RAM map:
+ memory: 00fff000 @ 00000000 (usable)
+Initial ramdisk at: 0x80182000 (743992 bytes)
+On node 0 totalpages: 4095
+zone(0): 4095 pages.
+zone(1): 0 pages.
+zone(2): 0 pages.
+Kernel command line: console=tty0 console=ttyS0,9600 root=/dev/ram
+Console: colour dummy device 80x25
+Calibrating delay loop... 104.85 BogoMIPS
+Memory: 12960k/16380k available (1360k kernel code, 3420k reserved, 820k data, 68k init, 0k highmem)
+Dentry-cache hash table entries: 2048 (order: 2, 16384 bytes)
+Inode-cache hash table entries: 1024 (order: 1, 8192 bytes)
+Mount-cache hash table entries: 512 (order: 0, 4096 bytes)
+Buffer-cache hash table entries: 1024 (order: 0, 4096 bytes)
+Page-cache hash table entries: 4096 (order: 2, 16384 bytes)
+Checking for 'wait' instruction...  unavailable.
+POSIX conformance testing by UNIFIX
+Linux NET4.0 for Linux 2.4
+Based upon Swansea University Computer Society NET3.039
+Initializing RT netlink socket
+Starting kswapd
+Console: switching to colour frame buffer device 30x40
+fb0: Simple frame buffer device, using 160K of video memory
+Dummy keyboard driver installed.
+Casio Cassiopeia BE-300 Serial Driver version 0.01
+ttyS0 at 0xAA008680 (irq = 19) is a NEC D89041F1001 UART
+pty: 256 Unix98 ptys configured
+block: 64 slots per queue, batch=16
+RAMDISK driver initialized: 16 RAM disks of 4096K size 1024 blocksize
+NET4: Linux TCP/IP 1.0 for NET4.0
+IP Protocols: ICMP, UDP, TCP
+IP: routing cache hash table of 512 buckets, 4Kbytes
+TCP: Hash tables configured (established 512 bind 1024)
+NET4: Unix domain sockets 1.0/SMP for Linux NET4.0.
+RAMDISK: Compressed image found at block 0
+Freeing initrd memory: 726k freed
+EXT2-fs warning: maximal mount count reached, running e2fsck is recommended
+VFS: Mounted root (ext2 filesystem).
+Freeing unused kernel memory: 68k freed
+init started:  BusyBox v0.60.4 (2002.11.04-17:21+0000) multi-call binaryAlgorithmics/MIPS FPU Emulator v1.5
+Serial port opened.
+
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] prepare probe_pa=0x80D61000 size=0x400
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] preexec map=0x80AB8000 entry=0x8000146C argc=4 arg3=0x00000000
+[CYACE_PROBE] ram-only preexec block=0x5E32952A
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+<4>CPU revision is: 00000c80
+Serial port opened.
+
+entry=8000146c  addr=80001000-802ab090
+
+can't allocate heap
+
+Serial port opened.
+
+entry=8000146c  addr=80001000-802ab090
+
+can't allocate heap
+
+Serial port opened.
+
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] prepare probe_pa=0x80D67000 size=0x400
+entry=8000146c  addr=80001000-802ab090
+
+[CYACE_PROBE] preexec map=0x80ABA000 entry=0x8000146C argc=4 arg3=0x00000000
+[CYACE_PROBE] ram-only preexec block=0xA1E15996
+[CYACE_PROBE] ram2000=0x00000000 ram6000=0x00000000 ram1d000=0x00000000 ram2d000=0x00000000
+<4>CPU revision is: 00000c80
+<4>Primary instruction cache 16kb, linesize 16 bytes.
+<4>Primary data cache 16kb, linesize 16 bytes.
+<4>Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
+<6>PClock: 165888000Hz
+<6>VTClock: 82944000Hz
+<6>TClock: 41472000Hz
+<4>Determined physical RAM map:
+<4> memory: 00fff000 @ 00000000 (usable)
+<4>Initial ramdisk at: 0x8014a000 (1283122 bytes)
+<4>On node 0 totalpages: 4095
+<4>zone(0): 4095 pages.
+<4>zone(1): 0 pages.
+<4>zone(2): 0 pages.
+<4>Kernel command line: console=tty0 console=ttyS0,9600 root=/dev/ram
+<4>Console: colour dummy device 80x25
+CPU revision is: 00000c80
+Primary instruction cache 16kb, linesize 16 bytes.
+Primary data cache 16kb, linesize 16 bytes.
+Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
+PClock: 165888000Hz
+VTClock: 82944000Hz
+TClock: 41472000Hz
+Determined physical RAM map:
+ memory: 00fff000 @ 00000000 (usable)
+Initial ramdisk at: 0x8014a000 (1283122 bytes)
+On node 0 totalpages: 4095
+zone(0): 4095 pages.
+zone(1): 0 pages.
+zone(2): 0 pages.
+Kernel command line: console=tty0 console=ttyS0,9600 root=/dev/ram
+Console: colour dummy device 80x25
+<4>Calibrating delay loop... Calibrating delay loop... 104.85 BogoMIPS
+104.85 BogoMIPS
+<4>Memory: 12136k/16380k available (1137k kernel code, 4244k reserved, 1348k data, 68k init, 0k highmem)
+Memory: 12136k/16380k available (1137k kernel code, 4244k reserved, 1348k data, 68k init, 0k highmem)
+<4>Dentry-cache hash table entries: 2048 (order: 2, 16384 bytes)
+Dentry-cache hash table entries: 2048 (order: 2, 16384 bytes)
+<4>Inode-cache hash table entries: 1024 (order: 1, 8192 bytes)
+Inode-cache hash table entries: 1024 (order: 1, 8192 bytes)
+<4>Mount-cache hash table entries: 512 (order: 0, 4096 bytes)
+Mount-cache hash table entries: 512 (order: 0, 4096 bytes)
+<4>Buffer-cache hash table entries: 1024 (order: 0, 4096 bytes)
+Buffer-cache hash table entries: 1024 (order: 0, 4096 bytes)
+<4>Page-cache hash table entries: 4096 (order: 2, 16384 bytes)
+Page-cache hash table entries: 4096 (order: 2, 16384 bytes)
+<4>Checking for 'wait' instruction... Checking for 'wait' instruction...  unavailable.
+ unavailable.
+<4>POSIX conformance testing by UNIFIX
+POSIX conformance testing by UNIFIX
+<6>Linux NET4.0 for Linux 2.4
+Linux NET4.0 for Linux 2.4
+<6>Based upon Swansea University Computer Society NET3.039
+Based upon Swansea University Computer Society NET3.039
+<4>Initializing RT netlink socket
+Initializing RT netlink socket
+<4>Starting kswapd
+Starting kswapd
+<4>Console: switching Console: switching to colour frame buffer device 30x40
+to colour frame buffer device 30x40
+<6>fb0: Simple frame buffer device, using 160K of video memory
+fb0: Simple frame buffer device, using 160K of video memory
+<6>Generic scan keyboard driver initialized
+Generic scan keyboard driver initialized
+<4>Casio Cassiopeia BE-300 Serial Driver version 0.01
+Casio Cassiopeia BE-300 Serial Driver version 0.01
+<4>ttyS0 at 0xAA008680 (irq = 19) is a NEC D89041F1001 UART
+ttyS0 at 0xAA008680 (irq = 19) is a NEC D89041F1001 UART
+<4>pty: 256 Unix98 ptys configured
+pty: 256 Unix98 ptys configured
+<4>block: 64 slots per queue, batch=16
+block: 64 slots per queue, batch=16
+<4>RAMDISK driver initialized: 16 RAM disks of 4096K size 1024 blocksize
+RAMDISK driver initialized: 16 RAM disks of 4096K size 1024 blocksize
+<6>NET4: Linux TCP/IP 1.0 for NET4.0
+NET4: Linux TCP/IP 1.0 for NET4.0
+<6>IP Protocols: IP Protocols: ICMP, ICMP, UDP, UDP, TCP
+TCP
+<4>IP: routing cache hash table of 512 buckets, 4Kbytes
+IP: routing cache hash table of 512 buckets, 4Kbytes
+<4>TCP: Hash tables configured (established 512 bind 1024)
+TCP: Hash tables configured (established 512 bind 1024)
+<6>NET4: Unix domain sockets 1.0/SMP for Linux NET4.0.
+NET4: Unix domain sockets 1.0/SMP for Linux NET4.0.
+<5>RAMDISK: Compressed image found at block 0
+RAMDISK: Compressed image found at block 0
+<4>Freeing initrd memory: 1253k freed
+Freeing initrd memory: 1253k freed
+<4>VFS: Mounted root (ext2 filesystem).
+VFS: Mounted root (ext2 filesystem).
+<4>Freeing unused kernel memory: 68k freed
+Freeing unused kernel memory: 68k freed
+<4>* open *
+* open *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: TIOCGSERIAL *
+* ioctl: TIOCGSERIAL *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* open *
+* open *
+<4>* ioctl: TIOCGSERIAL *
+* ioctl: TIOCGSERIAL *
+<4>* open *
+* open *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* open *
+* open *
+init started:  BusyBox v0.60.5 (2003.05.11-09:27+0000) multi-call binary<4>* open *
+* open *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>Algorithmics/MIPS FPU Emulator v1.5
+Algorithmics/MIPS FPU Emulator v1.5
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+<4>* ioctl: default *
+* ioctl: default *
+Welcome to Linux4BE
