@@ -58,6 +58,7 @@ set(BE300_CORE_SOURCES
     src/wince_init.c
     src/probes.c
     src/mem_alias.c
+    src/tlb_shadow.c
     src/bus.c
     src/loader.c
     src/macc.c
