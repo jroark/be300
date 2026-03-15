@@ -134,3 +134,16 @@ void log_wince_div_hist_summary(const machine_t *m,
 void log_wince_div_call_trace_summary(const machine_t *m, const char *reason);
 void log_wince_div_stack_watch_summary(machine_t *m, uc_engine *uc,
                                        const char *reason);
+
+/* ------------------------------------------------------------------ */
+/* Producer reachability diagnostics                                    */
+/* ------------------------------------------------------------------ */
+
+void init_wince_producer_attrs(machine_t *m);
+void wince_producer_record_write(machine_t *m, uint32_t pa, uint32_t pc,
+                                 unsigned size, uint64_t value);
+void wince_producer_record_read(machine_t *m, uint32_t pa, uint32_t pc,
+                                unsigned size, uint64_t value);
+void maybe_probe_wince_producer_pcs(machine_t *m, uc_engine *uc,
+                                    uint32_t pc32, uint32_t insn);
+void log_wince_producer_summary(const machine_t *m, const char *reason);

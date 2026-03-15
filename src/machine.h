@@ -148,6 +148,32 @@ typedef struct {
     uint64_t last_nz_to_zero_new;
 } wince_region_track_t;
 
+#define WINCE_PRODUCER_FAMILY_COUNT 7u
+typedef struct {
+    const char *name;
+    uint32_t start_pa;
+    uint32_t end_pa;            /* exclusive */
+    /* Writes */
+    uint32_t total_writes;
+    uint32_t total_nz_writes;
+    bool     first_write_valid;
+    uint32_t first_write_pc, first_write_pa;
+    uint64_t first_write_val;
+    bool     first_nz_write_valid;
+    uint32_t first_nz_write_pc, first_nz_write_pa;
+    uint64_t first_nz_write_val;
+    /* Reads */
+    uint32_t total_reads;
+    bool     first_read_valid;
+    uint32_t first_read_pc, first_read_pa;
+    uint64_t first_read_val;
+    /* Cross-event */
+    uint32_t last_write_before_read_pc, last_write_before_read_pa;
+    uint64_t last_write_before_read_val;
+    bool     any_write_before_read;
+    bool     read_found_zero_after_writes;
+} wince_producer_attr_t;
+
 #define WINCE_CTRL_HISTORY_LEN 128u
 typedef struct {
     uint32_t pc;
@@ -414,6 +440,21 @@ struct machine_s {
     bool     wince_despec_touch_bootctx;      /* PA 0x6000-0x7000 */
     bool     wince_despec_touch_bootparam0;   /* PA 0x1D000-0x1E000 */
     bool     wince_despec_touch_bootparam1;   /* PA 0x2D000-0x2E000 */
+
+    wince_producer_attr_t wince_producer[WINCE_PRODUCER_FAMILY_COUNT];
+
+    /* Producer reachability one-shot probes */
+    bool wince_prod_probe_A0079C90;
+    bool wince_prod_probe_A007AC68;
+    bool wince_prod_probe_80078BCC;
+    bool wince_prod_probe_80078BE0;
+    bool wince_prod_probe_80078BF0;
+    bool wince_prod_probe_80078BFC;
+    bool wince_prod_probe_80079670;
+    bool wince_prod_probe_80077FE4_entry;
+    bool wince_prod_probe_80077FE4_return;
+    bool wince_prod_fail_corridor_dumped;
+    uint32_t wince_prod_80077FE4_expected_ra;
 
     uint32_t wince_fptbl_read_logs;
     bool     wince_fptbl_context_dumped;
