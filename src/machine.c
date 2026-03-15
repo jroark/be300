@@ -4745,6 +4745,12 @@ machine_t *machine_create(const machine_config_t *cfg)
     m->wince_despec_touch_cb_globals = false;
     m->wince_despec_touch_pmu_rtc = false;
     m->wince_despec_touch_nand_c38 = false;
+    m->wince_despec_touch_cb_tbl = false;
+    m->wince_despec_touch_objptr = false;
+    m->wince_despec_touch_obj = false;
+    m->wince_despec_touch_bootctx = false;
+    m->wince_despec_touch_bootparam0 = false;
+    m->wince_despec_touch_bootparam1 = false;
     m->wince_div_hist_head = 0;
     m->wince_div_hist_count = 0;
     m->wince_div_logs = 0;
@@ -4859,6 +4865,48 @@ machine_t *machine_create(const machine_config_t *cfg)
             fprintf(stderr,
                     "[FPTBL_READ] enabled watch on 0x%08X-0x%08X (5 aliases)\n",
                     WINCE_TRACE_FPTBL_PA_START, WINCE_TRACE_FPTBL_PA_END - 1u);
+        }
+
+        /* De-speculation read hooks: fire one-shot first-touch diagnostics
+         * on reads to all SDRAM despec families (P1 fix). */
+        static const struct {
+            uint32_t start;
+            uint32_t end; /* inclusive */
+            const char *name;
+        } despec_read_ranges[] = {
+            { UINT32_C(0x00002200), UINT32_C(0x000022FF), "resume_ctx" },
+            { UINT32_C(0x00001700), UINT32_C(0x000017FF), "stack_frame" },
+            { UINT32_C(0x00679400), UINT32_C(0x006795FF), "cb_globals" },
+            { WINCE_TRACE_CB_PA_START, WINCE_TRACE_CB_PA_END - 1u, "cb_tbl" },
+            { WINCE_TRACE_OBJPTR_PA_START, WINCE_TRACE_OBJPTR_PA_END - 1u, "objptr" },
+            { WINCE_TRACE_OBJ_PA_START, WINCE_TRACE_OBJ_PA_END - 1u, "obj" },
+            { WINCE_TRACE_BOOTCTX_PA_START, WINCE_TRACE_BOOTCTX_PA_END - 1u, "bootctx" },
+            { WINCE_TRACE_BOOTPARAM0_PA_START, WINCE_TRACE_BOOTPARAM0_PA_END - 1u, "bootparam0" },
+            { WINCE_TRACE_BOOTPARAM1_PA_START, WINCE_TRACE_BOOTPARAM1_PA_END - 1u, "bootparam1" },
+        };
+        bool despec_read_ok = true;
+        for (unsigned r = 0; r < sizeof(despec_read_ranges) / sizeof(despec_read_ranges[0]); r++) {
+            uint64_t start_off = despec_read_ranges[r].start;
+            uint64_t end_off = despec_read_ranges[r].end;
+            for (unsigned i = 0; i < sizeof(watch_bases) / sizeof(watch_bases[0]); i++) {
+                uc_err hdr = uc_hook_add(m->uc, &hk, UC_HOOK_MEM_READ,
+                                         wince_despec_read_hook, m,
+                                         watch_bases[i] + start_off,
+                                         watch_bases[i] + end_off);
+                if (hdr != UC_ERR_OK) {
+                    despec_read_ok = false;
+                    fprintf(stderr,
+                            "[DESPEC_READ] hook failed range=%s base=0x%016" PRIX64
+                            " start=0x%08" PRIX64 " end=0x%08" PRIX64 ": %s\n",
+                            despec_read_ranges[r].name, watch_bases[i],
+                            start_off, end_off, uc_strerror(hdr));
+                }
+            }
+        }
+        if (despec_read_ok) {
+            fprintf(stderr,
+                    "[DESPEC_READ] enabled read hooks on %zu ranges x 5 aliases\n",
+                    sizeof(despec_read_ranges) / sizeof(despec_read_ranges[0]));
         }
     }
 
