@@ -70,6 +70,9 @@ void init_wince_region_tracks(machine_t *m);
 bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
                                uint64_t address, int size,
                                int64_t value, void *user_data);
+bool wince_despec_read_hook(uc_engine *uc, uc_mem_type type,
+                            uint64_t address, int size,
+                            int64_t value, void *user_data);
 bool wince_fptbl_read_hook(uc_engine *uc, uc_mem_type type,
                            uint64_t address, int size,
                            int64_t value, void *user_data);

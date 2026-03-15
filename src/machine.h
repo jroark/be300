@@ -408,6 +408,12 @@ struct machine_s {
     bool     wince_despec_touch_cb_globals;   /* PA 0x679400-0x6795FF */
     bool     wince_despec_touch_pmu_rtc;      /* PA 0x0F000100-0x0F00011F */
     bool     wince_despec_touch_nand_c38;     /* PA 0x0A000C38 */
+    bool     wince_despec_touch_cb_tbl;       /* PA 0x51680-0x51B00 */
+    bool     wince_despec_touch_objptr;       /* PA 0x660000-0x660040 */
+    bool     wince_despec_touch_obj;          /* PA 0x66BFC0-0x680000 */
+    bool     wince_despec_touch_bootctx;      /* PA 0x6000-0x7000 */
+    bool     wince_despec_touch_bootparam0;   /* PA 0x1D000-0x1E000 */
+    bool     wince_despec_touch_bootparam1;   /* PA 0x2D000-0x2E000 */
 
     uint32_t wince_fptbl_read_logs;
     bool     wince_fptbl_context_dumped;

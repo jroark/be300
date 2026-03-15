@@ -1127,6 +1127,24 @@ void wince_despec_first_touch_check(machine_t *m, bool is_write,
     } else if (pa == UINT32_C(0x0A000C38)) {
         family = "nand_c38";
         flag = &m->wince_despec_touch_nand_c38;
+    } else if (pa >= WINCE_TRACE_CB_PA_START && pa < WINCE_TRACE_CB_PA_END) {
+        family = "cb_tbl";
+        flag = &m->wince_despec_touch_cb_tbl;
+    } else if (pa >= WINCE_TRACE_OBJPTR_PA_START && pa < WINCE_TRACE_OBJPTR_PA_END) {
+        family = "objptr";
+        flag = &m->wince_despec_touch_objptr;
+    } else if (pa >= WINCE_TRACE_OBJ_PA_START && pa < WINCE_TRACE_OBJ_PA_END) {
+        family = "obj";
+        flag = &m->wince_despec_touch_obj;
+    } else if (pa >= WINCE_TRACE_BOOTCTX_PA_START && pa < WINCE_TRACE_BOOTCTX_PA_END) {
+        family = "bootctx";
+        flag = &m->wince_despec_touch_bootctx;
+    } else if (pa >= WINCE_TRACE_BOOTPARAM0_PA_START && pa < WINCE_TRACE_BOOTPARAM0_PA_END) {
+        family = "bootparam0";
+        flag = &m->wince_despec_touch_bootparam0;
+    } else if (pa >= WINCE_TRACE_BOOTPARAM1_PA_START && pa < WINCE_TRACE_BOOTPARAM1_PA_END) {
+        family = "bootparam1";
+        flag = &m->wince_despec_touch_bootparam1;
     }
 
     if (!family || !flag || *flag)
@@ -1138,6 +1156,27 @@ void wince_despec_first_touch_check(machine_t *m, bool is_write,
             " size=%u val=0x%08" PRIX64 " pc=0x%08X\n",
             family, is_write ? "WRITE" : "READ",
             pa, size, value, pc);
+}
+
+bool wince_despec_read_hook(uc_engine *uc, uc_mem_type type,
+                            uint64_t address, int size, int64_t value,
+                            void *user_data)
+{
+    (void)type;
+    (void)value;
+    machine_t *m = user_data;
+    if (!is_wince_boot_machine(m))
+        return true;
+    uint32_t pa = (uint32_t)address & UINT32_C(0x1FFFFFFF);
+    uint64_t pc64 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
+    /* Best-effort read of the actual value for diagnostic output;
+     * log with val=0 if the read fails (e.g., unmapped alias). */
+    uint32_t mem_val = 0;
+    (void)uc_mem_read(uc, address, &mem_val, (size <= 4) ? (size_t)size : 4u);
+    wince_despec_first_touch_check(m, false, pa, (uint32_t)size,
+                                   (uint64_t)mem_val, (uint32_t)pc64);
+    return true;
 }
 
 bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
