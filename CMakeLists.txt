@@ -59,6 +59,7 @@ set(BE300_CORE_SOURCES
     src/probes.c
     src/mem_alias.c
     src/tlb_shadow.c
+    src/null_call.c
     src/bus.c
     src/loader.c
     src/macc.c
