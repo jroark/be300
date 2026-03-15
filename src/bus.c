@@ -428,7 +428,7 @@ static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
     uint32_t pc32 = 0;
     uint64_t val = 0;
 
-    if (m->cfg.log_wince_stall || m->cfg.log_nand_legacy || m->cfg.log_mmio)
+    if (is_wince_boot_machine(m) || m->cfg.log_nand_legacy || m->cfg.log_mmio)
         pc32 = read_pc32(uc);
 
     if (m->cfg.log_mmio)
@@ -524,7 +524,7 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
     uint32_t cs3_off = vrc4173_cs3_off(ctx, offset);
     uint32_t pc32 = 0;
 
-    if (m->cfg.log_wince_stall || m->cfg.log_nand_legacy || m->cfg.log_mmio)
+    if (is_wince_boot_machine(m) || m->cfg.log_nand_legacy || m->cfg.log_mmio)
         pc32 = read_pc32(uc);
 
     if (m->cfg.log_mmio)
@@ -602,7 +602,7 @@ static uint64_t mmio_read_cb(uc_engine *uc, uint64_t offset,
     uint64_t val = 0;
     uint32_t pc32 = 0;
 
-    if (m->cfg.log_wince_stall)
+    if (is_wince_boot_machine(m))
         pc32 = read_pc32(uc);
 
     if (offset >= IO_BCU_BASE && offset < IO_BCU_BASE + IO_BCU_SIZE)
@@ -663,7 +663,7 @@ static void mmio_write_cb(uc_engine *uc, uint64_t offset,
     machine_t *m = user_data;
     uint32_t pc32 = 0;
 
-    if (m->cfg.log_wince_stall)
+    if (is_wince_boot_machine(m))
         pc32 = read_pc32(uc);
 
     if (m->cfg.log_mmio)

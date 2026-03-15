@@ -24,15 +24,7 @@ static inline bool is_kseg_va32(uint32_t va32)
     return seg == 0x80000000u || seg == 0xA0000000u;
 }
 
-static inline bool is_wince_boot_cfg(const machine_config_t *cfg)
-{
-    return cfg != NULL && cfg->nand_path != NULL;
-}
-
-static inline bool is_wince_boot_machine(const machine_t *m)
-{
-    return m != NULL && is_wince_boot_cfg(&m->cfg);
-}
+/* is_wince_boot_cfg / is_wince_boot_machine are in machine.h */
 
 #define VR4131_PCLK_HZ      UINT64_C(166000000)
 #define VR4131_CP0_COUNT_HZ (VR4131_PCLK_HZ / 2u)
@@ -9983,7 +9975,7 @@ static void icu_etime_fixup_hook(uc_engine *uc, uint64_t address,
 void machine_mmio_history_record(machine_t *m, bool is_write, uint32_t pa,
                                  unsigned size, uint64_t value, uint32_t pc)
 {
-    if (!m || !m->cfg.log_wince_stall)
+    if (!m || !is_wince_boot_machine(m))
         return;
 
     uint32_t idx = m->mmio_hist_head % WINCE_MMIO_HISTORY_LEN;
@@ -10308,7 +10300,7 @@ machine_t *machine_create(const machine_config_t *cfg)
             fprintf(stderr, "[ALIAS_MODE] write-sync hook failed: %s\n", uc_strerror(hs));
         }
     }
-    if (is_wince_boot_cfg(cfg) && cfg->log_wince_stall) {
+    if (is_wince_boot_cfg(cfg)) {
         static const uint64_t watch_bases[] = {
             UINT64_C(0x0000000000000000),
             UINT64_C(0x0000000080000000),
