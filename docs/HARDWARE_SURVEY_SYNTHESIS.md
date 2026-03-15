@@ -12,6 +12,22 @@ This memo consolidates the current `hardware_survey/*.txt` artifacts that were u
 
 This memo is intentionally limited to those six survey artifacts. It does not treat later emulator traces, `cyace_probe` serial logs, or ad hoc discussion as equivalent ground-truth inputs, except where explicitly called out as a later observation.
 
+Additional post-boot probe integration evidence was reviewed from the current `BE300Probe_v3_*.txt` outputs in `hardware_survey/`:
+
+- Completed text reports:
+  - `BE300Probe_v3_cold_21381.txt`
+  - `BE300Probe_v3_cold_27030.txt`
+  - `BE300Probe_v3_warm_12105.txt`
+  - `BE300Probe_v3_warm_14694.txt`
+  - `BE300Probe_v3_warm_42066.txt`
+  - `BE300Probe_v3_warm_48518.txt`
+  - `BE300Probe_v3_warm_65448.txt`
+  - `BE300Probe_v3_warm_9120.txt`
+  - `BE300Probe_v3_unknown_154600.txt`
+- Aborted NUL-only stub files:
+  - `BE300Probe_v3_cold_43081.txt`
+  - `BE300Probe_v3_warm_33316.txt`
+
 ## High-Confidence Stable Inputs
 
 ### Stable VR4131 BCU / core-page values at `0x0F000000`
@@ -129,6 +145,46 @@ This makes the block useful for targeted investigation, but not safe for blind w
 ### `0x0F000100+` is less stable than the BCU / ICU base windows
 `HardwareDump6.txt` and the post-boot probes agree on the low BCU / ICU windows, but the `0x100` / `0x110` region changes across captures and likely reflects timer / PMU / retained-state behavior. That region needs cold-vs-retained comparison, not unconditional seeding.
 
+## Post-Boot Probe v3 Integration
+
+The current `BE300Probe_v3_*.txt` runs materially refine the next hardware-collection step.
+
+### Observed facts from v3
+
+1. Output-path behavior is fixed.
+   - Completed runs correctly write beside the EXE, for example under `\Storage Card\Program Files\`.
+
+2. Most v3 runs complete as partial text reports rather than hard crashes.
+   - The dominant terminal status is `probe_complete status=PARTIAL_ERROR`.
+
+3. All completed runs fault on the same VR4131 read span.
+   - Every completed file includes:
+     - `[READ_FAULT] PA=0x0F000200 size=0xE00 code=0xC0000005`
+   - The useful implication is that `0x0F000080..0x0F00011F` is readable and informative, while the later part of the `0x0F000000` page is not safe to probe as a single full `0x1000` window.
+
+4. `0x0F000080..0x0F00011F` is already sufficient for the stable ICU/PMU words we care about.
+   - The focused dump survives in completed runs even when the broader `0x0F000000` page read is only partial.
+
+5. `0x006794E0..0x0067951F` is confirmed to hold post-boot textual or record-like content.
+   - UTF-16 hints in the v3 outputs include strings such as `imodem.dll`, `Calendar.exe` fragments, and other module-name-like text.
+   - This reinforces that the `0x006794xx` window should not be treated as a fixed callback-pointer seed block.
+
+6. `NAND status=ABSENT` in v3 is a file-selection artifact, not evidence that `\Nand Disk` does not exist.
+   - Current v3 only looks for root-level files under `\Nand Disk`.
+   - The returned reports already show `\Nand Disk\Program Files` exists, so recursive search is required.
+
+7. Cold/warm/device runs already show multiple CRC families.
+   - Distinct CRC families are visible for:
+     - `0x00002200`
+     - `0x00001700`
+     - `0x00051600`
+     - `0x0A000000`
+     - the readable subwindows of `0x0F000000`
+   - This is enough to justify clustering by reset mode and device, rather than promoting those pages directly into fixed emulator seeds.
+
+8. The two aborted NUL-only files show that end-of-run flush/close is still not enough if the system hangs before enough text is written.
+   - Future probe versions should flush incrementally after each major section and avoid success-path UI that is not needed for data capture.
+
 ## Corrections to Prior Assumptions
 
 1. `0x0A000C38` is **phase-sensitive / non-stable**, not a fixed full-word seed candidate.
@@ -139,7 +195,7 @@ This makes the block useful for targeted investigation, but not safe for blind w
 
 ## Direct Emulator Targets
 
-### Safe high-confidence readback / seed targets
+### Stable readable subwindows worth seeding or mirroring
 
 - VR4131 BCU/core-page words at `0x0F000000..0x0F00007F`
 - VR4131 ICU words at `0x0F000080..0x0F00009F`
@@ -148,15 +204,22 @@ This makes the block useful for targeted investigation, but not safe for blind w
 
 These have cross-artifact agreement strong enough to use as emulator readback targets, provided the boot path being modeled is compatible with post-boot state.
 
-### Model as dynamic / phaseful, not fixed
+### Reset-sensitive RAM / context regions that need clustering first
 
 - `0x0A000C38`
 - `0x0F000100..0x0F00011F`
 - `0x00002200..0x000022FF`
 - `0x00001700..0x000017FF`
-- `0x00679400..0x0067951F`
 
 These areas are still important, but they should be modeled as workload-, time-, or reset-dependent state rather than dumped into a fixed seed blob.
+
+### Post-boot textual/object regions that should not be treated as fixed seeds
+
+- `0x00679400..0x0067951F`
+- `0x0066BF00..0x0067C0FF` object/string tables
+- any UTF-16/module-name-like subwindow captured in the v2/v3 post-boot probes
+
+These are useful for identifying what WinCE drivers and services are alive, but they are not direct emulator seed targets.
 
 ### Do not treat as direct SPL / NK-entry warm seeds
 
@@ -189,12 +252,12 @@ These areas are still important, but they should be modeled as workload-, time-,
    - If later cold-vs-retained captures show stable differences in ICU/RTC/PMU or companion-chip windows, those should become explicit emulator profile inputs rather than being inferred indirectly from Linux outcomes.
 
 5. **Immediate action for the next hardware pass**
-   - Use a new post-boot probe that records:
-     - boot tag (`Cold battery boot`, `Warm retained boot`, `Unknown`)
-     - early snapshot
-     - settled snapshot
-     - post-workload snapshot
-     - explicit focus lines for `0x2200`, `0x1700`, ICU/PMU, `0x0A000Cxx`, and `0x006794xx`
-     - storage manager and filesystem inventory
+   - Use a stock-shell-oriented follow-up probe that:
+     - keeps the boot tag (`Cold battery boot`, `Warm retained boot`, `Unknown`)
+     - keeps early / settled / post snapshots
+     - replaces the faulting full `0x0F000000` page read with safe targeted windows
+     - searches `\Nand Disk` recursively so NAND workload actually runs
+     - flushes incrementally so hangs leave readable partial reports
+     - trims filesystem and registry enumeration to shallow summaries
 
-That is the purpose of `hardware_survey/be300_probe_v3.cpp` added in the same pass as this memo.
+That is the purpose of `hardware_survey/be300_probe_v4.cpp`.
