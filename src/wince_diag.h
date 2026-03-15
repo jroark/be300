@@ -108,6 +108,14 @@ void maybe_probe_wince_spl_memcpy(machine_t *m, uc_engine *uc,
                                   uint32_t pc32, uint32_t insn);
 
 /* ------------------------------------------------------------------ */
+/* De-speculation first-touch diagnostics                              */
+/* ------------------------------------------------------------------ */
+
+void wince_despec_first_touch_check(machine_t *m, bool is_write,
+                                    uint32_t pa, uint32_t size,
+                                    uint64_t value, uint32_t pc);
+
+/* ------------------------------------------------------------------ */
 /* Diagnostic summaries & logging                                      */
 /* ------------------------------------------------------------------ */
 

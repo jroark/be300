@@ -1098,6 +1098,48 @@ bool wince_fptbl_read_hook(uc_engine *uc, uc_mem_type type,
     return true;
 }
 
+/* ------------------------------------------------------------------ */
+/* De-speculation first-touch diagnostics                              */
+/* ------------------------------------------------------------------ */
+
+void wince_despec_first_touch_check(machine_t *m, bool is_write,
+                                    uint32_t pa, uint32_t size,
+                                    uint64_t value, uint32_t pc)
+{
+    if (!m || !is_wince_boot_machine(m))
+        return;
+
+    const char *family = NULL;
+    bool *flag = NULL;
+
+    if (pa >= UINT32_C(0x00002200) && pa <= UINT32_C(0x000022FF)) {
+        family = "resume_ctx";
+        flag = &m->wince_despec_touch_resume_ctx;
+    } else if (pa >= UINT32_C(0x00001700) && pa <= UINT32_C(0x000017FF)) {
+        family = "stack_frame";
+        flag = &m->wince_despec_touch_stack_frame;
+    } else if (pa >= UINT32_C(0x00679400) && pa <= UINT32_C(0x006795FF)) {
+        family = "cb_globals";
+        flag = &m->wince_despec_touch_cb_globals;
+    } else if (pa >= UINT32_C(0x0F000100) && pa <= UINT32_C(0x0F00011F)) {
+        family = "pmu_rtc";
+        flag = &m->wince_despec_touch_pmu_rtc;
+    } else if (pa == UINT32_C(0x0A000C38)) {
+        family = "nand_c38";
+        flag = &m->wince_despec_touch_nand_c38;
+    }
+
+    if (!family || !flag || *flag)
+        return;
+
+    *flag = true;
+    fprintf(stderr,
+            "[WINCE_DESPEC_FIRST_TOUCH] family=%s op=%s pa=0x%08X"
+            " size=%u val=0x%08" PRIX64 " pc=0x%08X\n",
+            family, is_write ? "WRITE" : "READ",
+            pa, size, value, pc);
+}
+
 bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
                                       uint64_t address, int size, int64_t value,
                                       void *user_data)
@@ -1116,6 +1158,10 @@ bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
     uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
     uint32_t pc = (uint32_t)pc64;
     uint64_t uval = (uint64_t)value;
+
+    /* De-speculation first-touch check for SDRAM families */
+    wince_despec_first_touch_check(m, true, pa, (uint32_t)size, uval, pc);
+
     update_wince_region_tracks(m, uc, pa, pc, (unsigned)size, uval);
     wince_div_stack_watch_record_write(m, uc, (uint32_t)address, pc, (unsigned)size, uval);
 

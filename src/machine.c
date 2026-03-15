@@ -4740,6 +4740,11 @@ machine_t *machine_create(const machine_config_t *cfg)
     init_wince_region_tracks(m);
     m->wince_region_nz2z_logs = 0;
     m->wince_deferred_seed_done = false;
+    m->wince_despec_touch_resume_ctx = false;
+    m->wince_despec_touch_stack_frame = false;
+    m->wince_despec_touch_cb_globals = false;
+    m->wince_despec_touch_pmu_rtc = false;
+    m->wince_despec_touch_nand_c38 = false;
     m->wince_div_hist_head = 0;
     m->wince_div_hist_count = 0;
     m->wince_div_logs = 0;

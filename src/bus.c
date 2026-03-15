@@ -10,6 +10,7 @@
 #include "hw/rtc.h"
 #include "hw/gpio.h"
 #include "hw/nand.h"
+#include "wince_diag.h"
 
 /* ------------------------------------------------------------------ */
 /* VRC4173 companion chip MMIO                                          */
@@ -248,173 +249,27 @@ static void vrc4173_seed_core_dump_once(void)
     vrc4173_latch_seeded = true;
 
     /*
-     * Warm-state VRC4173 snapshot seeds:
-     *  - hardware_survey/HardwareDump 2.txt (legacy low-offset probes)
-     *  - hardware_survey/HardwareDump6.txt (active pages 0x0A008000, 0x0A00A000)
-     *  - hardware_survey/BE300Probe_v1.txt (post-boot targeted 0x0A000Cxx words)
+     * v4-verified VRC4173 seeds: only NAND C-window words stable across
+     * all 12 v4 hardware survey runs, plus 0x1B10 (NK branch target).
+     * All other seeds removed — vrc4173_base CRC per-run unique.
      */
     static const vrc4173_seed_word_t seed_words[] = {
-        /* HardwareDump 2: low-offset companion core words. */
-        { 0x0008u, 0x00000001u },
-        { 0x0010u, 0x0000000Cu }, { 0x0014u, 0x0000000Cu },
-        { 0x0018u, 0x0000000Cu }, { 0x0020u, 0x0000000Cu },
-        { 0x0028u, 0x0000000Cu }, { 0x002Cu, 0x0000000Cu },
-        { 0x0030u, 0x0000000Cu }, { 0x0034u, 0x0000003Cu },
-        { 0x0040u, 0x0000000Cu },
-        { 0x0088u, 0x00000001u },
-        { 0x0090u, 0x0000000Cu }, { 0x0094u, 0x0000000Cu },
-        { 0x0098u, 0x0000000Cu }, { 0x00A0u, 0x0000000Cu },
-        { 0x00A8u, 0x0000000Cu }, { 0x00ACu, 0x0000000Cu },
-        { 0x00B0u, 0x0000000Cu }, { 0x00B4u, 0x0000003Cu },
-        { 0x00C0u, 0x0000000Cu },
-
-        /* BE300Probe_v1 baseline: targeted C-window state near 0x0A000C00. */
-        { 0x00C00u, 0x00000020u }, { 0x00C04u, 0x00000002u },
-        { 0x00C08u, 0x00000050u }, { 0x00C0Cu, 0x000000F1u },
-        { 0x00C10u, 0x00000002u },
-        { 0x00C24u, 0x00000014u },
-        { 0x00C2Cu, 0x00000001u },
-        { 0x00C30u, 0x0000E000u }, { 0x00C34u, 0x000001FFu },
-        { 0x00C3Cu, 0x00001F1Fu },
-        { 0x00C40u, 0x00000500u },
-        { 0x00C48u, 0x0000030Fu }, { 0x00C4Cu, 0x00000000u },
-
-        /* HardwareDump6: PA 0x0A008000 page (bridge/config identity). */
-        { 0x08000u, 0x0000200Cu },
-        { 0x08004u, 0x00001100u },
-        { 0x08010u, 0x0000000Cu },
-        { 0x08014u, 0x00000002u },
-        { 0x08040u, 0x0000000Au },
-
-        /* HardwareDump6: PA 0x0A00A000 page (functional core). */
-        { 0x0A000u, 0x0000000Bu },
-        { 0x0A004u, 0x00000004u },
-        { 0x0A008u, 0x000002F9u },
-        { 0x0A010u, 0x00001073u },
-        { 0x0A014u, 0x00001061u },
-        { 0x0A018u, 0x000010B1u },
-        { 0x0A01Cu, 0x00000004u },
-        { 0x0A020u, 0x00000078u },
-        { 0x0A024u, 0x00000040u },
-        { 0x0A030u, 0x00000040u },
-        { 0x0A034u, 0x0000000Cu },
-        { 0x0A040u, 0x00009EFFu },
-        { 0x0A060u, 0x000C000Cu }, { 0x0A064u, 0x000C000Cu },
-        { 0x0A068u, 0x000C000Cu }, { 0x0A06Cu, 0x000C000Cu },
-        { 0x0A070u, 0x000C000Cu }, { 0x0A074u, 0x000C000Cu },
-        { 0x0A078u, 0x000C000Cu }, { 0x0A07Cu, 0x000C000Cu },
-        { 0x0A084u, 0x00000001u },
-        { 0x0A08Cu, 0x00007100u },
-        { 0x0A090u, 0x00007100u }, { 0x0A094u, 0x00007100u },
-        { 0x0A098u, 0x00007100u }, { 0x0A09Cu, 0x00007100u },
-        { 0x0A0A0u, 0x00007100u }, { 0x0A0A4u, 0x00007100u },
-        { 0x0A0A8u, 0x00007100u }, { 0x0A0ACu, 0x00007100u },
-        { 0x0A0B0u, 0x00007100u }, { 0x0A0B4u, 0x00007100u },
-        { 0x0A0B8u, 0x00007100u }, { 0x0A0BCu, 0x00007100u },
-        { 0x0A0C0u, 0x00007100u },
-        { 0x0A0C4u, 0x00000003u },
-        { 0x0A0C8u, 0x0000FFFFu },
-        { 0x0A0D0u, 0x00000002u },
-        { 0x0A0DCu, 0x00000005u },
-        { 0x0A0E0u, 0x00000041u },
-        { 0x0A0E4u, 0x0000000Fu },
-        { 0x0A0F4u, 0x00007100u },
-        { 0x0A0F8u, 0x00007100u },
-        { 0x0A0FCu, 0x00007100u },
-        { 0x0A140u, 0x00000001u },
-        { 0x0A19Cu, 0x00000001u },
-        { 0x0A1A0u, 0x00000001u },
-        { 0x0A1A4u, 0x00000001u },
-        { 0x0A1C8u, 0x00000001u },
-        { 0x0A1CCu, 0x00000040u },
-
-        /*
-         * BE300Probe_v2: VRC4173 page 0x1000 baseline (PA 0x0A001000..0x0A001FFF).
-         * Non-0x01 values only; 0x01 fills done programmatically below.
-         */
-        /*
-         * NOTE: offsets 0x1000-0x10FF skipped — CF status stub returns
-         * 0x0C unconditionally; probe CIS data is post-boot state only.
-         */
-        /* 0x1300 area: misc config/status */
-        { 0x0131Cu, 0x0000001Cu }, { 0x01320u, 0x00009F80u },
-        { 0x0132Cu, 0x0000001Eu }, { 0x01330u, 0x00000030u },
-        { 0x01334u, 0x00000003u }, { 0x01378u, 0x0000003Fu },
-        /* 0x1460-0x1620: CIS tuples / CF config registers */
-        { 0x01464u, 0x0000004Cu }, { 0x01468u, 0x00000028u },
-        { 0x01470u, 0x0000007Du }, { 0x01474u, 0x00000038u },
-        { 0x01478u, 0x00000009u }, { 0x0147Cu, 0x000000FFu },
-        { 0x01480u, 0x000000FFu }, { 0x01484u, 0x000000FFu },
-        { 0x01490u, 0x00000010u }, { 0x01494u, 0x00000002u },
-        { 0x014C0u, 0x0000003Eu }, { 0x014C4u, 0x000000D1u },
-        { 0x014CCu, 0x00000021u }, { 0x014D4u, 0x0000007Eu },
-        { 0x01530u, 0x00000008u }, { 0x0153Cu, 0x00000012u },
-        { 0x0154Cu, 0x000000FFu }, { 0x01550u, 0x000000FFu },
-        { 0x01554u, 0x000000FFu }, { 0x01558u, 0x00000010u },
-        { 0x0155Cu, 0x000000CFu }, { 0x01560u, 0x00000007u },
-        { 0x01564u, 0x00000002u }, { 0x01568u, 0x00000020u },
-        { 0x01584u, 0x00000009u }, { 0x01588u, 0x00000002u },
-        { 0x0158Cu, 0x00000027u }, { 0x015A0u, 0x00000040u },
-        { 0x015A8u, 0x00000009u }, { 0x015ACu, 0x00000004u },
-        { 0x015B8u, 0x00000003u }, { 0x015BCu, 0x000000FFu },
-        { 0x015C0u, 0x000000FFu }, { 0x015C4u, 0x000000FFu },
-        { 0x015CCu, 0x00000007u }, { 0x015D0u, 0x00000005u },
-        { 0x015D4u, 0x00000081u }, { 0x015D8u, 0x00000002u },
-        { 0x015DCu, 0x00000040u }, { 0x015E8u, 0x00000007u },
-        { 0x015ECu, 0x00000005u }, { 0x015F0u, 0x00000002u },
-        { 0x015F4u, 0x00000002u }, { 0x015F8u, 0x00000040u },
-        { 0x01604u, 0x00000007u }, { 0x01608u, 0x00000005u },
-        { 0x0160Cu, 0x00000083u }, { 0x01610u, 0x00000003u },
-        { 0x01614u, 0x00000008u },
-        /* 0x1B10: critical — NK reads & branches on bit 6 (0x40) */
+        { 0x00C30u, 0x0000E000u },  /* nand_c30 — stable all 12 v4 runs */
+        { 0x00C34u, 0x000001FFu },  /* nand_c34 — stable all 12 v4 runs */
+        { 0x00C48u, 0x0000030Fu },  /* nand_c48 — stable all 12 v4 runs */
+        { 0x00C4Cu, 0x00000000u },  /* nand_c4c — stable all 12 v4 runs */
+        /* 0x1B10: NK reads & branches on bit 6 (0x40) — keep unconditionally */
         { 0x01B10u, 0x00000048u },
-        { 0x01B34u, 0x000000FFu }, { 0x01B58u, 0x0000000Fu },
-        { 0x01B74u, 0x00000004u }, { 0x01B90u, 0x00000008u },
-        /* 0x1C00-0x1CDC: DMA / bus master config */
-        { 0x01C04u, 0x00000100u }, { 0x01C08u, 0x00001000u },
-        { 0x01C18u, 0x00000004u }, { 0x01C44u, 0x00000100u },
-        { 0x01C48u, 0x00001000u }, { 0x01C58u, 0x00000004u },
-        { 0x01C84u, 0x00000100u }, { 0x01C88u, 0x00001000u },
-        { 0x01C98u, 0x00000004u }, { 0x01CC4u, 0x00000201u },
-        { 0x01CC8u, 0x00001000u }, { 0x01CD4u, 0x00000004u },
-        { 0x01CD8u, 0x00000008u }, { 0x01CDCu, 0x00052000u },
     };
 
     for (unsigned i = 0; i < (sizeof(seed_words) / sizeof(seed_words[0])); i++)
         vrc4173_latch_write(seed_words[i].off, 4u, seed_words[i].val);
 
-    /*
-     * BE300Probe_v2 page 0x1000: 445 words read as 0x01 on hardware.
-     * Fill programmatically instead of listing individually.
-     * Pattern: every-other-word (stride 8) in most ranges, with some
-     * contiguous sub-ranges.  Two large blocks dominate:
-     *   0x1100-0x1310, 0x1328-0x13FC, 0x1800-0x1AFC, 0x1D00-0x1FFC
-     */
-    static const struct { uint32_t start, end; } one_fill_ranges[] = {
-        /* 0x1100-0x1310: interrupt status / enable bitmap */
-        { 0x01100u, 0x01310u },
-        /* 0x1328, 0x133C-0x135C, 0x1374-0x13FC */
-        { 0x01328u, 0x013FCu },
-        /* 0x1534, 0x1540-0x1548, 0x1580, 0x1594-0x1598, 0x15A4, 0x161C */
-        { 0x01534u, 0x0161Cu },
-        /* 0x1800-0x1AFC: large status bitmap */
-        { 0x01800u, 0x01AFCu },
-        /* 0x1B14, 0x1B20, 0x1B2C, 0x1B64, 0x1CC0 */
-        { 0x01B14u, 0x01CC0u },
-        /* 0x1D00-0x1FFC: extended status */
-        { 0x01D00u, 0x01FFCu },
-    };
-    for (unsigned r = 0; r < sizeof(one_fill_ranges)/sizeof(one_fill_ranges[0]); r++) {
-        for (uint32_t off = one_fill_ranges[r].start;
-             off <= one_fill_ranges[r].end; off += 4u) {
-            /* Only write 0x01 if the latch wasn't already set by seed_words */
-            uint64_t existing;
-            if (!vrc4173_latch_read(off, 4u, &existing))
-                vrc4173_latch_write(off, 4u, 0x00000001u);
-        }
-    }
+    fprintf(stderr,
+            "[VRC4173_SEED] de-speculated: %u entries (was ~130+445 one-fills)\n",
+            (unsigned)(sizeof(seed_words) / sizeof(seed_words[0])));
 
-    /* NAND sideband latch observed in nand_sniff_v3.txt. */
+    /* NAND sideband latch — functional state machine init, not survey-derived. */
     vrc4173_nand_c38_phase = VRC4173_NAND_C38_PHASE_BOOT;
     vrc4173_set_nand_c38(NULL, VRC4173_NAND_C38_BOOT_INIT, 0u, "seed");
 }
@@ -452,6 +307,7 @@ static uint64_t vrc4173_read_cb(uc_engine *uc, uint64_t offset,
 
     if (cs3_off == VRC4173_NAND_C38_OFF) {
         val = vrc4173_nand_c38;
+        wince_despec_first_touch_check(m, false, UINT32_C(0x0A000C38), size, val, pc32);
         goto out;
     }
 
@@ -552,6 +408,7 @@ static void vrc4173_write_cb(uc_engine *uc, uint64_t offset,
         /* Read-only identity probe on hardware; ignore writes. */
         break;
     case VRC4173_NAND_C38_OFF:
+        wince_despec_first_touch_check(m, true, UINT32_C(0x0A000C38), size, value, pc32);
         if (is_wince_nand_mode(m) &&
             ((uint32_t)value == VRC4173_NAND_C38_POST_ACTIVE ||
              (uint32_t)value == VRC4173_NAND_C38_POST_DONE)) {
@@ -615,8 +472,11 @@ static uint64_t mmio_read_cb(uc_engine *uc, uint64_t offset,
         m->saw_icu_mmio = true;
         val = icu_read(&m->icu, (uint32_t)(offset - IO_ICU_BASE), size);
     }
-    else if (offset >= IO_RTC_BASE && offset < IO_RTC_BASE + IO_RTC_SIZE)
+    else if (offset >= IO_RTC_BASE && offset < IO_RTC_BASE + IO_RTC_SIZE) {
         val = rtc_read(&m->rtc, (uint32_t)(offset - IO_RTC_BASE), size);
+        if (offset < IO_RTC_BASE + 0x20u)
+            wince_despec_first_touch_check(m, false, (uint32_t)(PA_IO_BASE + offset), size, val, pc32);
+    }
     else if (offset >= IO_GPIO_BASE && offset < IO_GPIO_BASE + IO_GPIO_SIZE)
         val = gpio_read(&m->gpio, (uint32_t)(offset - IO_GPIO_BASE), size);
     else if (offset >= IO_SIU_BASE && offset < IO_SIU_BASE + IO_SIU_SIZE)
@@ -680,8 +540,11 @@ static void mmio_write_cb(uc_engine *uc, uint64_t offset,
         m->saw_icu_mmio = true;
         icu_write(&m->icu, (uint32_t)(offset - IO_ICU_BASE), size, (uint32_t)value);
     }
-    else if (offset >= IO_RTC_BASE && offset < IO_RTC_BASE + IO_RTC_SIZE)
+    else if (offset >= IO_RTC_BASE && offset < IO_RTC_BASE + IO_RTC_SIZE) {
         rtc_write(&m->rtc, (uint32_t)(offset - IO_RTC_BASE), size, (uint32_t)value);
+        if (offset < IO_RTC_BASE + 0x20u)
+            wince_despec_first_touch_check(m, true, (uint32_t)(PA_IO_BASE + offset), size, value, pc32);
+    }
     else if (offset >= IO_GPIO_BASE && offset < IO_GPIO_BASE + IO_GPIO_SIZE)
         gpio_write(&m->gpio, (uint32_t)(offset - IO_GPIO_BASE), size, (uint32_t)value);
     else if (offset >= IO_SIU_BASE && offset < IO_SIU_BASE + IO_SIU_SIZE)
@@ -780,38 +643,31 @@ typedef struct {
 static void seed_internal_io_fallback(machine_t *m)
 {
     /*
-     * Warm-state core-page snapshot from hardware_survey/HardwareDump6.txt
-     * and docs/HARDWARE_GROUND_TRUTH.md (PA 0x0F000000 page).
-     * These values are only used for unmodeled internal-I/O offsets.
+     * Warm-state core-page snapshot — only unmodeled internal-I/O offsets.
+     * De-speculated: removed entries dispatched to dedicated hw models
+     * (BCU 0x000-0x01F, CMU 0x060, ICU 0x080-0x0BF, RTC 0x100-0x13F,
+     * GPIO 0x140-0x15F) and per-run-unique values (RTC etime 0x100-0x108).
      */
     static const io_seed_word_t seed_words[] = {
-        { 0x000u, 0x0000000Cu }, { 0x004u, 0x100C4444u },
-        { 0x008u, 0x26721242u },
-        { 0x010u, 0x00005002u }, { 0x014u, 0x0883020Cu },
+        /* 0x020-0x034: BCU extended / DMAAU window config (no dedicated model) */
         { 0x020u, 0x01FFF800u }, { 0x024u, 0x01FFF800u },
         { 0x028u, 0x01FFF800u }, { 0x02Cu, 0x01FFF800u },
         { 0x030u, 0x00003800u }, { 0x034u, 0x00003800u },
+        /* 0x040: DMA config (no dedicated model) */
         { 0x040u, 0x00010000u },
-        { 0x060u, 0x09020902u }, { 0x064u, 0x09020902u },
+        /* 0x064-0x07C: DCU (CMU model only covers 0x060-0x063) */
+        { 0x064u, 0x09020902u },
         { 0x068u, 0x09020902u }, { 0x06Cu, 0x09020902u },
         { 0x070u, 0x09020902u }, { 0x074u, 0x09020902u },
         { 0x078u, 0x09020902u }, { 0x07Cu, 0x09020902u },
-        { 0x080u, 0x00000004u }, { 0x08Cu, 0x00000307u },
-        { 0x094u, 0x00000E83u }, { 0x098u, 0x00000001u },
-        { 0x0A0u, 0x00000001u }, { 0x0ACu, 0x00010000u },
+        /* 0x0C0-0x0D4: beyond ICU range, unmodeled */
         { 0x0C0u, 0x10061400u }, { 0x0C8u, 0x00000148u },
         { 0x0CCu, 0x00000002u }, { 0x0D0u, 0x020003FFu },
         { 0x0D4u, 0x000007FFu },
-        { 0x100u, 0x7C124A74u }, { 0x104u, 0x0000A5B3u },
-        { 0x108u, 0x00011C2Fu },
-        { 0x110u, 0x00000021u }, { 0x114u, 0x00000004u },
-        { 0x118u, 0x0000FFFFu }, { 0x11Cu, 0x0000F7A1u },
-        { 0x130u, 0x00060000u },
-        { 0x140u, 0x00000070u }, { 0x144u, 0x0000AAE2u },
-        { 0x148u, 0xFFFF111Cu }, { 0x14Cu, 0x00000E83u },
-        { 0x154u, 0x00000401u }, { 0x158u, 0x0000BFFFu },
+        /* 0x180-0x188: DSU (no dedicated model) */
         { 0x180u, 0x00200010u }, { 0x184u, 0x000014C8u },
         { 0x188u, 0x04B00002u },
+        /* 0x1E0-0x1EC: PCI window config (no dedicated model) */
         { 0x1E0u, 0x01FFF800u }, { 0x1E4u, 0x01FFF800u },
         { 0x1E8u, 0x0A000000u }, { 0x1ECu, 0x0A000000u },
     };
