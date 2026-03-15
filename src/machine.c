@@ -2077,6 +2077,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     maybe_probe_wince_obj_dispatch(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_bootmode_sp_flow(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_spl_memcpy(m, uc, (uint32_t)address, insn);
+    maybe_probe_wince_producer_pcs(m, uc, (uint32_t)address, insn);
 
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */
@@ -4738,6 +4739,7 @@ machine_t *machine_create(const machine_config_t *cfg)
     gpio_init(&m->gpio);
     nand_init(&m->nand, NULL, 0);
     init_wince_region_tracks(m);
+    init_wince_producer_attrs(m);
     m->wince_region_nz2z_logs = 0;
     m->wince_deferred_seed_done = false;
     m->wince_despec_touch_resume_ctx = false;
