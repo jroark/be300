@@ -205,9 +205,7 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 
 	// hold arguments
 	char *argv[256];
-	char probe_arg[64];
 	int argc = 0;
-	probe_arg[0] = '\0';
 
 	// first arg is the program name
 	argv[argc++] = szProgram;
@@ -246,25 +244,8 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 	if ( nResult < 0)
 		return;
 
-	{
-		if (vmem_probe_prepare(probe_arg, sizeof(probe_arg)) == 0)
-		{
-			if (argc < ((int)(sizeof(argv) / sizeof(argv[0])) - 1))
-			{
-				argv[argc++] = probe_arg;
-				argv[argc] = 0;
-				debug_printf(TEXT("[CYACE_PROBE] argv append enabled"));
-			}
-			else
-			{
-				debug_printf(TEXT("[CYACE_PROBE] argv append skipped (argv full)"));
-			}
-		}
-		else
-		{
-			debug_printf(TEXT("[CYACE_PROBE] prepare failed; continuing without probe arg"));
-		}
-	}
+	if (vmem_probe_prepare(0, 0) != 0)
+		debug_printf(TEXT("[CYACE_PROBE] prepare failed; continuing without probe block"));
 
 	progress.Update(0, _T("Allocating memory for arguments..."));
 
@@ -297,13 +278,24 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 	// Copy kernel arguments into newly allocated memory.
 	// skip past the argv[] array for the argument storage
 	caddr_t p = &argbuf[sizeof(char *)* argc];
+	unsigned long argbuf_used = sizeof(char *) * argc;
+	DWORD argbuf_limit = getpagesize();
 	int i;
 	for (i = 0; i < argc; i++)
 	{
 		int arglen = strlen(argv[i]) + 1;
+		if (argbuf_used + (unsigned long)arglen > (unsigned long)argbuf_limit)
+		{
+			_stprintf(msg, _T("Kernel arguments exceed one page (%lu bytes)."),
+				(unsigned long)(argbuf_used + (unsigned long)arglen));
+			System::ErrorMessageBox(msg);
+			vmem_free();
+			return;
+		}
 		((char **) argbuf)[i] = p;
 		memcpy (p, argv[i], arglen);
 		p += arglen;
+		argbuf_used += (unsigned long)arglen;
 	}
 
 	progress.Update(0, _T("Loading the kernel file..."));
@@ -433,9 +425,7 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 
 	// hold arguments
 	char *argv[256];
-	char probe_arg[64];
 	int argc = 0;
-	probe_arg[0] = '\0';
 
 	// first arg is the program name
 	argv[argc++] = szProgram;
@@ -474,25 +464,8 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 	if ( nResult < 0)
 		return;
 
-	{
-		if (vmem_probe_prepare(probe_arg, sizeof(probe_arg)) == 0)
-		{
-			if (argc < ((int)(sizeof(argv) / sizeof(argv[0])) - 1))
-			{
-				argv[argc++] = probe_arg;
-				argv[argc] = 0;
-				debug_printf(TEXT("[CYACE_PROBE] argv append enabled"));
-			}
-			else
-			{
-				debug_printf(TEXT("[CYACE_PROBE] argv append skipped (argv full)"));
-			}
-		}
-		else
-		{
-			debug_printf(TEXT("[CYACE_PROBE] prepare failed; continuing without probe arg"));
-		}
-	}
+	if (vmem_probe_prepare(0, 0) != 0)
+		debug_printf(TEXT("[CYACE_PROBE] prepare failed; continuing without probe block"));
 
 	progress.Update(0, _T("Allocating memory for arguments..."));
 
@@ -525,13 +498,24 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 	// Copy kernel arguments into newly allocated memory.
 	// skip past the argv[] array for the argument storage
 	caddr_t p = &argbuf[sizeof(char *)* argc];
+	unsigned long argbuf_used = sizeof(char *) * argc;
+	DWORD argbuf_limit = getpagesize();
 	int i;
 	for (i = 0; i < argc; i++)
 	{
 		int arglen = strlen(argv[i]) + 1;
+		if (argbuf_used + (unsigned long)arglen > (unsigned long)argbuf_limit)
+		{
+			_stprintf(msg, _T("Kernel arguments exceed one page (%lu bytes)."),
+				(unsigned long)(argbuf_used + (unsigned long)arglen));
+			System::ErrorMessageBox(msg);
+			vmem_free();
+			return;
+		}
 		((char **) argbuf)[i] = p;
 		memcpy (p, argv[i], arglen);
 		p += arglen;
+		argbuf_used += (unsigned long)arglen;
 	}
 
 	progress.Update(0, _T("Loading the kernel file..."));

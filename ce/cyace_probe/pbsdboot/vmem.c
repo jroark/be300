@@ -141,8 +141,12 @@ probe_read_phys_bytes(unsigned long pa, unsigned char *dst, unsigned long len)
       VirtualFree(mapped, 0, MEM_RELEASE);
       return FALSE;
     }
-
-    memcpy(dst, mapped + page_off, chunk);
+    __try {
+      memcpy(dst, mapped + page_off, chunk);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      VirtualFree(mapped, 0, MEM_RELEASE);
+      return FALSE;
+    }
     VirtualFree(mapped, 0, MEM_RELEASE);
     dst += chunk;
     pa += chunk;
@@ -200,8 +204,6 @@ vmem_probe_pa(void)
 int
 vmem_probe_prepare(char *arg, int arglen)
 {
-  if (!arg || arglen < 24)
-    return -1;
   if (map == NULL)
     return -1;
 
@@ -228,7 +230,13 @@ vmem_probe_prepare(char *arg, int arglen)
   probe_block->io_base_pa = 0x0F000000u;
   probe_block->io_len_bytes = 0x1000u;
 
-  sprintf(arg, "be300_probe_pa=0x%08lX", (unsigned long)probe_block_pa);
+  if (arg != NULL && arglen > 0) {
+    int n = _snprintf(arg, arglen, "be300_probe_pa=0x%08lX",
+                      (unsigned long)probe_block_pa);
+    arg[arglen - 1] = '\0';
+    if (n < 0 || n >= arglen)
+      return -1;
+  }
 
   debug_printf(TEXT("[CYACE_PROBE] prepare probe_pa=0x%08X size=0x%X"),
                (unsigned long)probe_block_pa, (unsigned long)CYACE_PROBE_BLOCK_SIZE);
@@ -263,31 +271,10 @@ vmem_probe_capture_preexec(caddr_t map_pa)
       probe_block->ram_word_ok_mask |= (1u << i);
     }
   }
-
   probe_block->mmio_word_ok_mask = 0u;
-  for (i = 0; i < CYACE_PROBE_MMIO_WORD_COUNT; i++) {
-    unsigned long v = 0;
-    probe_block->mmio_word_pa[i] = probe_mmio_word_pas[i];
-    if (probe_read_phys_u32(probe_mmio_word_pas[i], &v)) {
-      probe_block->mmio_word_val[i] = v;
-      probe_block->mmio_word_ok_mask |= (1u << i);
-    }
-  }
-
   probe_block->cwin_ok_mask = 0u;
-  for (i = 0; i < CYACE_PROBE_CWIN_WORD_COUNT; i++) {
-    unsigned long v = 0;
-    unsigned long pa = 0x0A000C00u + (unsigned long)(i * 4u);
-    if (probe_read_phys_u32(pa, &v)) {
-      probe_block->cwin_word_val[i] = v;
-      probe_block->cwin_ok_mask |= (1u << i);
-    }
-  }
-
-  if (!probe_crc_phys_window(0x0F000000u, 0x1000u, &probe_block->crc_0f_page))
-    probe_block->flags |= 0x00000001u;
-  if (!probe_crc_phys_window(0x0A000C00u, 0x50u, &probe_block->crc_0a_cwin))
-    probe_block->flags |= 0x00000002u;
+  probe_block->crc_0f_page = 0u;
+  probe_block->crc_0a_cwin = 0u;
 
   probe_block->preexec_ready = 0u;
   probe_block->crc32 = 0u;
@@ -298,8 +285,8 @@ vmem_probe_capture_preexec(caddr_t map_pa)
   debug_printf(TEXT("[CYACE_PROBE] preexec map=0x%08X entry=0x%08X argc=%u arg3=0x%08X"),
                (unsigned long)map_pa, (unsigned long)map->entry,
                (unsigned long)map->arg0, (unsigned long)map->arg3);
-  debug_printf(TEXT("[CYACE_PROBE] crc io0f=0x%08X cwin=0x%08X block=0x%08X"),
-               probe_block->crc_0f_page, probe_block->crc_0a_cwin, probe_block->crc32);
+  debug_printf(TEXT("[CYACE_PROBE] ram-only preexec block=0x%08X"),
+               probe_block->crc32);
   debug_printf(TEXT("[CYACE_PROBE] ram2000=0x%08X ram6000=0x%08X ram1d000=0x%08X ram2d000=0x%08X"),
                probe_block->ram_word_val[0], probe_block->ram_word_val[1],
                probe_block->ram_word_val[2], probe_block->ram_word_val[3]);
