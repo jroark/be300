@@ -6,6 +6,36 @@ I have access to real be300 hardware and a Virtual machine with eMbedded Visual 
 - docs/U14579EJ2V0UM00.pdf - NEC vrc4173 Companion Chip Users Manual
 - docs/hardware.txt - notes from Linux4be project developers
 
+## Source Code Layout
+
+**Core emulation (src/)**
+- `machine.c` — Main emulation: prid_hook (per-instruction), intr_hook (per-exception), machine_create/run/stop, IRQ injection, execve helpers
+- `machine.h` — machine_t struct, machine_config_t, shared inline helpers
+- `bus.c` / `bus.h` — VRC4173 companion chip MMIO, VR4131 I/O region dispatch
+- `loader.c` / `loader.h` — ELF kernel loader, B000FF NAND SPL parser
+- `macc.c` / `macc.h` — MACC (multiply-accumulate) instruction emulation
+- `ui.c` / `ui.h` — SDL2 display window (optional, gated on HAVE_SDL2)
+
+**WinCE support (src/)**
+- `wince_diag.c` / `wince_diag.h` — Diagnostic logging: DIV stack watch, call tracing, context probing, PA watch hooks, stall dumps (all gated on --log-wince-stall)
+- `wince_init.c` / `wince_init.h` — Boot-time seeding: exception vectors, kdata, warm profiles, bootrom window
+
+**Emulation subsystems (src/)**
+- `mem_alias.c` / `mem_alias.h` — kseg0/kseg1/kuseg memory aliasing, PA coherence
+- `tlb_shadow.c` / `tlb_shadow.h` — Shadow TLB recording, VA→PA translation, user handoff tracing
+- `null_call.c` / `null_call.h` — Null function pointer call recovery (Linux & WinCE)
+- `probes.c` / `probes.h` — Kernel diagnostic probe hooks (initcall, pgui, IRQ, RCU, page fault, etc.)
+
+**Hardware peripherals (src/hw/)**
+- `bcu.c/h` — Bus Control Unit
+- `icu.c/h` — Interrupt Control Unit
+- `rtc.c/h` — Real-Time Clock
+- `siu.c/h` — Serial Interface Unit (UART)
+- `nand.c/h` — NAND flash controller
+- `gpio.c/h` — GPIO
+- `cmu.c/h` — Clock Management Unit
+- `pmu.c/h` — Power Management Unit
+
 ## Commit & Push Policy
 
 **After every attempt — regardless of success or failure — commit and push all changes with a detailed message covering:**
