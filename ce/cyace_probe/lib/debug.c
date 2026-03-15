@@ -48,7 +48,6 @@ int debug_open()
 		GetCommState(hSerial,&dcb);
 		dcb.BaudRate=CBR_115200;
 		SetCommState(hSerial,&dcb);
-		debug_printf(_T("Serial port opened.\n"));
 	}
 	
 	return(0);

@@ -47,8 +47,6 @@
 
 #include "pbsdboot.h"
 #include <windows.h>
-#include <stdio.h>
-#include <string.h>
 
 #define MAX_MEMORY (1024*1024*32)	/* 32 MB */
 #define MEM_BLOCKS 8
@@ -79,217 +77,16 @@ unsigned char* heap = NULL;
 int npages;
 caddr_t kernel_start;
 caddr_t kernel_end;
-static struct cyace_probe_block_s *probe_block = NULL;
-static caddr_t probe_block_pa = NULL;
-
-#define PROBE_MIN(a, b) ((a) < (b) ? (a) : (b))
-
-static const unsigned long probe_ram_word_pas[CYACE_PROBE_RAM_WORD_COUNT] = {
-  0x00002000u, 0x00006000u, 0x0001D000u, 0x0002D000u,
-  0x00051680u, 0x00660000u, 0x0066BFC0u, 0x0067BFC0u
-};
-
-static const unsigned long probe_mmio_word_pas[CYACE_PROBE_MMIO_WORD_COUNT] = {
-  0x0F000000u, 0x0F000004u, 0x0F000008u, 0x0F000010u,
-  0x0F000014u, 0x0F000020u, 0x0F000024u, 0x0F00008Cu,
-  0x0F000094u, 0x0F000100u, 0x0F000104u, 0x0F000108u,
-  0x0F000110u, 0x0F000114u, 0x0F000118u, 0x0F000130u
-};
-
-static unsigned long
-probe_crc32_update(unsigned long crc, unsigned char byte)
-{
-  int i;
-  crc ^= byte;
-  for (i = 0; i < 8; i++) {
-    if (crc & 1u)
-      crc = (crc >> 1) ^ 0xEDB88320u;
-    else
-      crc >>= 1;
-  }
-  return crc;
-}
-
-static unsigned long
-probe_crc32_bytes(const unsigned char *buf, unsigned long len)
-{
-  unsigned long i;
-  unsigned long crc = 0xFFFFFFFFu;
-  for (i = 0; i < len; i++)
-    crc = probe_crc32_update(crc, buf[i]);
-  return crc ^ 0xFFFFFFFFu;
-}
-
-static BOOL
-probe_read_phys_bytes(unsigned long pa, unsigned char *dst, unsigned long len)
-{
-  unsigned long page_size = getpagesize();
-
-  while (len > 0) {
-    unsigned long page_base = pa & ~(page_size - 1u);
-    unsigned long page_off = pa - page_base;
-    unsigned long chunk = PROBE_MIN(len, page_size - page_off);
-    unsigned char *mapped = (unsigned char*)VirtualAlloc(0, page_size,
-                                                         MEM_RESERVE, PAGE_NOACCESS);
-    if (mapped == NULL)
-      return FALSE;
-
-    if (!VirtualCopy((LPVOID)mapped,
-                     (LPVOID)((phys_start + page_base) >> 8),
-                     page_size,
-                     PAGE_READWRITE | PAGE_NOCACHE | PAGE_PHYSICAL)) {
-      VirtualFree(mapped, 0, MEM_RELEASE);
-      return FALSE;
-    }
-    __try {
-      memcpy(dst, mapped + page_off, chunk);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-      VirtualFree(mapped, 0, MEM_RELEASE);
-      return FALSE;
-    }
-    VirtualFree(mapped, 0, MEM_RELEASE);
-    dst += chunk;
-    pa += chunk;
-    len -= chunk;
-  }
-
-  return TRUE;
-}
-
-static BOOL
-probe_read_phys_u32(unsigned long pa, unsigned long *out)
-{
-  unsigned char raw[4];
-  if (!out)
-    return FALSE;
-  if (!probe_read_phys_bytes(pa, raw, sizeof(raw)))
-    return FALSE;
-
-  *out = ((unsigned long)raw[0]) |
-         ((unsigned long)raw[1] << 8) |
-         ((unsigned long)raw[2] << 16) |
-         ((unsigned long)raw[3] << 24);
-  return TRUE;
-}
-
-static BOOL
-probe_crc_phys_window(unsigned long pa, unsigned long len, unsigned long *crc_out)
-{
-  unsigned long off = 0;
-  unsigned long crc = 0xFFFFFFFFu;
-  unsigned char buf[128];
-
-  if (!crc_out)
-    return FALSE;
-  while (off < len) {
-    unsigned long chunk = PROBE_MIN((unsigned long)sizeof(buf), len - off);
-    unsigned long i;
-    if (!probe_read_phys_bytes(pa + off, buf, chunk))
-      return FALSE;
-    for (i = 0; i < chunk; i++)
-      crc = probe_crc32_update(crc, buf[i]);
-    off += chunk;
-  }
-
-  *crc_out = crc ^ 0xFFFFFFFFu;
-  return TRUE;
-}
-
-caddr_t
-vmem_probe_pa(void)
-{
-  return probe_block_pa;
-}
-
-int
-vmem_probe_prepare(char *arg, int arglen)
+static void
+vmem_probe_log_handoff(void)
 {
   if (map == NULL)
-    return -1;
-
-  if (probe_block == NULL) {
-    probe_block = (struct cyace_probe_block_s *)vmem_alloc();
-    if (probe_block == NULL)
-      return -1;
-    memset(probe_block, 0, getpagesize());
-    probe_block_pa = vtophysaddr((caddr_t)probe_block);
-    if (probe_block_pa == NULL) {
-      probe_block = NULL;
-      probe_block_pa = NULL;
-      return -1;
-    }
-  }
-
-  memset(probe_block, 0, sizeof(*probe_block));
-  probe_block->magic = CYACE_PROBE_MAGIC;
-  probe_block->version = CYACE_PROBE_VERSION;
-  probe_block->size_bytes = CYACE_PROBE_BLOCK_SIZE;
-  probe_block->probe_pa = (unsigned long)probe_block_pa;
-  probe_block->cwin_base_pa = 0x0A000C00u;
-  probe_block->cwin_len_bytes = 0x50u;
-  probe_block->io_base_pa = 0x0F000000u;
-  probe_block->io_len_bytes = 0x1000u;
-
-  if (arg != NULL && arglen > 0) {
-    int n = _snprintf(arg, arglen, "be300_probe_pa=0x%08lX",
-                      (unsigned long)probe_block_pa);
-    arg[arglen - 1] = '\0';
-    if (n < 0 || n >= arglen)
-      return -1;
-  }
-
-  debug_printf(TEXT("[CYACE_PROBE] prepare probe_pa=0x%08X size=0x%X"),
-               (unsigned long)probe_block_pa, (unsigned long)CYACE_PROBE_BLOCK_SIZE);
-  return 0;
-}
-
-static void
-vmem_probe_capture_preexec(caddr_t map_pa)
-{
-  int i;
-  if (probe_block == NULL || probe_block_pa == NULL || map == NULL)
     return;
 
-  probe_block->entry_pa = (unsigned long)map->entry;
-  probe_block->argc = (unsigned long)map->arg0;
-  probe_block->argv_pa = (unsigned long)map->arg1;
-  probe_block->bootinfo_pa = (unsigned long)map->arg2;
-  probe_block->map_pa = (unsigned long)map_pa;
-  probe_block->map_base_pa = (unsigned long)map->base;
-  probe_block->pagesize = (unsigned long)map->pagesize;
-  probe_block->leafsize = (unsigned long)map->leafsize;
-  probe_block->nleaves = (unsigned long)map->nleaves;
-  probe_block->first_leaf_pa = (unsigned long)map->leaf[0];
-  probe_block->last_leaf_pa = (unsigned long)map->leaf[map->nleaves - 1];
-
-  probe_block->ram_word_ok_mask = 0u;
-  for (i = 0; i < CYACE_PROBE_RAM_WORD_COUNT; i++) {
-    unsigned long v = 0;
-    probe_block->ram_word_pa[i] = probe_ram_word_pas[i];
-    if (probe_read_phys_u32(probe_ram_word_pas[i], &v)) {
-      probe_block->ram_word_val[i] = v;
-      probe_block->ram_word_ok_mask |= (1u << i);
-    }
-  }
-  probe_block->mmio_word_ok_mask = 0u;
-  probe_block->cwin_ok_mask = 0u;
-  probe_block->crc_0f_page = 0u;
-  probe_block->crc_0a_cwin = 0u;
-
-  probe_block->preexec_ready = 0u;
-  probe_block->crc32 = 0u;
-  probe_block->crc32 = probe_crc32_bytes((const unsigned char*)probe_block,
-                                         CYACE_PROBE_BLOCK_SIZE);
-  probe_block->preexec_ready = 1u;
-
-  debug_printf(TEXT("[CYACE_PROBE] preexec map=0x%08X entry=0x%08X argc=%u arg3=0x%08X"),
-               (unsigned long)map_pa, (unsigned long)map->entry,
-               (unsigned long)map->arg0, (unsigned long)map->arg3);
-  debug_printf(TEXT("[CYACE_PROBE] ram-only preexec block=0x%08X"),
-               probe_block->crc32);
-  debug_printf(TEXT("[CYACE_PROBE] ram2000=0x%08X ram6000=0x%08X ram1d000=0x%08X ram2d000=0x%08X"),
-               probe_block->ram_word_val[0], probe_block->ram_word_val[1],
-               probe_block->ram_word_val[2], probe_block->ram_word_val[3]);
+  debug_printf(TEXT("[CYACE_PROBE] handoff entry=0x%08X argc=%u arg3=0x%08X"),
+               (unsigned long)map->entry,
+               (unsigned long)map->arg0,
+               (unsigned long)map->arg3);
 }
 
 int
@@ -357,7 +154,7 @@ vmem_exec(caddr_t entry, int argc, char *argv[], struct bootinfo *bi)
     return (-1);
   }
 
-  vmem_probe_capture_preexec(map_pa);
+  vmem_probe_log_handoff();
   //return (-1);
   return (startprog(map_pa));
 }
@@ -478,10 +275,9 @@ vmem_init(caddr_t start, caddr_t end)
   npages += (nleaves = ((npages * sizeof(caddr_t) + getpagesize()) / getpagesize()));
 
   /*
-   *  map root page, startprg code page, argument page, bootinfo page,
-   *  and the fixed probe block page used by cyace_probe.
+   *  map root page, startprg code page, argument page and bootinfo page.
    */
-  npages += 5;
+  npages += 4;
 
   // allocate an array of page Physical Frame Numbers
   // representing the CPU-dependent physical addresses of the pages.
@@ -674,8 +470,6 @@ void
 vmem_free()
 {
 	map = NULL;
-	probe_block = NULL;
-	probe_block_pa = NULL;
 	if (heap) {
 		VirtualFree(heap, 0, MEM_RELEASE);
 		heap = NULL;
