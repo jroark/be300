@@ -642,6 +642,12 @@ static inline void format_hex_bytes(const uint8_t *buf, size_t len,
         out[pos] = '\0';
 }
 
+static inline bool in_user_handoff_entry_window(uint32_t pc)
+{
+    return (pc >= USER_HANDOFF_ENTRY_WINDOW_START &&
+            pc < USER_HANDOFF_ENTRY_WINDOW_END);
+}
+
 static inline bool is_wince_boot_cfg(const machine_config_t *cfg)
 {
     return cfg != NULL && cfg->nand_path != NULL;
