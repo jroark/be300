@@ -499,6 +499,57 @@ void       machine_stop(machine_t *m);
 void       machine_mmio_history_record(machine_t *m, bool is_write, uint32_t pa,
                                        unsigned size, uint64_t value, uint32_t pc);
 
+/* Shared utility: read a 32-bit word trying all PA/kseg alias addresses. */
+bool read_pa_u32_all_aliases(machine_t *m, uint32_t pa, uint32_t *out);
+
+/* Shared utility: read a 32-bit word from guest VA (tries both 32-bit and sign-extended). */
+bool read_guest_u32(uc_engine *uc, uint64_t va, uint32_t *out);
+
+/* ------------------------------------------------------------------ */
+/* Shared inline helpers (used by machine.c and extracted modules)      */
+/* ------------------------------------------------------------------ */
+
+static inline uint64_t mips_sext(uint32_t va32) {
+    return (uint64_t)(int32_t)va32;
+}
+
+static inline bool is_kseg_va32(uint32_t va32)
+{
+    uint32_t seg = va32 & 0xE0000000u;
+    return seg == 0x80000000u || seg == 0xA0000000u;
+}
+
+static inline uint64_t tlb_pair_bytes_from_pagemask(uint32_t pagemask)
+{
+    uint64_t pair_bytes = ((uint64_t)(pagemask | 0x1FFFu) + 1u);
+    if (pair_bytes < 0x2000u)
+        pair_bytes = 0x2000u;
+    if ((pair_bytes & 0xFFFu) != 0u)
+        pair_bytes = (pair_bytes + 0xFFFu) & ~(uint64_t)0xFFFu;
+    if ((pair_bytes & (pair_bytes - 1u)) != 0u) {
+        uint64_t p2 = 0x2000u;
+        while (p2 < pair_bytes && p2 < (1ull << 31))
+            p2 <<= 1;
+        pair_bytes = p2;
+    }
+    return pair_bytes;
+}
+
+static inline uint64_t tlb_leaf_bytes_from_pagemask(uint32_t pagemask)
+{
+    uint64_t pair_bytes = tlb_pair_bytes_from_pagemask(pagemask);
+    if (pair_bytes < 0x2000u)
+        return 0x1000u;
+    return pair_bytes >> 1;
+}
+
+static inline bool tlb_entry_matches_va(uint32_t va, uint32_t entryhi, uint32_t pagemask)
+{
+    uint64_t pair_bytes = tlb_pair_bytes_from_pagemask(pagemask);
+    uint32_t mask = ~((uint32_t)(pair_bytes - 1u));
+    return ((va & mask) == (entryhi & mask));
+}
+
 static inline bool is_wince_boot_cfg(const machine_config_t *cfg)
 {
     return cfg != NULL && cfg->nand_path != NULL;
