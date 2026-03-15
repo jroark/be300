@@ -54,6 +54,7 @@ endif()
 # Source files for the core emulator logic (shared between main and tests)
 set(BE300_CORE_SOURCES
     src/machine.c
+    src/wince_diag.c
     src/bus.c
     src/loader.c
     src/macc.c
