@@ -19,7 +19,7 @@ typedef struct {
 #include "wince_kdata_probe_words.h"
 #include "wince_bootrom_words.h"
 
-static inline bool is_wince_probe_deferred_pa(uint32_t pa)
+static inline bool __attribute__((unused)) is_wince_probe_deferred_pa(uint32_t pa)
 {
     if (pa >= UINT32_C(0x00006000) && pa < UINT32_C(0x00007000))
         return true;
@@ -73,96 +73,14 @@ static void seed_wince_exception_vectors(machine_t *m)
 
 static void seed_wince_kdata(machine_t *m)
 {
-    /*
-     * Warm-state KData snapshot from hardware_survey/BE300Probe_v1.txt
-     * baseline (PA 0x00002000..0x000023FF).
-     */
-    for (uint32_t i = 0;
-         i < (uint32_t)(sizeof(wince_kdata_words) / sizeof(wince_kdata_words[0]));
-         i++) {
-        uint32_t pa = 0x00002000u + (i * 4u);
-        write_pa_u32_all_aliases(m, pa, wince_kdata_words[i]);
-    }
-
-    /*
-     * The post-boot KData snapshot includes a live context record at
-     * PA 0x00002200 whose saved sp/ra restore into the alternate entry
-     * path at 0x80096894. That resumed path later expects the function's
-     * saved s0/ra slots to exist at PA 0x1760/0x1764, but the post-boot
-     * probe did not capture that stack window. Reconstruct the two slots
-     * the skipped prologue would have written:
-     *   sw s0, 0x20(sp)   → frame_s0_pa = ctx_s0
-     *   sw ra, 0x24(sp)   → frame_ra_pa = real caller return address
-     *
-     * The ctx_ra from the KData context (0x80096894) is the resume PC
-     * within the function — NOT the function's saved return address.
-     * The actual caller is at VA 0x8008B6B8 (JAL 0x800967FC), so the
-     * correct frame ra is the return address 0x8008B6C0.
-     *
-     * Previously, seeding ctx_ra into the frame caused the function to
-     * "return" into its own mid-body, creating an infinite loop that
-     * consumed stack until ra=0 → crash.
-     */
-    {
-        uint32_t ctx_s0 = 0;
-        uint32_t ctx_sp = 0;
-        uint32_t ctx_ra = 0;
-        bool ok_s0 = read_pa_u32_all_aliases(m, UINT32_C(0x00002238), &ctx_s0);
-        bool ok_sp = read_pa_u32_all_aliases(m, UINT32_C(0x0000226C), &ctx_sp);
-        bool ok_ra = read_pa_u32_all_aliases(m, UINT32_C(0x00002274), &ctx_ra);
-
-        if (ok_s0 && ok_sp && ok_ra &&
-            ctx_sp == UINT32_C(0xFFFFD7B4) &&
-            ctx_ra == UINT32_C(0x80096894)) {
-            uint32_t frame_s0_pa = UINT32_C(0x00001760);
-            uint32_t frame_ra_pa = UINT32_C(0x00001764);
-            /* Use the real caller's return address, not the context resume PC.
-             * VA 0x8008B6B8: JAL 0x800967FC  → return addr = 0x8008B6C0 */
-            uint32_t real_caller_ra = UINT32_C(0x8008B6C0);
-            write_pa_u32_all_aliases(m, frame_s0_pa, ctx_s0);
-            write_pa_u32_all_aliases(m, frame_ra_pa, real_caller_ra);
-            fprintf(stderr,
-                    "[WINCE_KDATA_CTX_FRAME_SEED] ctx_s0=0x%08X"
-                    " ctx_sp=0x%08X ctx_ra=0x%08X"
-                    " frame_s0_pa=0x%08X frame_ra_pa=0x%08X"
-                    " real_caller_ra=0x%08X\n",
-                    ctx_s0, ctx_sp, ctx_ra,
-                    frame_s0_pa, frame_ra_pa, real_caller_ra);
-        } else {
-            fprintf(stderr,
-                    "[WINCE_KDATA_CTX_FRAME_SEED] skipped"
-                    " ok=[%u %u %u] ctx_s0=0x%08X ctx_sp=0x%08X ctx_ra=0x%08X\n",
-                    ok_s0 ? 1u : 0u, ok_sp ? 1u : 0u, ok_ra ? 1u : 0u,
-                    ctx_s0, ctx_sp, ctx_ra);
-        }
-    }
-
-    fprintf(stderr,
-            "[WINCE_KDATA_SEED] seeded %u words at PA=0x00002000\n",
-            (unsigned)(sizeof(wince_kdata_words) / sizeof(wince_kdata_words[0])));
+    (void)m;
+    fprintf(stderr, "[WINCE_KDATA_SEED] DISABLED — de-speculated (v4 survey: ctx_2200 3 families)\n");
 }
 
 static void seed_wince_probe_boot_safe(machine_t *m)
 {
-    uint32_t applied = 0;
-    uint32_t deferred = 0;
-
-    for (uint32_t i = 0;
-         i < (uint32_t)(sizeof(wince_probe_seed_words) / sizeof(wince_probe_seed_words[0]));
-         i++) {
-        if (is_wince_probe_deferred_pa(wince_probe_seed_words[i].pa)) {
-            deferred++;
-            continue;
-        }
-        write_pa_u32_all_aliases(m, wince_probe_seed_words[i].pa,
-                                 wince_probe_seed_words[i].val);
-        applied++;
-    }
-
-    fprintf(stderr,
-            "[WINCE_PROBE_SEED_BOOT] applied=%u deferred=%u total=%u\n",
-            applied, deferred,
-            (unsigned)(sizeof(wince_probe_seed_words) / sizeof(wince_probe_seed_words[0])));
+    (void)m;
+    fprintf(stderr, "[WINCE_PROBE_SEED_BOOT] DISABLED — de-speculated (v4 survey: post-boot runtime page)\n");
 }
 
 void seed_wince_probe_deferred(machine_t *m, uint32_t pc32)
@@ -170,40 +88,10 @@ void seed_wince_probe_deferred(machine_t *m, uint32_t pc32)
     if (!m || m->wince_deferred_seed_done)
         return;
 
-    uint32_t considered = 0;
-    uint32_t applied = 0;
-    uint32_t skipped_nonzero = 0;
-    uint32_t skipped_read_fail = 0;
-
-    for (uint32_t i = 0;
-         i < (uint32_t)(sizeof(wince_probe_seed_words) / sizeof(wince_probe_seed_words[0]));
-         i++) {
-        uint32_t pa = wince_probe_seed_words[i].pa;
-        uint32_t seed_val = wince_probe_seed_words[i].val;
-        uint32_t cur = 0;
-
-        if (!is_wince_probe_deferred_pa(pa))
-            continue;
-        considered++;
-
-        if (!read_pa_u32_all_aliases(m, pa, &cur)) {
-            skipped_read_fail++;
-            continue;
-        }
-        if (cur != 0u) {
-            skipped_nonzero++;
-            continue;
-        }
-
-        write_pa_u32_all_aliases(m, pa, seed_val);
-        applied++;
-    }
-
     m->wince_deferred_seed_done = true;
     fprintf(stderr,
-            "[WINCE_PROBE_SEED_DEFERRED] pc=0x%08X applied=%u"
-            " skip_nonzero=%u skip_unreadable=%u considered=%u\n",
-            pc32, applied, skipped_nonzero, skipped_read_fail, considered);
+            "[WINCE_PROBE_SEED_DEFERRED] DISABLED — de-speculated (v4 survey: post-boot runtime page)"
+            " pc=0x%08X\n", pc32);
 }
 
 static void seed_wince_bootrom_window(machine_t *m)

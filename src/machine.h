@@ -401,6 +401,14 @@ struct machine_s {
     uint32_t wince_null_consecutive;
     bool     wince_nk_epoch_reset_done;
     bool     wince_deferred_seed_done;
+
+    /* De-speculation first-touch one-shot flags (Step 5 diagnostics). */
+    bool     wince_despec_touch_resume_ctx;   /* PA 0x2200-0x22FF */
+    bool     wince_despec_touch_stack_frame;  /* PA 0x1700-0x17FF */
+    bool     wince_despec_touch_cb_globals;   /* PA 0x679400-0x6795FF */
+    bool     wince_despec_touch_pmu_rtc;      /* PA 0x0F000100-0x0F00011F */
+    bool     wince_despec_touch_nand_c38;     /* PA 0x0A000C38 */
+
     uint32_t wince_fptbl_read_logs;
     bool     wince_fptbl_context_dumped;
 
