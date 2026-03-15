@@ -1,0 +1,1 @@
+cmd_arch/mips/vr41xx/common/built-in.o :=  mipsel-linux-ld  --oformat elf32-tradlittlemips  -r -o arch/mips/vr41xx/common/built-in.o arch/mips/vr41xx/common/bcu.o arch/mips/vr41xx/common/cmu.o arch/mips/vr41xx/common/giu.o arch/mips/vr41xx/common/icu.o arch/mips/vr41xx/common/int-handler.o arch/mips/vr41xx/common/ksyms.o arch/mips/vr41xx/common/pmu.o arch/mips/vr41xx/common/rtc.o

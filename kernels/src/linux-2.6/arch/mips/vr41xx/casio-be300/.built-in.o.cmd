@@ -1,0 +1,1 @@
+cmd_arch/mips/vr41xx/casio-be300/built-in.o :=  mipsel-linux-ld  --oformat elf32-tradlittlemips  -r -o arch/mips/vr41xx/casio-be300/built-in.o arch/mips/vr41xx/casio-be300/init.o arch/mips/vr41xx/casio-be300/setup.o

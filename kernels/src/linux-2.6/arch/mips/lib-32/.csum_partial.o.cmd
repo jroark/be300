@@ -1,0 +1,14 @@
+cmd_arch/mips/lib-32/csum_partial.o := mipsel-linux-gcc -Wp,-MD,arch/mips/lib-32/.csum_partial.o.d -nostdinc -iwithprefix include -D__KERNEL__ -Iinclude  -D__ASSEMBLY__ -I /home/jroark/src/linux4be/linux4be-new/linux/include/asm/gcc -G 0 -mno-abicalls -fno-pic -pipe  -finline-limit=100000 -mabi=32 -mcpu=r4100 -mips3 -Wa,-32 -Wa,-march=r4100 -Wa,-mips3 -Wa,--trap -Iinclude/asm-mips/mach-vr41xx -Iinclude/asm-mips/mach-generic  -Wall -Wstrict-prototypes -Wno-trigraphs -fno-strict-aliasing -fno-common -I /home/jroark/src/linux4be/linux4be-new/linux/include/asm/gcc -G 0 -mno-abicalls -fno-pic -pipe  -finline-limit=100000 -mabi=32 -mcpu=r4100 -mips3 -Wa,-32 -Wa,-march=r4100 -Wa,-mips3 -Wa,--trap -Iinclude/asm-mips/mach-vr41xx -Iinclude/asm-mips/mach-generic  -O2 -fomit-frame-pointer    -c -o arch/mips/lib-32/csum_partial.o arch/mips/lib-32/csum_partial.S
+
+deps_arch/mips/lib-32/csum_partial.o := \
+  arch/mips/lib-32/csum_partial.S \
+  include/asm/asm.h \
+    $(wildcard include/config/cpu/has/prefetch.h) \
+  include/linux/config.h \
+    $(wildcard include/config/h.h) \
+  include/asm/sgidefs.h \
+  include/asm/regdef.h \
+
+arch/mips/lib-32/csum_partial.o: $(deps_arch/mips/lib-32/csum_partial.o)
+
+$(deps_arch/mips/lib-32/csum_partial.o):

@@ -1,0 +1,30 @@
+# Core emulator binary
+be300
+test_basic
+
+# Build artifacts
+build/
+build-docker/
+build-host/
+*.o
+*.log
+boot_stdout*.txt
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+
+# Project specific ignores
+linux4be/
+linux4be20040908/
+.DS_Store
+
+# Android project artifacts
+android/.gradle/
+android/.idea/
+android/local.properties
+android/**/build/
+android/app/.cxx/

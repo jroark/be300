@@ -1,0 +1,9 @@
+BE-300 TLB Inventory v3 (Hazard-Safe)
+Wired Entries: 2
+
+Index | EntryHi  | EntryLo0 | EntryLo1 | PageMask
+--------------------------------------------------
+[00]  | 0001300C | 000CC91A | 000CCB1E | 00001800
+[01]  | 01F8F000 | 0000C91A | 0000CA1A | 00001800
+[02]  | 01F8A00C | 0000C51A | 0000C61A | 00001800
+[03]  | 1A05F80B | 000CAF1E | 000CC81E | 00001800

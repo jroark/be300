@@ -26,7 +26,7 @@
 
 /* RTC — Real-Time Clock §13 */
 #define IO_RTC_BASE   0x0100u
-#define IO_RTC_SIZE   0x0020u
+#define IO_RTC_SIZE   0x0040u
 
 /* GPIO — General-Purpose I/O §14 */
 #define IO_GPIO_BASE  0x0140u
@@ -48,8 +48,18 @@
  */
 #define PA_VRC4173_BASE  UINT32_C(0x0A000000)
 #define PA_VRC4173_SIZE  (16u * 1024u * 1024u)   /* 16 MB CS3 window */
+/* VRC4173 UART registers (NS16550, 4-byte spacing from PA 0x0A008680) */
 #define VRC4173_UART_BASE  0x8680u   /* offset from PA_VRC4173_BASE */
-#define VRC4173_UART_THR   0x8680u   /* transmit holding register */
+#define VRC4173_UART_THR   0x8680u   /* transmit holding register (write) / RBR (read) */
+#define VRC4173_UART_IER   0x8684u   /* interrupt enable register (+0x04) */
+#define VRC4173_UART_IIR   0x8688u   /* interrupt ID register (+0x08, read) / FCR (write) */
+#define VRC4173_UART_LCR   0x868Cu   /* line control register (+0x0C) */
+#define VRC4173_UART_MCR   0x8690u   /* modem control register (+0x10) */
 #define VRC4173_UART_LSR   0x8694u   /* line status register (+0x14) */
+#define VRC4173_UART_MSR   0x8698u   /* modem status register (+0x18) */
+#define VRC4173_UART_SCR   0x869Cu   /* scratch register (+0x1C) */
+
+#define PA_FRAMEBUFFER_BASE UINT32_C(0x0A200000)
+#define PA_FRAMEBUFFER_SIZE (2u * 1024u * 1024u)   /* 2 MB VRAM */
 
 void bus_init(machine_t *m);

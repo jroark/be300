@@ -1,0 +1,1 @@
+#define CONFIG_CASIO_BE300 1

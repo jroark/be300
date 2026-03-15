@@ -10,9 +10,8 @@
  * interrupt registers (SYSINT1/2) hold pending flags; corresponding
  * mask registers (MSYSINT1/2) gate delivery.
  *
- * Interrupt sources are 16-bit flags.  A source asserts an interrupt
- * when its bit is set in SYSINTx AND cleared in MSYSINTx (active-low
- * mask convention — 0 = unmasked / enabled).
+ * Interrupt sources are 16-bit flags. A source is deliverable when its
+ * bit is set in SYSINTx AND set in MSYSINTx (active-high mask/enable).
  */
 
 /* Register offsets from ICU base (0x0F000080) */
@@ -30,27 +29,38 @@
 #define ICU_MDSIUINTREG  0x16u   /* DSIU interrupt mask         */
 #define ICU_NMIREG       0x18u   /* NMI control                 */
 #define ICU_SOFTINTREG   0x1Au   /* Software interrupt          */
+#define ICU_INTASSIGN2   0x1Cu   /* INTASSIGN2 (VR4133 style)   */
+#define ICU_INTASSIGN3   0x1Eu   /* INTASSIGN3 (VR4133 style)   */
 #define ICU_SYSINT2REG   0x20u   /* System interrupt 2 status   */
 #define ICU_GIUINTHREG   0x22u   /* GIU interrupt high status   */
 #define ICU_FIRINTREG    0x24u   /* FIR interrupt status        */
-#define ICU_MSYSINT2REG  0x2Cu   /* System interrupt 2 mask     */
-#define ICU_MGIUINTHREG  0x2Eu   /* GIU interrupt high mask     */
-#define ICU_MFIRINTREG   0x30u   /* FIR interrupt mask          */
+#define ICU_MSYSINT2REG  0x26u   /* System interrupt 2 mask     */
+#define ICU_MGIUINTHREG  0x28u   /* GIU interrupt high mask     */
+#define ICU_MFIRINTREG   0x2Au   /* FIR interrupt mask          */
+#define ICU_PCIINTREG    0x2Cu   /* PCI interrupt status        */
+#define ICU_SCUINTREG    0x2Eu   /* SCU interrupt status        */
+#define ICU_CSIINTREG    0x30u   /* CSI interrupt status        */
+#define ICU_MPCIINTREG   0x32u   /* PCI interrupt mask          */
+#define ICU_MSCUINTREG   0x34u   /* SCU interrupt mask          */
+#define ICU_MCSIINTREG   0x36u   /* CSI interrupt mask          */
+#define ICU_BCUINTREG    0x38u   /* BCU interrupt status        */
+#define ICU_MBCUINTREG   0x3Au   /* BCU interrupt mask          */
 
 /* SYSINT1 source bits */
 #define ICU_SRC1_POWER   (1u << 0)
-#define ICU_SRC1_RTC     (1u << 2)
-#define ICU_SRC1_PIU     (1u << 3)
-#define ICU_SRC1_AIU     (1u << 4)
-#define ICU_SRC1_KIU     (1u << 5)
-#define ICU_SRC1_GIU     (1u << 6)
-#define ICU_SRC1_SIU     (1u << 8)   /* DSIU */
-#define ICU_SRC1_WDOG    (1u << 9)
-#define ICU_SRC1_SOFT    (1u << 10)
+#define ICU_SRC1_RTC     (1u << 2)   /* RTCLONG1 */
+#define ICU_SRC1_ETIME   (1u << 3)   /* ELAPSEDTIME */
+#define ICU_SRC1_PIU     (1u << 5)
+#define ICU_SRC1_AIU     (1u << 6)
+#define ICU_SRC1_KIU     (1u << 7)
+#define ICU_SRC1_GIU     (1u << 8)
+#define ICU_SRC1_SIU     (1u << 9)   /* SIU */
+#define ICU_SRC1_WDOG    (1u << 10)
+#define ICU_SRC1_SOFT    (1u << 11)
 
 typedef struct {
     uint16_t sysint1;    /* pending sources (set by peripherals) */
-    uint16_t msysint1;   /* mask: 0 = enabled, 1 = masked        */
+    uint16_t msysint1;   /* mask/enable: 1 = enabled             */
     uint16_t sysint2;
     uint16_t msysint2;
     uint16_t piuint,  mpiuint;
@@ -61,6 +71,10 @@ typedef struct {
     uint16_t firint,  mfirint;
     uint16_t softint;
     uint16_t nmi;
+    uint16_t intassign2, intassign3;
+    uint16_t pciint, scuint, csiint;
+    uint16_t mpciint, mscuint, mcsiint;
+    uint16_t bcuint, mbcuint;
 } icu_state_t;
 
 void     icu_init    (icu_state_t *s);
