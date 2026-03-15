@@ -28,3 +28,21 @@ android/.idea/
 android/local.properties
 android/**/build/
 android/app/.cxx/
+
+# Screenshots and binary dumps
+screenshot_*.bmp
+*.bin
+
+# Python cache
+__pycache__/
+
+# Claude Code local config
+.claude/
+
+# Testing artifacts
+Testing/
+
+# Android build files (gradle wrapper)
+android/gradle/
+android/gradlew
+android/gradlew.bat
