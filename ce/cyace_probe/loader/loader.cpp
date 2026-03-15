@@ -80,23 +80,16 @@ public:
 unsigned int PbsdbootProgressCallbackAdapter::m_nCalls = 0;
 unsigned int PbsdbootProgressCallbackAdapter::m_nSkip = 1;
 
-static unsigned long s_probe_attempt = 0;
-
-static unsigned long ProbeNextAttempt()
+static void ProbeLogBegin(LPCTSTR pszKernel, LPCTSTR pszSource)
 {
-	return ++s_probe_attempt;
+	debug_printf(_T("[CYACE_PROBE] begin kernel=%s source=%s"),
+		pszKernel, pszSource);
 }
 
-static void ProbeLogAttemptBegin(unsigned long attempt, LPCTSTR pszKernel, LPCTSTR pszSource)
+static void ProbeLogFail(LPCTSTR pszStage, DWORD gle, int result)
 {
-	debug_printf(_T("[CYACE_PROBE] attempt=%lu begin kernel=%s source=%s"),
-		attempt, pszKernel, pszSource);
-}
-
-static void ProbeLogAttemptFail(unsigned long attempt, LPCTSTR pszStage, DWORD gle, int result)
-{
-	debug_printf(_T("[CYACE_PROBE] attempt=%lu fail stage=%s gle=%lu result=%d"),
-		attempt, pszStage, (unsigned long)gle, result);
+	debug_printf(_T("[CYACE_PROBE] fail stage=%s gle=%lu result=%d"),
+		pszStage, (unsigned long)gle, result);
 }
 
 Loader::Processor Loader::GetProcessor()
@@ -179,7 +172,6 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 
 	// Open the kernel file for reading.
 	int fd = open(szImage, O_RDONLY);
-	unsigned long attempt = 0;
 	if (fd == -1)
 	{
 		_stprintf(msg, _T("Error %d opening kernel file %s."),
@@ -189,8 +181,7 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 	}
 
 	debug_open();
-	attempt = ProbeNextAttempt();
-	ProbeLogAttemptBegin(attempt, pSection->GetLabel(), _T("file"));
+	ProbeLogBegin(pSection->GetLabel(), _T("file"));
 
 	// display the boot progress dialog
 	ProgressDialog progress;
@@ -253,7 +244,7 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 	if ( nResult < 0)
 	{
 		DWORD gle = GetLastError();
-		ProbeLogAttemptFail(attempt, _T("getinfo"), gle, nResult);
+		ProbeLogFail(_T("getinfo"), gle, nResult);
 		close(fd);
 		debug_close();
 		_stprintf(msg, _T("Error %d getting elf file info for %s."),
@@ -269,14 +260,11 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 	nResult = vmem_init(start, end);
 	if ( nResult < 0) {
 		DWORD gle = GetLastError();
-		ProbeLogAttemptFail(attempt, _T("vmem_init"), gle, nResult);
+		ProbeLogFail(_T("vmem_init"), gle, nResult);
 		close(fd);
 		debug_close();
 		return;
 	}
-
-	if (vmem_probe_prepare(0, 0) != 0)
-		debug_printf(TEXT("[CYACE_PROBE] prepare failed; continuing without probe block"));
 
 	progress.Update(0, _T("Allocating memory for arguments..."));
 
@@ -285,7 +273,7 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 	if ( argbuf == 0 )
 	{
 		DWORD gle = GetLastError();
-		ProbeLogAttemptFail(attempt, _T("argbuf"), gle, -1);
+		ProbeLogFail(_T("argbuf"), gle, -1);
 		_stprintf(msg, _T("Error %d allocating memory for kernel arguments."),
 			gle);
 		System::ErrorMessageBox(msg);
@@ -302,7 +290,7 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 	if ( bibuf == 0 )
 	{
 		DWORD gle = GetLastError();
-		ProbeLogAttemptFail(attempt, _T("bootinfo"), gle, -1);
+		ProbeLogFail(_T("bootinfo"), gle, -1);
 		_stprintf(msg, _T("Error %d allocating memory for bootinfo struct."),
 			gle);
 		System::ErrorMessageBox(msg);
@@ -325,7 +313,7 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 		int arglen = strlen(argv[i]) + 1;
 		if (argbuf_used + (unsigned long)arglen > (unsigned long)argbuf_limit)
 		{
-			ProbeLogAttemptFail(attempt, _T("argcopy"), ERROR_BUFFER_OVERFLOW, -1);
+			ProbeLogFail(_T("argcopy"), ERROR_BUFFER_OVERFLOW, -1);
 			_stprintf(msg, _T("Kernel arguments exceed one page (%lu bytes)."),
 				(unsigned long)(argbuf_used + (unsigned long)arglen));
 			System::ErrorMessageBox(msg);
@@ -348,7 +336,7 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 	if ( nResult < 0)
 	{
 		DWORD gle = GetLastError();
-		ProbeLogAttemptFail(attempt, _T("loadfile"), gle, nResult);
+		ProbeLogFail(_T("loadfile"), gle, nResult);
 		if ( !progress.ShouldCancel() )
 		{
 			_stprintf(msg, _T("Error %d loading elf file %s."),
@@ -371,7 +359,7 @@ void Loader::Load(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszBoot
 
 	// guess it didn't work
 	DWORD gle = GetLastError();
-	ProbeLogAttemptFail(attempt, _T("vmem_exec"), gle, nResult);
+	ProbeLogFail(_T("vmem_exec"), gle, nResult);
 	_stprintf(msg, _T("Error %d, result %d executing kernel."),
 		gle, nResult);
 	System::ErrorMessageBox(msg);
@@ -386,7 +374,6 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 	struct hostent *host;
 	struct hostent *allocated_host = 0;
 	struct sockaddr_in sin;
-	unsigned long attempt = 0;
 
 	// get the processor specific settings
 	BOOL bResult = GetProcessorSpecificSettings(&phys_start, &startprog);
@@ -457,8 +444,7 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 	sin.sin_port = htons(port);
 
 	debug_open();
-	attempt = ProbeNextAttempt();
-	ProbeLogAttemptBegin(attempt, pSection->GetLabel(), _T("url"));
+	ProbeLogBegin(pSection->GetLabel(), _T("url"));
 
 	_stprintf(msg, _T("Loading %s %s..."), pSection->GetLabel(), pszParameters);
 	progress.Update(0, _T(""), msg);
@@ -511,7 +497,7 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 	if ( nResult < 0)
 	{
 		DWORD gle = GetLastError();
-		ProbeLogAttemptFail(attempt, _T("getinfo2"), gle, nResult);
+		ProbeLogFail(_T("getinfo2"), gle, nResult);
 		_stprintf(msg, _T("Error %d getting elf file info for %s."),
 			gle, pSection->GetLabel());
 		System::ErrorMessageBox(msg);
@@ -528,15 +514,12 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 	nResult = vmem_init(start, end);
 	if ( nResult < 0) {
 		DWORD gle = GetLastError();
-		ProbeLogAttemptFail(attempt, _T("vmem_init"), gle, nResult);
+		ProbeLogFail(_T("vmem_init"), gle, nResult);
 		if (allocated_host)
 			free(allocated_host);
 		debug_close();
 		return;
 	}
-
-	if (vmem_probe_prepare(0, 0) != 0)
-		debug_printf(TEXT("[CYACE_PROBE] prepare failed; continuing without probe block"));
 
 	progress.Update(0, _T("Allocating memory for arguments..."));
 
@@ -545,7 +528,7 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 	if ( argbuf == 0 )
 	{
 		DWORD gle = GetLastError();
-		ProbeLogAttemptFail(attempt, _T("argbuf"), gle, -1);
+		ProbeLogFail(_T("argbuf"), gle, -1);
 		_stprintf(msg, _T("Error %d allocating memory for kernel arguments."),
 			gle);
 		System::ErrorMessageBox(msg);
@@ -563,7 +546,7 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 	if ( bibuf == 0 )
 	{
 		DWORD gle = GetLastError();
-		ProbeLogAttemptFail(attempt, _T("bootinfo"), gle, -1);
+		ProbeLogFail(_T("bootinfo"), gle, -1);
 		_stprintf(msg, _T("Error %d allocating memory for bootinfo struct."),
 			gle);
 		System::ErrorMessageBox(msg);
@@ -587,7 +570,7 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 		int arglen = strlen(argv[i]) + 1;
 		if (argbuf_used + (unsigned long)arglen > (unsigned long)argbuf_limit)
 		{
-			ProbeLogAttemptFail(attempt, _T("argcopy"), ERROR_BUFFER_OVERFLOW, -1);
+			ProbeLogFail(_T("argcopy"), ERROR_BUFFER_OVERFLOW, -1);
 			_stprintf(msg, _T("Kernel arguments exceed one page (%lu bytes)."),
 				(unsigned long)(argbuf_used + (unsigned long)arglen));
 			System::ErrorMessageBox(msg);
@@ -611,7 +594,7 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 	if ( nResult < 0)
 	{
 		DWORD gle = GetLastError();
-		ProbeLogAttemptFail(attempt, _T("loadfile2"), gle, nResult);
+		ProbeLogFail(_T("loadfile2"), gle, nResult);
 		if ( !progress.ShouldCancel() )
 		{
 			_stprintf(msg, _T("Error %d loading elf file %s."),
@@ -637,7 +620,7 @@ void Loader::LoadURL(ImageSection* pSection, LPCTSTR pszParameters, LPCTSTR pszB
 
 	// guess it didn't work
 	DWORD gle = GetLastError();
-	ProbeLogAttemptFail(attempt, _T("vmem_exec"), gle, nResult);
+	ProbeLogFail(_T("vmem_exec"), gle, nResult);
 	_stprintf(msg, _T("Error %d, result %d executing kernel."),
 		gle, nResult);
 	System::ErrorMessageBox(msg);

@@ -36,74 +36,6 @@ typedef unsigned int __SSIZE_TYPE__;			// From gcc compiler
 #define PATHBUFLEN 200
 #define whoami _T("Error")
 
-#define CYACE_PROBE_MAGIC              0x43595042u /* "CYPB" */
-#define CYACE_PROBE_VERSION            1u
-#define CYACE_PROBE_RAM_WORD_COUNT     8u
-#define CYACE_PROBE_MMIO_WORD_COUNT    16u
-#define CYACE_PROBE_CWIN_WORD_COUNT    20u
-#define CYACE_PROBE_BLOCK_SIZE         0x400u
-
-/* Fixed offsets used by the final kernel-mode handoff stub. */
-#define CYACE_PROBE_OFF_KERNEL_STAMP_READY 0x18u
-#define CYACE_PROBE_OFF_KSTATUS            0x20u
-#define CYACE_PROBE_OFF_KCONFIG            0x24u
-#define CYACE_PROBE_OFF_KWIRED             0x28u
-#define CYACE_PROBE_OFF_KCOUNT             0x2Cu
-#define CYACE_PROBE_OFF_KCOMPARE           0x30u
-#define CYACE_PROBE_OFF_KSP                0x34u
-#define CYACE_PROBE_OFF_KRA                0x38u
-#define CYACE_PROBE_OFF_KENTRY             0x3Cu
-
-struct cyace_probe_block_s {
-  unsigned long magic;
-  unsigned long version;
-  unsigned long size_bytes;
-  unsigned long crc32;
-  unsigned long flags;
-  unsigned long preexec_ready;
-  unsigned long reserved0;
-  unsigned long reserved1;
-  unsigned long kernel_stamp_ready;
-  unsigned long kernel_status;
-  unsigned long kernel_config;
-  unsigned long kernel_wired;
-  unsigned long kernel_count;
-  unsigned long kernel_compare;
-  unsigned long kernel_sp;
-  unsigned long kernel_ra;
-  unsigned long kernel_entry;
-  unsigned long entry_pa;
-  unsigned long argc;
-  unsigned long argv_pa;
-  unsigned long bootinfo_pa;
-  unsigned long map_pa;
-  unsigned long map_base_pa;
-  unsigned long pagesize;
-  unsigned long leafsize;
-  unsigned long nleaves;
-  unsigned long first_leaf_pa;
-  unsigned long last_leaf_pa;
-  unsigned long probe_pa;
-  unsigned long ram_word_pa[CYACE_PROBE_RAM_WORD_COUNT];
-  unsigned long ram_word_val[CYACE_PROBE_RAM_WORD_COUNT];
-  unsigned long ram_word_ok_mask;
-  unsigned long mmio_word_pa[CYACE_PROBE_MMIO_WORD_COUNT];
-  unsigned long mmio_word_val[CYACE_PROBE_MMIO_WORD_COUNT];
-  unsigned long mmio_word_ok_mask;
-  unsigned long cwin_word_val[CYACE_PROBE_CWIN_WORD_COUNT];
-  unsigned long cwin_ok_mask;
-  unsigned long crc_0f_page;
-  unsigned long crc_0a_cwin;
-  unsigned long cwin_base_pa;
-  unsigned long cwin_len_bytes;
-  unsigned long io_base_pa;
-  unsigned long io_len_bytes;
-  unsigned long reserved_tail[150];
-};
-typedef char cyace_probe_block_size_check[
-  (sizeof(struct cyace_probe_block_s) == CYACE_PROBE_BLOCK_SIZE) ? 1 : -1
-];
-
 struct map_s {
   caddr_t entry;
   caddr_t base;
@@ -154,8 +86,6 @@ void vmem_dump_map(void);
 caddr_t vtophysaddr(caddr_t page);
 void vmem_free(void);
 caddr_t vmem_alloc(void);
-int vmem_probe_prepare(char *arg, int arglen);
-caddr_t vmem_probe_pa(void);
 
 // elf.c
 int getinfo(int fd, caddr_t *start, caddr_t *end);
