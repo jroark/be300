@@ -6411,6 +6411,108 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     maybe_probe_wince_bootmode_sp_flow(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_spl_memcpy(m, uc, (uint32_t)address, insn);
 
+    /* Stall-path instrumentation: log entry to 0x80079898 and its nested
+     * call at 0x80079CE4, plus the scheduler dispatch at 0x8008B4F8.
+     * These are the functions that lead to the null-call crash with
+     * ra=0x8007A480.  Capture GPR context on first entry. */
+    if (is_wince_boot_machine(m) && m->cfg.log_wince_stall) {
+        uint32_t pc32 = (uint32_t)address;
+        static uint32_t stall_fn_log = 0;
+        static uint32_t nested_fn_log = 0;
+        static uint32_t sched_disp_log = 0;
+        static uint32_t caller_fn_log = 0;
+
+        if (pc32 == UINT32_C(0x80079898) && stall_fn_log < 8u) {
+            uint64_t ra = 0, a0 = 0, sp = 0, s0 = 0, t9 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+            uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
+            uint64_t status = 0;
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+            fprintf(stderr,
+                    "[WINCE_STALL_FN] pc=0x%08X ra=0x%08X a0=0x%08X"
+                    " sp=0x%08X s0=0x%08X t9=0x%08X status=0x%08X\n",
+                    pc32, (uint32_t)ra, (uint32_t)a0,
+                    (uint32_t)sp, (uint32_t)s0, (uint32_t)t9,
+                    (uint32_t)status);
+            /* One-shot code dump of the stall function body */
+            if (stall_fn_log == 0u) {
+                uint32_t dump_pa = UINT32_C(0x80079898) & UINT32_C(0x1FFFFFFF);
+                for (uint32_t doff = 0; doff < 256; doff += 4) {
+                    uint32_t word = 0;
+                    if (uc_mem_read(uc, (uint64_t)(dump_pa + doff),
+                                    &word, 4) == UC_ERR_OK) {
+                        fprintf(stderr,
+                                "[WINCE_STALL_DISASM] 0x%08X: 0x%08X\n",
+                                UINT32_C(0x80079898) + doff, word);
+                    }
+                }
+                /* Also dump nested function 0x80079CE4 */
+                dump_pa = UINT32_C(0x80079CE4) & UINT32_C(0x1FFFFFFF);
+                for (uint32_t doff = 0; doff < 256; doff += 4) {
+                    uint32_t word = 0;
+                    if (uc_mem_read(uc, (uint64_t)(dump_pa + doff),
+                                    &word, 4) == UC_ERR_OK) {
+                        fprintf(stderr,
+                                "[WINCE_STALL_DISASM] 0x%08X: 0x%08X\n",
+                                UINT32_C(0x80079CE4) + doff, word);
+                    }
+                }
+                /* Scheduler dispatch 0x8008B4F8 */
+                dump_pa = UINT32_C(0x8008B4F8) & UINT32_C(0x1FFFFFFF);
+                for (uint32_t doff = 0; doff < 256; doff += 4) {
+                    uint32_t word = 0;
+                    if (uc_mem_read(uc, (uint64_t)(dump_pa + doff),
+                                    &word, 4) == UC_ERR_OK) {
+                        fprintf(stderr,
+                                "[WINCE_STALL_DISASM] 0x%08X: 0x%08X\n",
+                                UINT32_C(0x8008B4F8) + doff, word);
+                    }
+                }
+            }
+            stall_fn_log++;
+        }
+        if (pc32 == UINT32_C(0x80079CE4) && nested_fn_log < 8u) {
+            uint64_t ra = 0, a0 = 0, sp = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            fprintf(stderr,
+                    "[WINCE_STALL_NESTED] pc=0x%08X ra=0x%08X"
+                    " a0=0x%08X sp=0x%08X\n",
+                    pc32, (uint32_t)ra, (uint32_t)a0, (uint32_t)sp);
+            nested_fn_log++;
+        }
+        if (pc32 == UINT32_C(0x8008B4F8) && sched_disp_log < 8u) {
+            uint64_t ra = 0, k0 = 0, sp = 0, t0 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_K0, &k0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+            fprintf(stderr,
+                    "[WINCE_SCHED_DISPATCH] pc=0x%08X ra=0x%08X"
+                    " k0=0x%08X sp=0x%08X t0=0x%08X\n",
+                    pc32, (uint32_t)ra, (uint32_t)k0,
+                    (uint32_t)sp, (uint32_t)t0);
+            sched_disp_log++;
+        }
+        if (pc32 == UINT32_C(0x8007A478) && caller_fn_log < 8u) {
+            uint64_t ra = 0, a0 = 0, sp = 0, t9 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
+            fprintf(stderr,
+                    "[WINCE_STALL_CALLER] pc=0x%08X ra=0x%08X"
+                    " a0=0x%08X sp=0x%08X t9=0x%08X\n",
+                    pc32, (uint32_t)ra, (uint32_t)a0,
+                    (uint32_t)sp, (uint32_t)t9);
+            caller_fn_log++;
+        }
+    }
+
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */
     if (is_wince_boot_machine(m) && m->cfg.log_wince_stall) {

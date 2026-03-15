@@ -52,6 +52,11 @@ static probe_region_t g_regions[] = {
     { "vrc4173_base",              0x0A000000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
     { "vrc4173_page_A000",         0x0A00A000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
     { "vrc4173_page_C000",         0x0A00C000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
+    { "vrc4173_page_1000",         0x0A001000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
+    { "vrc4173_page_2000",         0x0A002000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
+    { "stack_frame_PA_1000",       0x00001000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
+    { "kdata_extended_2400",       0x00002400, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
+    { "scheduler_code_2B400",      0x0002B400, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
     { "vr4131_core_page",          0x0F000000, REGION_SNAPSHOT_SIZE, FALSE, FALSE, {0}, {0} },
 };
 
@@ -69,6 +74,12 @@ static const focus_word_t g_focus_words[] = {
     { 0x00679510, "callback_g9510",        "0x80679510" },
     { 0x00075580, "fptr_table_slot0",      "0x80075580" },
     { 0x00075590, "fptr_table_slot4",      "0x80075590" },
+    { 0x0A00112C, "vrc4173_112C",          "0xAA00112C" },
+    { 0x0A001134, "vrc4173_1134",          "0xAA001134" },
+    { 0x0A00CE20, "vrc4173_CE20_byte",     "0xAA00CE20" },
+    { 0x0A00CE22, "vrc4173_CE22_byte",     "0xAA00CE22" },
+    { 0x00001760, "stack_frame_s0",        "0x80001760" },
+    { 0x0002B400, "scheduler_code_word0",  "0x8002B400" },
 };
 
 static void Log(const char *fmt, ...)
@@ -637,15 +648,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLin
     (void)lpCmdLine;
     (void)nCmdShow;
 
-    g_hFile = CreateFile(L"\\BE300Probe_v1.txt", GENERIC_WRITE, 0, NULL,
+    g_hFile = CreateFile(L"\\BE300Probe_v2.txt", GENERIC_WRITE, 0, NULL,
                          CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (g_hFile == INVALID_HANDLE_VALUE) {
-        MessageBox(NULL, L"Could not create \\BE300Probe_v1.txt", L"BE300 Probe v1", MB_OK | MB_ICONHAND);
+        MessageBox(NULL, L"Could not create \\BE300Probe_v2.txt", L"BE300 Probe v2", MB_OK | MB_ICONHAND);
         return 1;
     }
 
     __try {
-        Log("BE-300 Post-Boot Probe Utility v1\r\n");
+        Log("BE-300 Post-Boot Probe Utility v2\r\n");
         Log("tick_ms=%lu\r\n", GetTickCount());
 
         EnableKernelAccess();
@@ -678,15 +689,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLin
 
     if (g_had_error) {
         MessageBox(NULL,
-                   L"BE300Probe v1 completed with partial errors.\nSee \\BE300Probe_v1.txt",
-                   L"BE300 Probe v1",
+                   L"BE300Probe v1 completed with partial errors.\nSee \\BE300Probe_v2.txt",
+                   L"BE300 Probe v2",
                    MB_OK | MB_ICONEXCLAMATION);
         return 2;
     }
 
     MessageBox(NULL,
-               L"BE300Probe v1 complete.\nSee \\BE300Probe_v1.txt",
-               L"BE300 Probe v1",
+               L"BE300Probe v1 complete.\nSee \\BE300Probe_v2.txt",
+               L"BE300 Probe v2",
                MB_OK | MB_ICONASTERISK);
     return 0;
 }
