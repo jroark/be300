@@ -285,24 +285,6 @@ void VR41xxAssemblyCodeHolder ()
 		"lw	a1, 24(a0);"  /* arg1 */
 		"lw	a2, 28(a0);"  /* arg2 */
 		"lw	a3, 32(a0);"  /* arg3 */
-		"beq	a3, zero, 2f;"
-		"nop;"
-		"mfc0	t1, $12;"    /* CP0 Status */
-		"sw	t1, 0x20(a3);"
-		"mfc0	t1, $16;"    /* CP0 Config */
-		"sw	t1, 0x24(a3);"
-		"mfc0	t1, $6;"     /* CP0 Wired */
-		"sw	t1, 0x28(a3);"
-		"mfc0	t1, $9;"     /* CP0 Count */
-		"sw	t1, 0x2c(a3);"
-		"mfc0	t1, $11;"    /* CP0 Compare */
-		"sw	t1, 0x30(a3);"
-		"sw	sp, 0x34(a3);"
-		"sw	ra, 0x38(a3);"
-		"sw	t0, 0x3c(a3);"
-		"ori	t1, zero, 1;"
-		"sw	t1, 0x18(a3);"
-		"2:"
 		"lw	a0, 20(a0);"  /* arg0 */
 		"jr	t0;"
 		"nop;"

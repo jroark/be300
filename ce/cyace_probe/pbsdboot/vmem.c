@@ -316,7 +316,7 @@ vmem_exec(caddr_t entry, int argc, char *argv[], struct bootinfo *bi)
   map->arg0 = (caddr_t)argc;
   map->arg1 = vtophysaddr((caddr_t)argv);
   map->arg2 = vtophysaddr((caddr_t)bi);
-  map->arg3 = probe_block_pa;
+  map->arg3 = NULL;
 
   if (map->arg1 == NULL || map->arg2 == NULL) {
       debug_printf(TEXT("arg, vtophysaddr() failed\n"));
