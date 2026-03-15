@@ -499,7 +499,8 @@ void       machine_stop(machine_t *m);
 void       machine_mmio_history_record(machine_t *m, bool is_write, uint32_t pa,
                                        unsigned size, uint64_t value, uint32_t pc);
 
-/* Shared utility: read a 32-bit word trying all PA/kseg alias addresses. */
+/* Shared utilities: read/write a 32-bit word trying all PA/kseg alias addresses. */
+void write_pa_u32_all_aliases(machine_t *m, uint32_t pa, uint32_t val);
 bool read_pa_u32_all_aliases(machine_t *m, uint32_t pa, uint32_t *out);
 
 /* Shared utility: read a 32-bit word from guest VA (tries both 32-bit and sign-extended). */
