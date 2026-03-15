@@ -837,6 +837,8 @@ static void apply_wince_warm_profile(machine_t *m, const char *marker)
 #define WINCE_TRACE_CALLER_FRAME_PA_END   UINT32_C(0x000017C0)
 #define WINCE_TRACE_S0_OBJ_PA_START UINT32_C(0x00001A80)
 #define WINCE_TRACE_S0_OBJ_PA_END   UINT32_C(0x00001B00)
+#define WINCE_TRACE_FPTBL_PA_START UINT32_C(0x00075580)
+#define WINCE_TRACE_FPTBL_PA_END   UINT32_C(0x000755A0)
 #define WINCE_TRACE_BOOTCTX_PA_START UINT32_C(0x00006000)
 #define WINCE_TRACE_BOOTCTX_PA_END   UINT32_C(0x00007000)
 #define WINCE_TRACE_BOOTPARAM0_PA_START UINT32_C(0x0001D000)
@@ -1873,6 +1875,68 @@ static void wince_pa_watch_update(machine_t *m, wince_pa_watch_t *watch,
             m->wince_pa_watch_logs++;
         }
     }
+}
+
+static bool wince_fptbl_read_hook(uc_engine *uc, uc_mem_type type,
+                                   uint64_t address, int size, int64_t value,
+                                   void *user_data)
+{
+    (void)type;
+    (void)value;
+    machine_t *m = user_data;
+    if (m->wince_fptbl_read_logs >= 64u)
+        return true;
+
+    uint32_t pa = (uint32_t)address & UINT32_C(0x1FFFFFFF);
+    uint32_t slot = (pa - WINCE_TRACE_FPTBL_PA_START) / 4u;
+
+    uint64_t pc64 = 0, ra64 = 0, a0_64 = 0, a1_64 = 0, a2_64 = 0, a3_64 = 0;
+    uint64_t v0_64 = 0, t9_64 = 0, sp64 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_PC, &pc64);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra64);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0_64);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1_64);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2_64);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3_64);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0_64);
+    uc_reg_read(uc, UC_MIPS_REG_T9, &t9_64);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp64);
+
+    /* Read the value at the target address */
+    uint32_t mem_val = 0;
+    uc_mem_read(uc, address, &mem_val, sizeof(mem_val));
+
+    uint32_t pc = (uint32_t)pc64;
+    fprintf(stderr,
+            "[FPTBL_READ] slot=%u pa=0x%08X pc=0x%08X ra=0x%08X value=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X v0=0x%08X t9=0x%08X sp=0x%08X\n",
+            slot, pa, pc, (uint32_t)ra64, mem_val,
+            (uint32_t)a0_64, (uint32_t)a1_64, (uint32_t)a2_64, (uint32_t)a3_64,
+            (uint32_t)v0_64, (uint32_t)t9_64, (uint32_t)sp64);
+
+    if (slot == 4u) {
+        fprintf(stderr,
+                "[FPTBL_READ_SLOT4] REACHED — producer dispatch would fire"
+                " pc=0x%08X ra=0x%08X value=0x%08X\n",
+                pc, (uint32_t)ra64, mem_val);
+    }
+
+    /* One-shot: dump 16 instructions around the reading PC */
+    if (!m->wince_fptbl_context_dumped) {
+        m->wince_fptbl_context_dumped = true;
+        fprintf(stderr, "[FPTBL_READ] PC context dump around 0x%08X:\n", pc);
+        for (int off = -8; off <= 8; off++) {
+            uint32_t ctx_addr = pc + (uint32_t)(off * 4);
+            uint32_t ctx_word = 0;
+            if (uc_mem_read(uc, (uint64_t)ctx_addr, &ctx_word, 4) == UC_ERR_OK) {
+                const char *marker = (off == 0) ? " <<" : "";
+                fprintf(stderr, "  0x%08X: %08X%s\n", ctx_addr, ctx_word, marker);
+            }
+        }
+    }
+
+    m->wince_fptbl_read_logs++;
+    return true;
 }
 
 static bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
@@ -10141,6 +10205,26 @@ machine_t *machine_create(const machine_config_t *cfg)
                     WINCE_TRACE_CALLER_FRAME_PA_START, WINCE_TRACE_CALLER_FRAME_PA_END - 1u,
                     WINCE_TRACE_RESUME_GLOBAL_PA_START, WINCE_TRACE_RESUME_GLOBAL_PA_END - 1u,
                     WINCE_TRACE_S0_OBJ_PA_START, WINCE_TRACE_S0_OBJ_PA_END - 1u);
+        }
+
+        /* Read hook on fptr table 0x80075580..0x8007559F */
+        bool fptbl_ok = true;
+        for (unsigned i = 0; i < sizeof(watch_bases) / sizeof(watch_bases[0]); i++) {
+            uc_err hf = uc_hook_add(m->uc, &hk, UC_HOOK_MEM_READ,
+                                    wince_fptbl_read_hook, m,
+                                    watch_bases[i] + WINCE_TRACE_FPTBL_PA_START,
+                                    watch_bases[i] + WINCE_TRACE_FPTBL_PA_END - 1u);
+            if (hf != UC_ERR_OK) {
+                fptbl_ok = false;
+                fprintf(stderr,
+                        "[FPTBL_READ] hook failed base=0x%016" PRIX64 ": %s\n",
+                        watch_bases[i], uc_strerror(hf));
+            }
+        }
+        if (fptbl_ok) {
+            fprintf(stderr,
+                    "[FPTBL_READ] enabled watch on 0x%08X-0x%08X (5 aliases)\n",
+                    WINCE_TRACE_FPTBL_PA_START, WINCE_TRACE_FPTBL_PA_END - 1u);
         }
     }
 

@@ -353,6 +353,8 @@ struct machine_s {
     uint32_t wince_null_consecutive;
     bool     wince_nk_epoch_reset_done;
     bool     wince_deferred_seed_done;
+    uint32_t wince_fptbl_read_logs;
+    bool     wince_fptbl_context_dumped;
 
     /* Manual MIPS exception-entry state (set by intr_hook / inject_hw_irq_if_pending) */
     uint64_t pending_epc;           /* EPC to return/restore via MFC0/ERET intercepts      */

@@ -448,6 +448,92 @@ def scan_callback_ptr_producers(data, base_va, target_va=0x806794F0):
     return results
 
 
+def scan_indexed_table_access(data, base_va, table_base=0x80075580, table_end=0x800755A0):
+    """Search for classic C table[index] dispatch: SLL rX, rY, 2 + ADDU + LW + JALR.
+
+    Also searches for the table base address being loaded from a structure field
+    (LW rBase, offset(rStruct)) followed by indexed access.
+    """
+    results = []
+    n_insns = len(data) // 4
+    WINDOW = 6
+
+    for i in range(n_insns):
+        word = struct.unpack_from("<I", data, i * 4)[0]
+        op, rs, rt, imm = decode_insn(word)
+        rd = (word >> 11) & 0x1F
+        funct = word & 0x3F
+        sa = (word >> 6) & 0x1F
+
+        # Look for SLL rX, rY, 2 (word index shift)
+        if op != 0 or funct != 0x00 or sa != 2:
+            continue
+        if word == 0:  # skip NOP
+            continue
+
+        sll_rd = rd
+        sll_va = base_va + i * 4
+
+        # Search forward for ADDU rZ, rBase, sll_rd
+        for j in range(i + 1, min(i + 1 + WINDOW, n_insns)):
+            jw = struct.unpack_from("<I", data, j * 4)[0]
+            jop = (jw >> 26) & 0x3F
+            jrs = (jw >> 21) & 0x1F
+            jrt = (jw >> 16) & 0x1F
+            jrd = (jw >> 11) & 0x1F
+            jfunct = jw & 0x3F
+
+            if jop != 0 or jfunct != 0x21:  # not ADDU
+                continue
+            # One of the source regs must be sll_rd
+            if jrs != sll_rd and jrt != sll_rd:
+                continue
+
+            addu_rd = jrd
+            addu_va = base_va + j * 4
+
+            # Search forward for LW rTarget, offset(addu_rd) with small offset
+            for k in range(j + 1, min(j + 1 + WINDOW, n_insns)):
+                kw = struct.unpack_from("<I", data, k * 4)[0]
+                kop, krs, krt, kimm = decode_insn(kw)
+                if kop != 0x23:  # not LW
+                    continue
+                if krs != addu_rd:
+                    continue
+                lw_offset = kimm if kimm < 0x8000 else kimm - 0x10000
+                if abs(lw_offset) > 0x100:  # small offset expected for table[i]
+                    continue
+
+                lw_rd = krt
+                lw_va = base_va + k * 4
+
+                # Check for JALR following
+                has_jalr = False
+                jalr_va = 0
+                for l in range(k + 1, min(k + 1 + 4, n_insns)):
+                    lw2 = struct.unpack_from("<I", data, l * 4)[0]
+                    lop = (lw2 >> 26) & 0x3F
+                    lfunct = lw2 & 0x3F
+                    lrs = (lw2 >> 21) & 0x1F
+                    if lop == 0 and lfunct == 0x09 and lrs == lw_rd:
+                        has_jalr = True
+                        jalr_va = base_va + l * 4
+                        break
+
+                results.append({
+                    "sll_va": sll_va,
+                    "addu_va": addu_va,
+                    "lw_va": lw_va,
+                    "lw_offset": lw_offset,
+                    "has_jalr": has_jalr,
+                    "jalr_va": jalr_va,
+                    "index_reg": MIPS_REGS[rt],  # SLL source
+                    "dest_reg": MIPS_REGS[lw_rd],
+                })
+
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description="Scan NK binary for callback global producers")
     parser.add_argument("binary", help="Path to flat NK binary dump")
@@ -760,6 +846,29 @@ def main():
                         print(f"    lui @ 0x{args.base + i*4:08X}, lw @ 0x{ref_va:08X}")
                         for line in dump_context_disasm(data, args.base, ref_va, half_window=8):
                             print(f"      {line}")
+
+    # ================================================================
+    # Section 2d: Indexed table access scan (SLL+ADDU+LW+JALR)
+    # ================================================================
+    print(f"\n{'='*60}")
+    print(f"=== INDEXED TABLE ACCESS SCAN (SLL+ADDU+LW+JALR) ===")
+    print(f"{'='*60}")
+
+    idx_results = scan_indexed_table_access(data, args.base, TABLE_BASE, TABLE_END)
+    if idx_results:
+        jalr_count = sum(1 for r in idx_results if r['has_jalr'])
+        print(f"Found {len(idx_results)} SLL+ADDU+LW sequences ({jalr_count} with JALR):")
+        for r in idx_results:
+            jalr_info = f" JALR @ 0x{r['jalr_va']:08X}" if r['has_jalr'] else " (no JALR)"
+            print(f"  SLL @ 0x{r['sll_va']:08X}  ADDU @ 0x{r['addu_va']:08X}"
+                  f"  LW @ 0x{r['lw_va']:08X} (offset={r['lw_offset']})"
+                  f"  index={r['index_reg']} dest={r['dest_reg']}{jalr_info}")
+            print(f"  Context:")
+            for line in dump_context_disasm(data, args.base, r['sll_va'], half_window=10):
+                print(f"    {line}")
+            print()
+    else:
+        print("  No SLL+ADDU+LW indexed access patterns found")
 
     # ================================================================
     print(f"{'='*60}")
