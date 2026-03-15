@@ -3832,19 +3832,43 @@ void log_wince_producer_summary(const machine_t *m, const char *reason)
             verdict = "data_lost";
         } else if (p->total_reads == 0) {
             verdict = "blocked";
+        } else if (p->first_read_valid && !p->any_write_before_read) {
+            verdict = "late_producer";
         } else {
             verdict = "ok";
         }
+
+        /* Format PC fields with explicit validity to avoid 0x00000000 ambiguity */
+        char first_read_pc_str[20], first_write_pc_str[20], first_nz_write_pc_str[20];
+        if (p->first_read_valid)
+            snprintf(first_read_pc_str, sizeof(first_read_pc_str),
+                     "0x%08X", p->first_read_pc);
+        else
+            snprintf(first_read_pc_str, sizeof(first_read_pc_str), "NONE");
+        if (p->first_write_valid)
+            snprintf(first_write_pc_str, sizeof(first_write_pc_str),
+                     "0x%08X", p->first_write_pc);
+        else
+            snprintf(first_write_pc_str, sizeof(first_write_pc_str), "NONE");
+        if (p->first_nz_write_valid)
+            snprintf(first_nz_write_pc_str, sizeof(first_nz_write_pc_str),
+                     "0x%08X", p->first_nz_write_pc);
+        else
+            snprintf(first_nz_write_pc_str, sizeof(first_nz_write_pc_str), "NONE");
+
         fprintf(stderr,
                 "[WINCE_PRODUCER_SUMMARY] reason=%s family=%s"
                 " reads=%u writes=%u nz_writes=%u"
                 " write_before_read=%s"
-                " first_read_val=0x%08" PRIX64
+                " first_read_pc=%s first_read_val=0x%08" PRIX64
+                " first_write_pc=%s first_nz_write_pc=%s"
                 " verdict=%s\n",
                 reason, p->name,
                 p->total_reads, p->total_writes, p->total_nz_writes,
                 p->any_write_before_read ? "yes" : "no",
+                first_read_pc_str,
                 p->first_read_valid ? p->first_read_val : UINT64_C(0),
+                first_write_pc_str, first_nz_write_pc_str,
                 verdict);
     }
 }
