@@ -2078,6 +2078,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     maybe_probe_wince_bootmode_sp_flow(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_spl_memcpy(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_producer_pcs(m, uc, (uint32_t)address, insn);
+    maybe_probe_wince_77FE4_internals(m, uc, (uint32_t)address, insn);
+    maybe_probe_wince_dispatcher_corridor(m, uc, (uint32_t)address, insn);
 
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */

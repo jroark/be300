@@ -3507,6 +3507,23 @@ void init_wince_producer_attrs(machine_t *m)
     m->wince_prod_probe_80077FE4_return = false;
     m->wince_prod_fail_corridor_dumped = false;
     m->wince_prod_80077FE4_expected_ra = 0;
+
+    /* Thread A: 0x80077FE4 internal probes */
+    m->wince_prod_77fe4_probe_77FFC = false;
+    m->wince_prod_77fe4_probe_78004 = false;
+    m->wince_prod_77fe4_probe_7800C = false;
+    m->wince_prod_77fe4_probe_7801C = false;
+    m->wince_prod_77fe4_probe_78064 = false;
+    m->wince_prod_77fe4_probe_78248 = false;
+    m->wince_prod_77fe4_probe_78250 = false;
+
+    /* Thread B: dispatcher corridor probes */
+    m->wince_prod_disp_probe_795D8 = false;
+    m->wince_prod_disp_probe_795E0 = false;
+    m->wince_prod_disp_probe_795E8 = false;
+    m->wince_prod_disp_probe_79634 = false;
+    m->wince_prod_disp_probe_7963C = false;
+    m->wince_prod_disp_probe_79668 = false;
 }
 
 void wince_producer_record_write(machine_t *m, uint32_t pa, uint32_t pc,
@@ -3814,6 +3831,248 @@ void maybe_probe_wince_producer_pcs(machine_t *m, uc_engine *uc,
                 "[WINCE_PRODUCER_PROBE] pc=0x%08X insn=0x%08X"
                 " RETURN_FROM_80077FE4 v0=0x%08X v1=0x%08X\n",
                 pc32, insn, (uint32_t)v0, (uint32_t)v1);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Thread A: 0x80077FE4 internal deep-trace probes                     */
+/* ------------------------------------------------------------------ */
+void maybe_probe_wince_77FE4_internals(machine_t *m, uc_engine *uc,
+                                        uint32_t pc32, uint32_t insn)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+
+    switch (pc32) {
+    case 0x80077FFCu:
+        if (!m->wince_prod_77fe4_probe_77FFC) {
+            m->wince_prod_77fe4_probe_77FFC = true;
+            uint64_t a0 = 0, sp = 0, ra = 0;
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            fprintf(stderr,
+                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
+                    " a0=0x%08X sp=0x%08X ra=0x%08X"
+                    " note=pre_call_77DC0\n",
+                    pc32, insn,
+                    (uint32_t)a0, (uint32_t)sp, (uint32_t)ra);
+        }
+        break;
+    case 0x80078004u:
+        if (!m->wince_prod_77fe4_probe_78004) {
+            m->wince_prod_77fe4_probe_78004 = true;
+            uint64_t v0 = 0, a0 = 0, sp = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            fprintf(stderr,
+                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
+                    " v0=0x%08X a0=0x%08X sp=0x%08X"
+                    " note=branch_on_77DC0_return_%s\n",
+                    pc32, insn,
+                    (uint32_t)v0, (uint32_t)a0, (uint32_t)sp,
+                    (uint32_t)v0 ? "NONZERO_success" : "ZERO_fail");
+        }
+        break;
+    case 0x8007800Cu:
+        if (!m->wince_prod_77fe4_probe_7800C) {
+            m->wince_prod_77fe4_probe_7800C = true;
+            uint64_t v0 = 0, a1 = 0, sp = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            fprintf(stderr,
+                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
+                    " v0=0x%08X a1=0x%08X sp=0x%08X"
+                    " note=FAIL_PATH_entered\n",
+                    pc32, insn,
+                    (uint32_t)v0, (uint32_t)a1, (uint32_t)sp);
+        }
+        break;
+    case 0x8007801Cu: {
+        if (!m->wince_prod_77fe4_probe_7801C) {
+            m->wince_prod_77fe4_probe_7801C = true;
+            uint64_t v0 = 0, sp = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            fprintf(stderr,
+                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
+                    " v0=0x%08X sp=0x%08X"
+                    " note=SUCCESS_PATH_entered\n",
+                    pc32, insn,
+                    (uint32_t)v0, (uint32_t)sp);
+            /* Stack slot dump: sp+0x2C through sp+0x48 */
+            uint32_t sp32 = (uint32_t)sp;
+            static const uint32_t offsets[] = {
+                0x2Cu, 0x30u, 0x34u, 0x38u, 0x3Cu, 0x40u, 0x48u
+            };
+            uint32_t vals[7] = {0};
+            for (int i = 0; i < 7; i++) {
+                uint64_t addr = (uint64_t)(int32_t)(sp32 + offsets[i]);
+                uc_mem_read(uc, addr, &vals[i], 4);
+            }
+            fprintf(stderr,
+                    "[WINCE_77FE4_STACK] sp=0x%08X"
+                    " [+2C]=0x%08X [+30]=0x%08X [+34]=0x%08X"
+                    " [+38]=0x%08X [+3C]=0x%08X [+40]=0x%08X"
+                    " [+48]=0x%08X\n",
+                    sp32,
+                    vals[0], vals[1], vals[2], vals[3],
+                    vals[4], vals[5], vals[6]);
+        }
+        break;
+    }
+    case 0x80078064u:
+        if (!m->wince_prod_77fe4_probe_78064) {
+            m->wince_prod_77fe4_probe_78064 = true;
+            uint64_t t9 = 0, v0 = 0, a0 = 0, sp = 0;
+            uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            fprintf(stderr,
+                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
+                    " t9=0x%08X v0=0x%08X a0=0x%08X sp=0x%08X"
+                    " note=signature_check_0xF137\n",
+                    pc32, insn,
+                    (uint32_t)t9, (uint32_t)v0,
+                    (uint32_t)a0, (uint32_t)sp);
+        }
+        break;
+    case 0x80078248u:
+        if (!m->wince_prod_77fe4_probe_78248) {
+            m->wince_prod_77fe4_probe_78248 = true;
+            uint64_t a0 = 0, sp = 0;
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            fprintf(stderr,
+                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
+                    " a0=0x%08X sp=0x%08X"
+                    " note=success_dispatch\n",
+                    pc32, insn,
+                    (uint32_t)a0, (uint32_t)sp);
+        }
+        break;
+    case 0x80078250u:
+        if (!m->wince_prod_77fe4_probe_78250) {
+            m->wince_prod_77fe4_probe_78250 = true;
+            uint64_t v0 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            fprintf(stderr,
+                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
+                    " v0=0x%08X"
+                    " note=success_return_v0_should_be_1\n",
+                    pc32, insn, (uint32_t)v0);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Thread B: Dispatcher corridor deep-trace probes                     */
+/* ------------------------------------------------------------------ */
+void maybe_probe_wince_dispatcher_corridor(machine_t *m, uc_engine *uc,
+                                            uint32_t pc32, uint32_t insn)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+
+    switch (pc32) {
+    case 0x800795D8u:
+        if (!m->wince_prod_disp_probe_795D8) {
+            m->wince_prod_disp_probe_795D8 = true;
+            uint64_t ra = 0, sp = 0, a0 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            fprintf(stderr,
+                    "[WINCE_DISPATCH_CORRIDOR] pc=0x%08X insn=0x%08X"
+                    " ra=0x%08X sp=0x%08X a0=0x%08X"
+                    " note=corridor_entry_pre_gate1\n",
+                    pc32, insn,
+                    (uint32_t)ra, (uint32_t)sp, (uint32_t)a0);
+        }
+        break;
+    case 0x800795E0u:
+        if (!m->wince_prod_disp_probe_795E0) {
+            m->wince_prod_disp_probe_795E0 = true;
+            uint64_t v0 = 0, sp = 0, ra = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            fprintf(stderr,
+                    "[WINCE_DISPATCH_CORRIDOR] pc=0x%08X insn=0x%08X"
+                    " ra=0x%08X sp=0x%08X v0=0x%08X"
+                    " note=gate1_result_%s\n",
+                    pc32, insn,
+                    (uint32_t)ra, (uint32_t)sp, (uint32_t)v0,
+                    (uint32_t)v0 ? "NONZERO_skip_to_dispatch" : "ZERO_continue");
+        }
+        break;
+    case 0x800795E8u:
+        if (!m->wince_prod_disp_probe_795E8) {
+            m->wince_prod_disp_probe_795E8 = true;
+            uint64_t v0 = 0, sp = 0, ra = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            fprintf(stderr,
+                    "[WINCE_DISPATCH_CORRIDOR] pc=0x%08X insn=0x%08X"
+                    " ra=0x%08X sp=0x%08X v0=0x%08X"
+                    " note=gate2_entry_gate1_was_zero\n",
+                    pc32, insn,
+                    (uint32_t)ra, (uint32_t)sp, (uint32_t)v0);
+        }
+        break;
+    case 0x80079634u:
+        if (!m->wince_prod_disp_probe_79634) {
+            m->wince_prod_disp_probe_79634 = true;
+            uint64_t ra = 0, sp = 0, v0 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            fprintf(stderr,
+                    "[WINCE_DISPATCH_CORRIDOR] pc=0x%08X insn=0x%08X"
+                    " ra=0x%08X sp=0x%08X v0=0x%08X"
+                    " note=DISPATCH_REACHED\n",
+                    pc32, insn,
+                    (uint32_t)ra, (uint32_t)sp, (uint32_t)v0);
+        }
+        break;
+    case 0x8007963Cu:
+        if (!m->wince_prod_disp_probe_7963C) {
+            m->wince_prod_disp_probe_7963C = true;
+            uint64_t v0 = 0, a0 = 0, sp = 0;
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            fprintf(stderr,
+                    "[WINCE_DISPATCH_CORRIDOR] pc=0x%08X insn=0x%08X"
+                    " v0=0x%08X a0=0x%08X sp=0x%08X"
+                    " note=post_dispatch_return_from_78BC0\n",
+                    pc32, insn,
+                    (uint32_t)v0, (uint32_t)a0, (uint32_t)sp);
+        }
+        break;
+    case 0x80079668u:
+        if (!m->wince_prod_disp_probe_79668) {
+            m->wince_prod_disp_probe_79668 = true;
+            uint64_t t0 = 0, sp = 0;
+            uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            fprintf(stderr,
+                    "[WINCE_DISPATCH_CORRIDOR] pc=0x%08X insn=0x%08X"
+                    " t0=0x%08X sp=0x%08X"
+                    " note=resume_ctx_setup_about_to_read_PA_0x2280\n",
+                    pc32, insn,
+                    (uint32_t)t0, (uint32_t)sp);
+        }
+        break;
+    default:
+        break;
     }
 }
 

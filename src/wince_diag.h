@@ -146,4 +146,8 @@ void wince_producer_record_read(machine_t *m, uint32_t pa, uint32_t pc,
                                 unsigned size, uint64_t value);
 void maybe_probe_wince_producer_pcs(machine_t *m, uc_engine *uc,
                                     uint32_t pc32, uint32_t insn);
+void maybe_probe_wince_77FE4_internals(machine_t *m, uc_engine *uc,
+                                        uint32_t pc32, uint32_t insn);
+void maybe_probe_wince_dispatcher_corridor(machine_t *m, uc_engine *uc,
+                                            uint32_t pc32, uint32_t insn);
 void log_wince_producer_summary(const machine_t *m, const char *reason);
