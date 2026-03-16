@@ -83,6 +83,39 @@ static void seed_wince_probe_boot_safe(machine_t *m)
     fprintf(stderr, "[WINCE_PROBE_SEED_BOOT] DISABLED — de-speculated (v4 survey: post-boot runtime page)\n");
 }
 
+static void seed_wince_obj_bootstrap(machine_t *m)
+{
+    static const wince_pa_seed_word_t words[WINCE_OBJ_BOOTSTRAP_WORD_COUNT] = {
+        { UINT32_C(0x00660000), UINT32_C(0x8066BFC0) },
+        { UINT32_C(0x0066BFC0), UINT32_C(0x8008AE98) },
+        { UINT32_C(0x0066BFC4), UINT32_C(0x80078BA0) },
+        { UINT32_C(0x0066BFC8), UINT32_C(0x800A4978) },
+        { UINT32_C(0x0066BFCC), UINT32_C(0x8008AE98) },
+        { UINT32_C(0x0066BFD0), UINT32_C(0x800A4978) },
+        { UINT32_C(0x0066BFD4), UINT32_C(0x8008AE98) },
+    };
+
+    if (!m || !m->uc || !m->cfg.wince_obj_bootstrap || m->wince_obj_bootstrap_active)
+        return;
+
+    m->wince_obj_bootstrap_active = true;
+    memset(m->wince_obj_bootstrap, 0, sizeof(m->wince_obj_bootstrap));
+
+    for (uint32_t i = 0; i < WINCE_OBJ_BOOTSTRAP_WORD_COUNT; i++) {
+        write_pa_u32_all_aliases(m, words[i].pa, words[i].val);
+        m->wince_obj_bootstrap[i].pa = words[i].pa;
+        m->wince_obj_bootstrap[i].seed_val = words[i].val;
+    }
+
+    fprintf(stderr,
+            "[WINCE_OBJ_BOOTSTRAP] enabled"
+            " pa[660000]=0x%08X"
+            " objhdr=[0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X]\n",
+            words[0].val,
+            words[1].val, words[2].val, words[3].val,
+            words[4].val, words[5].val, words[6].val);
+}
+
 void seed_wince_probe_deferred(machine_t *m, uint32_t pc32)
 {
     if (!m || m->wince_deferred_seed_done)
@@ -148,6 +181,7 @@ void apply_wince_warm_profile(machine_t *m, const char *marker)
     seed_wince_exception_vectors(m);
     seed_wince_kdata(m);
     seed_wince_probe_boot_safe(m);
+    seed_wince_obj_bootstrap(m);
 
     if (marker != NULL) {
         fprintf(stderr,

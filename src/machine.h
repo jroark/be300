@@ -149,6 +149,7 @@ typedef struct {
 } wince_region_track_t;
 
 #define WINCE_PRODUCER_FAMILY_COUNT 10u
+#define WINCE_OBJ_BOOTSTRAP_WORD_COUNT 7u
 typedef struct {
     const char *name;
     uint32_t start_pa;
@@ -344,6 +345,7 @@ typedef struct {
     bool        kuseg_hotpath_populate; /* experimental: try shadow-TLB-backed kuseg population in LOAD_EMU/STORE_EMU */
     bool        log_nand_legacy; /* log D7F8/D7FC indexed register traffic */
     bool        log_wince_stall; /* log WinCE post-NAND stall diagnostics */
+    bool        wince_obj_bootstrap; /* experimental: seed stable objptr/header words for WinCE NAND boot */
     bool        trace_user_handoff; /* debug: first-fault and handoff VA->PA trace */
     const char *rom_path;     /* path to flat ROM image, loaded at PA_RESET_VECTOR */
     const char *kernel_path;  /* path to ELF kernel (vmlinux); if set, skip ROM boot */
@@ -352,6 +354,19 @@ typedef struct {
     const char *nand_path;    /* optional: NAND image for WinCE boot (B000FF SPL) */
     uint32_t    sdram_size;   /* SDRAM size in bytes (default 16 MB) */
 } machine_config_t;
+
+typedef struct {
+    uint32_t pa;
+    uint32_t seed_val;
+    bool     first_read_valid;
+    uint32_t first_read_pc;
+    uint64_t first_read_val;
+    bool     first_post_seed_write_valid;
+    uint32_t first_post_seed_write_pc;
+    uint32_t first_post_seed_write_pa;
+    uint64_t first_post_seed_write_val;
+    bool     overwritten_before_first_read;
+} wince_obj_bootstrap_track_t;
 
 struct machine_s {
     uc_engine       *uc;
@@ -427,6 +442,8 @@ struct machine_s {
     uint32_t wince_null_consecutive;
     bool     wince_nk_epoch_reset_done;
     bool     wince_deferred_seed_done;
+    bool     wince_obj_bootstrap_active;
+    wince_obj_bootstrap_track_t wince_obj_bootstrap[WINCE_OBJ_BOOTSTRAP_WORD_COUNT];
 
     /* De-speculation first-touch one-shot flags (Step 5 diagnostics). */
     bool     wince_despec_touch_resume_ctx;   /* PA 0x2200-0x22FF */
@@ -461,9 +478,26 @@ struct machine_s {
     bool wince_prod_77fe4_probe_78004;
     bool wince_prod_77fe4_probe_7800C;
     bool wince_prod_77fe4_probe_7801C;
+    bool wince_prod_77fe4_probe_78038;
+    bool wince_prod_77fe4_probe_7803C;
+    bool wince_prod_77fe4_probe_78040;
     bool wince_prod_77fe4_probe_78064;
+    bool wince_prod_77fe4_probe_78098;
+    bool wince_prod_77fe4_probe_780B8;
+    bool wince_prod_77fe4_probe_7813C;
+    bool wince_prod_77fe4_probe_78148;
+    bool wince_prod_77fe4_probe_7816C;
+    bool wince_prod_77fe4_probe_78178;
+    bool wince_prod_77fe4_probe_78180;
+    bool wince_prod_77fe4_probe_781A0;
+    bool wince_prod_77fe4_probe_78244;
     bool wince_prod_77fe4_probe_78248;
+    bool wince_prod_77fe4_probe_7824C;
     bool wince_prod_77fe4_probe_78250;
+    bool wince_prod_77fe4_probe_77E28;
+    bool wince_prod_77fe4_probe_77E30;
+    bool wince_prod_77fe4_probe_77F28;
+    bool wince_prod_77fe4_probe_77FE0;
 
     /* Thread B: dispatcher corridor deep-trace probes */
     bool wince_prod_disp_probe_795D8;
