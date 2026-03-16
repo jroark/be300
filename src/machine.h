@@ -148,7 +148,7 @@ typedef struct {
     uint64_t last_nz_to_zero_new;
 } wince_region_track_t;
 
-#define WINCE_PRODUCER_FAMILY_COUNT 7u
+#define WINCE_PRODUCER_FAMILY_COUNT 10u
 typedef struct {
     const char *name;
     uint32_t start_pa;
@@ -472,6 +472,15 @@ struct machine_s {
     bool wince_prod_disp_probe_79634;
     bool wince_prod_disp_probe_7963C;
     bool wince_prod_disp_probe_79668;
+
+    /* Late-writer corridor probes for obj slot/header attribution */
+    bool wince_prod_late_probe_79658;
+    bool wince_prod_late_probe_7A65C;
+    bool wince_prod_late_probe_7A668;
+    bool wince_prod_late_probe_7A744;
+    bool wince_prod_late_probe_7A75C;
+    bool wince_prod_late_probe_7A764;
+    bool wince_prod_late_probe_7A76C;
 
     uint32_t wince_fptbl_read_logs;
     bool     wince_fptbl_context_dumped;

@@ -19,6 +19,12 @@ typedef struct machine_s machine_t;
 #define WINCE_TRACE_CB_PA_END    UINT32_C(0x00051B00)
 #define WINCE_TRACE_OBJPTR_PA_START UINT32_C(0x00660000)
 #define WINCE_TRACE_OBJPTR_PA_END   UINT32_C(0x00660040)
+#define WINCE_TRACE_OBJ_SLOT0_PA_START UINT32_C(0x0066BFC0)
+#define WINCE_TRACE_OBJ_SLOT0_PA_END   UINT32_C(0x0066BFC4)
+#define WINCE_TRACE_OBJ_HEADER_PA_START UINT32_C(0x0066BFC0)
+#define WINCE_TRACE_OBJ_HEADER_PA_END   UINT32_C(0x0066BFE0)
+#define WINCE_TRACE_OBJ_TAIL_STATS_PA_START UINT32_C(0x0067BFF4)
+#define WINCE_TRACE_OBJ_TAIL_STATS_PA_END   UINT32_C(0x0067C000)
 #define WINCE_TRACE_OBJ_PA_START UINT32_C(0x0066BFC0)
 #define WINCE_TRACE_OBJ_PA_END   UINT32_C(0x00680000)
 #define WINCE_TRACE_RESUME_GLOBAL_PA_START UINT32_C(0x006794EC)
@@ -150,4 +156,6 @@ void maybe_probe_wince_77FE4_internals(machine_t *m, uc_engine *uc,
                                         uint32_t pc32, uint32_t insn);
 void maybe_probe_wince_dispatcher_corridor(machine_t *m, uc_engine *uc,
                                             uint32_t pc32, uint32_t insn);
+void maybe_probe_wince_obj_late_writer(machine_t *m, uc_engine *uc,
+                                       uint32_t pc32, uint32_t insn);
 void log_wince_producer_summary(const machine_t *m, const char *reason);
