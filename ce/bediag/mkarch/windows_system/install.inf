@@ -4,6 +4,7 @@
 
 [Copy Files]
 "\Windows\BEDiag.dll" , "BEDiag.dll", COPYFLG_REPLACEONLY
+"\Windows\BEDiagKick.exe" , "BEDiagKick.exe", COPYFLG_REPLACEONLY
 "\Windows\BEDiag_unapps.inf" , "unapps.inf", COPYFLG_REPLACEONLY
 "\Windows\InsResetFlag.txt" , "InsResetFlag.txt", COPYFLG_REPLACEONLY
 

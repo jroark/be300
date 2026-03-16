@@ -1,1 +1,1 @@
-BEDiag|patch_fallback|built_in_driver|\Nand Disk\Program Files\Patch\BEDiag.dll|HKLM\Drivers\BuiltIn\BEDiag
+BEDiag|patch_fallback|built_in_driver|\Nand Disk\Program Files\Patch\BEDiag.dll|\Windows\BEDiagKick.exe|HKLM\Drivers\BuiltIn\BEDiag

@@ -12,12 +12,14 @@ Variants
 1. windows_system
    Primary package. Installs:
      \Windows\BEDiag.dll
+     \Windows\BEDiagKick.exe
    Registry:
      HKLM\Drivers\BuiltIn\BEDiag\Dll = "BEDiag.dll"
 
 2. patch_fallback
    Fallback package. Installs:
      \Nand Disk\Program Files\Patch\BEDiag.dll
+     \Windows\BEDiagKick.exe
    Registry:
      HKLM\Drivers\BuiltIn\BEDiag\Dll = "\Nand Disk\Program Files\Patch\BEDiag.dll"
 
@@ -49,16 +51,24 @@ BEDiag.dll
     ce\bediag\WMIPSRel\BEDiag.dll
   Do not rename it.
 
+BEDiagKick.exe
+  Copy this in from the PB3/eVC build output before running MkArch:
+    ce\bediag\WMIPSRel\BEDiagKick.exe
+  Do not rename it.
+
 Windows 2000 VM workflow
 ------------------------
 1. Build BEDiag.dll from ce\bediag\BEDiag.dsp as "BEDiag - Win32 (WCE MIPS) Release".
-2. Copy the built DLL into exactly one source directory:
+2. Build BEDiagKick.exe from ce\bediag\BEDiagKick.dsp as "BEDiagKick - Win32 (WCE MIPS) Release".
+3. Copy both outputs into exactly one source directory:
      windows_system\BEDiag.dll
+     windows_system\BEDiagKick.exe
    or:
      patch_fallback\BEDiag.dll
-3. Run BUILD_WINDOWS.cmd for the primary package.
-4. If the package installs and resets the BE-300 but no BEDiag COM1 markers
-   appear on the next boot, run BUILD_PATCH.cmd and test the fallback package.
+     patch_fallback\BEDiagKick.exe
+4. Run BUILD_WINDOWS.cmd for the primary package.
+5. If the package installs and resets the BE-300 but no \Windows\BEDiag_boot.txt
+   appears on the next boot, run BUILD_PATCH.cmd and test the fallback package.
 
 Outputs
 -------
@@ -77,6 +87,7 @@ These packages are patch-style installs, not normal launcher apps. The included
 unapps.inf files define the authoritative delete actions:
   - remove HKLM\Drivers\BuiltIn\BEDiag
   - remove the installed BEDiag.dll
+  - remove \Windows\BEDiagKick.exe
   - remove the copied cleanup INF
 If the stock installer UI does not expose uninstall for this package type, use
 that INF as the source for a removal-only package rather than editing the live
@@ -85,12 +96,17 @@ registry by hand.
 Hardware test order
 -------------------
 1. Install the windows_system package on one stock-shell BE-300.
-2. Capture COM1 from install through the post-install reset boot.
-3. Look for:
+2. Capture COM1 from install through the post-install reset boot if available.
+3. Inspect:
+     \Windows\BEDiag_boot.txt
+     \Windows\BEDiag_kick.txt
+4. In BEDiag_boot.txt look for:
      --- BEDIAG INIT ---
      --- SNAPSHOT INIT ---
      --- SNAPSHOT +1S ---
      --- SNAPSHOT +5S ---
      --- DRIVER STATE ---
      --- BEDIAG DONE ---
-4. Only if the driver does not load after reset, try the patch_fallback package.
+5. If there is no boot file after reset, run BEDiagKick.exe manually and inspect
+   BEDiag_kick.txt to distinguish built-in autoload failure from a bad DLL/export.
+6. Only if the driver does not load after reset, try the patch_fallback package.

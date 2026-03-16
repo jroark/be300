@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include <wchar.h>
 
 extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 
@@ -13,6 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
+#define BEDIAG_BUILD_TAG         "loadproof1"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -95,6 +97,8 @@ static BOOL g_backlog_overflow = FALSE;
 static char g_backlog[BEDIAG_BACKLOG_SIZE];
 static DWORD g_backlog_used = 0;
 static WCHAR g_file_path[BEDIAG_MAX_PATH_LEN];
+static const WCHAR g_boot_file_path[] = L"\\Windows\\BEDiag_boot.txt";
+static const WCHAR g_breadcrumb_key[] = L"Drivers\\BuiltIn\\BEDiag";
 
 static const WCHAR *g_file_roots[] = {
     L"\\Nand Disk",
@@ -295,6 +299,61 @@ static BOOL OpenSerialLog(void)
     return TRUE;
 }
 
+static void SetBreadcrumbDWORD(const WCHAR *name, DWORD value)
+{
+    HKEY hKey;
+
+    hKey = NULL;
+    if (RegCreateKeyEx(HKEY_LOCAL_MACHINE, g_breadcrumb_key, 0, NULL, 0, 0, NULL, &hKey, NULL) != ERROR_SUCCESS)
+        return;
+
+    RegSetValueEx(hKey, name, 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
+    RegCloseKey(hKey);
+}
+
+static void SetBreadcrumbString(const WCHAR *name, const WCHAR *value)
+{
+    HKEY hKey;
+    DWORD cbData;
+
+    if (!value)
+        return;
+
+    hKey = NULL;
+    if (RegCreateKeyEx(HKEY_LOCAL_MACHINE, g_breadcrumb_key, 0, NULL, 0, 0, NULL, &hKey, NULL) != ERROR_SUCCESS)
+        return;
+
+    cbData = ((DWORD)wcslen(value) + 1u) * sizeof(WCHAR);
+    RegSetValueEx(hKey, name, 0, REG_SZ, (const BYTE *)value, cbData);
+    RegCloseKey(hKey);
+}
+
+static BOOL OpenPrimaryFileLog(void)
+{
+    DWORD written;
+
+    if (g_file != INVALID_HANDLE_VALUE)
+        return TRUE;
+
+    g_file = CreateFile(g_boot_file_path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (g_file == INVALID_HANDLE_VALUE)
+        return FALSE;
+
+    SetFilePointer(g_file, 0, NULL, FILE_END);
+    CopyWide(g_file_path, BEDIAG_MAX_PATH_LEN, g_boot_file_path);
+
+    written = 0;
+    if (g_backlog_used != 0)
+        WriteFile(g_file, g_backlog, g_backlog_used, &written, NULL);
+    if (g_backlog_overflow) {
+        const char *overflow = "[BEDIAG] backlog_overflow=1\r\n";
+        WriteFile(g_file, overflow, (DWORD)strlen(overflow), &written, NULL);
+    }
+    FlushFileBuffers(g_file);
+    return TRUE;
+}
+
 static void MaybeRetrySerial(void)
 {
     if (g_serial != INVALID_HANDLE_VALUE || g_serial_retry_done)
@@ -326,6 +385,8 @@ static void TryOpenSecondaryFile(void)
     DWORD tick;
 
     if (g_file != INVALID_HANDLE_VALUE)
+        return;
+    if (OpenPrimaryFileLog())
         return;
 
     tick = g_driver.init_tick ? g_driver.init_tick : GetTickCount();
@@ -372,6 +433,29 @@ static void MaybeReportSerialFailure(void)
     Logf("[BEDIAG] serial_open_failed err=%lu retried=%u\r\n",
          g_serial_open_error,
          g_serial_retry_done ? 1u : 0u);
+}
+
+static void LogStage(const char *stage, const char *status)
+{
+    char active_key_a[256];
+
+    WideToAnsi(g_driver.active_key, active_key_a, sizeof(active_key_a));
+    Logf("[BEDIAG_STAGE] build=%s stage=%s tick_ms=%lu context=0x%08lX active_key=\"%s\"",
+         BEDIAG_BUILD_TAG,
+         stage,
+         GetTickCount(),
+         g_driver.init_context,
+         active_key_a[0] ? active_key_a : "<unavailable>");
+    if (status)
+        Logf(" status=%s", status);
+    if (g_serial == INVALID_HANDLE_VALUE)
+        Logf(" serial_open_failed=%lu retried=%u",
+             g_serial_open_error,
+             g_serial_retry_done ? 1u : 0u);
+    else
+        Logf(" serial_status=OPEN");
+    Logf("\r\n");
+    FlushSinks();
 }
 
 static BOOL ReadPhysicalBytes(DWORD phys_addr, BYTE *out, DWORD size)
@@ -707,6 +791,7 @@ static void LogDriverState(void)
     WideToAnsi(g_driver.active_key, active_key_a, sizeof(active_key_a));
     WideToAnsi(g_file_path, file_path_a, sizeof(file_path_a));
 
+    Logf("build=%s\r\n", BEDIAG_BUILD_TAG);
     Logf("tick_ms=%lu\r\n", GetTickCount());
     Logf("init_tick_ms=%lu\r\n", g_driver.init_tick);
     Logf("worker_started=%u worker_thread_id=%lu stop_requested=%ld\r\n",
@@ -755,10 +840,12 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 {
     bediag_driver_t *driver;
     const char *final_status;
+    WCHAR status_w[32];
 
     driver = (bediag_driver_t *)arg;
     driver->worker_started = TRUE;
     driver->worker_thread_id = GetCurrentThreadId();
+    SetBreadcrumbDWORD(L"BEDiagWorkerStarted", 1);
 
     TryOpenSecondaryFile();
     MaybeReportSerialFailure();
@@ -778,6 +865,7 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
     CapturePhase(PHASE_INIT);
     EmitFocusWords(PHASE_INIT);
     CaptureRegistryState(PHASE_INIT);
+    LogStage("snapshot_init_done", NULL);
 
     if (!driver->stop_requested)
         Sleep(1000);
@@ -792,6 +880,7 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
         CapturePhase(PHASE_PLUS1S);
         EmitFocusWords(PHASE_PLUS1S);
         CaptureRegistryState(PHASE_PLUS1S);
+        LogStage("snapshot_1s_done", NULL);
     }
 
     if (!driver->stop_requested)
@@ -806,6 +895,7 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
         CapturePhase(PHASE_PLUS5S);
         EmitFocusWords(PHASE_PLUS5S);
         CaptureRegistryState(PHASE_PLUS5S);
+        LogStage("snapshot_5s_done", NULL);
     }
 
     BeginSection("DRIVER STATE");
@@ -815,6 +905,10 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
     Logf("tick_ms=%lu\r\n", GetTickCount());
     final_status = driver->stop_requested ? "ABORTED" : (g_had_error ? "PARTIAL_ERROR" : "OK");
     Logf("status=%s\r\n", final_status);
+    status_w[0] = L'\0';
+    if (MultiByteToWideChar(CP_ACP, 0, final_status, -1, status_w, sizeof(status_w) / sizeof(status_w[0])) > 0)
+        SetBreadcrumbString(L"BEDiagLastStatus", status_w);
+    LogStage("done", final_status);
     FlushSinks();
 
     return 0;
@@ -855,7 +949,13 @@ extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
     g_driver.init_context = dwContext;
     CopyContextPath(dwContext, g_driver.active_key, sizeof(g_driver.active_key) / sizeof(g_driver.active_key[0]));
 
+    OpenPrimaryFileLog();
+    SetBreadcrumbDWORD(L"BEDiagLoaded", 1);
+    SetBreadcrumbDWORD(L"BEDiagInitTick", g_driver.init_tick);
+    SetBreadcrumbDWORD(L"BEDiagWorkerStarted", 0);
     OpenSerialLog();
+    LogStage("init_enter", NULL);
+    MaybeReportSerialFailure();
 
     g_driver.worker_thread = CreateThread(NULL, 0, BEDiagWorkerThread, &g_driver, 0, &g_driver.worker_thread_id);
     if (!g_driver.worker_thread) {
@@ -866,11 +966,14 @@ extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
         Logf("worker_start_failed err=%lu\r\n", GetLastError());
         BeginSection("BEDIAG DONE");
         Logf("status=FAILED\r\n");
+        SetBreadcrumbString(L"BEDiagLastStatus", L"FAILED");
+        LogStage("done", "FAILED");
         FlushSinks();
         g_had_error = TRUE;
         return 0;
     }
 
+    LogStage("worker_created", NULL);
     return (DWORD)&g_driver;
 }
 

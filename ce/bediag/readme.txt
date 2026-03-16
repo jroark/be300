@@ -46,10 +46,17 @@ It also logs focused raw words for:
 
 Logging behavior
 ----------------
-Primary output is COM1 text logging.
-Secondary output is an optional text file if a writable filesystem appears
-after Device Manager starts. The driver keeps an in-memory backlog so a late
-file open still captures earlier log lines.
+Primary proof path is:
+
+  \Windows\BEDiag_boot.txt
+
+BEDiag opens this file synchronously in BDG_Init and appends deterministic
+stage breadcrumbs plus the full snapshot output. COM1 logging remains enabled
+as best-effort only and should not be treated as the primary WinCE proof
+channel on this device.
+
+If \Windows logging is not available, BEDiag falls back to the older secondary
+file search on writable roots and replays the in-memory backlog there.
 
 Required sections:
   --- BEDIAG INIT ---
@@ -58,6 +65,14 @@ Required sections:
   --- SNAPSHOT +5S ---
   --- DRIVER STATE ---
   --- BEDIAG DONE ---
+
+Deterministic stage breadcrumbs are also written:
+  stage=init_enter
+  stage=worker_created
+  stage=snapshot_init_done
+  stage=snapshot_1s_done
+  stage=snapshot_5s_done
+  stage=done status=...
 
 Registry churn
 --------------
@@ -83,21 +98,40 @@ Notes:
     /dll and BEDiag.def.
   - No resources or UI are required.
 
+Helper EXE
+----------
+BEDiagKick.exe is a tiny no-UI helper that attempts to activate the same
+built-in driver key manually and logs to:
+
+  \Windows\BEDiag_kick.txt
+
+Build it from BEDiagKick.dsp as:
+
+  "BEDiagKick - Win32 (WCE MIPS) Release"
+
 Install
 -------
 Preferred path:
   Use the MkArch packaging bundle in ce\bediag\mkarch and install BEDiag
   through the Casio Setup.exe + Setup.ini + .cbea flow. The package writes the
-  BuiltIn registry key and requests the stock post-install reset path.
+  BuiltIn registry key, installs BEDiag.dll plus BEDiagKick.exe, and requests
+  the stock post-install reset path.
 
 Fallback manual path:
-1. Copy BEDiag.dll to the device, for example:
+1. Copy BEDiag.dll and BEDiagKick.exe to the device, for example:
 
      \Windows\BEDiag.dll
+     \Windows\BEDiagKick.exe
 
 2. Add the BuiltIn registry key from BEDiag.reg.txt.
 3. Soft reset the BE-300.
-4. Capture COM1 from power-on through shell idle.
+4. After reset, inspect:
+
+     \Windows\BEDiag_boot.txt
+     \Windows\BEDiag_kick.txt
+
+5. Capture COM1 if useful, but do not treat it as the primary WinCE proof
+   channel.
 
 Interpretation
 --------------
@@ -113,4 +147,3 @@ Compatibility note
 The BE-300 driver guidelines indicate BE can use PPC-standard embedded drivers
 that have no UI, provided they are rebuilt for MIPS. BEDiag follows that
 constraint and intentionally keeps the code path passive.
-
