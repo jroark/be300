@@ -1,0 +1,19 @@
+; BEDiag built-in diagnostic driver install package.
+; Fallback variant: install a raw DLL into \Nand Disk\Program Files\Patch
+; and point the BuiltIn Dll value at the full path if the \Windows variant
+; installs but Device Manager never loads the driver.
+
+[Make Dirs]
+"\Nand Disk\Program Files\Patch"
+
+[Copy Files]
+"\Nand Disk\Program Files\Patch\BEDiag.dll" , "BEDiag.dll", COPYFLG_REPLACEONLY
+"\Nand Disk\Program Files\Patch\BEDiag_unapps.inf" , "unapps.inf", COPYFLG_REPLACEONLY
+"\Windows\InsResetFlag.txt" , "InsResetFlag.txt", COPYFLG_REPLACEONLY
+
+[Add Registry]
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Dll", REG_SZ, FLG_ADDREG_REPLACEONLY, "\Nand Disk\Program Files\Patch\BEDiag.dll"
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Prefix", REG_SZ, FLG_ADDREG_REPLACEONLY, "BDG"
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Index", REG_DWORD, FLG_ADDREG_REPLACEONLY, 1
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Order", REG_DWORD, FLG_ADDREG_REPLACEONLY, 1
+; End
