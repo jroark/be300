@@ -456,6 +456,23 @@ struct machine_s {
     bool wince_prod_fail_corridor_dumped;
     uint32_t wince_prod_80077FE4_expected_ra;
 
+    /* Thread A: 0x80077FE4 internal deep-trace probes */
+    bool wince_prod_77fe4_probe_77FFC;
+    bool wince_prod_77fe4_probe_78004;
+    bool wince_prod_77fe4_probe_7800C;
+    bool wince_prod_77fe4_probe_7801C;
+    bool wince_prod_77fe4_probe_78064;
+    bool wince_prod_77fe4_probe_78248;
+    bool wince_prod_77fe4_probe_78250;
+
+    /* Thread B: dispatcher corridor deep-trace probes */
+    bool wince_prod_disp_probe_795D8;
+    bool wince_prod_disp_probe_795E0;
+    bool wince_prod_disp_probe_795E8;
+    bool wince_prod_disp_probe_79634;
+    bool wince_prod_disp_probe_7963C;
+    bool wince_prod_disp_probe_79668;
+
     uint32_t wince_fptbl_read_logs;
     bool     wince_fptbl_context_dumped;
 
