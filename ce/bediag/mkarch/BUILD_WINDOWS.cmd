@@ -1,7 +1,7 @@
 @echo off
 setlocal
 set SCRIPT_DIR=%~dp0
-set TOOL_DIR=%SCRIPT_DIR%..\..\..\be300 Installer\Installer
+set TOOL_DIR=%SCRIPT_DIR%..
 set SOURCE_DIR=%SCRIPT_DIR%windows_system
 set OUT_DIR=%SCRIPT_DIR%out\windows_system
 
