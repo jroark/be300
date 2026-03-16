@@ -3036,16 +3036,30 @@ void maybe_probe_wince_bootmode(machine_t *m, uc_engine *uc,
 
     const char *edge = NULL;
     switch (pc32) {
+    case 0x80077E28u: edge = "writer_enter_77e28"; break;
+    case 0x80077E30u: edge = "writer_post_prologue"; break;
+    case 0x80077F28u: edge = "writer_store_slot0"; break;
+    case 0x80077FE0u: edge = "writer_return_77fe0"; break;
     case 0x80078004u: edge = "ret_77dc0"; break;
     case 0x8007801Cu: edge = "pre_jalr_sp30"; break;
     case 0x80078020u: edge = "jalr_sp30"; break;
     case 0x80078028u: edge = "ret_jalr_sp30"; break;
     case 0x8007802Cu: edge = "jalr_sp34"; break;
     case 0x80078034u: edge = "ret_jalr_sp34"; break;
+    case 0x80078038u: edge = "delay_call_77210"; break;
+    case 0x8007803Cu: edge = "delay_call_arg_30000"; break;
+    case 0x80078040u: edge = "load_sp3c_target"; break;
     case 0x80078048u: edge = "jalr_sp3c_a0_1"; break;
     case 0x80078050u: edge = "ret_jalr_sp3c_a0_1"; break;
+    case 0x80078064u: edge = "branch_sig_f137"; break;
+    case 0x80078098u: edge = "fallback_probe_call_786b0"; break;
+    case 0x800780B8u: edge = "gate_fetch_a002d000"; break;
+    case 0x8007813Cu: edge = "mode_ptr_reload"; break;
+    case 0x80078148u: edge = "mode_load_after_gate"; break;
+    case 0x8007816Cu: edge = "status_flag_clear"; break;
     case 0x80078178u: edge = "branch_t5_to_78248"; break;
     case 0x80078180u: edge = "jalr_sp3c_a0_0"; break;
+    case 0x800781A0u: edge = "set_boot_flags"; break;
     case 0x80078188u: edge = "ret_jalr_sp3c_a0_0"; break;
     case 0x8007818Cu: edge = "jalr_sp38"; break;
     case 0x80078194u: edge = "ret_jalr_sp38"; break;
@@ -3056,6 +3070,7 @@ void maybe_probe_wince_bootmode(machine_t *m, uc_engine *uc,
     case 0x8007823Cu: edge = "ret_jalr_sp38_b"; break;
     case 0x80078244u: edge = "pre_sel_call"; break;
     case 0x80078248u: edge = "sel_call_77e28"; break;
+    case 0x8007824Cu: edge = "post_sel_load_a1"; break;
     case 0x80078250u: edge = "post_sel_call"; break;
     case 0x80078254u: edge = "epilogue"; break;
     default: break;
@@ -3411,6 +3426,7 @@ void log_wince_stall_dump(machine_t *m, uint32_t pc32)
     log_wince_div_call_trace_summary(m, "STALL");
     log_wince_ctrl_hist_summary(m, "STALL", 24u);
     log_wince_producer_summary(m, "STALL");
+    log_wince_obj_bootstrap_summary(m, "STALL");
 
     if (m->mmio_hist_count == 0) {
         fprintf(stderr, "[WINCE_STALL_MMIO] (empty)\n");
@@ -3548,9 +3564,26 @@ void init_wince_producer_attrs(machine_t *m)
     m->wince_prod_77fe4_probe_78004 = false;
     m->wince_prod_77fe4_probe_7800C = false;
     m->wince_prod_77fe4_probe_7801C = false;
+    m->wince_prod_77fe4_probe_78038 = false;
+    m->wince_prod_77fe4_probe_7803C = false;
+    m->wince_prod_77fe4_probe_78040 = false;
     m->wince_prod_77fe4_probe_78064 = false;
+    m->wince_prod_77fe4_probe_78098 = false;
+    m->wince_prod_77fe4_probe_780B8 = false;
+    m->wince_prod_77fe4_probe_7813C = false;
+    m->wince_prod_77fe4_probe_78148 = false;
+    m->wince_prod_77fe4_probe_7816C = false;
+    m->wince_prod_77fe4_probe_78178 = false;
+    m->wince_prod_77fe4_probe_78180 = false;
+    m->wince_prod_77fe4_probe_781A0 = false;
+    m->wince_prod_77fe4_probe_78244 = false;
     m->wince_prod_77fe4_probe_78248 = false;
+    m->wince_prod_77fe4_probe_7824C = false;
     m->wince_prod_77fe4_probe_78250 = false;
+    m->wince_prod_77fe4_probe_77E28 = false;
+    m->wince_prod_77fe4_probe_77E30 = false;
+    m->wince_prod_77fe4_probe_77F28 = false;
+    m->wince_prod_77fe4_probe_77FE0 = false;
 
     /* Thread B: dispatcher corridor probes */
     m->wince_prod_disp_probe_795D8 = false;
@@ -3568,11 +3601,59 @@ void init_wince_producer_attrs(machine_t *m)
     m->wince_prod_late_probe_7A76C = false;
 }
 
+static void wince_obj_bootstrap_record_write(machine_t *m, uint32_t pa,
+                                             uint32_t pc, uint64_t value)
+{
+    if (!m || !m->wince_obj_bootstrap_active)
+        return;
+
+    for (uint32_t i = 0; i < WINCE_OBJ_BOOTSTRAP_WORD_COUNT; i++) {
+        wince_obj_bootstrap_track_t *t = &m->wince_obj_bootstrap[i];
+        if (t->pa != pa)
+            continue;
+        if (!t->first_post_seed_write_valid) {
+            t->first_post_seed_write_valid = true;
+            t->first_post_seed_write_pc = pc;
+            t->first_post_seed_write_pa = pa;
+            t->first_post_seed_write_val = value;
+            t->overwritten_before_first_read =
+                (!t->first_read_valid && (uint32_t)value != t->seed_val);
+            if (m->cfg.log_wince_stall) {
+                fprintf(stderr,
+                        "[WINCE_OBJ_BOOTSTRAP_WRITE] pa=0x%08X pc=0x%08X"
+                        " val=0x%08" PRIX64 " before_first_read=%s changes_seed=%s\n",
+                        pa, pc, (uint64_t)(uint32_t)value,
+                        t->first_read_valid ? "no" : "yes",
+                        ((uint32_t)value != t->seed_val) ? "yes" : "no");
+            }
+        }
+    }
+}
+
+static void wince_obj_bootstrap_record_read(machine_t *m, uint32_t pa,
+                                            uint32_t pc, uint64_t value)
+{
+    if (!m || !m->wince_obj_bootstrap_active)
+        return;
+
+    for (uint32_t i = 0; i < WINCE_OBJ_BOOTSTRAP_WORD_COUNT; i++) {
+        wince_obj_bootstrap_track_t *t = &m->wince_obj_bootstrap[i];
+        if (t->pa != pa)
+            continue;
+        if (!t->first_read_valid) {
+            t->first_read_valid = true;
+            t->first_read_pc = pc;
+            t->first_read_val = value;
+        }
+    }
+}
+
 void wince_producer_record_write(machine_t *m, uint32_t pa, uint32_t pc,
                                  unsigned size, uint64_t value)
 {
     if (!is_wince_boot_machine(m))
         return;
+    wince_obj_bootstrap_record_write(m, pa, pc, value & write_value_mask(size));
     for (uint32_t i = 0; i < WINCE_PRODUCER_FAMILY_COUNT; i++) {
         wince_producer_attr_t *p = &m->wince_producer[i];
         if (pa < p->start_pa || pa >= p->end_pa)
@@ -3627,6 +3708,7 @@ void wince_producer_record_read(machine_t *m, uint32_t pa, uint32_t pc,
 {
     if (!is_wince_boot_machine(m))
         return;
+    wince_obj_bootstrap_record_read(m, pa, pc, value & write_value_mask(size));
     for (uint32_t i = 0; i < WINCE_PRODUCER_FAMILY_COUNT; i++) {
         wince_producer_attr_t *p = &m->wince_producer[i];
         if (pa < p->start_pa || pa >= p->end_pa)
@@ -3889,6 +3971,47 @@ void maybe_probe_wince_producer_pcs(machine_t *m, uc_engine *uc,
 /* ------------------------------------------------------------------ */
 /* Thread A: 0x80077FE4 internal deep-trace probes                     */
 /* ------------------------------------------------------------------ */
+static void log_wince_77fe4_state(uc_engine *uc, uint32_t pc32, uint32_t insn,
+                                  const char *note)
+{
+    uint64_t ra = 0, sp = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, v1 = 0, t9 = 0;
+    uint32_t mode = 0, gate = 0, objptr0 = 0;
+    uint32_t obj66_w0 = 0, obj66_w1 = 0, obj66_w2 = 0, obj66_w3 = 0;
+    bool mode_ok = false, gate_ok = false;
+
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+    uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
+    mode_ok = read_guest_u32(uc, 0xA001D004u, &mode);
+    gate_ok = read_guest_u32(uc, 0xA002D000u, &gate);
+    read_guest_u32(uc, 0x80660000u, &objptr0);
+    read_guest_u32(uc, 0x8066BFC0u + 0u, &obj66_w0);
+    read_guest_u32(uc, 0x8066BFC0u + 4u, &obj66_w1);
+    read_guest_u32(uc, 0x8066BFC0u + 8u, &obj66_w2);
+    read_guest_u32(uc, 0x8066BFC0u + 12u, &obj66_w3);
+
+    fprintf(stderr,
+            "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X note=%s"
+            " ra=0x%08X sp=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+            " v0=0x%08X v1=0x%08X t9=0x%08X"
+            " mode=%s0x%08X gate=%s0x%08X"
+            " objptr0=0x%08X obj66=[%08X %08X %08X %08X]\n",
+            pc32, insn, note,
+            (uint32_t)ra, (uint32_t)sp,
+            (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+            (uint32_t)v0, (uint32_t)v1, (uint32_t)t9,
+            mode_ok ? "" : "ERR:", mode,
+            gate_ok ? "" : "ERR:", gate,
+            objptr0, obj66_w0, obj66_w1, obj66_w2, obj66_w3);
+}
+
 void maybe_probe_wince_77FE4_internals(machine_t *m, uc_engine *uc,
                                         uint32_t pc32, uint32_t insn)
 {
@@ -3896,65 +4019,59 @@ void maybe_probe_wince_77FE4_internals(machine_t *m, uc_engine *uc,
         return;
 
     switch (pc32) {
+    case 0x80077E28u:
+        if (!m->wince_prod_77fe4_probe_77E28) {
+            m->wince_prod_77fe4_probe_77E28 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "writer_enter_77E28");
+        }
+        break;
+    case 0x80077E30u:
+        if (!m->wince_prod_77fe4_probe_77E30) {
+            m->wince_prod_77fe4_probe_77E30 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "writer_post_prologue_77E30");
+        }
+        break;
+    case 0x80077F28u:
+        if (!m->wince_prod_77fe4_probe_77F28) {
+            m->wince_prod_77fe4_probe_77F28 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "writer_store_slot0_77F28");
+        }
+        break;
+    case 0x80077FE0u:
+        if (!m->wince_prod_77fe4_probe_77FE0) {
+            m->wince_prod_77fe4_probe_77FE0 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "writer_return_77FE0");
+        }
+        break;
     case 0x80077FFCu:
         if (!m->wince_prod_77fe4_probe_77FFC) {
             m->wince_prod_77fe4_probe_77FFC = true;
-            uint64_t a0 = 0, sp = 0, ra = 0;
-            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
-            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
-            fprintf(stderr,
-                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
-                    " a0=0x%08X sp=0x%08X ra=0x%08X"
-                    " note=pre_call_77DC0\n",
-                    pc32, insn,
-                    (uint32_t)a0, (uint32_t)sp, (uint32_t)ra);
+            log_wince_77fe4_state(uc, pc32, insn, "pre_call_77DC0");
         }
         break;
     case 0x80078004u:
         if (!m->wince_prod_77fe4_probe_78004) {
             m->wince_prod_77fe4_probe_78004 = true;
-            uint64_t v0 = 0, a0 = 0, sp = 0;
+            uint64_t v0 = 0;
             uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
-            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-            fprintf(stderr,
-                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
-                    " v0=0x%08X a0=0x%08X sp=0x%08X"
-                    " note=branch_on_77DC0_return_%s\n",
-                    pc32, insn,
-                    (uint32_t)v0, (uint32_t)a0, (uint32_t)sp,
-                    (uint32_t)v0 ? "NONZERO_success" : "ZERO_fail");
+            log_wince_77fe4_state(uc, pc32, insn,
+                                  (uint32_t)v0 ? "branch_on_77DC0_return_NONZERO_success"
+                                               : "branch_on_77DC0_return_ZERO_fail");
         }
         break;
     case 0x8007800Cu:
         if (!m->wince_prod_77fe4_probe_7800C) {
             m->wince_prod_77fe4_probe_7800C = true;
-            uint64_t v0 = 0, a1 = 0, sp = 0;
-            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-            uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
-            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-            fprintf(stderr,
-                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
-                    " v0=0x%08X a1=0x%08X sp=0x%08X"
-                    " note=FAIL_PATH_entered\n",
-                    pc32, insn,
-                    (uint32_t)v0, (uint32_t)a1, (uint32_t)sp);
+            log_wince_77fe4_state(uc, pc32, insn, "FAIL_PATH_entered");
         }
         break;
-    case 0x8007801Cu: {
+    case 0x8007801Cu:
         if (!m->wince_prod_77fe4_probe_7801C) {
             m->wince_prod_77fe4_probe_7801C = true;
-            uint64_t v0 = 0, sp = 0;
-            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-            fprintf(stderr,
-                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
-                    " v0=0x%08X sp=0x%08X"
-                    " note=SUCCESS_PATH_entered\n",
-                    pc32, insn,
-                    (uint32_t)v0, (uint32_t)sp);
+            uint64_t sp = 0;
+            log_wince_77fe4_state(uc, pc32, insn, "SUCCESS_PATH_entered");
             /* Stack slot dump: sp+0x2C through sp+0x48 */
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
             uint32_t sp32 = (uint32_t)sp;
             static const uint32_t offsets[] = {
                 0x2Cu, 0x30u, 0x34u, 0x38u, 0x3Cu, 0x40u, 0x48u
@@ -3974,48 +4091,100 @@ void maybe_probe_wince_77FE4_internals(machine_t *m, uc_engine *uc,
                     vals[4], vals[5], vals[6]);
         }
         break;
-    }
+    case 0x80078038u:
+        if (!m->wince_prod_77fe4_probe_78038) {
+            m->wince_prod_77fe4_probe_78038 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "delay_call_77210");
+        }
+        break;
+    case 0x8007803Cu:
+        if (!m->wince_prod_77fe4_probe_7803C) {
+            m->wince_prod_77fe4_probe_7803C = true;
+            log_wince_77fe4_state(uc, pc32, insn, "delay_call_arg_30000");
+        }
+        break;
+    case 0x80078040u:
+        if (!m->wince_prod_77fe4_probe_78040) {
+            m->wince_prod_77fe4_probe_78040 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "load_sp3c_target");
+        }
+        break;
     case 0x80078064u:
         if (!m->wince_prod_77fe4_probe_78064) {
             m->wince_prod_77fe4_probe_78064 = true;
-            uint64_t t9 = 0, v0 = 0, a0 = 0, sp = 0;
-            uc_reg_read(uc, UC_MIPS_REG_T9, &t9);
-            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
-            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-            fprintf(stderr,
-                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
-                    " t9=0x%08X v0=0x%08X a0=0x%08X sp=0x%08X"
-                    " note=signature_check_0xF137\n",
-                    pc32, insn,
-                    (uint32_t)t9, (uint32_t)v0,
-                    (uint32_t)a0, (uint32_t)sp);
+            log_wince_77fe4_state(uc, pc32, insn, "signature_check_0xF137");
+        }
+        break;
+    case 0x80078098u:
+        if (!m->wince_prod_77fe4_probe_78098) {
+            m->wince_prod_77fe4_probe_78098 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "fallback_probe_call_786B0");
+        }
+        break;
+    case 0x800780B8u:
+        if (!m->wince_prod_77fe4_probe_780B8) {
+            m->wince_prod_77fe4_probe_780B8 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "gate_fetch_A002D000");
+        }
+        break;
+    case 0x8007813Cu:
+        if (!m->wince_prod_77fe4_probe_7813C) {
+            m->wince_prod_77fe4_probe_7813C = true;
+            log_wince_77fe4_state(uc, pc32, insn, "mode_ptr_reload");
+        }
+        break;
+    case 0x80078148u:
+        if (!m->wince_prod_77fe4_probe_78148) {
+            m->wince_prod_77fe4_probe_78148 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "mode_load_after_gate");
+        }
+        break;
+    case 0x8007816Cu:
+        if (!m->wince_prod_77fe4_probe_7816C) {
+            m->wince_prod_77fe4_probe_7816C = true;
+            log_wince_77fe4_state(uc, pc32, insn, "status_flag_clear");
+        }
+        break;
+    case 0x80078178u:
+        if (!m->wince_prod_77fe4_probe_78178) {
+            m->wince_prod_77fe4_probe_78178 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "branch_t5_to_78248");
+        }
+        break;
+    case 0x80078180u:
+        if (!m->wince_prod_77fe4_probe_78180) {
+            m->wince_prod_77fe4_probe_78180 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "jalr_sp3c_a0_0");
+        }
+        break;
+    case 0x800781A0u:
+        if (!m->wince_prod_77fe4_probe_781A0) {
+            m->wince_prod_77fe4_probe_781A0 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "set_boot_flags");
+        }
+        break;
+    case 0x80078244u:
+        if (!m->wince_prod_77fe4_probe_78244) {
+            m->wince_prod_77fe4_probe_78244 = true;
+            log_wince_77fe4_state(uc, pc32, insn, "pre_sel_call");
         }
         break;
     case 0x80078248u:
         if (!m->wince_prod_77fe4_probe_78248) {
             m->wince_prod_77fe4_probe_78248 = true;
-            uint64_t a0 = 0, sp = 0;
-            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
-            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
-            fprintf(stderr,
-                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
-                    " a0=0x%08X sp=0x%08X"
-                    " note=success_dispatch\n",
-                    pc32, insn,
-                    (uint32_t)a0, (uint32_t)sp);
+            log_wince_77fe4_state(uc, pc32, insn, "success_dispatch");
+        }
+        break;
+    case 0x8007824Cu:
+        if (!m->wince_prod_77fe4_probe_7824C) {
+            m->wince_prod_77fe4_probe_7824C = true;
+            log_wince_77fe4_state(uc, pc32, insn, "post_sel_load_a1");
         }
         break;
     case 0x80078250u:
         if (!m->wince_prod_77fe4_probe_78250) {
             m->wince_prod_77fe4_probe_78250 = true;
-            uint64_t v0 = 0;
-            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
-            fprintf(stderr,
-                    "[WINCE_77FE4_PROBE] pc=0x%08X insn=0x%08X"
-                    " v0=0x%08X"
-                    " note=success_return_v0_should_be_1\n",
-                    pc32, insn, (uint32_t)v0);
+            log_wince_77fe4_state(uc, pc32, insn, "success_return_v0_should_be_1");
         }
         break;
     default:
@@ -4324,5 +4493,39 @@ void log_wince_producer_summary(const machine_t *m, const char *reason)
                 first_write_pc_str, first_write_pa_str,
                 first_nz_write_pc_str, first_nz_write_pa_str,
                 verdict);
+    }
+}
+
+void log_wince_obj_bootstrap_summary(const machine_t *m, const char *reason)
+{
+    if (!m || !m->wince_obj_bootstrap_active)
+        return;
+
+    for (uint32_t i = 0; i < WINCE_OBJ_BOOTSTRAP_WORD_COUNT; i++) {
+        const wince_obj_bootstrap_track_t *t = &m->wince_obj_bootstrap[i];
+        char first_read_pc_str[20];
+        char first_write_pc_str[20];
+        if (t->first_read_valid)
+            snprintf(first_read_pc_str, sizeof(first_read_pc_str),
+                     "0x%08X", t->first_read_pc);
+        else
+            snprintf(first_read_pc_str, sizeof(first_read_pc_str), "NONE");
+        if (t->first_post_seed_write_valid)
+            snprintf(first_write_pc_str, sizeof(first_write_pc_str),
+                     "0x%08X", t->first_post_seed_write_pc);
+        else
+            snprintf(first_write_pc_str, sizeof(first_write_pc_str), "NONE");
+
+        fprintf(stderr,
+                "[WINCE_OBJ_BOOTSTRAP_SUMMARY] reason=%s pa=0x%08X"
+                " seed=0x%08X first_read_pc=%s first_read_val=0x%08" PRIX64
+                " first_post_seed_write_pc=%s first_post_seed_write_val=0x%08" PRIX64
+                " overwritten_before_first_read=%s\n",
+                reason, t->pa, t->seed_val,
+                first_read_pc_str,
+                t->first_read_valid ? (uint64_t)(uint32_t)t->first_read_val : UINT64_C(0),
+                first_write_pc_str,
+                t->first_post_seed_write_valid ? (uint64_t)(uint32_t)t->first_post_seed_write_val : UINT64_C(0),
+                t->overwritten_before_first_read ? "yes" : "no");
     }
 }
