@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "loadproof1"
+#define BEDIAG_BUILD_TAG         "activationproof1"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -44,7 +44,7 @@ typedef struct {
     DWORD init_context;
     HANDLE worker_thread;
     DWORD worker_thread_id;
-    volatile LONG stop_requested;
+    LONG stop_requested;
     WCHAR active_key[256];
     BOOL worker_started;
 } bediag_driver_t;
@@ -953,9 +953,7 @@ extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
     SetBreadcrumbDWORD(L"BEDiagLoaded", 1);
     SetBreadcrumbDWORD(L"BEDiagInitTick", g_driver.init_tick);
     SetBreadcrumbDWORD(L"BEDiagWorkerStarted", 0);
-    OpenSerialLog();
     LogStage("init_enter", NULL);
-    MaybeReportSerialFailure();
 
     g_driver.worker_thread = CreateThread(NULL, 0, BEDiagWorkerThread, &g_driver, 0, &g_driver.worker_thread_id);
     if (!g_driver.worker_thread) {

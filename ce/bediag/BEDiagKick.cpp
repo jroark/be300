@@ -2,17 +2,37 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include <wchar.h>
 
-#define BEDIAG_KICK_BUILD_TAG  "loadproof1"
+#define BEDIAG_KICK_BUILD_TAG  "activationproof1"
+#define BEDIAG_MAX_TEXT        260
+
+extern "C" HANDLE WINAPI ActivateDevice(LPCWSTR, DWORD);
 
 static const WCHAR g_kick_log_path[] = L"\\Windows\\BEDiag_kick.txt";
 static const WCHAR g_boot_log_path[] = L"\\Windows\\BEDiag_boot.txt";
 static const WCHAR g_bediag_key[] = L"Drivers\\BuiltIn\\BEDiag";
+static const WCHAR g_bediag_dll[] = L"BEDiag.dll";
+static const WCHAR g_active_root[] = L"Drivers\\Active";
 
 static HANDLE g_log = INVALID_HANDLE_VALUE;
 
-typedef HANDLE (WINAPI *PFN_ACTIVATEDEVICE)(LPCWSTR, DWORD);
-typedef HANDLE (WINAPI *PFN_ACTIVATEDEVICEEX)(LPCWSTR, const BYTE *, DWORD, LPVOID);
+static void WideToAnsi(const WCHAR *src, char *dst, int dst_size)
+{
+    int ok;
+
+    if (!dst || dst_size <= 0)
+        return;
+    dst[0] = '\0';
+    if (!src)
+        return;
+
+    ok = WideCharToMultiByte(CP_ACP, 0, src, -1, dst, dst_size, NULL, NULL);
+    if (ok <= 0) {
+        _snprintf(dst, dst_size - 1, "<conv-failed>");
+        dst[dst_size - 1] = '\0';
+    }
+}
 
 static void Logf(const char *fmt, ...)
 {
@@ -60,16 +80,191 @@ static BOOL FileExists(const WCHAR *path)
     return attrs != 0xFFFFFFFFu;
 }
 
+static BOOL QueryStringValue(HKEY hKey, const WCHAR *name, WCHAR *out, DWORD out_cch)
+{
+    DWORD type;
+    DWORD cb_data;
+    LONG rc;
+
+    if (!out || out_cch == 0)
+        return FALSE;
+    out[0] = L'\0';
+
+    type = 0;
+    cb_data = out_cch * sizeof(WCHAR);
+    rc = RegQueryValueEx(hKey, name, NULL, &type, (LPBYTE)out, &cb_data);
+    if (rc != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) {
+        out[0] = L'\0';
+        return FALSE;
+    }
+
+    out[out_cch - 1] = L'\0';
+    return TRUE;
+}
+
+static BOOL QueryDWORDValue(HKEY hKey, const WCHAR *name, DWORD *out)
+{
+    DWORD type;
+    DWORD cb_data;
+    LONG rc;
+
+    if (!out)
+        return FALSE;
+    *out = 0;
+
+    type = 0;
+    cb_data = sizeof(DWORD);
+    rc = RegQueryValueEx(hKey, name, NULL, &type, (LPBYTE)out, &cb_data);
+    return (rc == ERROR_SUCCESS && type == REG_DWORD && cb_data == sizeof(DWORD)) ? TRUE : FALSE;
+}
+
+static BOOL WideEquals(const WCHAR *a, const WCHAR *b)
+{
+    DWORD i;
+
+    if (!a || !b)
+        return FALSE;
+    for (i = 0;; i++) {
+        WCHAR ca = a[i];
+        WCHAR cb = b[i];
+
+        if (ca >= L'A' && ca <= L'Z')
+            ca = (WCHAR)(ca - L'A' + L'a');
+        if (cb >= L'A' && cb <= L'Z')
+            cb = (WCHAR)(cb - L'A' + L'a');
+        if (ca != cb)
+            return FALSE;
+        if (ca == L'\0')
+            return TRUE;
+    }
+}
+
+static BOOL WideContainsInsensitive(const WCHAR *haystack, const WCHAR *needle)
+{
+    WCHAR hay[BEDIAG_MAX_TEXT];
+    WCHAR ndl[BEDIAG_MAX_TEXT];
+    DWORD i;
+
+    if (!haystack || !needle)
+        return FALSE;
+
+    for (i = 0; i + 1 < BEDIAG_MAX_TEXT && haystack[i] != L'\0'; i++) {
+        WCHAR ch = haystack[i];
+        if (ch >= L'A' && ch <= L'Z')
+            ch = (WCHAR)(ch - L'A' + L'a');
+        hay[i] = ch;
+    }
+    hay[i] = L'\0';
+
+    for (i = 0; i + 1 < BEDIAG_MAX_TEXT && needle[i] != L'\0'; i++) {
+        WCHAR ch = needle[i];
+        if (ch >= L'A' && ch <= L'Z')
+            ch = (WCHAR)(ch - L'A' + L'a');
+        ndl[i] = ch;
+    }
+    ndl[i] = L'\0';
+
+    return wcsstr(hay, ndl) ? TRUE : FALSE;
+}
+
+static BOOL FindActiveBEDiag(WCHAR *match_path, DWORD match_path_cch)
+{
+    HKEY hRoot;
+    LONG rc;
+    DWORD kIndex;
+
+    if (match_path && match_path_cch)
+        match_path[0] = L'\0';
+
+    hRoot = NULL;
+    rc = RegOpenKeyEx(HKEY_LOCAL_MACHINE, g_active_root, 0, KEY_READ, &hRoot);
+    if (rc != ERROR_SUCCESS)
+        return FALSE;
+
+    kIndex = 0;
+    while (1) {
+        WCHAR sub_name[128];
+        DWORD sub_name_len;
+        FILETIME ft;
+        HKEY hSub;
+        WCHAR full_path[256];
+        WCHAR key_value[256];
+        WCHAR name_value[128];
+        WCHAR dll_value[128];
+        BOOL is_match;
+
+        sub_name_len = sizeof(sub_name) / sizeof(sub_name[0]);
+        rc = RegEnumKeyEx(hRoot, kIndex, sub_name, &sub_name_len, NULL, NULL, NULL, &ft);
+        if (rc == ERROR_NO_MORE_ITEMS)
+            break;
+        if (rc != ERROR_SUCCESS)
+            break;
+
+        sub_name[sub_name_len] = L'\0';
+        wsprintf(full_path, L"%s\\%s", g_active_root, sub_name);
+        hSub = NULL;
+        if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, full_path, 0, KEY_READ, &hSub) != ERROR_SUCCESS) {
+            kIndex++;
+            continue;
+        }
+
+        key_value[0] = L'\0';
+        name_value[0] = L'\0';
+        dll_value[0] = L'\0';
+        QueryStringValue(hSub, L"Key", key_value, sizeof(key_value) / sizeof(key_value[0]));
+        QueryStringValue(hSub, L"Name", name_value, sizeof(name_value) / sizeof(name_value[0]));
+        QueryStringValue(hSub, L"Dll", dll_value, sizeof(dll_value) / sizeof(dll_value[0]));
+        RegCloseKey(hSub);
+
+        is_match = FALSE;
+        if (WideEquals(key_value, g_bediag_key))
+            is_match = TRUE;
+        if (WideContainsInsensitive(name_value, L"BEDiag"))
+            is_match = TRUE;
+        if (WideContainsInsensitive(dll_value, L"BEDiag"))
+            is_match = TRUE;
+
+        if (is_match) {
+            if (match_path && match_path_cch) {
+                wcsncpy(match_path, full_path, match_path_cch - 1);
+                match_path[match_path_cch - 1] = L'\0';
+            }
+            RegCloseKey(hRoot);
+            return TRUE;
+        }
+
+        kIndex++;
+    }
+
+    RegCloseKey(hRoot);
+    return FALSE;
+}
+
+static void LogExportState(HMODULE hModule, const WCHAR *export_name)
+{
+    FARPROC proc;
+    char export_a[64];
+
+    proc = GetProcAddress(hModule, export_name);
+    WideToAnsi(export_name, export_a, sizeof(export_a));
+    Logf("[BEDIAG_KICK] export_%s=%s proc=0x%08lX\r\n",
+         export_a,
+         proc ? "yes" : "no",
+         (DWORD)proc);
+}
+
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShowCmd)
 {
-    HMODULE coredll;
-    PFN_ACTIVATEDEVICE activate_device;
-    PFN_ACTIVATEDEVICEEX activate_device_ex;
-    HANDLE hDevice;
-    DWORD gle;
+    HKEY hKey;
+    LONG rc;
     BOOL boot_before;
     BOOL boot_after;
-    const char *api_name;
+    BOOL dll_exists;
+    HMODULE hBediag;
+    DWORD gle;
+    HANDLE hDevice;
+    WCHAR active_after[256];
+    char active_after_a[256];
 
     (void)hInst;
     (void)hPrev;
@@ -80,49 +275,91 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
         return 1;
 
     boot_before = FileExists(g_boot_log_path);
+    dll_exists = FileExists(L"\\Windows\\BEDiag.dll");
     Logf("[BEDIAG_KICK] build=%s tick_ms=%lu key=\"Drivers\\BuiltIn\\BEDiag\" boot_log_before=%u\r\n",
          BEDIAG_KICK_BUILD_TAG,
          GetTickCount(),
          boot_before ? 1u : 0u);
+    Logf("[BEDIAG_KICK] dll_exists=%s path=\"\\\\Windows\\\\BEDiag.dll\"\r\n",
+         dll_exists ? "yes" : "no");
 
-    coredll = GetModuleHandle(L"coredll.dll");
-    if (!coredll)
-        coredll = LoadLibrary(L"coredll.dll");
+    hKey = NULL;
+    rc = RegOpenKeyEx(HKEY_LOCAL_MACHINE, g_bediag_key, 0, KEY_READ, &hKey);
+    Logf("[BEDIAG_KICK] reg_key_exists=%s\r\n", rc == ERROR_SUCCESS ? "yes" : "no");
+    if (rc == ERROR_SUCCESS) {
+        WCHAR dll_value[256];
+        WCHAR prefix_value[64];
+        DWORD index_value;
+        DWORD order_value;
+        char dll_a[256];
+        char prefix_a[64];
 
-    if (!coredll) {
-        Logf("[BEDIAG_KICK] status=NO_COREDLL err=%lu\r\n", GetLastError());
-        CloseHandle(g_log);
-        g_log = INVALID_HANDLE_VALUE;
-        return 1;
+        dll_value[0] = L'\0';
+        prefix_value[0] = L'\0';
+        index_value = 0;
+        order_value = 0;
+
+        Logf("[BEDIAG_KICK] reg_dll_present=%s\r\n",
+             QueryStringValue(hKey, L"Dll", dll_value, sizeof(dll_value) / sizeof(dll_value[0])) ? "yes" : "no");
+        WideToAnsi(dll_value, dll_a, sizeof(dll_a));
+        Logf("[BEDIAG_KICK] reg_dll=\"%s\"\r\n", dll_a[0] ? dll_a : "<missing>");
+
+        Logf("[BEDIAG_KICK] reg_prefix_present=%s\r\n",
+             QueryStringValue(hKey, L"Prefix", prefix_value, sizeof(prefix_value) / sizeof(prefix_value[0])) ? "yes" : "no");
+        WideToAnsi(prefix_value, prefix_a, sizeof(prefix_a));
+        Logf("[BEDIAG_KICK] reg_prefix=\"%s\"\r\n", prefix_a[0] ? prefix_a : "<missing>");
+
+        Logf("[BEDIAG_KICK] reg_index_present=%s\r\n",
+             QueryDWORDValue(hKey, L"Index", &index_value) ? "yes" : "no");
+        Logf("[BEDIAG_KICK] reg_index=%lu\r\n", index_value);
+
+        Logf("[BEDIAG_KICK] reg_order_present=%s\r\n",
+             QueryDWORDValue(hKey, L"Order", &order_value) ? "yes" : "no");
+        Logf("[BEDIAG_KICK] reg_order=%lu\r\n", order_value);
+
+        RegCloseKey(hKey);
     }
 
-    activate_device_ex = (PFN_ACTIVATEDEVICEEX)GetProcAddress(coredll, "ActivateDeviceEx");
-    activate_device = (PFN_ACTIVATEDEVICE)GetProcAddress(coredll, "ActivateDevice");
-
-    hDevice = NULL;
-    api_name = NULL;
-    SetLastError(0);
-
-    if (activate_device_ex) {
-        api_name = "ActivateDeviceEx";
-        hDevice = activate_device_ex(g_bediag_key, NULL, 0, NULL);
-    } else if (activate_device) {
-        api_name = "ActivateDevice";
-        hDevice = activate_device(g_bediag_key, 0);
+    active_after[0] = L'\0';
+    if (FindActiveBEDiag(active_after, sizeof(active_after) / sizeof(active_after[0]))) {
+        WideToAnsi(active_after, active_after_a, sizeof(active_after_a));
+        Logf("[BEDIAG_KICK] active_key_before=\"%s\"\r\n", active_after_a);
     } else {
-        Logf("[BEDIAG_KICK] status=NO_ACTIVATE_API\r\n");
-        CloseHandle(g_log);
-        g_log = INVALID_HANDLE_VALUE;
-        return 1;
+        Logf("[BEDIAG_KICK] active_key_before=NONE\r\n");
     }
 
+    SetLastError(0);
+    hBediag = LoadLibrary(g_bediag_dll);
     gle = GetLastError();
-    Logf("[BEDIAG_KICK] api=%s handle=0x%08lX last_error=%lu\r\n",
-         api_name,
+    Logf("[BEDIAG_KICK] loadlibrary=%s handle=0x%08lX last_error=%lu\r\n",
+         hBediag ? "yes" : "no",
+         (DWORD)hBediag,
+         gle);
+    if (hBediag) {
+        LogExportState(hBediag, L"BDG_Init");
+        LogExportState(hBediag, L"BDG_Deinit");
+        LogExportState(hBediag, L"BDG_Open");
+        LogExportState(hBediag, L"BDG_Close");
+        LogExportState(hBediag, L"BDG_IOControl");
+        FreeLibrary(hBediag);
+    }
+
+    SetLastError(0);
+    hDevice = ActivateDevice(g_bediag_key, 0);
+    gle = GetLastError();
+    Logf("[BEDIAG_KICK] activate_handle=0x%08lX last_error=%lu\r\n",
          (DWORD)hDevice,
          gle);
 
     Sleep(500);
+    active_after[0] = L'\0';
+    if (FindActiveBEDiag(active_after, sizeof(active_after) / sizeof(active_after[0]))) {
+        WideToAnsi(active_after, active_after_a, sizeof(active_after_a));
+        Logf("[BEDIAG_KICK] active_key_after=\"%s\"\r\n", active_after_a);
+    } else {
+        Logf("[BEDIAG_KICK] active_key_after=NONE\r\n");
+    }
+
     boot_after = FileExists(g_boot_log_path);
     Logf("[BEDIAG_KICK] boot_log_after=%u\r\n", boot_after ? 1u : 0u);
 

@@ -67,8 +67,16 @@ Windows 2000 VM workflow
      patch_fallback\BEDiag.dll
      patch_fallback\BEDiagKick.exe
 4. Run BUILD_WINDOWS.cmd for the primary package.
-5. If the package installs and resets the BE-300 but no \Windows\BEDiag_boot.txt
-   appears on the next boot, run BUILD_PATCH.cmd and test the fallback package.
+5. These scripts expect MkArch.exe and Setup.exe in the parent directory of
+   mkarch, matching the local BE-300 VM layout:
+
+     mkarch\..
+
+6. If the package installs and resets the BE-300 but no \Windows\BEDiag_boot.txt
+   appears on the next boot, do not switch packages first. Run BEDiagKick.exe
+   and inspect \Windows\BEDiag_kick.txt for loadlibrary/export/activation
+   results. Only try BUILD_PATCH.cmd after that if the primary package proves
+   valid but still fails to autoload.
 
 Outputs
 -------
@@ -107,6 +115,13 @@ Hardware test order
      --- SNAPSHOT +5S ---
      --- DRIVER STATE ---
      --- BEDIAG DONE ---
-5. If there is no boot file after reset, run BEDiagKick.exe manually and inspect
-   BEDiag_kick.txt to distinguish built-in autoload failure from a bad DLL/export.
-6. Only if the driver does not load after reset, try the patch_fallback package.
+5. If there is no boot file after reset, run BEDiagKick.exe manually and inspect:
+     dll_exists=yes|no
+     reg_key_exists=yes|no
+     loadlibrary=yes|no
+     export_BDG_Init=yes|no
+     activate_handle=...
+     active_key_after=...
+     boot_log_after=...
+6. Only if the primary package proves valid but still does not autoload, try
+   the patch_fallback package.

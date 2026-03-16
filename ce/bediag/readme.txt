@@ -51,9 +51,11 @@ Primary proof path is:
   \Windows\BEDiag_boot.txt
 
 BEDiag opens this file synchronously in BDG_Init and appends deterministic
-stage breadcrumbs plus the full snapshot output. COM1 logging remains enabled
-as best-effort only and should not be treated as the primary WinCE proof
-channel on this device.
+stage breadcrumbs plus the full snapshot output. In the current activation-proof
+pass, BDG_Init is intentionally kept minimal: it opens the boot log, writes the
+entry breadcrumb, updates BuiltIn registry breadcrumbs, and starts the worker
+thread. COM1 logging remains enabled as best-effort only and should not be
+treated as the primary WinCE proof channel on this device.
 
 If \Windows logging is not available, BEDiag falls back to the older secondary
 file search on writable roots and replays the in-memory backlog there.
@@ -100,10 +102,20 @@ Notes:
 
 Helper EXE
 ----------
-BEDiagKick.exe is a tiny no-UI helper that attempts to activate the same
-built-in driver key manually and logs to:
+BEDiagKick.exe is a tiny no-UI helper that proves whether the installed
+BEDiag.dll is loadable and activatable. It logs to:
 
   \Windows\BEDiag_kick.txt
+
+The helper records:
+  - whether \Windows\BEDiag.dll exists
+  - whether HKLM\Drivers\BuiltIn\BEDiag exists
+  - the Dll/Prefix/Index/Order registry values
+  - whether HKLM\Drivers\Active already contains a BEDiag entry
+  - whether LoadLibrary("BEDiag.dll") succeeds
+  - whether the BDG_* exports are present
+  - the ActivateDevice(...) result and GetLastError()
+  - whether an Active key and BEDiag_boot.txt appear after activation
 
 Build it from BEDiagKick.dsp as:
 
@@ -132,6 +144,13 @@ Fallback manual path:
 
 5. Capture COM1 if useful, but do not treat it as the primary WinCE proof
    channel.
+6. If there is no boot file after reset, run BEDiagKick.exe and inspect:
+
+     loadlibrary=yes|no
+     export_BDG_Init=yes|no
+     activate_handle=...
+     active_key_after=...
+     boot_log_after=...
 
 Interpretation
 --------------
