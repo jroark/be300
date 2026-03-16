@@ -26,6 +26,11 @@ static inline bool pc_in_wince_fail_corridor(uint32_t pc32)
     return pc32 >= WINCE_FAIL_CORRIDOR_START && pc32 <= WINCE_FAIL_CORRIDOR_END;
 }
 
+static inline bool pc_in_wince_delay_call_window(uint32_t pc32)
+{
+    return pc32 >= UINT32_C(0x800771F0) && pc32 < UINT32_C(0x80077370);
+}
+
 static const int wince_gpr_ids[32] = {
     UC_MIPS_REG_ZERO, UC_MIPS_REG_AT, UC_MIPS_REG_V0, UC_MIPS_REG_V1,
     UC_MIPS_REG_A0,   UC_MIPS_REG_A1, UC_MIPS_REG_A2, UC_MIPS_REG_A3,
@@ -3427,6 +3432,7 @@ void log_wince_stall_dump(machine_t *m, uint32_t pc32)
     log_wince_ctrl_hist_summary(m, "STALL", 24u);
     log_wince_producer_summary(m, "STALL");
     log_wince_obj_bootstrap_summary(m, "STALL");
+    log_wince_delay_call_summary(m, "STALL");
 
     if (m->mmio_hist_count == 0) {
         fprintf(stderr, "[WINCE_STALL_MMIO] (empty)\n");
@@ -3599,6 +3605,141 @@ void init_wince_producer_attrs(machine_t *m)
     m->wince_prod_late_probe_7A75C = false;
     m->wince_prod_late_probe_7A764 = false;
     m->wince_prod_late_probe_7A76C = false;
+    memset(&m->wince_delay_call_trace, 0, sizeof(m->wince_delay_call_trace));
+}
+
+static void dump_wince_delay_call_bytes(uc_engine *uc, uint32_t start, size_t len)
+{
+    uint8_t buf[192];
+    char hex[sizeof(buf) * 2u + 1u];
+
+    if (!uc || len > sizeof(buf))
+        return;
+
+    uc_err err = uc_mem_read(uc, (uint64_t)(int32_t)start, buf, len);
+    if (err != UC_ERR_OK)
+        err = uc_mem_read(uc, (uint64_t)(start & UINT32_C(0x1FFFFFFF)), buf, len);
+    if (err != UC_ERR_OK) {
+        fprintf(stderr,
+                "[WINCE_DELAY_CALL_DUMP] region=0x%08X-0x%08X READ_FAILED\n",
+                start, start + (uint32_t)len);
+        return;
+    }
+
+    format_hex_bytes(buf, len, hex, sizeof(hex));
+    fprintf(stderr,
+            "[WINCE_DELAY_CALL_DUMP] region=0x%08X-0x%08X hex=%s\n",
+            start, start + (uint32_t)len, hex);
+}
+
+void maybe_probe_wince_delay_call_frame(machine_t *m, uc_engine *uc,
+                                        uint32_t pc32, uint32_t insn)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+
+    wince_delay_call_trace_t *t = &m->wince_delay_call_trace;
+
+    if (t->armed && !t->entered && pc32 == UINT32_C(0x80077210)) {
+        uint64_t sp = 0, ra = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, v1 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+        uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+        uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+        uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+        uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+        uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+        uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+
+        t->armed = false;
+        t->active = true;
+        t->entered = true;
+        t->call_pc = UINT32_C(0x80078038);
+        t->target_pc = UINT32_C(0x80077210);
+        if (t->expected_return_pc == 0u)
+            t->expected_return_pc = UINT32_C(0x80078040);
+        t->entry_sp = (uint32_t)sp;
+        t->entry_ra = (uint32_t)ra;
+        t->entry_a0 = (uint32_t)a0;
+        t->entry_a1 = (uint32_t)a1;
+        t->entry_a2 = (uint32_t)a2;
+        t->entry_a3 = (uint32_t)a3;
+        t->entry_v0 = (uint32_t)v0;
+        t->entry_v1 = (uint32_t)v1;
+        t->sp_min = (uint32_t)sp;
+        t->sp_max = (uint32_t)sp;
+        t->final_ra = (uint32_t)ra;
+
+        if (!t->bytes_dumped) {
+            t->bytes_dumped = true;
+            dump_wince_delay_call_bytes(uc, UINT32_C(0x800771F0), 0xC0u);
+            dump_wince_delay_call_bytes(uc, UINT32_C(0x800772B0), 0xC0u);
+        }
+
+        fprintf(stderr,
+                "[WINCE_DELAY_CALL_ENTRY] call_pc=0x%08X target=0x%08X"
+                " expected_return=0x%08X sp=0x%08X ra=0x%08X"
+                " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+                " v0=0x%08X v1=0x%08X\n",
+                t->call_pc, t->target_pc, t->expected_return_pc,
+                t->entry_sp, t->entry_ra,
+                t->entry_a0, t->entry_a1, t->entry_a2, t->entry_a3,
+                t->entry_v0, t->entry_v1);
+    }
+
+    if (!t->active)
+        return;
+
+    {
+        uint64_t sp = 0, ra = 0;
+        uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+        uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+
+        if ((uint32_t)sp < t->sp_min)
+            t->sp_min = (uint32_t)sp;
+        if ((uint32_t)sp > t->sp_max)
+            t->sp_max = (uint32_t)sp;
+        t->final_ra = (uint32_t)ra;
+        if ((uint32_t)ra != t->expected_return_pc)
+            t->observed_ra_change = true;
+
+        if (t->pc_count < WINCE_DELAY_CALL_TRACE_PC_LIMIT)
+            t->pcs[t->pc_count++] = pc32;
+        t->event_count++;
+
+        if (t->last_pc_valid &&
+            !t->first_window_exit_valid &&
+            pc_in_wince_delay_call_window(t->last_pc) &&
+            !pc_in_wince_delay_call_window(pc32)) {
+            t->first_window_exit_valid = true;
+            t->first_window_exit_from_pc = t->last_pc;
+            t->first_window_exit_to_pc = pc32;
+        }
+
+        if (pc32 == t->expected_return_pc) {
+            t->returned_to_expected = true;
+            t->active = false;
+            fprintf(stderr,
+                    "[WINCE_DELAY_CALL_RETURN] target=0x%08X sp=0x%08X"
+                    " ra=0x%08X events=%u\n",
+                    pc32, (uint32_t)sp, (uint32_t)ra, t->event_count);
+        } else if (t->event_count > 1u &&
+                   (uint32_t)sp >= t->entry_sp &&
+                   !pc_in_wince_delay_call_window(pc32)) {
+            t->escaped = true;
+            t->returned_elsewhere_valid = true;
+            t->returned_elsewhere_pc = pc32;
+            t->active = false;
+            fprintf(stderr,
+                    "[WINCE_DELAY_CALL_ESCAPE] pc=0x%08X sp=0x%08X"
+                    " ra=0x%08X events=%u\n",
+                    pc32, (uint32_t)sp, (uint32_t)ra, t->event_count);
+        }
+
+        t->last_pc = pc32;
+        t->last_pc_valid = true;
+        (void)insn;
+    }
 }
 
 static void wince_obj_bootstrap_record_write(machine_t *m, uint32_t pa,
@@ -4527,5 +4668,63 @@ void log_wince_obj_bootstrap_summary(const machine_t *m, const char *reason)
                 first_write_pc_str,
                 t->first_post_seed_write_valid ? (uint64_t)(uint32_t)t->first_post_seed_write_val : UINT64_C(0),
                 t->overwritten_before_first_read ? "yes" : "no");
+    }
+}
+
+void log_wince_delay_call_summary(const machine_t *m, const char *reason)
+{
+    if (!m)
+        return;
+
+    const wince_delay_call_trace_t *t = &m->wince_delay_call_trace;
+    char returned_elsewhere_str[20];
+    char first_exit_from_str[20];
+    char first_exit_to_str[20];
+
+    if (t->returned_elsewhere_valid)
+        snprintf(returned_elsewhere_str, sizeof(returned_elsewhere_str),
+                 "0x%08X", t->returned_elsewhere_pc);
+    else
+        snprintf(returned_elsewhere_str, sizeof(returned_elsewhere_str), "NONE");
+
+    if (t->first_window_exit_valid) {
+        snprintf(first_exit_from_str, sizeof(first_exit_from_str),
+                 "0x%08X", t->first_window_exit_from_pc);
+        snprintf(first_exit_to_str, sizeof(first_exit_to_str),
+                 "0x%08X", t->first_window_exit_to_pc);
+    } else {
+        snprintf(first_exit_from_str, sizeof(first_exit_from_str), "NONE");
+        snprintf(first_exit_to_str, sizeof(first_exit_to_str), "NONE");
+    }
+
+    fprintf(stderr,
+            "[WINCE_DELAY_CALL_SUMMARY] reason=%s entered=%s"
+            " returned_to_78040=%s returned_elsewhere=%s escaped=%s"
+            " sp_min=0x%08X sp_max=0x%08X final_ra=0x%08X"
+            " ra_changed=%s events=%u"
+            " first_window_exit_from=%s first_window_exit_to=%s\n",
+            reason,
+            t->entered ? "yes" : "no",
+            t->returned_to_expected ? "yes" : "no",
+            returned_elsewhere_str,
+            t->escaped ? "yes" : "no",
+            t->entered ? t->sp_min : 0u,
+            t->entered ? t->sp_max : 0u,
+            t->entered ? t->final_ra : 0u,
+            t->observed_ra_change ? "yes" : "no",
+            t->event_count,
+            first_exit_from_str, first_exit_to_str);
+
+    if (!t->entered || t->pc_count == 0u)
+        return;
+
+    for (uint32_t i = 0; i < t->pc_count; i += 16u) {
+        fprintf(stderr, "[WINCE_DELAY_CALL_PCS] reason=%s idx=%u", reason, i);
+        uint32_t limit = i + 16u;
+        if (limit > t->pc_count)
+            limit = t->pc_count;
+        for (uint32_t j = i; j < limit; j++)
+            fprintf(stderr, " pc[%u]=0x%08X", j, t->pcs[j]);
+        fprintf(stderr, "\n");
     }
 }

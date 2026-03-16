@@ -225,13 +225,38 @@ bool maybe_skip_wince_bootmode_delay_call(machine_t *m, uc_engine *uc,
         return false;
 
     static uint32_t skip_logs = 0;
+    if (m->cfg.wince_delay_skip) {
+        uint64_t a0 = 0, ra_before = 0;
+        uint64_t next_pc = UINT64_C(0x80078040);
+        uint64_t new_ra = UINT64_C(0x80078040);
+        uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+        uc_reg_read(uc, UC_MIPS_REG_RA, &ra_before);
+        m->wince_delay_call_trace.armed = false;
+        uc_reg_write(uc, UC_MIPS_REG_RA, &new_ra);
+        uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+        fprintf(stderr,
+                "[WINCE_DELAY_SKIP] pc=0x80078038 target=0x80077210 next=0x80078040"
+                " a0=0x%08X ra_before=0x%08X ra_after=0x%08X\n",
+                (uint32_t)a0, (uint32_t)ra_before, (uint32_t)new_ra);
+        return true;
+    }
+
+    if (!m->wince_delay_call_trace.entered && !m->wince_delay_call_trace.active) {
+        m->wince_delay_call_trace.armed = true;
+        m->wince_delay_call_trace.call_pc = pc32;
+        m->wince_delay_call_trace.target_pc = UINT32_C(0x80077210);
+        m->wince_delay_call_trace.expected_return_pc = UINT32_C(0x80078040);
+    }
+
     if (skip_logs < 16u) {
         uint64_t a0 = 0, ra = 0;
         uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
         uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
         fprintf(stderr,
                 "[WINCE_DELAY_DIAG] pc=0x80078038 target=0x80077210"
+                " expect_return=0x80078040 armed=%u"
                 " a0=0x%08X ra=0x%08X\n",
+                m->wince_delay_call_trace.armed ? 1u : 0u,
                 (uint32_t)a0, (uint32_t)ra);
         skip_logs++;
     }

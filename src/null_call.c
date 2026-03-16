@@ -330,6 +330,7 @@ bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
     log_wince_null_mmio_tail(m, 24u);
     log_wince_producer_summary(m, "NULL_POSTMORTEM");
     log_wince_obj_bootstrap_summary(m, "NULL_POSTMORTEM");
+    log_wince_delay_call_summary(m, "NULL_POSTMORTEM");
 
     /* Dump code around last known execution PC for post-mortem analysis */
     {

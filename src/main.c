@@ -23,6 +23,7 @@ static void usage(const char *prog)
         "                        falling back to empty block mapping\n"
         "  --log-nand-legacy     Log D7F8/D7FC indexed register traffic (with PC)\n"
         "  --log-wince-stall     Log WinCE post-NAND stall diagnostics\n"
+        "  --wince-delay-skip    Experimental: replay old WinCE bootmode delay skip\n"
         "  --wince-obj-bootstrap Experimental: seed narrow WinCE objptr/header words\n"
         "  --trace-user-handoff  Debug first user handoff fault/map details (verbose)\n"
         "  --ram <file>          Preload a raw RAM image at PA 0x00000000\n"
@@ -46,6 +47,7 @@ int main(int argc, char *argv[])
         .sfb_5bit_green = false,
         .kuseg_hotpath_populate = false,
         .log_wince_stall = false,
+        .wince_delay_skip = false,
         .wince_obj_bootstrap = false,
         .trace_user_handoff = false,
         .rom_path       = NULL,
@@ -75,6 +77,8 @@ int main(int argc, char *argv[])
             cfg.log_nand_legacy = true;
         } else if (strcmp(argv[i], "--log-wince-stall") == 0) {
             cfg.log_wince_stall = true;
+        } else if (strcmp(argv[i], "--wince-delay-skip") == 0) {
+            cfg.wince_delay_skip = true;
         } else if (strcmp(argv[i], "--wince-obj-bootstrap") == 0) {
             cfg.wince_obj_bootstrap = true;
         } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {

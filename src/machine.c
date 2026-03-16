@@ -2079,6 +2079,7 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     maybe_probe_wince_spl_memcpy(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_producer_pcs(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_77FE4_internals(m, uc, (uint32_t)address, insn);
+    maybe_probe_wince_delay_call_frame(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_dispatcher_corridor(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_obj_late_writer(m, uc, (uint32_t)address, insn);
 
