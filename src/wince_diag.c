@@ -26,6 +26,25 @@ static inline bool pc_in_wince_fail_corridor(uint32_t pc32)
     return pc32 >= WINCE_FAIL_CORRIDOR_START && pc32 <= WINCE_FAIL_CORRIDOR_END;
 }
 
+static const int wince_gpr_ids[32] = {
+    UC_MIPS_REG_ZERO, UC_MIPS_REG_AT, UC_MIPS_REG_V0, UC_MIPS_REG_V1,
+    UC_MIPS_REG_A0,   UC_MIPS_REG_A1, UC_MIPS_REG_A2, UC_MIPS_REG_A3,
+    UC_MIPS_REG_T0,   UC_MIPS_REG_T1, UC_MIPS_REG_T2, UC_MIPS_REG_T3,
+    UC_MIPS_REG_T4,   UC_MIPS_REG_T5, UC_MIPS_REG_T6, UC_MIPS_REG_T7,
+    UC_MIPS_REG_S0,   UC_MIPS_REG_S1, UC_MIPS_REG_S2, UC_MIPS_REG_S3,
+    UC_MIPS_REG_S4,   UC_MIPS_REG_S5, UC_MIPS_REG_S6, UC_MIPS_REG_S7,
+    UC_MIPS_REG_T8,   UC_MIPS_REG_T9, UC_MIPS_REG_K0, UC_MIPS_REG_K1,
+    UC_MIPS_REG_GP,   UC_MIPS_REG_SP, UC_MIPS_REG_FP, UC_MIPS_REG_RA
+};
+
+static bool wince_read_gpr_by_index(uc_engine *uc, uint32_t reg_idx, uint64_t *out)
+{
+    if (!uc || !out || reg_idx >= 32u)
+        return false;
+    *out = 0;
+    return uc_reg_read(uc, wince_gpr_ids[reg_idx], out) == UC_ERR_OK;
+}
+
 void init_wince_region_tracks(machine_t *m)
 {
     if (!m)
@@ -3475,6 +3494,19 @@ typedef struct {
     uint32_t end_pa; /* exclusive */
 } wince_producer_desc_t;
 
+enum {
+    WINCE_PROD_RESUME_CTX = 0,
+    WINCE_PROD_BOOTCTX,
+    WINCE_PROD_BOOTPARAM0,
+    WINCE_PROD_BOOTPARAM1,
+    WINCE_PROD_CB_TBL,
+    WINCE_PROD_OBJPTR,
+    WINCE_PROD_OBJ_SLOT0,
+    WINCE_PROD_OBJ_HEADER,
+    WINCE_PROD_OBJ_TAIL_STATS,
+    WINCE_PROD_OBJ,
+};
+
 static const wince_producer_desc_t wince_producer_descs[WINCE_PRODUCER_FAMILY_COUNT] = {
     { "resume_ctx",  UINT32_C(0x00002200), UINT32_C(0x00002300) },
     { "bootctx",     WINCE_TRACE_BOOTCTX_PA_START,    WINCE_TRACE_BOOTCTX_PA_END },
@@ -3482,6 +3514,9 @@ static const wince_producer_desc_t wince_producer_descs[WINCE_PRODUCER_FAMILY_CO
     { "bootparam1",  WINCE_TRACE_BOOTPARAM1_PA_START,  WINCE_TRACE_BOOTPARAM1_PA_END },
     { "cb_tbl",      WINCE_TRACE_CB_PA_START,           WINCE_TRACE_CB_PA_END },
     { "objptr",      WINCE_TRACE_OBJPTR_PA_START,       WINCE_TRACE_OBJPTR_PA_END },
+    { "obj_slot0",   WINCE_TRACE_OBJ_SLOT0_PA_START,    WINCE_TRACE_OBJ_SLOT0_PA_END },
+    { "obj_header",  WINCE_TRACE_OBJ_HEADER_PA_START,   WINCE_TRACE_OBJ_HEADER_PA_END },
+    { "obj_tail_stats", WINCE_TRACE_OBJ_TAIL_STATS_PA_START, WINCE_TRACE_OBJ_TAIL_STATS_PA_END },
     { "obj",         WINCE_TRACE_OBJ_PA_START,          WINCE_TRACE_OBJ_PA_END },
 };
 
@@ -3524,6 +3559,13 @@ void init_wince_producer_attrs(machine_t *m)
     m->wince_prod_disp_probe_79634 = false;
     m->wince_prod_disp_probe_7963C = false;
     m->wince_prod_disp_probe_79668 = false;
+    m->wince_prod_late_probe_79658 = false;
+    m->wince_prod_late_probe_7A65C = false;
+    m->wince_prod_late_probe_7A668 = false;
+    m->wince_prod_late_probe_7A744 = false;
+    m->wince_prod_late_probe_7A75C = false;
+    m->wince_prod_late_probe_7A764 = false;
+    m->wince_prod_late_probe_7A76C = false;
 }
 
 void wince_producer_record_write(machine_t *m, uint32_t pa, uint32_t pc,
@@ -3544,12 +3586,32 @@ void wince_producer_record_write(machine_t *m, uint32_t pa, uint32_t pc,
             p->first_write_pc  = pc;
             p->first_write_pa  = pa;
             p->first_write_val = value;
+            if (m->cfg.log_wince_stall &&
+                !m->wince_prod_probe_80078BF0 &&
+                (i == WINCE_PROD_OBJ_SLOT0 || i == WINCE_PROD_OBJ_HEADER)) {
+                fprintf(stderr,
+                        "[WINCE_OBJ_WRITE_PROBE] family=%s kind=first_write"
+                        " pa=0x%08X pc=0x%08X size=%u val=0x%08" PRIX64
+                        " before_null_read=yes\n",
+                        p->name, pa, pc, size,
+                        (uint64_t)(value & write_value_mask(size)));
+            }
         }
         if (!is_zero && !p->first_nz_write_valid) {
             p->first_nz_write_valid = true;
             p->first_nz_write_pc  = pc;
             p->first_nz_write_pa  = pa;
             p->first_nz_write_val = value;
+            if (m->cfg.log_wince_stall &&
+                !m->wince_prod_probe_80078BF0 &&
+                (i == WINCE_PROD_OBJ_SLOT0 || i == WINCE_PROD_OBJ_HEADER)) {
+                fprintf(stderr,
+                        "[WINCE_OBJ_WRITE_PROBE] family=%s kind=first_nz_write"
+                        " pa=0x%08X pc=0x%08X size=%u val=0x%08" PRIX64
+                        " before_null_read=yes\n",
+                        p->name, pa, pc, size,
+                        (uint64_t)(value & write_value_mask(size)));
+            }
         }
         /* Track last write before any read (for cross-event analysis) */
         if (!p->first_read_valid) {
@@ -3703,17 +3765,7 @@ void maybe_probe_wince_producer_pcs(machine_t *m, uc_engine *uc,
             } else if (op6 == 0x00u) { /* SPECIAL: JALR/JR */
                 uint32_t rs_idx = (insn >> 21) & 0x1Fu;
                 uint64_t rs_val = 0;
-                static const int gpr_map[32] = {
-                    UC_MIPS_REG_ZERO, UC_MIPS_REG_AT, UC_MIPS_REG_V0, UC_MIPS_REG_V1,
-                    UC_MIPS_REG_A0, UC_MIPS_REG_A1, UC_MIPS_REG_A2, UC_MIPS_REG_A3,
-                    UC_MIPS_REG_T0, UC_MIPS_REG_T1, UC_MIPS_REG_T2, UC_MIPS_REG_T3,
-                    UC_MIPS_REG_T4, UC_MIPS_REG_T5, UC_MIPS_REG_T6, UC_MIPS_REG_T7,
-                    UC_MIPS_REG_S0, UC_MIPS_REG_S1, UC_MIPS_REG_S2, UC_MIPS_REG_S3,
-                    UC_MIPS_REG_S4, UC_MIPS_REG_S5, UC_MIPS_REG_S6, UC_MIPS_REG_S7,
-                    UC_MIPS_REG_T8, UC_MIPS_REG_T9, UC_MIPS_REG_K0, UC_MIPS_REG_K1,
-                    UC_MIPS_REG_GP, UC_MIPS_REG_SP, UC_MIPS_REG_FP, UC_MIPS_REG_RA
-                };
-                uc_reg_read(uc, gpr_map[rs_idx], &rs_val);
+                wince_read_gpr_by_index(uc, rs_idx, &rs_val);
                 target = (uint32_t)rs_val;
             } else if ((op6 >> 2) == 0x01u) { /* BEQ/BNE/BLEZ/BGTZ family */
                 int16_t off16 = (int16_t)(insn & 0xFFFFu);
@@ -4076,6 +4128,136 @@ void maybe_probe_wince_dispatcher_corridor(machine_t *m, uc_engine *uc,
     }
 }
 
+static void log_wince_late_writer_store(machine_t *m, uc_engine *uc, bool *seen_flag,
+                                        uint32_t pc32, uint32_t insn,
+                                        const char *note)
+{
+    if (!m || !uc || !seen_flag || *seen_flag)
+        return;
+    *seen_flag = true;
+
+    uint32_t rs_idx = (insn >> 21) & 0x1Fu;
+    uint32_t rt_idx = (insn >> 16) & 0x1Fu;
+    int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+    uint64_t rs_val = 0, rt_val = 0;
+    uint64_t ra = 0, sp = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, v1 = 0;
+
+    wince_read_gpr_by_index(uc, rs_idx, &rs_val);
+    wince_read_gpr_by_index(uc, rt_idx, &rt_val);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+
+    uint32_t target_va = (uint32_t)rs_val + (uint32_t)imm;
+    uint32_t target_pa = target_va & UINT32_C(0x1FFFFFFF);
+
+    fprintf(stderr,
+            "[WINCE_LATE_WRITER] pc=0x%08X insn=0x%08X note=%s"
+            " rs=%u rt=%u target_va=0x%08X target_pa=0x%08X"
+            " val=0x%08X ra=0x%08X sp=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+            " v0=0x%08X v1=0x%08X\n",
+            pc32, insn, note,
+            rs_idx, rt_idx, target_va, target_pa,
+            (uint32_t)rt_val, (uint32_t)ra, (uint32_t)sp,
+            (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+            (uint32_t)v0, (uint32_t)v1);
+}
+
+void maybe_probe_wince_obj_late_writer(machine_t *m, uc_engine *uc,
+                                       uint32_t pc32, uint32_t insn)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+
+    switch (pc32) {
+    case 0x80079658u:
+        if (!m->wince_prod_late_probe_79658) {
+            m->wince_prod_late_probe_79658 = true;
+            uint64_t ra = 0, sp = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, v1 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+            uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+            fprintf(stderr,
+                    "[WINCE_LATE_WRITER] pc=0x%08X insn=0x%08X note=callsite_80079658"
+                    " call_target=0x8007A65C ra=0x%08X sp=0x%08X"
+                    " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+                    " v0=0x%08X v1=0x%08X\n",
+                    pc32, insn,
+                    (uint32_t)ra, (uint32_t)sp,
+                    (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+                    (uint32_t)v0, (uint32_t)v1);
+        }
+        break;
+    case 0x8007A65Cu:
+        if (!m->wince_prod_late_probe_7A65C) {
+            m->wince_prod_late_probe_7A65C = true;
+            uint64_t ra = 0, sp = 0, v0 = 0, v1 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+            fprintf(stderr,
+                    "[WINCE_LATE_WRITER] pc=0x%08X insn=0x%08X note=return_stub_8007A65C"
+                    " ra=0x%08X sp=0x%08X v0=0x%08X v1=0x%08X\n",
+                    pc32, insn,
+                    (uint32_t)ra, (uint32_t)sp, (uint32_t)v0, (uint32_t)v1);
+        }
+        break;
+    case 0x8007A668u:
+        if (!m->wince_prod_late_probe_7A668) {
+            m->wince_prod_late_probe_7A668 = true;
+            uint64_t ra = 0, sp = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, v1 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+            uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+            uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+            uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+            uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+            uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+            fprintf(stderr,
+                    "[WINCE_LATE_WRITER] pc=0x%08X insn=0x%08X note=function_entry_8007A668"
+                    " ra=0x%08X sp=0x%08X"
+                    " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+                    " v0=0x%08X v1=0x%08X\n",
+                    pc32, insn,
+                    (uint32_t)ra, (uint32_t)sp,
+                    (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+                    (uint32_t)v0, (uint32_t)v1);
+        }
+        break;
+    case 0x8007A744u:
+        log_wince_late_writer_store(m, uc, &m->wince_prod_late_probe_7A744,
+                                    pc32, insn, "store_8067BFFC");
+        break;
+    case 0x8007A75Cu:
+        log_wince_late_writer_store(m, uc, &m->wince_prod_late_probe_7A75C,
+                                    pc32, insn, "store_8067BFF8");
+        break;
+    case 0x8007A764u:
+        log_wince_late_writer_store(m, uc, &m->wince_prod_late_probe_7A764,
+                                    pc32, insn, "store_80660408");
+        break;
+    case 0x8007A76Cu:
+        log_wince_late_writer_store(m, uc, &m->wince_prod_late_probe_7A76C,
+                                    pc32, insn, "store_8067BFF4");
+        break;
+    default:
+        break;
+    }
+}
+
 void log_wince_producer_summary(const machine_t *m, const char *reason)
 {
     if (!m || !is_wince_boot_machine(m))
@@ -4099,6 +4281,7 @@ void log_wince_producer_summary(const machine_t *m, const char *reason)
 
         /* Format PC fields with explicit validity to avoid 0x00000000 ambiguity */
         char first_read_pc_str[20], first_write_pc_str[20], first_nz_write_pc_str[20];
+        char first_write_pa_str[20], first_nz_write_pa_str[20];
         if (p->first_read_valid)
             snprintf(first_read_pc_str, sizeof(first_read_pc_str),
                      "0x%08X", p->first_read_pc);
@@ -4114,20 +4297,32 @@ void log_wince_producer_summary(const machine_t *m, const char *reason)
                      "0x%08X", p->first_nz_write_pc);
         else
             snprintf(first_nz_write_pc_str, sizeof(first_nz_write_pc_str), "NONE");
+        if (p->first_write_valid)
+            snprintf(first_write_pa_str, sizeof(first_write_pa_str),
+                     "0x%08X", p->first_write_pa);
+        else
+            snprintf(first_write_pa_str, sizeof(first_write_pa_str), "NONE");
+        if (p->first_nz_write_valid)
+            snprintf(first_nz_write_pa_str, sizeof(first_nz_write_pa_str),
+                     "0x%08X", p->first_nz_write_pa);
+        else
+            snprintf(first_nz_write_pa_str, sizeof(first_nz_write_pa_str), "NONE");
 
         fprintf(stderr,
                 "[WINCE_PRODUCER_SUMMARY] reason=%s family=%s"
                 " reads=%u writes=%u nz_writes=%u"
                 " write_before_read=%s"
                 " first_read_pc=%s first_read_val=0x%08" PRIX64
-                " first_write_pc=%s first_nz_write_pc=%s"
+                " first_write_pc=%s first_write_pa=%s"
+                " first_nz_write_pc=%s first_nz_write_pa=%s"
                 " verdict=%s\n",
                 reason, p->name,
                 p->total_reads, p->total_writes, p->total_nz_writes,
                 p->any_write_before_read ? "yes" : "no",
                 first_read_pc_str,
                 p->first_read_valid ? p->first_read_val : UINT64_C(0),
-                first_write_pc_str, first_nz_write_pc_str,
+                first_write_pc_str, first_write_pa_str,
+                first_nz_write_pc_str, first_nz_write_pa_str,
                 verdict);
     }
 }
