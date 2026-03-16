@@ -1,0 +1,10 @@
+; BEDiag built-in diagnostic driver cleanup manifest for the NAND Patch fallback.
+
+[Delete Registry]
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag"
+
+[Delete Files]
+"\Nand Disk\Program Files\Patch\BEDiag.dll"
+"\Nand Disk\Program Files\Patch\BEDiag_unapps.inf"
+"\Windows\InsResetFlag.txt"
+; End

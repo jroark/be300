@@ -85,6 +85,12 @@ Notes:
 
 Install
 -------
+Preferred path:
+  Use the MkArch packaging bundle in ce\bediag\mkarch and install BEDiag
+  through the Casio Setup.exe + Setup.ini + .cbea flow. The package writes the
+  BuiltIn registry key and requests the stock post-install reset path.
+
+Fallback manual path:
 1. Copy BEDiag.dll to the device, for example:
 
      \Windows\BEDiag.dll

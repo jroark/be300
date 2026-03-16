@@ -1,0 +1,15 @@
+; BEDiag built-in diagnostic driver install package.
+; Primary variant: install a raw DLL into \Windows so Device Manager can
+; resolve Dll="BEDiag.dll" like stock built-in drivers.
+
+[Copy Files]
+"\Windows\BEDiag.dll" , "BEDiag.dll", COPYFLG_REPLACEONLY
+"\Windows\BEDiag_unapps.inf" , "unapps.inf", COPYFLG_REPLACEONLY
+"\Windows\InsResetFlag.txt" , "InsResetFlag.txt", COPYFLG_REPLACEONLY
+
+[Add Registry]
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Dll", REG_SZ, FLG_ADDREG_REPLACEONLY, "BEDiag.dll"
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Prefix", REG_SZ, FLG_ADDREG_REPLACEONLY, "BDG"
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Index", REG_DWORD, FLG_ADDREG_REPLACEONLY, 1
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Order", REG_DWORD, FLG_ADDREG_REPLACEONLY, 1
+; End
