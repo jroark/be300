@@ -1,0 +1,9 @@
+; BEDiag built-in driver registry template for the BE-300.
+; Import with your preferred WinCE registry editor, then soft reset.
+
+[HKEY_LOCAL_MACHINE\Drivers\BuiltIn\BEDiag]
+    "Dll"="BEDiag.dll"
+    "Prefix"="BDG"
+    "Index"=dword:1
+    "Order"=dword:1
+

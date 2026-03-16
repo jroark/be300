@@ -1,0 +1,9 @@
+LIBRARY "BEDiag"
+
+EXPORTS
+    BDG_Init
+    BDG_Deinit
+    BDG_Open
+    BDG_Close
+    BDG_IOControl
+
