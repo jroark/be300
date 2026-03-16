@@ -8,6 +8,7 @@
 
 [Copy Files]
 "\Nand Disk\Program Files\Patch\BEDiag.dll" , "BEDiag.dll", COPYFLG_REPLACEONLY
+"\Windows\BEDiagKick.exe" , "BEDiagKick.exe", COPYFLG_REPLACEONLY
 "\Nand Disk\Program Files\Patch\BEDiag_unapps.inf" , "unapps.inf", COPYFLG_REPLACEONLY
 "\Windows\InsResetFlag.txt" , "InsResetFlag.txt", COPYFLG_REPLACEONLY
 

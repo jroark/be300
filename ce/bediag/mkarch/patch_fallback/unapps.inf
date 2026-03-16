@@ -6,5 +6,6 @@ HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag"
 [Delete Files]
 "\Nand Disk\Program Files\Patch\BEDiag.dll"
 "\Nand Disk\Program Files\Patch\BEDiag_unapps.inf"
+"\Windows\BEDiagKick.exe"
 "\Windows\InsResetFlag.txt"
 ; End

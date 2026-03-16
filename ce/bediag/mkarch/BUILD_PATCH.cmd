@@ -10,6 +10,11 @@ if not exist "%SOURCE_DIR%\BEDiag.dll" (
   exit /b 1
 )
 
+if not exist "%SOURCE_DIR%\BEDiagKick.exe" (
+  echo ERROR: Copy WMIPSRel\BEDiagKick.exe to %SOURCE_DIR% before running this script.
+  exit /b 1
+)
+
 if not exist "%TOOL_DIR%\MkArch.exe" (
   echo ERROR: MkArch.exe not found at %TOOL_DIR%
   exit /b 1
