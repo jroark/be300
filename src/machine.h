@@ -175,6 +175,41 @@ typedef struct {
     bool     read_found_zero_after_writes;
 } wince_producer_attr_t;
 
+#define WINCE_DELAY_CALL_TRACE_PC_LIMIT 128u
+typedef struct {
+    bool     armed;
+    bool     active;
+    bool     entered;
+    bool     bytes_dumped;
+    bool     returned_to_expected;
+    bool     escaped;
+    bool     returned_elsewhere_valid;
+    bool     first_window_exit_valid;
+    bool     observed_ra_change;
+    uint32_t call_pc;
+    uint32_t target_pc;
+    uint32_t expected_return_pc;
+    uint32_t entry_sp;
+    uint32_t entry_ra;
+    uint32_t entry_a0;
+    uint32_t entry_a1;
+    uint32_t entry_a2;
+    uint32_t entry_a3;
+    uint32_t entry_v0;
+    uint32_t entry_v1;
+    uint32_t sp_min;
+    uint32_t sp_max;
+    uint32_t final_ra;
+    uint32_t returned_elsewhere_pc;
+    uint32_t first_window_exit_from_pc;
+    uint32_t first_window_exit_to_pc;
+    uint32_t event_count;
+    uint32_t pc_count;
+    uint32_t pcs[WINCE_DELAY_CALL_TRACE_PC_LIMIT];
+    uint32_t last_pc;
+    bool     last_pc_valid;
+} wince_delay_call_trace_t;
+
 #define WINCE_CTRL_HISTORY_LEN 128u
 typedef struct {
     uint32_t pc;
@@ -345,6 +380,7 @@ typedef struct {
     bool        kuseg_hotpath_populate; /* experimental: try shadow-TLB-backed kuseg population in LOAD_EMU/STORE_EMU */
     bool        log_nand_legacy; /* log D7F8/D7FC indexed register traffic */
     bool        log_wince_stall; /* log WinCE post-NAND stall diagnostics */
+    bool        wince_delay_skip; /* experimental: replay old skip at 0x80078038 */
     bool        wince_obj_bootstrap; /* experimental: seed stable objptr/header words for WinCE NAND boot */
     bool        trace_user_handoff; /* debug: first-fault and handoff VA->PA trace */
     const char *rom_path;     /* path to flat ROM image, loaded at PA_RESET_VECTOR */
@@ -444,6 +480,7 @@ struct machine_s {
     bool     wince_deferred_seed_done;
     bool     wince_obj_bootstrap_active;
     wince_obj_bootstrap_track_t wince_obj_bootstrap[WINCE_OBJ_BOOTSTRAP_WORD_COUNT];
+    wince_delay_call_trace_t wince_delay_call_trace;
 
     /* De-speculation first-touch one-shot flags (Step 5 diagnostics). */
     bool     wince_despec_touch_resume_ctx;   /* PA 0x2200-0x22FF */
