@@ -58,7 +58,13 @@ Windows 2000 VM workflow
 
      mkarch\..
 
+   Place native.ina in that same directory as well.
+
 5. Run BUILD.cmd.
+
+BUILD.cmd now stages Setup.exe and native.ina into the temporary package
+directory before invoking MkArch, because MkArch expects them beside the other
+package files during archive generation.
 
 Hardware test order
 -------------------

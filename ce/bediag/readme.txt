@@ -134,7 +134,9 @@ Preferred path:
   shaped like a normal BE-300 Patch app, installs BEDiagKick.exe under
   ?Drive?\Program Files\Patch, installs BEDiag.dll under the same persistent
   Patch location, writes the BuiltIn registry key to the absolute NAND path,
-  and requests the stock post-install reset path.
+  and requests the stock post-install reset path. The MkArch build step also
+  requires Setup.exe and native.ina to be present in the tool directory so
+  BUILD.cmd can stage them beside the package files before invoking MkArch.
 
 Fallback manual path:
 1. Copy BEDiag.dll and BEDiagKick.exe to the device, for example:
