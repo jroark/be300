@@ -1,0 +1,22 @@
+[BEDIAG_KICK] build=activationproof1 tick_ms=21052 key="Drivers\BuiltIn\BEDiag" boot_log_before=0
+[BEDIAG_KICK] reg_key_exists=yes
+[BEDIAG_KICK] reg_dll_present=yes
+[BEDIAG_KICK] reg_dll="\Nand Disk\Program Files\Patch\BEDiag.dll"
+[BEDIAG_KICK] reg_prefix_present=yes
+[BEDIAG_KICK] reg_prefix="BDG"
+[BEDIAG_KICK] reg_index_present=yes
+[BEDIAG_KICK] reg_index=1
+[BEDIAG_KICK] reg_order_present=yes
+[BEDIAG_KICK] reg_order=1
+[BEDIAG_KICK] dll_exists=yes path="\Nand Disk\Program Files\Patch\BEDiag.dll"
+[BEDIAG_KICK] active_key_before=NONE
+[BEDIAG_KICK] loadlibrary=yes handle=0x80DBD424 last_error=0
+[BEDIAG_KICK] loadlibrary_path="\Nand Disk\Program Files\Patch\BEDiag.dll"
+[BEDIAG_KICK] export_BDG_Init=yes proc=0x017330B4
+[BEDIAG_KICK] export_BDG_Deinit=yes proc=0x01732F74
+[BEDIAG_KICK] export_BDG_Open=yes proc=0x01732EF8
+[BEDIAG_KICK] export_BDG_Close=yes proc=0x01732EEC
+[BEDIAG_KICK] export_BDG_IOControl=yes proc=0x01732EA4
+[BEDIAG_KICK] activate_handle=0x00000000 last_error=1
+[BEDIAG_KICK] active_key_after=NONE
+[BEDIAG_KICK] boot_log_after=0

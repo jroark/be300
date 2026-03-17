@@ -46,23 +46,10 @@ It also logs focused raw words for:
 
 Logging behavior
 ----------------
-Primary proof path is:
-
-  \Windows\BEDiag_boot.txt
-
-BEDiag opens this file synchronously in BDG_Init and appends deterministic
-stage breadcrumbs plus the full snapshot output. In the current activation-proof
-pass, BDG_Init is intentionally kept minimal: it opens the boot log, writes the
-entry breadcrumb, updates BuiltIn registry breadcrumbs, and starts the worker
-thread. COM1 logging remains enabled as best-effort only and should not be
-treated as the primary WinCE proof channel on this device.
-
-On the BE-300, \Windows should be treated as volatile. BEDiag uses it only for
-same-boot proof files such as BEDiag_boot.txt, BEDiag_kick.txt, and
-InsResetFlag.txt. Persistent binaries belong under \Nand Disk\Program Files\Patch.
-
-If \Windows logging is not available, BEDiag falls back to the older secondary
-file search on writable roots and replays the in-memory backlog there.
+Primary output is COM1 text logging.
+Secondary output is an optional text file if a writable filesystem appears
+after Device Manager starts. The driver keeps an in-memory backlog so a late
+file open still captures earlier log lines.
 
 Required sections:
   --- BEDIAG INIT ---
@@ -71,14 +58,6 @@ Required sections:
   --- SNAPSHOT +5S ---
   --- DRIVER STATE ---
   --- BEDIAG DONE ---
-
-Deterministic stage breadcrumbs are also written:
-  stage=init_enter
-  stage=worker_created
-  stage=snapshot_init_done
-  stage=snapshot_1s_done
-  stage=snapshot_5s_done
-  stage=done status=...
 
 Registry churn
 --------------
@@ -104,65 +83,15 @@ Notes:
     /dll and BEDiag.def.
   - No resources or UI are required.
 
-Helper EXE
-----------
-BEDiagKick.exe is a tiny no-UI helper that proves whether the installed
-BEDiag.dll is loadable and activatable. It logs to:
-
-  \Windows\BEDiag_kick.txt
-
-The helper records:
-  - the configured Dll value from HKLM\Drivers\BuiltIn\BEDiag
-  - whether the configured DLL path exists
-  - whether HKLM\Drivers\BuiltIn\BEDiag exists
-  - the Dll/Prefix/Index/Order registry values
-  - whether HKLM\Drivers\Active already contains a BEDiag entry
-  - whether LoadLibrary(registry Dll value) succeeds
-  - whether the BDG_* exports are present
-  - the ActivateDevice(...) result and GetLastError()
-  - whether an Active key and BEDiag_boot.txt appear after activation
-
-Build it from BEDiagKick.dsp as:
-
-  "BEDiagKick - Win32 (WCE MIPS) Release"
-
 Install
 -------
-Preferred path:
-  Use the single MkArch packaging bundle in ce\bediag\mkarch and install
-  BEDiag through the Casio Setup.exe + Setup.ini + .cbea flow. The package is
-  shaped like a normal BE-300 Patch app, installs BEDiagKick.exe under
-  ?Drive?\Program Files\Patch, installs BEDiag.dll under the same persistent
-  Patch location, writes the BuiltIn registry key to the absolute NAND path,
-  and requests the stock post-install reset path. The MkArch build step also
-  requires Setup.exe and native.ina to be present in the tool directory so
-  BUILD.cmd can stage them beside the package files before invoking MkArch.
+1. Copy BEDiag.dll to the device, for example:
 
-Fallback manual path:
-1. Copy BEDiag.dll and BEDiagKick.exe to the device, for example:
-
-     \Nand Disk\Program Files\Patch\BEDiag.dll
-     \Nand Disk\Program Files\Patch\BEDiagKick.exe
+     \Windows\BEDiag.dll
 
 2. Add the BuiltIn registry key from BEDiag.reg.txt.
 3. Soft reset the BE-300.
-4. After reset, inspect:
-
-     \Windows\BEDiag_boot.txt
-     \Windows\BEDiag_kick.txt
-
-5. Capture COM1 if useful, but do not treat it as the primary WinCE proof
-   channel.
-6. If there is no boot file after reset, run BEDiagKick.exe from the Patch
-   location and inspect:
-
-     reg_dll=...
-     loadlibrary=yes|no
-     loadlibrary_path=...
-     export_BDG_Init=yes|no
-     activate_handle=...
-     active_key_after=...
-     boot_log_after=...
+4. Capture COM1 from power-on through shell idle.
 
 Interpretation
 --------------
@@ -178,3 +107,4 @@ Compatibility note
 The BE-300 driver guidelines indicate BE can use PPC-standard embedded drivers
 that have no UI, provided they are rebuilt for MIPS. BEDiag follows that
 constraint and intentionally keeps the code path passive.
+
