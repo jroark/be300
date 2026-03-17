@@ -57,6 +57,10 @@ entry breadcrumb, updates BuiltIn registry breadcrumbs, and starts the worker
 thread. COM1 logging remains enabled as best-effort only and should not be
 treated as the primary WinCE proof channel on this device.
 
+On the BE-300, \Windows should be treated as volatile. BEDiag uses it only for
+same-boot proof files such as BEDiag_boot.txt, BEDiag_kick.txt, and
+InsResetFlag.txt. Persistent binaries belong under \Nand Disk\Program Files\Patch.
+
 If \Windows logging is not available, BEDiag falls back to the older secondary
 file search on writable roots and replays the in-memory backlog there.
 
@@ -108,11 +112,12 @@ BEDiag.dll is loadable and activatable. It logs to:
   \Windows\BEDiag_kick.txt
 
 The helper records:
-  - whether \Windows\BEDiag.dll exists
+  - the configured Dll value from HKLM\Drivers\BuiltIn\BEDiag
+  - whether the configured DLL path exists
   - whether HKLM\Drivers\BuiltIn\BEDiag exists
   - the Dll/Prefix/Index/Order registry values
   - whether HKLM\Drivers\Active already contains a BEDiag entry
-  - whether LoadLibrary("BEDiag.dll") succeeds
+  - whether LoadLibrary(registry Dll value) succeeds
   - whether the BDG_* exports are present
   - the ActivateDevice(...) result and GetLastError()
   - whether an Active key and BEDiag_boot.txt appear after activation
@@ -127,13 +132,14 @@ Preferred path:
   Use the single MkArch packaging bundle in ce\bediag\mkarch and install
   BEDiag through the Casio Setup.exe + Setup.ini + .cbea flow. The package is
   shaped like a normal BE-300 Patch app, installs BEDiagKick.exe under
-  ?Drive?\Program Files\Patch, copies BEDiag.dll to \Windows, writes the
-  BuiltIn registry key, and requests the stock post-install reset path.
+  ?Drive?\Program Files\Patch, installs BEDiag.dll under the same persistent
+  Patch location, writes the BuiltIn registry key to the absolute NAND path,
+  and requests the stock post-install reset path.
 
 Fallback manual path:
 1. Copy BEDiag.dll and BEDiagKick.exe to the device, for example:
 
-     \Windows\BEDiag.dll
+     \Nand Disk\Program Files\Patch\BEDiag.dll
      \Nand Disk\Program Files\Patch\BEDiagKick.exe
 
 2. Add the BuiltIn registry key from BEDiag.reg.txt.
@@ -148,7 +154,9 @@ Fallback manual path:
 6. If there is no boot file after reset, run BEDiagKick.exe from the Patch
    location and inspect:
 
+     reg_dll=...
      loadlibrary=yes|no
+     loadlibrary_path=...
      export_BDG_Init=yes|no
      activate_handle=...
      active_key_after=...

@@ -8,7 +8,7 @@ Program = "BEDiag"
 HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag"
 
 [Delete Files]
-"\Windows\BEDiag.dll"
+"?Drive?\Program Files\Patch\BEDiag.dll"
 "?Drive?\Program Files\Patch\BEDiagKick.exe"
 "?Drive?\Program Files\UnBEDiag.inf"
 "\Windows\InsResetFlag.txt"

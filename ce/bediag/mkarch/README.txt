@@ -5,18 +5,21 @@ Purpose
 -------
 This directory contains one canonical BE-300-style patch installer for BEDiag.
 The package matches the working Casio examples by using App Information at the
-head of Install.inf while still copying BEDiag.dll to \Windows and registering
-HKLM\Drivers\BuiltIn\BEDiag.
+head of Install.inf while keeping persistent binaries on NAND Patch storage.
+On the BE-300, \Windows should be treated as volatile; only transient proof
+files and \Windows\InsResetFlag.txt belong there.
 
 Package contents
 ----------------
 Install.inf
   Canonical Casio install INF. It declares BEDiag as a Patch-style app and
   copies:
-    \Windows\BEDiag.dll
+    ?Drive?\Program Files\Patch\BEDiag.dll
     ?Drive?\Program Files\Patch\BEDiagKick.exe
     ?Drive?\Program Files\UnBEDiag.inf
     \Windows\InsResetFlag.txt
+  It also writes:
+    HKLM\Drivers\BuiltIn\BEDiag\Dll = "\Nand Disk\Program Files\Patch\BEDiag.dll"
 
 UnBEDiag.inf
   Canonical uninstall INF for the same Maker/Program pair.
@@ -63,13 +66,19 @@ Hardware test order
 2. Allow the device to reset.
 3. Inspect:
      \Windows\BEDiag_boot.txt
-4. Confirm BEDiagKick.exe was installed under:
+4. Confirm the persistent Patch payloads exist under:
      \Nand Disk\Program Files\Patch
-   or the resolved ?Drive?\Program Files\Patch location.
-5. If there is no boot file after reset, run BEDiagKick.exe manually and inspect:
+   or the resolved ?Drive?\Program Files\Patch location:
+     BEDiag.dll
+     BEDiagKick.exe
+5. Confirm the registry points at the persistent DLL:
+     HKLM\Drivers\BuiltIn\BEDiag\Dll = \Nand Disk\Program Files\Patch\BEDiag.dll
+6. If there is no boot file after reset, run BEDiagKick.exe manually and inspect:
      dll_exists=yes|no
+     reg_dll=...
      reg_key_exists=yes|no
      loadlibrary=yes|no
+     loadlibrary_path=...
      export_BDG_Init=yes|no
      activate_handle=...
      active_key_after=...

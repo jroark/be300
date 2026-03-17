@@ -12,7 +12,6 @@ extern "C" HANDLE WINAPI ActivateDevice(LPCWSTR, DWORD);
 static const WCHAR g_kick_log_path[] = L"\\Windows\\BEDiag_kick.txt";
 static const WCHAR g_boot_log_path[] = L"\\Windows\\BEDiag_boot.txt";
 static const WCHAR g_bediag_key[] = L"Drivers\\BuiltIn\\BEDiag";
-static const WCHAR g_bediag_dll[] = L"BEDiag.dll";
 static const WCHAR g_active_root[] = L"Drivers\\Active";
 
 static HANDLE g_log = INVALID_HANDLE_VALUE;
@@ -264,7 +263,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
     DWORD gle;
     HANDLE hDevice;
     WCHAR active_after[256];
+    WCHAR dll_path[256];
+    WCHAR prefix_value[64];
     char active_after_a[256];
+    char dll_a[256];
+    char prefix_a[64];
+    DWORD index_value;
+    DWORD order_value;
+    BOOL reg_dll_present;
+    BOOL reg_prefix_present;
+    BOOL reg_index_present;
+    BOOL reg_order_present;
 
     (void)hInst;
     (void)hPrev;
@@ -275,50 +284,52 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
         return 1;
 
     boot_before = FileExists(g_boot_log_path);
-    dll_exists = FileExists(L"\\Windows\\BEDiag.dll");
     Logf("[BEDIAG_KICK] build=%s tick_ms=%lu key=\"Drivers\\BuiltIn\\BEDiag\" boot_log_before=%u\r\n",
          BEDIAG_KICK_BUILD_TAG,
          GetTickCount(),
          boot_before ? 1u : 0u);
-    Logf("[BEDIAG_KICK] dll_exists=%s path=\"\\\\Windows\\\\BEDiag.dll\"\r\n",
-         dll_exists ? "yes" : "no");
+
+    dll_path[0] = L'\0';
+    prefix_value[0] = L'\0';
+    dll_a[0] = '\0';
+    prefix_a[0] = '\0';
+    index_value = 0;
+    order_value = 0;
+    reg_dll_present = FALSE;
+    reg_prefix_present = FALSE;
+    reg_index_present = FALSE;
+    reg_order_present = FALSE;
 
     hKey = NULL;
     rc = RegOpenKeyEx(HKEY_LOCAL_MACHINE, g_bediag_key, 0, KEY_READ, &hKey);
     Logf("[BEDIAG_KICK] reg_key_exists=%s\r\n", rc == ERROR_SUCCESS ? "yes" : "no");
     if (rc == ERROR_SUCCESS) {
-        WCHAR dll_value[256];
-        WCHAR prefix_value[64];
-        DWORD index_value;
-        DWORD order_value;
-        char dll_a[256];
-        char prefix_a[64];
+        reg_dll_present = QueryStringValue(hKey, L"Dll", dll_path, sizeof(dll_path) / sizeof(dll_path[0]));
+        reg_prefix_present = QueryStringValue(hKey, L"Prefix", prefix_value, sizeof(prefix_value) / sizeof(prefix_value[0]));
+        reg_index_present = QueryDWORDValue(hKey, L"Index", &index_value);
+        reg_order_present = QueryDWORDValue(hKey, L"Order", &order_value);
 
-        dll_value[0] = L'\0';
-        prefix_value[0] = L'\0';
-        index_value = 0;
-        order_value = 0;
-
-        Logf("[BEDIAG_KICK] reg_dll_present=%s\r\n",
-             QueryStringValue(hKey, L"Dll", dll_value, sizeof(dll_value) / sizeof(dll_value[0])) ? "yes" : "no");
-        WideToAnsi(dll_value, dll_a, sizeof(dll_a));
+        Logf("[BEDIAG_KICK] reg_dll_present=%s\r\n", reg_dll_present ? "yes" : "no");
+        WideToAnsi(dll_path, dll_a, sizeof(dll_a));
         Logf("[BEDIAG_KICK] reg_dll=\"%s\"\r\n", dll_a[0] ? dll_a : "<missing>");
 
-        Logf("[BEDIAG_KICK] reg_prefix_present=%s\r\n",
-             QueryStringValue(hKey, L"Prefix", prefix_value, sizeof(prefix_value) / sizeof(prefix_value[0])) ? "yes" : "no");
+        Logf("[BEDIAG_KICK] reg_prefix_present=%s\r\n", reg_prefix_present ? "yes" : "no");
         WideToAnsi(prefix_value, prefix_a, sizeof(prefix_a));
         Logf("[BEDIAG_KICK] reg_prefix=\"%s\"\r\n", prefix_a[0] ? prefix_a : "<missing>");
 
-        Logf("[BEDIAG_KICK] reg_index_present=%s\r\n",
-             QueryDWORDValue(hKey, L"Index", &index_value) ? "yes" : "no");
+        Logf("[BEDIAG_KICK] reg_index_present=%s\r\n", reg_index_present ? "yes" : "no");
         Logf("[BEDIAG_KICK] reg_index=%lu\r\n", index_value);
 
-        Logf("[BEDIAG_KICK] reg_order_present=%s\r\n",
-             QueryDWORDValue(hKey, L"Order", &order_value) ? "yes" : "no");
+        Logf("[BEDIAG_KICK] reg_order_present=%s\r\n", reg_order_present ? "yes" : "no");
         Logf("[BEDIAG_KICK] reg_order=%lu\r\n", order_value);
 
         RegCloseKey(hKey);
     }
+
+    dll_exists = (reg_dll_present && dll_path[0] != L'\0') ? FileExists(dll_path) : FALSE;
+    Logf("[BEDIAG_KICK] dll_exists=%s path=\"%s\"\r\n",
+         dll_exists ? "yes" : "no",
+         dll_a[0] ? dll_a : "<missing>");
 
     active_after[0] = L'\0';
     if (FindActiveBEDiag(active_after, sizeof(active_after) / sizeof(active_after[0]))) {
@@ -328,13 +339,19 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
         Logf("[BEDIAG_KICK] active_key_before=NONE\r\n");
     }
 
-    SetLastError(0);
-    hBediag = LoadLibrary(g_bediag_dll);
-    gle = GetLastError();
+    hBediag = NULL;
+    gle = 0;
+    if (reg_dll_present && dll_path[0] != L'\0') {
+        SetLastError(0);
+        hBediag = LoadLibrary(dll_path);
+        gle = GetLastError();
+    }
     Logf("[BEDIAG_KICK] loadlibrary=%s handle=0x%08lX last_error=%lu\r\n",
          hBediag ? "yes" : "no",
          (DWORD)hBediag,
          gle);
+    Logf("[BEDIAG_KICK] loadlibrary_path=\"%s\"\r\n",
+         dll_a[0] ? dll_a : "<missing>");
     if (hBediag) {
         LogExportState(hBediag, L"BDG_Init");
         LogExportState(hBediag, L"BDG_Deinit");
@@ -342,6 +359,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
         LogExportState(hBediag, L"BDG_Close");
         LogExportState(hBediag, L"BDG_IOControl");
         FreeLibrary(hBediag);
+    } else {
+        Logf("[BEDIAG_KICK] export_BDG_Init=no proc=0x00000000\r\n");
+        Logf("[BEDIAG_KICK] export_BDG_Deinit=no proc=0x00000000\r\n");
+        Logf("[BEDIAG_KICK] export_BDG_Open=no proc=0x00000000\r\n");
+        Logf("[BEDIAG_KICK] export_BDG_Close=no proc=0x00000000\r\n");
+        Logf("[BEDIAG_KICK] export_BDG_IOControl=no proc=0x00000000\r\n");
     }
 
     SetLastError(0);
