@@ -14,11 +14,11 @@ Caption     = "BEDiag"
 [Copy Files]
 "?Drive?\Program Files\UnBEDiag.inf" , "UnBEDiag.inf", COPYFLG_REPLACEONLY
 "\Windows\InsResetFlag.txt" , "InsResetFlag.txt", COPYFLG_REPLACEONLY
-"\Windows\BEDiag.dll" , "BEDiag.dll", COPYFLG_REPLACEONLY
+"%INSTALL_DIR%\BEDiag.dll" , "BEDiag.dll", COPYFLG_REPLACEONLY
 "%INSTALL_DIR%\BEDiagKick.exe" , "BEDiagKick.exe", COPYFLG_REPLACEONLY
 
 [Add Registry]
-HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Dll", REG_SZ, FLG_ADDREG_REPLACEONLY, "BEDiag.dll"
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Dll", REG_SZ, FLG_ADDREG_REPLACEONLY, "\Nand Disk\Program Files\Patch\BEDiag.dll"
 HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Prefix", REG_SZ, FLG_ADDREG_REPLACEONLY, "BDG"
 HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Index", REG_DWORD, FLG_ADDREG_REPLACEONLY, 1
 HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag", "Order", REG_DWORD, FLG_ADDREG_REPLACEONLY, 1
