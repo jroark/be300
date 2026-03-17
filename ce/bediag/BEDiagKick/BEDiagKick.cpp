@@ -4,10 +4,15 @@
 #include <stdarg.h>
 #include <wchar.h>
 
-#define BEDIAG_KICK_BUILD_TAG  "activationproof1"
+#define BEDIAG_KICK_BUILD_TAG  "activationsplit1"
 #define BEDIAG_MAX_TEXT        260
 
 extern "C" HANDLE WINAPI ActivateDevice(LPCWSTR, DWORD);
+extern "C" HANDLE WINAPI RegisterDevice(LPCWSTR, DWORD, LPCWSTR, DWORD);
+extern "C" BOOL WINAPI DeregisterDevice(HANDLE);
+
+typedef DWORD (WINAPI *PFN_BDG_INIT)(DWORD);
+typedef BOOL (WINAPI *PFN_BDG_DEINIT)(DWORD);
 
 static const WCHAR g_kick_log_path[] = L"\\Windows\\BEDiag_kick.txt";
 static const WCHAR g_boot_log_path[] = L"\\Windows\\BEDiag_boot.txt";
@@ -115,6 +120,84 @@ static BOOL QueryDWORDValue(HKEY hKey, const WCHAR *name, DWORD *out)
     cb_data = sizeof(DWORD);
     rc = RegQueryValueEx(hKey, name, NULL, &type, (LPBYTE)out, &cb_data);
     return (rc == ERROR_SUCCESS && type == REG_DWORD && cb_data == sizeof(DWORD)) ? TRUE : FALSE;
+}
+
+static void LogPhaseMarker(const char *phase, const char *marker)
+{
+    Logf("[BEDIAG_KICK] phase=%s %s\r\n", phase, marker);
+}
+
+static void LogBreadcrumbState(const char *phase, const char *when)
+{
+    HKEY hKey;
+    LONG rc;
+    DWORD loaded;
+    DWORD init_tick;
+    DWORD worker_started;
+    WCHAR last_status[128];
+    char status_a[128];
+    BOOL loaded_present;
+    BOOL init_tick_present;
+    BOOL worker_present;
+    BOOL status_present;
+
+    hKey = NULL;
+    rc = RegOpenKeyEx(HKEY_LOCAL_MACHINE, g_bediag_key, 0, KEY_READ, &hKey);
+    if (rc != ERROR_SUCCESS) {
+        Logf("[BEDIAG_KICK] phase=%s breadcrumbs_%s key_present=no\r\n", phase, when);
+        return;
+    }
+
+    loaded = 0;
+    init_tick = 0;
+    worker_started = 0;
+    last_status[0] = L'\0';
+    status_a[0] = '\0';
+
+    loaded_present = QueryDWORDValue(hKey, L"BEDiagLoaded", &loaded);
+    init_tick_present = QueryDWORDValue(hKey, L"BEDiagInitTick", &init_tick);
+    worker_present = QueryDWORDValue(hKey, L"BEDiagWorkerStarted", &worker_started);
+    status_present = QueryStringValue(hKey, L"BEDiagLastStatus", last_status, sizeof(last_status) / sizeof(last_status[0]));
+    if (status_present)
+        WideToAnsi(last_status, status_a, sizeof(status_a));
+
+    Logf("[BEDIAG_KICK] phase=%s breadcrumbs_%s key_present=yes loaded_present=%s loaded=%lu init_tick_present=%s init_tick=%lu worker_present=%s worker=%lu status_present=%s status=\"%s\"\r\n",
+         phase,
+         when,
+         loaded_present ? "yes" : "no",
+         loaded,
+         init_tick_present ? "yes" : "no",
+         init_tick,
+         worker_present ? "yes" : "no",
+         worker_started,
+         status_present ? "yes" : "no",
+         status_a[0] ? status_a : "<missing>");
+
+    RegCloseKey(hKey);
+}
+
+static void PrepareBootLogProbe(const char *phase)
+{
+    BOOL existed;
+    BOOL deleted;
+    DWORD gle;
+
+    existed = FileExists(g_boot_log_path);
+    deleted = FALSE;
+    gle = 0;
+
+    if (existed) {
+        SetLastError(0);
+        deleted = DeleteFile(g_boot_log_path);
+        gle = GetLastError();
+    }
+
+    Logf("[BEDIAG_KICK] phase=%s boot_log_before=%u delete_attempted=%u delete_ok=%u delete_err=%lu\r\n",
+         phase,
+         existed ? 1u : 0u,
+         existed ? 1u : 0u,
+         deleted ? 1u : 0u,
+         gle);
 }
 
 static BOOL WideEquals(const WCHAR *a, const WCHAR *b)
@@ -239,7 +322,7 @@ static BOOL FindActiveBEDiag(WCHAR *match_path, DWORD match_path_cch)
     return FALSE;
 }
 
-static void LogExportState(HMODULE hModule, const WCHAR *export_name)
+static FARPROC LogExportState(HMODULE hModule, const WCHAR *export_name)
 {
     FARPROC proc;
     char export_a[64];
@@ -250,6 +333,7 @@ static void LogExportState(HMODULE hModule, const WCHAR *export_name)
          export_a,
          proc ? "yes" : "no",
          (DWORD)proc);
+    return proc;
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShowCmd)
@@ -262,6 +346,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
     HMODULE hBediag;
     DWORD gle;
     HANDLE hDevice;
+    HANDLE hRegDevice;
+    HANDLE hOpenDevice;
     WCHAR active_after[256];
     WCHAR dll_path[256];
     WCHAR prefix_value[64];
@@ -274,6 +360,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
     BOOL reg_prefix_present;
     BOOL reg_index_present;
     BOOL reg_order_present;
+    PFN_BDG_INIT pfn_bdg_init;
+    PFN_BDG_DEINIT pfn_bdg_deinit;
+    DWORD bdg_init_ret;
+    BOOL bdg_deinit_ret;
+    BOOL dereg_ret;
 
     (void)hInst;
     (void)hPrev;
@@ -339,6 +430,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
         Logf("[BEDIAG_KICK] active_key_before=NONE\r\n");
     }
 
+    pfn_bdg_init = NULL;
+    pfn_bdg_deinit = NULL;
     hBediag = NULL;
     gle = 0;
     if (reg_dll_present && dll_path[0] != L'\0') {
@@ -353,12 +446,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
     Logf("[BEDIAG_KICK] loadlibrary_path=\"%s\"\r\n",
          dll_a[0] ? dll_a : "<missing>");
     if (hBediag) {
-        LogExportState(hBediag, L"BDG_Init");
-        LogExportState(hBediag, L"BDG_Deinit");
+        pfn_bdg_init = (PFN_BDG_INIT)LogExportState(hBediag, L"BDG_Init");
+        pfn_bdg_deinit = (PFN_BDG_DEINIT)LogExportState(hBediag, L"BDG_Deinit");
         LogExportState(hBediag, L"BDG_Open");
         LogExportState(hBediag, L"BDG_Close");
         LogExportState(hBediag, L"BDG_IOControl");
-        FreeLibrary(hBediag);
     } else {
         Logf("[BEDIAG_KICK] export_BDG_Init=no proc=0x00000000\r\n");
         Logf("[BEDIAG_KICK] export_BDG_Deinit=no proc=0x00000000\r\n");
@@ -367,26 +459,109 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
         Logf("[BEDIAG_KICK] export_BDG_IOControl=no proc=0x00000000\r\n");
     }
 
+    LogPhaseMarker("activate_builtin", "begin");
+    PrepareBootLogProbe("activate_builtin");
+    LogBreadcrumbState("activate_builtin", "before");
     SetLastError(0);
     hDevice = ActivateDevice(g_bediag_key, 0);
     gle = GetLastError();
-    Logf("[BEDIAG_KICK] activate_handle=0x%08lX last_error=%lu\r\n",
+    Logf("[BEDIAG_KICK] phase=activate_builtin activate_handle=0x%08lX last_error=%lu\r\n",
          (DWORD)hDevice,
          gle);
-
     Sleep(500);
     active_after[0] = L'\0';
     if (FindActiveBEDiag(active_after, sizeof(active_after) / sizeof(active_after[0]))) {
         WideToAnsi(active_after, active_after_a, sizeof(active_after_a));
-        Logf("[BEDIAG_KICK] active_key_after=\"%s\"\r\n", active_after_a);
+        Logf("[BEDIAG_KICK] phase=activate_builtin active_key_after=\"%s\"\r\n", active_after_a);
     } else {
-        Logf("[BEDIAG_KICK] active_key_after=NONE\r\n");
+        Logf("[BEDIAG_KICK] phase=activate_builtin active_key_after=NONE\r\n");
     }
-
     boot_after = FileExists(g_boot_log_path);
-    Logf("[BEDIAG_KICK] boot_log_after=%u\r\n", boot_after ? 1u : 0u);
+    Logf("[BEDIAG_KICK] phase=activate_builtin boot_log_after=%u\r\n", boot_after ? 1u : 0u);
+    LogBreadcrumbState("activate_builtin", "after");
+    LogPhaseMarker("activate_builtin", "end");
+
+    LogPhaseMarker("register_device", "begin");
+    PrepareBootLogProbe("register_device");
+    LogBreadcrumbState("register_device", "before");
+    hRegDevice = NULL;
+    hOpenDevice = INVALID_HANDLE_VALUE;
+    gle = 0;
+    if (reg_dll_present && dll_path[0] != L'\0') {
+        SetLastError(0);
+        hRegDevice = RegisterDevice(L"BDG", 9, dll_path, 0);
+        gle = GetLastError();
+    }
+    Logf("[BEDIAG_KICK] phase=register_device register_handle=0x%08lX last_error=%lu\r\n",
+         (DWORD)hRegDevice,
+         gle);
+    if (hRegDevice) {
+        Sleep(500);
+        SetLastError(0);
+        hOpenDevice = CreateFile(L"BDG9:", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        gle = GetLastError();
+        Logf("[BEDIAG_KICK] phase=register_device createfile_handle=0x%08lX last_error=%lu\r\n",
+             (DWORD)hOpenDevice,
+             gle);
+        if (hOpenDevice != INVALID_HANDLE_VALUE) {
+            CloseHandle(hOpenDevice);
+            hOpenDevice = INVALID_HANDLE_VALUE;
+        }
+    } else {
+        Logf("[BEDIAG_KICK] phase=register_device createfile_handle=SKIPPED\r\n");
+    }
+    Sleep(500);
+    active_after[0] = L'\0';
+    if (FindActiveBEDiag(active_after, sizeof(active_after) / sizeof(active_after[0]))) {
+        WideToAnsi(active_after, active_after_a, sizeof(active_after_a));
+        Logf("[BEDIAG_KICK] phase=register_device active_key_after=\"%s\"\r\n", active_after_a);
+    } else {
+        Logf("[BEDIAG_KICK] phase=register_device active_key_after=NONE\r\n");
+    }
+    boot_after = FileExists(g_boot_log_path);
+    Logf("[BEDIAG_KICK] phase=register_device boot_log_after=%u\r\n", boot_after ? 1u : 0u);
+    LogBreadcrumbState("register_device", "after");
+    if (hRegDevice) {
+        SetLastError(0);
+        dereg_ret = DeregisterDevice(hRegDevice);
+        gle = GetLastError();
+        Logf("[BEDIAG_KICK] phase=register_device deregister_ret=%s last_error=%lu\r\n",
+             dereg_ret ? "yes" : "no",
+             gle);
+    } else {
+        Logf("[BEDIAG_KICK] phase=register_device deregister_ret=SKIPPED\r\n");
+    }
+    LogPhaseMarker("register_device", "end");
+
+    LogPhaseMarker("direct_bdg_init", "begin");
+    PrepareBootLogProbe("direct_bdg_init");
+    LogBreadcrumbState("direct_bdg_init", "before");
+    bdg_init_ret = 0;
+    bdg_deinit_ret = FALSE;
+    if (pfn_bdg_init) {
+        bdg_init_ret = pfn_bdg_init(0);
+    }
+    Logf("[BEDIAG_KICK] phase=direct_bdg_init bdg_init_ret=0x%08lX\r\n", bdg_init_ret);
+    Sleep(500);
+    if (bdg_init_ret != 0 && pfn_bdg_deinit) {
+        SetLastError(0);
+        bdg_deinit_ret = pfn_bdg_deinit(bdg_init_ret);
+        gle = GetLastError();
+        Logf("[BEDIAG_KICK] phase=direct_bdg_init bdg_deinit_ret=%s last_error=%lu\r\n",
+             bdg_deinit_ret ? "yes" : "no",
+             gle);
+    } else {
+        Logf("[BEDIAG_KICK] phase=direct_bdg_init bdg_deinit_ret=SKIPPED\r\n");
+    }
+    boot_after = FileExists(g_boot_log_path);
+    Logf("[BEDIAG_KICK] phase=direct_bdg_init boot_log_after=%u\r\n", boot_after ? 1u : 0u);
+    LogBreadcrumbState("direct_bdg_init", "after");
+    LogPhaseMarker("direct_bdg_init", "end");
+
+    if (hBediag)
+        FreeLibrary(hBediag);
 
     CloseHandle(g_log);
     g_log = INVALID_HANDLE_VALUE;
-    return hDevice ? 0 : 1;
+    return (hDevice || hRegDevice || bdg_init_ret != 0) ? 0 : 1;
 }
