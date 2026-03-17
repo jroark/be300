@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
-#include <wchar.h>
+//#include <wchar.h>
 
 extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 
