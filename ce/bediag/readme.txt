@@ -124,16 +124,17 @@ Build it from BEDiagKick.dsp as:
 Install
 -------
 Preferred path:
-  Use the MkArch packaging bundle in ce\bediag\mkarch and install BEDiag
-  through the Casio Setup.exe + Setup.ini + .cbea flow. The package writes the
-  BuiltIn registry key, installs BEDiag.dll plus BEDiagKick.exe, and requests
-  the stock post-install reset path.
+  Use the single MkArch packaging bundle in ce\bediag\mkarch and install
+  BEDiag through the Casio Setup.exe + Setup.ini + .cbea flow. The package is
+  shaped like a normal BE-300 Patch app, installs BEDiagKick.exe under
+  ?Drive?\Program Files\Patch, copies BEDiag.dll to \Windows, writes the
+  BuiltIn registry key, and requests the stock post-install reset path.
 
 Fallback manual path:
 1. Copy BEDiag.dll and BEDiagKick.exe to the device, for example:
 
      \Windows\BEDiag.dll
-     \Windows\BEDiagKick.exe
+     \Nand Disk\Program Files\Patch\BEDiagKick.exe
 
 2. Add the BuiltIn registry key from BEDiag.reg.txt.
 3. Soft reset the BE-300.
@@ -144,7 +145,8 @@ Fallback manual path:
 
 5. Capture COM1 if useful, but do not treat it as the primary WinCE proof
    channel.
-6. If there is no boot file after reset, run BEDiagKick.exe and inspect:
+6. If there is no boot file after reset, run BEDiagKick.exe from the Patch
+   location and inspect:
 
      loadlibrary=yes|no
      export_BDG_Init=yes|no

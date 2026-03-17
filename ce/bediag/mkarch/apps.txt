@@ -1,0 +1,1 @@
+BEDiag|BEDiag|built_in_driver|\Windows\BEDiag.dll|?Drive?\Program Files\Patch\BEDiagKick.exe|HKLM\Drivers\BuiltIn\BEDiag

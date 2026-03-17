@@ -1,0 +1,15 @@
+; BEDiag built-in diagnostic driver uninstall package.
+
+[Uninstall Information]
+Maker   = "BEDiag"
+Program = "BEDiag"
+
+[Delete Registry]
+HKEY_LOCAL_MACHINE, "Drivers\BuiltIn\BEDiag"
+
+[Delete Files]
+"\Windows\BEDiag.dll"
+"?Drive?\Program Files\Patch\BEDiagKick.exe"
+"?Drive?\Program Files\UnBEDiag.inf"
+"\Windows\InsResetFlag.txt"
+; End
