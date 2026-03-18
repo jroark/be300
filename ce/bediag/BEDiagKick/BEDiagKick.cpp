@@ -4,7 +4,7 @@
 #include <stdarg.h>
 #include <wchar.h>
 
-#define BEDIAG_KICK_BUILD_TAG  "activationsplit1"
+#define BEDIAG_KICK_BUILD_TAG  "basenameprobe1"
 #define BEDIAG_MAX_TEXT        260
 
 extern "C" HANDLE WINAPI ActivateDevice(LPCWSTR, DWORD);
@@ -17,7 +17,10 @@ typedef BOOL (WINAPI *PFN_BDG_DEINIT)(DWORD);
 static const WCHAR g_kick_log_path[] = L"\\Windows\\BEDiag_kick.txt";
 static const WCHAR g_boot_log_path[] = L"\\Windows\\BEDiag_boot.txt";
 static const WCHAR g_bediag_key[] = L"Drivers\\BuiltIn\\BEDiag";
+static const WCHAR g_bediag_tmp_key[] = L"Drivers\\BuiltIn\\BEDiagTmp";
 static const WCHAR g_active_root[] = L"Drivers\\Active";
+static const WCHAR g_tmp_dll_path[] = L"\\Windows\\BEDiagTmp.dll";
+static const WCHAR g_tmp_dll_name[] = L"BEDiagTmp.dll";
 
 static HANDLE g_log = INVALID_HANDLE_VALUE;
 
@@ -249,7 +252,11 @@ static BOOL WideContainsInsensitive(const WCHAR *haystack, const WCHAR *needle)
     return wcsstr(hay, ndl) ? TRUE : FALSE;
 }
 
-static BOOL FindActiveBEDiag(WCHAR *match_path, DWORD match_path_cch)
+static BOOL FindActiveMatch(const WCHAR *match_key,
+                            const WCHAR *name_needle,
+                            const WCHAR *dll_needle,
+                            WCHAR *match_path,
+                            DWORD match_path_cch)
 {
     HKEY hRoot;
     LONG rc;
@@ -299,11 +306,11 @@ static BOOL FindActiveBEDiag(WCHAR *match_path, DWORD match_path_cch)
         RegCloseKey(hSub);
 
         is_match = FALSE;
-        if (WideEquals(key_value, g_bediag_key))
+        if (match_key && match_key[0] != L'\0' && WideEquals(key_value, match_key))
             is_match = TRUE;
-        if (WideContainsInsensitive(name_value, L"BEDiag"))
+        if (name_needle && name_needle[0] != L'\0' && WideContainsInsensitive(name_value, name_needle))
             is_match = TRUE;
-        if (WideContainsInsensitive(dll_value, L"BEDiag"))
+        if (dll_needle && dll_needle[0] != L'\0' && WideContainsInsensitive(dll_value, dll_needle))
             is_match = TRUE;
 
         if (is_match) {
@@ -320,6 +327,250 @@ static BOOL FindActiveBEDiag(WCHAR *match_path, DWORD match_path_cch)
 
     RegCloseKey(hRoot);
     return FALSE;
+}
+
+static void LogActiveMatch(const char *phase,
+                           const WCHAR *match_key,
+                           const WCHAR *name_needle,
+                           const WCHAR *dll_needle)
+{
+    WCHAR active_after[256];
+    char active_after_a[256];
+
+    active_after[0] = L'\0';
+    if (FindActiveMatch(match_key, name_needle, dll_needle,
+                        active_after, sizeof(active_after) / sizeof(active_after[0]))) {
+        WideToAnsi(active_after, active_after_a, sizeof(active_after_a));
+        Logf("[BEDIAG_KICK] phase=%s active_key_after=\"%s\"\r\n", phase, active_after_a);
+    } else {
+        Logf("[BEDIAG_KICK] phase=%s active_key_after=NONE\r\n", phase);
+    }
+}
+
+static BOOL SetStringValue(HKEY hKey, const WCHAR *name, const WCHAR *value)
+{
+    DWORD cb_data;
+
+    if (!value)
+        value = L"";
+
+    cb_data = ((DWORD)wcslen(value) + 1u) * sizeof(WCHAR);
+    return RegSetValueEx(hKey, name, 0, REG_SZ, (const BYTE *)value, cb_data) == ERROR_SUCCESS ? TRUE : FALSE;
+}
+
+static BOOL SetDWORDValue(HKEY hKey, const WCHAR *name, DWORD value)
+{
+    return RegSetValueEx(hKey, name, 0, REG_DWORD, (const BYTE *)&value, sizeof(value)) == ERROR_SUCCESS ? TRUE : FALSE;
+}
+
+static BOOL CopyConfiguredDllToTemp(const WCHAR *src_path)
+{
+    BOOL copy_ok;
+    DWORD gle;
+    char src_a[256];
+    char dst_a[256];
+
+    src_a[0] = '\0';
+    dst_a[0] = '\0';
+    WideToAnsi(src_path, src_a, sizeof(src_a));
+    WideToAnsi(g_tmp_dll_path, dst_a, sizeof(dst_a));
+
+    DeleteFile(g_tmp_dll_path);
+    SetLastError(0);
+    copy_ok = CopyFile(src_path, g_tmp_dll_path, FALSE);
+    gle = GetLastError();
+
+    Logf("[BEDIAG_KICK] tmp_copy_src=\"%s\"\r\n", src_a[0] ? src_a : "<missing>");
+    Logf("[BEDIAG_KICK] tmp_copy_dst=\"%s\"\r\n", dst_a);
+    Logf("[BEDIAG_KICK] tmp_copy_ok=%s\r\n", copy_ok ? "yes" : "no");
+    Logf("[BEDIAG_KICK] tmp_copy_err=%lu\r\n", gle);
+
+    return copy_ok;
+}
+
+static BOOL CreateTempBuiltInKey(void)
+{
+    HKEY hKey;
+    LONG rc;
+    BOOL ok;
+
+    RegDeleteKey(HKEY_LOCAL_MACHINE, g_bediag_tmp_key);
+
+    hKey = NULL;
+    rc = RegCreateKeyEx(HKEY_LOCAL_MACHINE, g_bediag_tmp_key, 0, NULL, 0, 0, NULL, &hKey, NULL);
+    if (rc != ERROR_SUCCESS)
+        return FALSE;
+
+    ok = TRUE;
+    ok = ok && SetStringValue(hKey, L"Dll", g_tmp_dll_name);
+    ok = ok && SetStringValue(hKey, L"Prefix", L"BDT");
+    ok = ok && SetDWORDValue(hKey, L"Index", 9);
+    ok = ok && SetDWORDValue(hKey, L"Order", 1);
+
+    RegCloseKey(hKey);
+    return ok;
+}
+
+static void CleanupTempBuiltInKey(const char *phase)
+{
+    LONG rc;
+
+    rc = RegDeleteKey(HKEY_LOCAL_MACHINE, g_bediag_tmp_key);
+    Logf("[BEDIAG_KICK] phase=%s cleanup_temp_key_rc=%ld\r\n", phase, (long)rc);
+}
+
+static BOOL RunActivatePhase(const char *phase,
+                             const WCHAR *activate_key,
+                             const WCHAR *match_key,
+                             const WCHAR *name_needle,
+                             const WCHAR *dll_needle)
+{
+    HANDLE hDevice;
+    DWORD gle;
+    BOOL boot_after;
+
+    LogPhaseMarker(phase, "begin");
+    PrepareBootLogProbe(phase);
+    LogBreadcrumbState(phase, "before");
+    SetLastError(0);
+    hDevice = ActivateDevice(activate_key, 0);
+    gle = GetLastError();
+    Logf("[BEDIAG_KICK] phase=%s activate_handle=0x%08lX last_error=%lu\r\n",
+         phase,
+         (DWORD)hDevice,
+         gle);
+    Sleep(500);
+    LogActiveMatch(phase, match_key, name_needle, dll_needle);
+    boot_after = FileExists(g_boot_log_path);
+    Logf("[BEDIAG_KICK] phase=%s boot_log_after=%u\r\n", phase, boot_after ? 1u : 0u);
+    LogBreadcrumbState(phase, "after");
+    LogPhaseMarker(phase, "end");
+    return hDevice ? TRUE : FALSE;
+}
+
+static BOOL RunRegisterDevicePhase(const char *phase,
+                                   const WCHAR *prefix,
+                                   DWORD index,
+                                   const WCHAR *dll_path,
+                                   const WCHAR *match_key,
+                                   const WCHAR *name_needle,
+                                   const WCHAR *dll_needle)
+{
+    HANDLE hRegDevice;
+    HANDLE hOpenDevice;
+    WCHAR device_name[32];
+    DWORD gle;
+    BOOL boot_after;
+    BOOL dereg_ret;
+
+    LogPhaseMarker(phase, "begin");
+    PrepareBootLogProbe(phase);
+    LogBreadcrumbState(phase, "before");
+
+    hRegDevice = NULL;
+    hOpenDevice = INVALID_HANDLE_VALUE;
+    gle = 0;
+
+    if (dll_path && dll_path[0] != L'\0') {
+        SetLastError(0);
+        hRegDevice = RegisterDevice(prefix, index, dll_path, 0);
+        gle = GetLastError();
+    }
+
+    Logf("[BEDIAG_KICK] phase=%s register_handle=0x%08lX last_error=%lu\r\n",
+         phase,
+         (DWORD)hRegDevice,
+         gle);
+
+    if (hRegDevice) {
+        Sleep(500);
+        wsprintf(device_name, L"%s%lu:", prefix, index);
+        SetLastError(0);
+        hOpenDevice = CreateFile(device_name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        gle = GetLastError();
+        Logf("[BEDIAG_KICK] phase=%s createfile_handle=0x%08lX last_error=%lu\r\n",
+             phase,
+             (DWORD)hOpenDevice,
+             gle);
+        if (hOpenDevice != INVALID_HANDLE_VALUE) {
+            CloseHandle(hOpenDevice);
+            hOpenDevice = INVALID_HANDLE_VALUE;
+        }
+    } else {
+        Logf("[BEDIAG_KICK] phase=%s createfile_handle=SKIPPED\r\n", phase);
+    }
+
+    Sleep(500);
+    LogActiveMatch(phase, match_key, name_needle, dll_needle);
+    boot_after = FileExists(g_boot_log_path);
+    Logf("[BEDIAG_KICK] phase=%s boot_log_after=%u\r\n", phase, boot_after ? 1u : 0u);
+    LogBreadcrumbState(phase, "after");
+
+    if (hRegDevice) {
+        SetLastError(0);
+        dereg_ret = DeregisterDevice(hRegDevice);
+        gle = GetLastError();
+        Logf("[BEDIAG_KICK] phase=%s deregister_ret=%s last_error=%lu\r\n",
+             phase,
+             dereg_ret ? "yes" : "no",
+             gle);
+    } else {
+        Logf("[BEDIAG_KICK] phase=%s deregister_ret=SKIPPED\r\n", phase);
+    }
+
+    LogPhaseMarker(phase, "end");
+    return hRegDevice ? TRUE : FALSE;
+}
+
+static DWORD RunDirectInitPhase(const char *phase,
+                                PFN_BDG_INIT pfn_bdg_init,
+                                PFN_BDG_DEINIT pfn_bdg_deinit,
+                                DWORD context,
+                                const WCHAR *context_path)
+{
+    DWORD bdg_init_ret;
+    DWORD gle;
+    BOOL bdg_deinit_ret;
+    BOOL boot_after;
+    char context_a[256];
+
+    context_a[0] = '\0';
+    if (context_path)
+        WideToAnsi(context_path, context_a, sizeof(context_a));
+
+    LogPhaseMarker(phase, "begin");
+    PrepareBootLogProbe(phase);
+    LogBreadcrumbState(phase, "before");
+    Logf("[BEDIAG_KICK] phase=%s bdg_init_context=0x%08lX context_path=\"%s\"\r\n",
+         phase,
+         context,
+         context_a[0] ? context_a : "<none>");
+
+    bdg_init_ret = 0;
+    bdg_deinit_ret = FALSE;
+    if (pfn_bdg_init)
+        bdg_init_ret = pfn_bdg_init(context);
+
+    Logf("[BEDIAG_KICK] phase=%s bdg_init_ret=0x%08lX\r\n", phase, bdg_init_ret);
+    Sleep(500);
+
+    if (bdg_init_ret != 0 && pfn_bdg_deinit) {
+        SetLastError(0);
+        bdg_deinit_ret = pfn_bdg_deinit(bdg_init_ret);
+        gle = GetLastError();
+        Logf("[BEDIAG_KICK] phase=%s bdg_deinit_ret=%s last_error=%lu\r\n",
+             phase,
+             bdg_deinit_ret ? "yes" : "no",
+             gle);
+    } else {
+        Logf("[BEDIAG_KICK] phase=%s bdg_deinit_ret=SKIPPED\r\n", phase);
+    }
+
+    boot_after = FileExists(g_boot_log_path);
+    Logf("[BEDIAG_KICK] phase=%s boot_log_after=%u\r\n", phase, boot_after ? 1u : 0u);
+    LogBreadcrumbState(phase, "after");
+    LogPhaseMarker(phase, "end");
+    return bdg_init_ret;
 }
 
 static FARPROC LogExportState(HMODULE hModule, const WCHAR *export_name)
@@ -341,13 +592,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
     HKEY hKey;
     LONG rc;
     BOOL boot_before;
-    BOOL boot_after;
     BOOL dll_exists;
     HMODULE hBediag;
     DWORD gle;
-    HANDLE hDevice;
-    HANDLE hRegDevice;
-    HANDLE hOpenDevice;
     WCHAR active_after[256];
     WCHAR dll_path[256];
     WCHAR prefix_value[64];
@@ -362,9 +609,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
     BOOL reg_order_present;
     PFN_BDG_INIT pfn_bdg_init;
     PFN_BDG_DEINIT pfn_bdg_deinit;
-    DWORD bdg_init_ret;
-    BOOL bdg_deinit_ret;
-    BOOL dereg_ret;
+    BOOL tmp_copy_ok;
+    BOOL temp_key_ok;
+    BOOL any_success;
+    DWORD bdg_init_null_ret;
+    DWORD bdg_init_builtin_ret;
 
     (void)hInst;
     (void)hPrev;
@@ -423,7 +672,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
          dll_a[0] ? dll_a : "<missing>");
 
     active_after[0] = L'\0';
-    if (FindActiveBEDiag(active_after, sizeof(active_after) / sizeof(active_after[0]))) {
+    if (FindActiveMatch(g_bediag_key, NULL, L"BEDiag.dll",
+                        active_after, sizeof(active_after) / sizeof(active_after[0]))) {
         WideToAnsi(active_after, active_after_a, sizeof(active_after_a));
         Logf("[BEDIAG_KICK] active_key_before=\"%s\"\r\n", active_after_a);
     } else {
@@ -459,109 +709,84 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
         Logf("[BEDIAG_KICK] export_BDG_IOControl=no proc=0x00000000\r\n");
     }
 
-    LogPhaseMarker("activate_builtin", "begin");
-    PrepareBootLogProbe("activate_builtin");
-    LogBreadcrumbState("activate_builtin", "before");
-    SetLastError(0);
-    hDevice = ActivateDevice(g_bediag_key, 0);
-    gle = GetLastError();
-    Logf("[BEDIAG_KICK] phase=activate_builtin activate_handle=0x%08lX last_error=%lu\r\n",
-         (DWORD)hDevice,
-         gle);
-    Sleep(500);
-    active_after[0] = L'\0';
-    if (FindActiveBEDiag(active_after, sizeof(active_after) / sizeof(active_after[0]))) {
-        WideToAnsi(active_after, active_after_a, sizeof(active_after_a));
-        Logf("[BEDIAG_KICK] phase=activate_builtin active_key_after=\"%s\"\r\n", active_after_a);
-    } else {
-        Logf("[BEDIAG_KICK] phase=activate_builtin active_key_after=NONE\r\n");
-    }
-    boot_after = FileExists(g_boot_log_path);
-    Logf("[BEDIAG_KICK] phase=activate_builtin boot_log_after=%u\r\n", boot_after ? 1u : 0u);
-    LogBreadcrumbState("activate_builtin", "after");
-    LogPhaseMarker("activate_builtin", "end");
+    any_success = FALSE;
 
-    LogPhaseMarker("register_device", "begin");
-    PrepareBootLogProbe("register_device");
-    LogBreadcrumbState("register_device", "before");
-    hRegDevice = NULL;
-    hOpenDevice = INVALID_HANDLE_VALUE;
-    gle = 0;
-    if (reg_dll_present && dll_path[0] != L'\0') {
-        SetLastError(0);
-        hRegDevice = RegisterDevice(L"BDG", 9, dll_path, 0);
-        gle = GetLastError();
-    }
-    Logf("[BEDIAG_KICK] phase=register_device register_handle=0x%08lX last_error=%lu\r\n",
-         (DWORD)hRegDevice,
-         gle);
-    if (hRegDevice) {
-        Sleep(500);
-        SetLastError(0);
-        hOpenDevice = CreateFile(L"BDG9:", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-        gle = GetLastError();
-        Logf("[BEDIAG_KICK] phase=register_device createfile_handle=0x%08lX last_error=%lu\r\n",
-             (DWORD)hOpenDevice,
-             gle);
-        if (hOpenDevice != INVALID_HANDLE_VALUE) {
-            CloseHandle(hOpenDevice);
-            hOpenDevice = INVALID_HANDLE_VALUE;
-        }
-    } else {
-        Logf("[BEDIAG_KICK] phase=register_device createfile_handle=SKIPPED\r\n");
-    }
-    Sleep(500);
-    active_after[0] = L'\0';
-    if (FindActiveBEDiag(active_after, sizeof(active_after) / sizeof(active_after[0]))) {
-        WideToAnsi(active_after, active_after_a, sizeof(active_after_a));
-        Logf("[BEDIAG_KICK] phase=register_device active_key_after=\"%s\"\r\n", active_after_a);
-    } else {
-        Logf("[BEDIAG_KICK] phase=register_device active_key_after=NONE\r\n");
-    }
-    boot_after = FileExists(g_boot_log_path);
-    Logf("[BEDIAG_KICK] phase=register_device boot_log_after=%u\r\n", boot_after ? 1u : 0u);
-    LogBreadcrumbState("register_device", "after");
-    if (hRegDevice) {
-        SetLastError(0);
-        dereg_ret = DeregisterDevice(hRegDevice);
-        gle = GetLastError();
-        Logf("[BEDIAG_KICK] phase=register_device deregister_ret=%s last_error=%lu\r\n",
-             dereg_ret ? "yes" : "no",
-             gle);
-    } else {
-        Logf("[BEDIAG_KICK] phase=register_device deregister_ret=SKIPPED\r\n");
-    }
-    LogPhaseMarker("register_device", "end");
+    if (RunActivatePhase("activate_builtin",
+                         g_bediag_key,
+                         g_bediag_key,
+                         NULL,
+                         L"BEDiag.dll"))
+        any_success = TRUE;
 
-    LogPhaseMarker("direct_bdg_init", "begin");
-    PrepareBootLogProbe("direct_bdg_init");
-    LogBreadcrumbState("direct_bdg_init", "before");
-    bdg_init_ret = 0;
-    bdg_deinit_ret = FALSE;
-    if (pfn_bdg_init) {
-        bdg_init_ret = pfn_bdg_init(0);
-    }
-    Logf("[BEDIAG_KICK] phase=direct_bdg_init bdg_init_ret=0x%08lX\r\n", bdg_init_ret);
-    Sleep(500);
-    if (bdg_init_ret != 0 && pfn_bdg_deinit) {
-        SetLastError(0);
-        bdg_deinit_ret = pfn_bdg_deinit(bdg_init_ret);
-        gle = GetLastError();
-        Logf("[BEDIAG_KICK] phase=direct_bdg_init bdg_deinit_ret=%s last_error=%lu\r\n",
-             bdg_deinit_ret ? "yes" : "no",
-             gle);
+    if (RunRegisterDevicePhase("register_device",
+                               L"BDG",
+                               9,
+                               reg_dll_present ? dll_path : NULL,
+                               g_bediag_key,
+                               NULL,
+                               L"BEDiag.dll"))
+        any_success = TRUE;
+
+    tmp_copy_ok = FALSE;
+    if (reg_dll_present && dll_path[0] != L'\0')
+        tmp_copy_ok = CopyConfiguredDllToTemp(dll_path);
+    else
+        Logf("[BEDIAG_KICK] tmp_copy_src=\"<missing>\"\r\n[BEDIAG_KICK] tmp_copy_dst=\"\\Windows\\BEDiagTmp.dll\"\r\n[BEDIAG_KICK] tmp_copy_ok=no\r\n[BEDIAG_KICK] tmp_copy_err=0\r\n");
+
+    if (tmp_copy_ok) {
+        if (RunRegisterDevicePhase("register_device_windows_copy",
+                                   L"BDG",
+                                   9,
+                                   g_tmp_dll_name,
+                                   g_bediag_tmp_key,
+                                   NULL,
+                                   L"BEDiagTmp.dll"))
+            any_success = TRUE;
     } else {
-        Logf("[BEDIAG_KICK] phase=direct_bdg_init bdg_deinit_ret=SKIPPED\r\n");
+        LogPhaseMarker("register_device_windows_copy", "begin");
+        Logf("[BEDIAG_KICK] phase=register_device_windows_copy skipped_reason=tmp_copy_failed\r\n");
+        LogPhaseMarker("register_device_windows_copy", "end");
     }
-    boot_after = FileExists(g_boot_log_path);
-    Logf("[BEDIAG_KICK] phase=direct_bdg_init boot_log_after=%u\r\n", boot_after ? 1u : 0u);
-    LogBreadcrumbState("direct_bdg_init", "after");
-    LogPhaseMarker("direct_bdg_init", "end");
+
+    temp_key_ok = FALSE;
+    if (tmp_copy_ok)
+        temp_key_ok = CreateTempBuiltInKey();
+    Logf("[BEDIAG_KICK] temp_key_create_ok=%s\r\n", temp_key_ok ? "yes" : "no");
+
+    if (temp_key_ok) {
+        if (RunActivatePhase("activate_builtin_windows_copy",
+                             g_bediag_tmp_key,
+                             g_bediag_tmp_key,
+                             NULL,
+                             L"BEDiagTmp.dll"))
+            any_success = TRUE;
+        CleanupTempBuiltInKey("activate_builtin_windows_copy");
+    } else {
+        LogPhaseMarker("activate_builtin_windows_copy", "begin");
+        Logf("[BEDIAG_KICK] phase=activate_builtin_windows_copy skipped_reason=temp_key_create_failed\r\n");
+        LogPhaseMarker("activate_builtin_windows_copy", "end");
+    }
+
+    bdg_init_null_ret = RunDirectInitPhase("direct_bdg_init_nullctx",
+                                           pfn_bdg_init,
+                                           pfn_bdg_deinit,
+                                           0,
+                                           NULL);
+    if (bdg_init_null_ret != 0)
+        any_success = TRUE;
+
+    bdg_init_builtin_ret = RunDirectInitPhase("direct_bdg_init_builtinctx",
+                                              pfn_bdg_init,
+                                              pfn_bdg_deinit,
+                                              (DWORD)g_bediag_key,
+                                              g_bediag_key);
+    if (bdg_init_builtin_ret != 0)
+        any_success = TRUE;
 
     if (hBediag)
         FreeLibrary(hBediag);
 
     CloseHandle(g_log);
     g_log = INVALID_HANDLE_VALUE;
-    return (hDevice || hRegDevice || bdg_init_ret != 0) ? 0 : 1;
+    return any_success ? 0 : 1;
 }

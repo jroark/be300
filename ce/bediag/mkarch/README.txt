@@ -86,16 +86,31 @@ Hardware test order
      loadlibrary=yes|no
      loadlibrary_path=...
      export_BDG_Init=yes|no
+     tmp_copy_ok=yes|no
      phase=activate_builtin begin/end
      phase=activate_builtin activate_handle=...
      phase=register_device begin/end
      phase=register_device register_handle=...
      phase=register_device createfile_handle=...
-     phase=direct_bdg_init begin/end
-     phase=direct_bdg_init bdg_init_ret=...
-     phase=direct_bdg_init bdg_deinit_ret=...
+     phase=register_device_windows_copy begin/end
+     phase=register_device_windows_copy register_handle=...
+     phase=activate_builtin_windows_copy begin/end
+     phase=activate_builtin_windows_copy activate_handle=...
+     phase=direct_bdg_init_nullctx begin/end
+     phase=direct_bdg_init_nullctx bdg_init_ret=...
+     phase=direct_bdg_init_builtinctx begin/end
+     phase=direct_bdg_init_builtinctx bdg_init_ret=...
 
 BEDiagKick is now the primary diagnostic ladder:
   1. ActivateDevice on Drivers\BuiltIn\BEDiag
   2. RegisterDevice using the same DLL path but a temporary BDG9: name
-  3. direct BDG_Init / BDG_Deinit calls
+  3. RegisterDevice using basename loading from \Windows\BEDiagTmp.dll
+  4. ActivateDevice using a temporary Drivers\BuiltIn\BEDiagTmp key
+  5. direct BDG_Init / BDG_Deinit with null context
+  6. direct BDG_Init / BDG_Deinit with Drivers\BuiltIn\BEDiag context
+
+BACKUP.bin note
+---------------
+The copied BACKUP.bin is useful as a filesystem-layout reference. It confirms
+that persistent payloads live on NAND storage while \Windows is volatile. It
+is not the primary source of live BuiltIn registry truth; BEDiag_boot.txt is.
