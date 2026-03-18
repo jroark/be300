@@ -91,8 +91,11 @@ logs to:
   \Windows\BEDiag_kick.txt
 
 It now supports two target modes:
-  - no arguments: current BEDiag target
-  - mini: minimal dummy BuiltIn driver target
+  - BEDiagKick.exe: current BEDiag target
+  - BDGMiniKick.exe: minimal dummy BuiltIn driver target
+
+If command-line arguments are available, `mini` still selects the BDGMini
+target. On the BE-300, the intended selection method is the executable name.
 
 Mini-mode outputs are:
   \Windows\BDGMini_kick.txt
@@ -227,9 +230,14 @@ BDGMini manual deployment:
 
        BDGMini.reg.txt
 
-  4. Run:
+  4. Copy the helper twice:
 
-       BEDiagKick.exe mini
+       \Nand Disk\Program Files\Patch\BEDiagKick.exe
+       \Nand Disk\Program Files\Patch\BDGMiniKick.exe
+
+  5. Run:
+
+       BDGMiniKick.exe
 
 Compatibility note
 ------------------
