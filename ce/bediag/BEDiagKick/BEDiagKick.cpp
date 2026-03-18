@@ -101,6 +101,7 @@ static const kick_target_t g_target_mini = {
 };
 
 static const kick_target_t *g_target = &g_target_bediag;
+static const char *g_target_select = "default";
 static HANDLE g_log = INVALID_HANDLE_VALUE;
 
 static void WideToAnsi(const WCHAR *src, char *dst, int dst_size)
@@ -703,12 +704,36 @@ static BOOL StartsWithTokenInsensitive(const WCHAR *text, const WCHAR *token)
     return (ca == L'\0' || ca == L' ' || ca == L'\t') ? TRUE : FALSE;
 }
 
-static void SelectTargetFromCmdLine(LPCWSTR cmdline)
+static void SelectTarget(LPCWSTR cmdline)
 {
-    if (StartsWithTokenInsensitive(cmdline, L"mini"))
+    WCHAR module_path[MAX_PATH];
+    const WCHAR *base_name;
+    DWORD n;
+    DWORD i;
+
+    if (StartsWithTokenInsensitive(cmdline, L"mini")) {
         g_target = &g_target_mini;
-    else
-        g_target = &g_target_bediag;
+        g_target_select = "cmdline";
+        return;
+    }
+
+    module_path[0] = L'\0';
+    n = GetModuleFileName(NULL, module_path, sizeof(module_path) / sizeof(module_path[0]));
+    if (n > 0 && n < (sizeof(module_path) / sizeof(module_path[0]))) {
+        base_name = module_path;
+        for (i = 0; module_path[i] != L'\0'; i++) {
+            if (module_path[i] == L'\\' || module_path[i] == L'/')
+                base_name = &module_path[i + 1];
+        }
+        if (WideContainsInsensitive(base_name, L"mini")) {
+            g_target = &g_target_mini;
+            g_target_select = "exe_name";
+            return;
+        }
+    }
+
+    g_target = &g_target_bediag;
+    g_target_select = "default";
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShowCmd)
@@ -743,15 +768,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow
     (void)hPrev;
     (void)nShowCmd;
 
-    SelectTargetFromCmdLine(lpCmdLine);
+    SelectTarget(lpCmdLine);
 
     if (!OpenKickLog())
         return 1;
 
     boot_before = FileExists(g_target->boot_log_path);
-    Logf("[BEDIAG_KICK] build=%s mode=%s tick_ms=%lu key=\"",
+    Logf("[BEDIAG_KICK] build=%s mode=%s select=%s tick_ms=%lu key=\"",
          BEDIAG_KICK_BUILD_TAG,
          g_target->mode_tag,
+         g_target_select,
          GetTickCount());
     WideToAnsi(g_target->registry_key, active_after_a, sizeof(active_after_a));
     Logf("%s\" boot_log_before=%u\r\n", active_after_a, boot_before ? 1u : 0u);

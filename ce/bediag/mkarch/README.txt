@@ -109,10 +109,10 @@ BEDiagKick is now the primary diagnostic ladder:
   5. direct Init / Deinit with null context
   6. direct Init / Deinit with Drivers\BuiltIn target-key context
 
-BEDiagKick also supports:
-  BEDiagKick.exe mini
+The helper also supports a no-argument alternate name:
+  BDGMiniKick.exe
 
-That mode targets the manual-only BDGMini driver and writes:
+That selects the manual-only BDGMini driver and writes:
   \Windows\BDGMini_kick.txt
   \Windows\BDGMini_boot.txt
 
@@ -121,6 +121,11 @@ BEDiag packaging frozen and deploy BDGMini manually from:
   \Nand Disk\Program Files\Patch\BDGMini.dll
 with the registry template in:
   ce\bediag\BDGMini.reg.txt
+
+If command-line launchers are available, `mini` still selects the same target.
+On the BE-300, the expected flow is to copy the same built helper binary twice:
+  \Nand Disk\Program Files\Patch\BEDiagKick.exe
+  \Nand Disk\Program Files\Patch\BDGMiniKick.exe
 
 BACKUP.bin note
 ---------------
