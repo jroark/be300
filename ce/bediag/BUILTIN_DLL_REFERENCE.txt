@@ -1,0 +1,71 @@
+BE-300 BuiltIn DLL reference notes
+==================================
+
+Purpose
+-------
+This note captures the loader-shape facts confirmed from real-device DLLs and
+runtime dumps. It is the reference for future BuiltIn-driver debugging.
+
+Real-device DLLs copied from hardware
+-------------------------------------
+card_ex.dll
+  - PE32 Windows CE DLL, MIPS R4000
+  - Subsystem: Wince CUI
+  - Imports: COREDLL.dll
+  - Exports full stream-driver family:
+      CEX_Init
+      CEX_Deinit
+      CEX_Open
+      CEX_Close
+      CEX_Read
+      CEX_Write
+      CEX_Seek
+      CEX_IOControl
+      CEX_PowerDown
+      CEX_PowerUp
+  - Matches runtime registry exactly:
+      HKLM\Drivers\BuiltIn\CardState
+      Dll    = card_ex.dll
+      Prefix = CEX
+
+pcmcia.dll
+  - PE32 Windows CE DLL, MIPS R4000
+  - Subsystem: Wince CUI
+  - Imports: COREDLL.dll, cdm.dll
+  - Exports Card* / PCMCIA services entrypoints, not stream-driver XXX_* exports
+
+getdisk.dll
+  - PE32 Windows CE DLL, MIPS R4000
+  - Subsystem: Wince CUI
+  - Imports: COREDLL.dll, NANDAccess.dll
+  - Exports disk/path helper APIs such as GetProgramDiskName and GetUserDiskName
+
+redir.dll
+  - PE32 Windows CE DLL, MIPS R4000
+  - Not used as the BuiltIn stream-driver reference in this repo
+
+ROM / NK residency
+------------------
+The FAT-side restore images do not contain the stock BuiltIn DLL set seen in the
+live registry. The loaded NK memory dump does.
+
+build-docker/nk_code_dump.bin contains stock BuiltIn names such as:
+  nk.exe
+  atadisk.dll
+  waveapi.dll
+  PowerOn.dll
+  cedmbltin.dll
+  clbbltin.dll
+  nanddisk.dll
+  card_ex.dll
+  wavedev.dll
+  bltinbuz.dll
+  compdisk.dll
+  modmonitordll.dll
+
+Conclusion
+----------
+For BE-300 BuiltIn-driver work:
+  - NAND FAT images are the persistence/layout reference
+  - nk_code_dump.bin is the ROM-module presence reference
+  - card_ex.dll is the working stream-driver loader/export reference

@@ -96,18 +96,31 @@ Hardware test order
      phase=register_device_windows_copy register_handle=...
      phase=activate_builtin_windows_copy begin/end
      phase=activate_builtin_windows_copy activate_handle=...
-     phase=direct_bdg_init_nullctx begin/end
-     phase=direct_bdg_init_nullctx bdg_init_ret=...
-     phase=direct_bdg_init_builtinctx begin/end
-     phase=direct_bdg_init_builtinctx bdg_init_ret=...
+     phase=direct_init_nullctx begin/end
+     phase=direct_init_nullctx init_ret=...
+     phase=direct_init_builtinctx begin/end
+     phase=direct_init_builtinctx init_ret=...
 
 BEDiagKick is now the primary diagnostic ladder:
   1. ActivateDevice on Drivers\BuiltIn\BEDiag
   2. RegisterDevice using the same DLL path but a temporary BDG9: name
   3. RegisterDevice using basename loading from \Windows\BEDiagTmp.dll
   4. ActivateDevice using a temporary Drivers\BuiltIn\BEDiagTmp key
-  5. direct BDG_Init / BDG_Deinit with null context
-  6. direct BDG_Init / BDG_Deinit with Drivers\BuiltIn\BEDiag context
+  5. direct Init / Deinit with null context
+  6. direct Init / Deinit with Drivers\BuiltIn target-key context
+
+BEDiagKick also supports:
+  BEDiagKick.exe mini
+
+That mode targets the manual-only BDGMini driver and writes:
+  \Windows\BDGMini_kick.txt
+  \Windows\BDGMini_boot.txt
+
+BDGMini is intentionally not packaged through MkArch in this pass. Keep
+BEDiag packaging frozen and deploy BDGMini manually from:
+  \Nand Disk\Program Files\Patch\BDGMini.dll
+with the registry template in:
+  ce\bediag\BDGMini.reg.txt
 
 BACKUP.bin note
 ---------------
