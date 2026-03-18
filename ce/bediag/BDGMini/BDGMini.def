@@ -1,0 +1,13 @@
+LIBRARY "BDGMini"
+
+EXPORTS
+    MDG_Init
+    MDG_Deinit
+    MDG_Open
+    MDG_Close
+    MDG_Read
+    MDG_Write
+    MDG_Seek
+    MDG_IOControl
+    MDG_PowerDown
+    MDG_PowerUp

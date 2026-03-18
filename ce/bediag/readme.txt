@@ -90,12 +90,20 @@ logs to:
 
   \Windows\BEDiag_kick.txt
 
+It now supports two target modes:
+  - no arguments: current BEDiag target
+  - mini: minimal dummy BuiltIn driver target
+
+Mini-mode outputs are:
+  \Windows\BDGMini_kick.txt
+  \Windows\BDGMini_boot.txt
+
 It first records:
-  - the configured Dll value from HKLM\Drivers\BuiltIn\BEDiag
+  - the configured Dll value from the selected HKLM\Drivers\BuiltIn key
   - whether that DLL exists
   - whether LoadLibrary succeeds
-  - whether the BDG_* exports are present
-  - whether the configured DLL can be copied to \Windows\BEDiagTmp.dll for
+  - whether the expected exports are present
+  - whether the configured DLL can be copied to a temporary \Windows DLL for
     basename-loading tests
 
 Then it runs a six-phase ladder:
@@ -103,13 +111,13 @@ Then it runs a six-phase ladder:
   2. register_device
   3. register_device_windows_copy
   4. activate_builtin_windows_copy
-  5. direct_bdg_init_nullctx
-  6. direct_bdg_init_builtinctx
+  5. direct_init_nullctx
+  6. direct_init_builtinctx
 
 Each phase logs:
   - begin/end markers
   - boot-log delete/probe state
-  - BEDiagLoaded / BEDiagInitTick / BEDiagWorkerStarted / BEDiagLastStatus
+  - target-specific breadcrumbs
   - handle/error results
   - Active-key appearance
   - boot-log appearance
@@ -120,8 +128,19 @@ Expected high-signal fields:
   - phase=register_device createfile_handle=...
   - phase=register_device_windows_copy register_handle=...
   - phase=activate_builtin_windows_copy activate_handle=...
-  - phase=direct_bdg_init_nullctx bdg_init_ret=...
-  - phase=direct_bdg_init_builtinctx bdg_init_ret=...
+  - phase=direct_init_nullctx init_ret=...
+  - phase=direct_init_builtinctx init_ret=...
+
+Reference note
+--------------
+Copied real-device DLLs and NK residency facts are summarized in:
+
+  BUILTIN_DLL_REFERENCE.txt
+
+That note is the canonical reference for:
+  - card_ex.dll as the working BuiltIn stream-driver export model
+  - helper DLLs such as getdisk.dll and pcmcia.dll
+  - stock BuiltIn DLL names being present in nk_code_dump.bin
 
 BuiltIn ground truth
 --------------------
@@ -176,12 +195,41 @@ Use the first boot with BEDiag to decide whether the emulator gap is:
 Current decision order:
   - NAND activate/register fail, but a windows_copy phase succeeds:
     device.exe expects basename / \Windows-resolved DLL loading.
-  - all Device Manager phases fail, but both direct_bdg_init phases succeed:
+  - all Device Manager phases fail, but both direct_init phases succeed:
     device.exe / Device Manager loading semantics are the blocker.
-  - direct_bdg_init_nullctx succeeds, but direct_bdg_init_builtinctx fails:
+  - direct_init_nullctx succeeds, but direct_init_builtinctx fails:
     context handling is still part of the problem.
   - only direct init works:
     compare against a minimal dummy BuiltIn stream driver next.
+
+BDGMini
+-------
+BDGMini is the minimal dummy BuiltIn control for device-manager testing.
+It lives under:
+
+  ce\bediag\BDGMini
+
+Its design is intentionally small:
+  - coredll only
+  - no worker thread
+  - no VirtualCopy or snapshot logic
+  - full stream-driver export family:
+      MDG_Init / Deinit / Open / Close / Read / Write / Seek / IOControl
+      MDG_PowerDown / MDG_PowerUp
+
+BDGMini manual deployment:
+  1. Build BDGMini.dll from the BDGMini project.
+  2. Copy:
+
+       \Nand Disk\Program Files\Patch\BDGMini.dll
+
+  3. Add the BuiltIn key from:
+
+       BDGMini.reg.txt
+
+  4. Run:
+
+       BEDiagKick.exe mini
 
 Compatibility note
 ------------------
