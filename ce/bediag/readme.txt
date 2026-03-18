@@ -95,11 +95,16 @@ It first records:
   - whether that DLL exists
   - whether LoadLibrary succeeds
   - whether the BDG_* exports are present
+  - whether the configured DLL can be copied to \Windows\BEDiagTmp.dll for
+    basename-loading tests
 
-Then it runs a three-phase ladder:
+Then it runs a six-phase ladder:
   1. activate_builtin
   2. register_device
-  3. direct_bdg_init
+  3. register_device_windows_copy
+  4. activate_builtin_windows_copy
+  5. direct_bdg_init_nullctx
+  6. direct_bdg_init_builtinctx
 
 Each phase logs:
   - begin/end markers
@@ -113,8 +118,25 @@ Expected high-signal fields:
   - phase=activate_builtin activate_handle=...
   - phase=register_device register_handle=...
   - phase=register_device createfile_handle=...
-  - phase=direct_bdg_init bdg_init_ret=...
-  - phase=direct_bdg_init bdg_deinit_ret=...
+  - phase=register_device_windows_copy register_handle=...
+  - phase=activate_builtin_windows_copy activate_handle=...
+  - phase=direct_bdg_init_nullctx bdg_init_ret=...
+  - phase=direct_bdg_init_builtinctx bdg_init_ret=...
+
+BuiltIn ground truth
+--------------------
+BACKUP.bin is useful as a filesystem backup image: it confirms the BE-300
+keeps persistent payloads on NAND (Program Files / My Documents) rather than
+in \Windows. For live BuiltIn-driver registry truth, the better source is the
+runtime registry dump inside BEDiag_boot.txt. Current stock examples seen there
+use basename Dll values such as:
+
+  Serial.Dll
+  nanddisk.dll
+  compdisk.dll
+
+That is why BEDiagKick now includes basename-loading tests via a temporary
+\Windows\BEDiagTmp.dll copy.
 
 Install
 -------
@@ -152,12 +174,14 @@ Use the first boot with BEDiag to decide whether the emulator gap is:
     NK/loader instrumentation instead of more built-in driver work
 
 Current decision order:
-  - activate_builtin fails, register_device succeeds:
-    BuiltIn semantics are the blocker.
-  - activate_builtin fails, register_device fails, direct_bdg_init succeeds:
+  - NAND activate/register fail, but a windows_copy phase succeeds:
+    device.exe expects basename / \Windows-resolved DLL loading.
+  - all Device Manager phases fail, but both direct_bdg_init phases succeed:
     device.exe / Device Manager loading semantics are the blocker.
-  - all three phases fail:
-    the driver entrypoint path is still broken despite LoadLibrary succeeding.
+  - direct_bdg_init_nullctx succeeds, but direct_bdg_init_builtinctx fails:
+    context handling is still part of the problem.
+  - only direct init works:
+    compare against a minimal dummy BuiltIn stream driver next.
 
 Compatibility note
 ------------------
