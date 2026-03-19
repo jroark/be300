@@ -1,14 +1,31 @@
-[BEDIAG_STAGE] build=hwseed1 stage=init_enter tick_ms=35738 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
-[BEDIAG_STAGE] build=hwseed1 stage=worker_created tick_ms=35740 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
+[BEDIAG_STAGE] build=hwseed2 stage=init_enter tick_ms=25908 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
+[BEDIAG_STAGE] build=hwseed2 stage=worker_created tick_ms=25909 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
 [BEDIAG] serial_open_failed err=0 retried=0
 
 --- BEDIAG INIT ---
-tick_ms=35745
+tick_ms=25915
 context=0x000150B8
 active_key="Drivers\BuiltIn\BEDiag"
 
 --- SNAPSHOT INIT ---
-tick_ms=35747 phase=init
+tick_ms=25917 phase=init
+[REGION] phase=init name=ctx_tlb PA=0x00002000 size=0x0200 status=OK crc32=0xB4261E31 changed_vs_prev=INITIAL
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x0000 size=0x20 data=010000001B0100000040000000180000010000001F01000000C0FFFF00180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x0020 size=0x20 data=000000001E910E0002E02E06001800001AC700001AC8000003C0F80100180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x0040 size=0x20 data=1A7105001A7205000320920100180000000000001A44050003009C0100180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x0060 size=0x20 data=000000001A70050003009201001800001E9C0F001E750F0003400D0000180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x0080 size=0x20 data=000000001AC50F0003008501001800001626A2001627A2000260200000180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x00A0 size=0x20 data=000000001A3E05000300A001001800001AF901001ED40F000360010000180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x00C0 size=0x20 data=000000001AF4010003000100001800001A7305001A7405000340920100180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x00E0 size=0x20 data=1A3305001E860E000240A401001800001606A0001607A0000360060000180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x0100 size=0x20 data=1A4105001E790F0003209F01001800001AC60F001AC70F000320850100180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x0120 size=0x20 data=1600A0001601A00003000600001800001AC500001AC6000003A0F80100180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x0140 size=0x20 data=1AAC0F001EAD0F000320840100180000000000001AAB0F000300840100180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x0160 size=0x20 data=16020000C0FFFF0F03000B0000180000160AA000C0FFFF0F03000C0000180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x0180 size=0x20 data=1AD00F001AD10F0003C08501001800001A7705001A7805000320910100180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x01A0 size=0x20 data=1AD20F001EB80F0003E08501001800001ACE0F001ACF0F0003A0850100180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x01C0 size=0x20 data=1EC10F001E990F0003000D00001800001AA102001E6B0F000340EB0100180000
+[REGION_RAW] phase=init name=ctx_tlb PA=0x00002000 off=0x01E0 size=0x20 data=000000001A97050003008A01001800001ED60F00000000000360FE0100180000
 [REGION] phase=init name=resume_ctx PA=0x00002200 size=0x0100 status=OK crc32=0xC43DD503 changed_vs_prev=INITIAL
 [REGION_RAW] phase=init name=resume_ctx PA=0x00002200 off=0x0000 size=0x20 data=00008601000000002A13040090000D000000000090000D000000000002000000
 [REGION_RAW] phase=init name=resume_ctx PA=0x00002200 off=0x0020 size=0x20 data=24F185010100000060D7FFFF05000080040000000000000000D8FFFFC8FE2E06
@@ -147,8 +164,8 @@ tick_ms=35747 phase=init
 [REGION_RAW] phase=init name=bootctx PA=0x00006000 off=0x0FA0 size=0x20 data=0000000000000000000000000000000000000000000000000000000000000000
 [REGION_RAW] phase=init name=bootctx PA=0x00006000 off=0x0FC0 size=0x20 data=0000000000000000000000000000000000000000000000000000000000000000
 [REGION_RAW] phase=init name=bootctx PA=0x00006000 off=0x0FE0 size=0x20 data=0000000000000000000000000000000000000000000000000000000000000000
-[REGION] phase=init name=bootparam0 PA=0x0001D000 size=0x1000 status=OK crc32=0x39BD28D4 changed_vs_prev=INITIAL
-[REGION_RAW] phase=init name=bootparam0 PA=0x0001D000 off=0x0000 size=0x20 data=000000000000000070C601A00000000000000000000000000000000000000000
+[REGION] phase=init name=bootparam0 PA=0x0001D000 size=0x1000 status=OK crc32=0xC0D81BAE changed_vs_prev=INITIAL
+[REGION_RAW] phase=init name=bootparam0 PA=0x0001D000 off=0x0000 size=0x20 data=000000000000000037CC01A00000000000000000000000000000000000000000
 [REGION_RAW] phase=init name=bootparam0 PA=0x0001D000 off=0x0020 size=0x20 data=0000000000000000000000000000000000000000000000000000000000000000
 [REGION_RAW] phase=init name=bootparam0 PA=0x0001D000 off=0x0040 size=0x20 data=0000000000000000000000000000000000000000000000000000000000000000
 [REGION_RAW] phase=init name=bootparam0 PA=0x0001D000 off=0x0060 size=0x20 data=0000000000000000000000000000000000000000000000000000000000000000
@@ -442,37 +459,37 @@ tick_ms=35747 phase=init
 [REGION_RAW] phase=init name=cb_tbl PA=0x00051680 off=0x0420 size=0x20 data=FFFFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
 [REGION_RAW] phase=init name=cb_tbl PA=0x00051680 off=0x0440 size=0x20 data=FFFFFFFFFF7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF7FFFFFFFFFFFFF
 [REGION_RAW] phase=init name=cb_tbl PA=0x00051680 off=0x0460 size=0x20 data=FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFDFFFFFFFFFFFFFF
-[REGION] phase=init name=objptr PA=0x00660000 size=0x0040 status=OK crc32=0xF7ED07AB changed_vs_prev=INITIAL
+[REGION] phase=init name=objptr PA=0x00660000 size=0x0040 status=OK crc32=0x7E162148 changed_vs_prev=INITIAL
 [REGION_RAW] phase=init name=objptr PA=0x00660000 off=0x0000 size=0x20 data=C0BF66800000000000000000BFBF6680C0BB6680C0BB668094D8FFFF00000000
-[REGION_RAW] phase=init name=objptr PA=0x00660000 off=0x0020 size=0x20 data=010000000000000094D8FFFF98D8FFFFB7F830160000000030006680370E0000
+[REGION_RAW] phase=init name=objptr PA=0x00660000 off=0x0020 size=0x20 data=010000000000000094D8FFFF98D8FFFF16ED1D10000000003000668096250000
 [REGION] phase=init name=obj_header PA=0x0066BFC0 size=0x0020 status=OK crc32=0xE52D7114 changed_vs_prev=INITIAL
 [REGION_RAW] phase=init name=obj_header PA=0x0066BFC0 off=0x0000 size=0x20 data=98AE0880A08B078078490A8098AE088078490A8098AE08800000000000000000
-[REGION] phase=init name=postboot_text PA=0x00679400 size=0x0200 status=OK crc32=0xDBEC34A4 changed_vs_prev=INITIAL
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0000 size=0x20 data=70006C0000006400300000D000000000C6040000CA0400000100010020003400
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0020 size=0x20 data=4D00750073006900630050006C0061007900650072002E006500780065000000
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0040 size=0x20 data=73005500200000D000000000C7040000C604000001000100120035004D006100
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0060 size=0x20 data=69006C002E0065007800650000003300140000C000000000C8040000D2040000
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0080 size=0x20 data=00000000A70400000200300033003900200000D000000000CB040000C9040000
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x00A0 size=0x20 data=0100010012003100630061006C0063002E0065007800650000000000580000C0
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x00C0 size=0x20 data=000000003B00000000000000000000003F000000240035004200440033004100
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x00E0 size=0x20 data=4300360030002D0032003900410030002D0031003100640035002D0042004400
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0100 size=0x20 data=300033002D003000300039003000430043003000320032003000460043002000
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0120 size=0x20 data=240000D0000000003C0000000000000001000400100054007900700065005000
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0140 size=0x20 data=52004F00430045005300530000000042280000D0000000003E0000003C000000
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0160 size=0x20 data=010007000E005200650063006F007600650072005200450042004F004F005400
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0180 size=0x20 data=00006500380000D0000000003F0000003E00000001000B001600500072006F00
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x01A0 size=0x20 data=63006500730073004E0061006D0065006400650076006900630065002E006500
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x01C0 size=0x20 data=7800650000000500580000C000000000410000003B0000000000000045000000
-[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x01E0 size=0x20 data=2400350042004400330041004300360031002D0032003900410030002D003100
-[REGION] phase=init name=vrc4173_cwin PA=0x0A000C00 size=0x0050 status=OK crc32=0x91F73AB9 changed_vs_prev=INITIAL
-[REGION] phase=init name=vr4131_safe PA=0x0F000000 size=0x0120 status=OK crc32=0xDEDB12F0 changed_vs_prev=INITIAL
+[REGION] phase=init name=postboot_text PA=0x00679400 size=0x0200 status=OK crc32=0x88B18E86 changed_vs_prev=INITIAL
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0000 size=0x20 data=CA040000C204000001000100140033006E006F007400650073002E0065007800
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0020 size=0x20 data=650000006F007200300000D000000000C6040000CA0400000100010020003400
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0040 size=0x20 data=4D00750073006900630050006C0061007900650072002E006500780065000000
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0060 size=0x20 data=38003000340000D0000000003A0000003800000004001100040050006F007700
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0080 size=0x20 data=650072004F006600660043006800650063006B00540069006D0065001E000000
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x00A0 size=0x20 data=D4A70042580000C0000000003B00000000000000000000003F00000024003500
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x00C0 size=0x20 data=42004400330041004300360030002D0032003900410030002D00310031006400
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x00E0 size=0x20 data=35002D0042004400300033002D00300030003900300043004300300032003200
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0100 size=0x20 data=3000460043006B00240000D0000000003C000000000000000100040010005400
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0120 size=0x20 data=790070006500500052004F00430045005300530000000000280000D000000000
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0140 size=0x20 data=3E0000003C000000010007000E005200650063006F0076006500720052004500
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0160 size=0x20 data=42004F004F00540000000300380000D0000000003F0000003E00000001000B00
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x0180 size=0x20 data=1600500072006F0063006500730073004E0061006D0065006400650076006900
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x01A0 size=0x20 data=630065002E0065007800650000006C00580000C000000000410000003B000000
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x01C0 size=0x20 data=00000000450000002400350042004400330041004300360031002D0032003900
+[REGION_RAW] phase=init name=postboot_text PA=0x00679400 off=0x01E0 size=0x20 data=410030002D0031003100640035002D0042004400300033002D00300030003900
+[REGION] phase=init name=vrc4173_cwin PA=0x0A000C00 size=0x0050 status=OK crc32=0x0E43F36D changed_vs_prev=INITIAL
+[REGION] phase=init name=vr4131_safe PA=0x0F000000 size=0x0120 status=OK crc32=0xB22598D2 changed_vs_prev=INITIAL
 [FOCUS] phase=init label=nand_c30 PA=0x0A000C30 status=OK value=0x0000E000
 [FOCUS] phase=init label=nand_c34 PA=0x0A000C34 status=OK value=0x000001FF
-[FOCUS] phase=init label=nand_c38 PA=0x0A000C38 status=OK value=0x000000A6
+[FOCUS] phase=init label=nand_c38 PA=0x0A000C38 status=OK value=0x0000002E
 [FOCUS] phase=init label=nand_c48 PA=0x0A000C48 status=OK value=0x0000030F
 [FOCUS] phase=init label=nand_c4c PA=0x0A000C4C status=OK value=0x00000000
 [FOCUS] phase=init label=icu_0080 PA=0x0F000080 status=OK value=0x00000004
-[FOCUS] phase=init label=pmu_0100 PA=0x0F000100 status=OK value=0xCBDE805D
+[FOCUS] phase=init label=pmu_0100 PA=0x0F000100 status=OK value=0xD4A12ED8
 [FOCUS] phase=init label=ctx_2220 PA=0x00002220 status=OK value=0x0185F124
 [FOCUS] phase=init label=ctx_2228 PA=0x00002228 status=OK value=0xFFFFD760
 [FOCUS] phase=init label=ctx_2274 PA=0x00002274 status=OK value=0x80096894
@@ -481,13 +498,13 @@ tick_ms=35747 phase=init
 [FOCUS] phase=init label=objhdr_bfc4 PA=0x0066BFC4 status=OK value=0x80078BA0
 [FOCUS] phase=init label=objhdr_bfc8 PA=0x0066BFC8 status=OK value=0x800A4978
 [FOCUS] phase=init label=objhdr_bfcc PA=0x0066BFCC status=OK value=0x8008AE98
-[FOCUS] phase=init label=resume_glob_94ec PA=0x006794EC status=OK value=0x00300041
-[FOCUS] phase=init label=resume_glob_94f0 PA=0x006794F0 status=OK value=0x0031002D
-[FOCUS] phase=init label=resume_glob_94f4 PA=0x006794F4 status=OK value=0x00640031
-[FOCUS] phase=init label=resume_glob_94f8 PA=0x006794F8 status=OK value=0x002D0035
+[FOCUS] phase=init label=resume_glob_94ec PA=0x006794EC status=OK value=0x0030002D
+[FOCUS] phase=init label=resume_glob_94f0 PA=0x006794F0 status=OK value=0x00390030
+[FOCUS] phase=init label=resume_glob_94f4 PA=0x006794F4 status=OK value=0x00430030
+[FOCUS] phase=init label=resume_glob_94f8 PA=0x006794F8 status=OK value=0x00300043
 [REG_KEY] phase=init path="HKLM\Drivers\Active" status=OK
 [REG_SUBKEY] phase=init path="HKLM\Drivers\Active\17"
-[REG_VALUE] phase=init path="Drivers\Active\17" name="Hnd" data=DWORD(0x000E0B30)
+[REG_VALUE] phase=init path="Drivers\Active\17" name="Hnd" data=DWORD(0x000DF358)
 [REG_VALUE] phase=init path="Drivers\Active\17" name="Name" data=STR("DSK2:")
 [REG_VALUE] phase=init path="Drivers\Active\17" name="ClientInfo" data=DWORD(0x00000000)
 [REG_VALUE] phase=init path="Drivers\Active\17" name="Sckt" data=TYPE=4 SIZE=2
@@ -576,7 +593,7 @@ tick_ms=35747 phase=init
 [REG_KEY] phase=init path="HKLM\Drivers\BuiltIn" status=OK
 [REG_SUBKEY] phase=init path="HKLM\Drivers\BuiltIn\BEDiag"
 [REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="BEDiagWorkerStarted" data=DWORD(0x00000001)
-[REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="BEDiagInitTick" data=DWORD(0x00008B98)
+[REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="BEDiagInitTick" data=DWORD(0x00006532)
 [REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="BEDiagLoaded" data=DWORD(0x00000001)
 [REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="BEDiagLastStatus" data=STR("ABORTED")
 [REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="Order" data=DWORD(0x00000001)
@@ -693,19 +710,19 @@ tick_ms=35747 phase=init
 [REG_SUBKEY] phase=init path="HKLM\Drivers\BuiltIn\BDGMini"
 [REG_KEY] phase=init path="HKLM\System\StorageManager\Profiles" open_failed=87
 [REG_KEY] phase=init path="HKLM\System\StorageManager\AutoLoad" open_failed=87
-[BEDIAG_STAGE] build=hwseed1 stage=snapshot_init_done tick_ms=36024 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
+[BEDIAG_STAGE] build=hwseed2 stage=snapshot_init_done tick_ms=26204 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
 
 --- DRIVER STATE ---
-build=hwseed1
-tick_ms=37035
-init_tick_ms=35736
-worker_started=1 worker_thread_id=2161257458 stop_requested=1
+build=hwseed2
+tick_ms=27216
+init_tick_ms=25906
+worker_started=1 worker_thread_id=2161489118 stop_requested=1
 active_key="Drivers\BuiltIn\BEDiag"
 serial_status=UNAVAILABLE serial_open_error=55 serial_retried=1
 file_status=OPEN file_path="\Windows\BEDiag_boot.txt"
-backlog_used=85651 backlog_overflow=0
+backlog_used=88050 backlog_overflow=0
 
 --- BEDIAG DONE ---
-tick_ms=37043
+tick_ms=27222
 status=ABORTED
-[BEDIAG_STAGE] build=hwseed1 stage=done tick_ms=37043 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" status=ABORTED serial_open_failed=55 retried=1
+[BEDIAG_STAGE] build=hwseed2 stage=done tick_ms=27223 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" status=ABORTED serial_open_failed=55 retried=1
