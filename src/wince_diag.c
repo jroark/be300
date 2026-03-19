@@ -462,6 +462,93 @@ static void wince_div_log_resume_globals(machine_t *m, uc_engine *uc,
             (uint32_t)v0);
 }
 
+void log_wince_midbody_9c_state(machine_t *m, uc_engine *uc,
+                                const char *reason, uint32_t pc_hint)
+{
+    uint64_t reg_pc = 0, sp = 0, ra = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    uint64_t v0 = 0, s0 = 0, s1 = 0, s2 = 0, t0 = 0, t2 = 0;
+    uint64_t k0 = 0, gp = 0, fp = 0, status = 0;
+    uint32_t pc32, sp32, ra32, s032, a032, a232, t032;
+    uint32_t pending_epc = 0, pending_cause = 0;
+    char s0_2b8_desc[64], s0_2bc_desc[64], s0_2c0_desc[64], s0_2c4_desc[64], s0_2c8_desc[64];
+    char sp_20_desc[64], sp_24_desc[64], sp_28_desc[64], sp_2c_desc[64];
+    char a0_desc[64], a2_desc[64], t0_desc[64];
+    char s0_page_desc[64], sp_page_desc[64];
+
+    if (!m || !uc || !reason)
+        return;
+
+    uc_reg_read(uc, UC_MIPS_REG_PC, &reg_pc);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    uc_reg_read(uc, UC_MIPS_REG_S2, &s2);
+    uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+    uc_reg_read(uc, UC_MIPS_REG_T2, &t2);
+    uc_reg_read(uc, UC_MIPS_REG_K0, &k0);
+    uc_reg_read(uc, UC_MIPS_REG_GP, &gp);
+    uc_reg_read(uc, UC_MIPS_REG_FP, &fp);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+    pc32 = pc_hint ? pc_hint : (uint32_t)reg_pc;
+    sp32 = (uint32_t)sp;
+    ra32 = (uint32_t)ra;
+    s032 = (uint32_t)s0;
+    a032 = (uint32_t)a0;
+    a232 = (uint32_t)a2;
+    t032 = (uint32_t)t0;
+    pending_epc = m->pending_epc;
+    pending_cause = m->pending_cause;
+
+    wince_diag_format_va_word(m, uc, s032 + UINT32_C(0x000002B8), s0_2b8_desc, sizeof(s0_2b8_desc));
+    wince_diag_format_va_word(m, uc, s032 + UINT32_C(0x000002BC), s0_2bc_desc, sizeof(s0_2bc_desc));
+    wince_diag_format_va_word(m, uc, s032 + UINT32_C(0x000002C0), s0_2c0_desc, sizeof(s0_2c0_desc));
+    wince_diag_format_va_word(m, uc, s032 + UINT32_C(0x000002C4), s0_2c4_desc, sizeof(s0_2c4_desc));
+    wince_diag_format_va_word(m, uc, s032 + UINT32_C(0x000002C8), s0_2c8_desc, sizeof(s0_2c8_desc));
+    wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x00000020), sp_20_desc, sizeof(sp_20_desc));
+    wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x00000024), sp_24_desc, sizeof(sp_24_desc));
+    wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x00000028), sp_28_desc, sizeof(sp_28_desc));
+    wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x0000002C), sp_2c_desc, sizeof(sp_2c_desc));
+    wince_diag_format_va_word(m, uc, a032, a0_desc, sizeof(a0_desc));
+    wince_diag_format_va_word(m, uc, a232, a2_desc, sizeof(a2_desc));
+    wince_diag_format_va_word(m, uc, t032, t0_desc, sizeof(t0_desc));
+    wince_diag_format_va_word(m, uc, s032 & UINT32_C(0xFFFFF000), s0_page_desc, sizeof(s0_page_desc));
+    wince_diag_format_va_word(m, uc, sp32 & UINT32_C(0xFFFFF000), sp_page_desc, sizeof(sp_page_desc));
+
+    fprintf(stderr,
+            "[WINCE_DIV_9C_STATE] reason=%s pc=0x%08X reg_pc=0x%08X"
+            " ra=0x%08X sp=0x%08X s0=0x%08X s1=0x%08X s2=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+            " v0=0x%08X t0=0x%08X t2=0x%08X k0=0x%08X gp=0x%08X fp=0x%08X"
+            " status=0x%08X pending_epc=0x%08X pending_cause=0x%08X\n",
+            reason, pc32, (uint32_t)reg_pc,
+            ra32, sp32, s032, (uint32_t)s1, (uint32_t)s2,
+            a032, (uint32_t)a1, a232, (uint32_t)a3,
+            (uint32_t)v0, t032, (uint32_t)t2, (uint32_t)k0,
+            (uint32_t)gp, (uint32_t)fp,
+            (uint32_t)status, pending_epc, pending_cause);
+
+    fprintf(stderr,
+            "[WINCE_DIV_9C_WINDOW] reason=%s"
+            " s0_page=%s sp_page=%s"
+            " s0_2b8=%s s0_2bc=%s s0_2c0=%s s0_2c4=%s s0_2c8=%s"
+            " sp_20=%s sp_24=%s sp_28=%s sp_2c=%s"
+            " a0_ptr=%s a2_ptr=%s t0_ptr=%s\n",
+            reason,
+            s0_page_desc, sp_page_desc,
+            s0_2b8_desc, s0_2bc_desc, s0_2c0_desc, s0_2c4_desc, s0_2c8_desc,
+            sp_20_desc, sp_24_desc, sp_28_desc, sp_2c_desc,
+            a0_desc, a2_desc, t0_desc);
+
+    wince_div_log_resume_globals(m, uc, "WINCE_DIV_9C_GLOBALS", pc32, sp32, ra32);
+}
+
 static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t phase)
 {
     if (!m || !uc || phase >= WINCE_DIV_STACK_PHASE_COUNT)
@@ -2222,6 +2309,14 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                     }
                     free(nk_buf);
                 }
+            }
+        }
+
+        if (pc32 == 0x8009689Cu) {
+            static uint32_t midbody_9c_logs = 0;
+            if (midbody_9c_logs < 16u) {
+                log_wince_midbody_9c_state(m, uc, "TRACE_9C", pc32);
+                midbody_9c_logs++;
             }
         }
 

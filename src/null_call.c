@@ -201,9 +201,16 @@ bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
                     intno, ra32, m->wince_null_consecutive,
                     WINCE_NULL_RECOVER_CAP, (uint64_t)(uint32_t)status);
             log_wince_pa_watch_nonzero(m, "NULL_BAILOUT");
+            log_wince_pa_watch_summary(m, "NULL_BAILOUT");
             log_wince_region_track_summary(m, "NULL_BAILOUT");
             log_wince_div_hist_summary(m, "NULL_BAILOUT", 32u);
             log_wince_div_call_trace_summary(m, "NULL_BAILOUT");
+            log_wince_div_stack_watch_summary(m, uc, "NULL_BAILOUT");
+            log_wince_null_mmio_tail(m, 24u);
+            log_wince_producer_summary(m, "NULL_BAILOUT");
+            log_wince_resume_global_summary(m, uc, "NULL_BAILOUT");
+            log_wince_delay_call_summary(m, "NULL_BAILOUT");
+            log_wince_midbody_9c_state(m, uc, "NULL_BAILOUT", m->last_exec_pc);
             machine_stop(m);
             uc_emu_stop(uc);
             return true;
