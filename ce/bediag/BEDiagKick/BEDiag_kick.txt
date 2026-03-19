@@ -1,4 +1,4 @@
-[BEDIAG_KICK] build=builtinref1 mode=bediag select=default tick_ms=31516 key="Drivers\BuiltIn\BEDiag" boot_log_before=0
+[BEDIAG_KICK] build=builtinref1 mode=bediag select=default tick_ms=21706 key="Drivers\BuiltIn\BEDiag" boot_log_before=0
 [BEDIAG_KICK] reg_key_exists=yes
 [BEDIAG_KICK] reg_dll_present=yes
 [BEDIAG_KICK] reg_dll="\Nand Disk\Program Files\Patch\BEDiag.dll"
@@ -10,7 +10,7 @@
 [BEDIAG_KICK] reg_order=1
 [BEDIAG_KICK] dll_exists=yes path="\Nand Disk\Program Files\Patch\BEDiag.dll"
 [BEDIAG_KICK] active_key_before=NONE
-[BEDIAG_KICK] loadlibrary=yes handle=0x80D78000 last_error=0
+[BEDIAG_KICK] loadlibrary=yes handle=0x80DC3E24 last_error=0
 [BEDIAG_KICK] loadlibrary_path="\Nand Disk\Program Files\Patch\BEDiag.dll"
 [BEDIAG_KICK] export_BDG_Init=yes proc=0x01753210
 [BEDIAG_KICK] export_BDG_Deinit=yes proc=0x017530D0
@@ -63,17 +63,17 @@
 [BEDIAG_KICK] phase=direct_init_nullctx boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
 [BEDIAG_KICK] phase=direct_init_nullctx breadcrumbs_before key_present=yes loaded_present=yes loaded=1 init_tick_present=yes init_tick=72494 worker_present=yes worker=1 status_present=yes status="ABORTED"
 [BEDIAG_KICK] phase=direct_init_nullctx init_context=0x00000000 context_path="<none>"
-[BEDIAG_KICK] phase=direct_init_nullctx init_ret=0x017F4148
+[BEDIAG_KICK] phase=direct_init_nullctx init_ret=0x017F7178
 [BEDIAG_KICK] phase=direct_init_nullctx deinit_ret=yes last_error=0
 [BEDIAG_KICK] phase=direct_init_nullctx boot_log_after=1
-[BEDIAG_KICK] phase=direct_init_nullctx breadcrumbs_after key_present=yes loaded_present=yes loaded=1 init_tick_present=yes init_tick=34344 worker_present=yes worker=1 status_present=yes status="ABORTED"
+[BEDIAG_KICK] phase=direct_init_nullctx breadcrumbs_after key_present=yes loaded_present=yes loaded=1 init_tick_present=yes init_tick=24520 worker_present=yes worker=1 status_present=yes status="ABORTED"
 [BEDIAG_KICK] phase=direct_init_nullctx end
 [BEDIAG_KICK] phase=direct_init_builtinctx begin
 [BEDIAG_KICK] phase=direct_init_builtinctx boot_log_before=1 delete_attempted=1 delete_ok=1 delete_err=0
-[BEDIAG_KICK] phase=direct_init_builtinctx breadcrumbs_before key_present=yes loaded_present=yes loaded=1 init_tick_present=yes init_tick=34344 worker_present=yes worker=1 status_present=yes status="ABORTED"
+[BEDIAG_KICK] phase=direct_init_builtinctx breadcrumbs_before key_present=yes loaded_present=yes loaded=1 init_tick_present=yes init_tick=24520 worker_present=yes worker=1 status_present=yes status="ABORTED"
 [BEDIAG_KICK] phase=direct_init_builtinctx init_context=0x000150B8 context_path="Drivers\BuiltIn\BEDiag"
-[BEDIAG_KICK] phase=direct_init_builtinctx init_ret=0x017F4148
+[BEDIAG_KICK] phase=direct_init_builtinctx init_ret=0x017F7178
 [BEDIAG_KICK] phase=direct_init_builtinctx deinit_ret=yes last_error=0
 [BEDIAG_KICK] phase=direct_init_builtinctx boot_log_after=1
-[BEDIAG_KICK] phase=direct_init_builtinctx breadcrumbs_after key_present=yes loaded_present=yes loaded=1 init_tick_present=yes init_tick=35736 worker_present=yes worker=1 status_present=yes status="ABORTED"
+[BEDIAG_KICK] phase=direct_init_builtinctx breadcrumbs_after key_present=yes loaded_present=yes loaded=1 init_tick_present=yes init_tick=25906 worker_present=yes worker=1 status_present=yes status="ABORTED"
 [BEDIAG_KICK] phase=direct_init_builtinctx end
