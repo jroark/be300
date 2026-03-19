@@ -118,7 +118,7 @@ typedef struct {
     uint64_t last_value;
 } wince_pa_watch_t;
 
-#define WINCE_REGION_TRACK_COUNT 4u
+#define WINCE_REGION_TRACK_COUNT 5u
 typedef struct {
     uint32_t start_pa;
     uint32_t end_pa; /* exclusive */
