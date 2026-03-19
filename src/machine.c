@@ -704,6 +704,158 @@ static bool decode_load_source_va(machine_t *m, uint64_t pc, uint32_t *source_va
 }
 
 /*
+ * Populate a kseg2/kseg3 VA leaf directly from the shadow TLB translation.
+ * This is the kernel-mapped analogue of shadow_tlb_populate(), used when
+ * kernel code faults on high VAs like 0xFFFFxxxx that Unicorn leaves unmapped.
+ */
+static bool shadow_tlb_populate_kernel_mapped(machine_t *m, uint32_t va,
+                                              const char *tag,
+                                              uint32_t pc_hint)
+{
+    uint32_t best_idx = 0xFFFFFFFFu;
+    uint32_t best_seq = 0u;
+    uint32_t entryhi = 0, lo0 = 0, lo1 = 0, pagemask = 0;
+    uint32_t entryhi_vpn2 = 0;
+    uint8_t entryhi_asid = 0;
+    bool current_asid_valid = false;
+    uint8_t current_asid = 0;
+    uint64_t page_bytes = 0, pa_page = 0, va_page = 0;
+    const char *reason = "init";
+    bool odd_page = false;
+    uint32_t lo = 0;
+
+    if (!m || !tag || va < 0xC0000000u) {
+        return false;
+    }
+
+    current_asid_valid = m->shadow_cp0_entryhi_live_valid;
+    current_asid = (uint8_t)(m->shadow_cp0_entryhi_live & 0xFFu);
+
+    for (uint32_t i = 0; i < 64u; i++) {
+        if (!m->shadow_tlb_valid[i])
+            continue;
+        if (!tlb_entry_matches_va(va, m->shadow_tlb_entryhi[i],
+                                  m->shadow_tlb_pagemask[i]))
+            continue;
+        if (m->shadow_tlb_seq[i] >= best_seq) {
+            best_seq = m->shadow_tlb_seq[i];
+            best_idx = i;
+        }
+    }
+
+    if (best_idx == 0xFFFFFFFFu) {
+        reason = "vpn2_mismatch";
+        goto skip;
+    }
+
+    entryhi = m->shadow_tlb_entryhi[best_idx];
+    lo0 = m->shadow_tlb_lo0[best_idx];
+    lo1 = m->shadow_tlb_lo1[best_idx];
+    pagemask = m->shadow_tlb_pagemask[best_idx];
+    entryhi_vpn2 = entryhi & 0xFFFFE000u;
+    entryhi_asid = (uint8_t)(entryhi & 0xFFu);
+
+    page_bytes = tlb_leaf_bytes_from_pagemask(pagemask);
+    if (page_bytes < 0x1000u) {
+        reason = "invalid_page_bytes";
+        goto skip;
+    }
+
+    odd_page = (((uint64_t)va & page_bytes) != 0u);
+    lo = odd_page ? lo1 : lo0;
+    if ((lo & 0x2u) == 0u) {
+        reason = odd_page ? "lo1_invalid" : "lo0_invalid";
+        goto skip;
+    }
+
+    {
+        bool global_pair = ((lo0 & 0x1u) != 0u) && ((lo1 & 0x1u) != 0u);
+        bool asid_ok = global_pair || !current_asid_valid ||
+                       (entryhi_asid == current_asid);
+        if (!asid_ok) {
+            reason = "asid_mismatch";
+            goto skip;
+        }
+        if (!global_pair && !current_asid_valid)
+            reason = "asid_unchecked";
+    }
+
+    {
+        uint64_t pfn = (uint64_t)((lo >> 6) & 0xFFFFFu);
+        pa_page = (pfn << 10) & ~(page_bytes - 1u);
+        if (pa_page >= (uint64_t)m->cfg.sdram_size) {
+            reason = "pa_out_of_range";
+            goto skip;
+        }
+    }
+
+    va_page = (uint64_t)va & ~(page_bytes - 1u);
+
+    {
+        uc_err me = uc_mem_map(m->uc, va_page, page_bytes, UC_PROT_ALL);
+        bool premap = (me == UC_ERR_MAP);
+        if (premap)
+            me = uc_mem_protect(m->uc, va_page, page_bytes, UC_PROT_ALL);
+        if (me != UC_ERR_OK) {
+            reason = "map_fail";
+            goto skip;
+        }
+
+        uint8_t buf[4096];
+        for (uint64_t off = 0; off < page_bytes; off += sizeof(buf)) {
+            uint64_t pa_off = pa_page + off;
+            bool got_data = false;
+            if (pa_off < (uint64_t)m->cfg.sdram_size) {
+                uint64_t kseg0_addr = UINT64_C(0x80000000) + pa_off;
+                if (uc_mem_read(m->uc, kseg0_addr, buf, sizeof(buf)) == UC_ERR_OK)
+                    got_data = true;
+            }
+            if (!got_data && pa_off < (uint64_t)m->cfg.sdram_size) {
+                if (uc_mem_read(m->uc, pa_off, buf, sizeof(buf)) == UC_ERR_OK)
+                    got_data = true;
+            }
+            if (!got_data)
+                memset(buf, 0, sizeof(buf));
+            uc_mem_write(m->uc, va_page + off, buf, sizeof(buf));
+        }
+
+        static uint32_t ok_log = 0;
+        if (ok_log++ < 128u) {
+            fprintf(stderr,
+                    "[%s_POPULATE] va=0x%08X pc=0x%08X pa=0x%08" PRIX64
+                    " bytes=0x%08" PRIX64 " src=tlb:%u reason=%s"
+                    " entryhi=0x%08X lo0=0x%08X lo1=0x%08X mask=0x%08X"
+                    " premap=%u\n",
+                    tag, va, pc_hint, pa_page, page_bytes, best_idx, reason,
+                    entryhi, lo0, lo1, pagemask, premap ? 1u : 0u);
+        }
+        return true;
+    }
+
+skip:
+    {
+        static uint32_t skip_log = 0;
+        if (skip_log++ < 128u) {
+            fprintf(stderr,
+                    "[%s_SKIP] va=0x%08X pc=0x%08X reason=%s src=%s%u"
+                    " entryhi=0x%08X vpn2=0x%08X lo0=0x%08X lo1=0x%08X"
+                    " mask=0x%08X asid=0x%02X cur_asid=%s0x%02X"
+                    " ctx=0x%08X badv=0x%08X\n",
+                    tag, va, pc_hint, reason,
+                    (best_idx == 0xFFFFFFFFu) ? "none:" : "tlb:",
+                    (best_idx == 0xFFFFFFFFu) ? 0u : best_idx,
+                    entryhi, entryhi_vpn2, lo0, lo1, pagemask,
+                    (unsigned)entryhi_asid,
+                    current_asid_valid ? "" : "?",
+                    (unsigned)current_asid,
+                    (uint32_t)m->shadow_cp0_context,
+                    (uint32_t)m->shadow_cp0_badvaddr);
+        }
+    }
+    return false;
+}
+
+/*
  * Inject a TLBS (TLB store miss) exception for a kernel-mode store to
  * an unmapped kuseg VA. Sets up shadow CP0 state (BadVAddr, EntryHi,
  * Context), saves any existing exception state, and redirects PC to
@@ -6503,11 +6655,18 @@ void machine_run(machine_t *m)
                 uint64_t s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
                 uint64_t gp = 0, fp = 0, ra = 0;
                 uc_mem_type fault_type = (uc_mem_type)0;
+                uint32_t decoded_load_va = 0;
+                bool decoded_load_valid = false;
                 if (m->last_unmapped_valid) {
                     badv = m->last_unmapped_addr;
                     fault_type = m->last_unmapped_type;
                 } else if (m->shadow_cp0_badvaddr != 0) {
                     badv = m->shadow_cp0_badvaddr;
+                }
+                if ((uint32_t)bad_pc >= 0x80000000u) {
+                    decoded_load_valid = decode_load_source_va(m, bad_pc, &decoded_load_va);
+                    if (decoded_load_valid && badv == 0u)
+                        badv = decoded_load_va;
                 }
                 /*
                  * Kernel-mode TLBL injection for kuseg reads.
@@ -6518,8 +6677,9 @@ void machine_run(machine_t *m)
                  */
                 if (m->kernel_vm_ready && (uint32_t)bad_pc >= 0x80000000u) {
                     uint32_t load_va = 0;
-                    if (decode_load_source_va(m, bad_pc, &load_va) &&
-                        load_va < 0x80000000u) {
+                    if (decoded_load_valid)
+                        load_va = decoded_load_va;
+                    if (decoded_load_valid && load_va < 0x80000000u) {
                         tlb_lookup_result_t rd = shadow_tlb_lookup(m, load_va);
                         if (rd.hit && rd.confident) {
                             /* Populate from SDRAM and retry */
@@ -6534,6 +6694,13 @@ void machine_run(machine_t *m)
                                 m->last_unmapped_valid = false;
                                 continue;
                             }
+                        }
+                    } else if (decoded_load_valid && load_va >= 0xC0000000u) {
+                        if (shadow_tlb_populate_kernel_mapped(m, load_va,
+                                                              "KLOAD_KMAPPED",
+                                                              (uint32_t)bad_pc)) {
+                            m->last_unmapped_valid = false;
+                            continue;
                         }
                     }
                 }
