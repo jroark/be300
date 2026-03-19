@@ -329,6 +329,7 @@ bool handle_wince_null_call_interrupt(machine_t *m, uc_engine *uc,
     log_wince_div_stack_watch_summary(m, uc, "NULL_POSTMORTEM");
     log_wince_null_mmio_tail(m, 24u);
     log_wince_producer_summary(m, "NULL_POSTMORTEM");
+    log_wince_resume_global_summary(m, uc, "NULL_POSTMORTEM");
     log_wince_obj_bootstrap_summary(m, "NULL_POSTMORTEM");
     log_wince_delay_call_summary(m, "NULL_POSTMORTEM");
 

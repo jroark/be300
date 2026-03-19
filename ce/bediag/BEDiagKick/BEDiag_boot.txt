@@ -1,31 +1,31 @@
-[BEDIAG_STAGE] build=activationproof1 stage=init_enter tick_ms=66044 context=0x00013070 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
-[BEDIAG_STAGE] build=activationproof1 stage=worker_created tick_ms=66046 context=0x00013070 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
+[BEDIAG_STAGE] build=activationproof1 stage=init_enter tick_ms=179597 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
+[BEDIAG_STAGE] build=activationproof1 stage=worker_created tick_ms=179599 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
 [BEDIAG] serial_open_failed err=0 retried=0
 
 --- BEDIAG INIT ---
-tick_ms=66051
-context=0x00013070
+tick_ms=179604
+context=0x000150B8
 active_key="Drivers\BuiltIn\BEDiag"
 
 --- SNAPSHOT INIT ---
-tick_ms=66053 phase=init
-[REGION] phase=init name=resume_ctx PA=0x00002200 size=0x0100 status=OK crc32=0xC4A692DB changed_vs_prev=INITIAL
+tick_ms=179606 phase=init
+[REGION] phase=init name=resume_ctx PA=0x00002200 size=0x0100 status=OK crc32=0xC43DD503 changed_vs_prev=INITIAL
 [REGION] phase=init name=bootctx PA=0x00006000 size=0x1000 status=OK crc32=0xC3C5B55A changed_vs_prev=INITIAL
-[REGION] phase=init name=bootparam0 PA=0x0001D000 size=0x1000 status=OK crc32=0x76E36DD8 changed_vs_prev=INITIAL
+[REGION] phase=init name=bootparam0 PA=0x0001D000 size=0x1000 status=OK crc32=0x5BB01067 changed_vs_prev=INITIAL
 [REGION] phase=init name=bootparam1 PA=0x0002D000 size=0x1000 status=OK crc32=0xC71C0011 changed_vs_prev=INITIAL
 [REGION] phase=init name=cb_tbl PA=0x00051680 size=0x0480 status=OK crc32=0xF4770F8F changed_vs_prev=INITIAL
-[REGION] phase=init name=objptr PA=0x00660000 size=0x0040 status=OK crc32=0x35BE13B1 changed_vs_prev=INITIAL
+[REGION] phase=init name=objptr PA=0x00660000 size=0x0040 status=OK crc32=0x3C5CF5DD changed_vs_prev=INITIAL
 [REGION] phase=init name=obj_header PA=0x0066BFC0 size=0x0020 status=OK crc32=0xE52D7114 changed_vs_prev=INITIAL
-[REGION] phase=init name=postboot_text PA=0x00679400 size=0x0200 status=OK crc32=0x99484A25 changed_vs_prev=INITIAL
-[REGION] phase=init name=vrc4173_cwin PA=0x0A000C00 size=0x0050 status=OK crc32=0x8CAC2B6A changed_vs_prev=INITIAL
-[REGION] phase=init name=vr4131_safe PA=0x0F000000 size=0x0120 status=OK crc32=0x24173043 changed_vs_prev=INITIAL
+[REGION] phase=init name=postboot_text PA=0x00679400 size=0x0200 status=OK crc32=0x7CA49F34 changed_vs_prev=INITIAL
+[REGION] phase=init name=vrc4173_cwin PA=0x0A000C00 size=0x0050 status=OK crc32=0x10D25F9E changed_vs_prev=INITIAL
+[REGION] phase=init name=vr4131_safe PA=0x0F000000 size=0x0120 status=OK crc32=0x943348BB changed_vs_prev=INITIAL
 [FOCUS] phase=init label=nand_c30 PA=0x0A000C30 status=OK value=0x0000E000
 [FOCUS] phase=init label=nand_c34 PA=0x0A000C34 status=OK value=0x000001FF
-[FOCUS] phase=init label=nand_c38 PA=0x0A000C38 status=OK value=0x000000B8
+[FOCUS] phase=init label=nand_c38 PA=0x0A000C38 status=OK value=0x000000A7
 [FOCUS] phase=init label=nand_c48 PA=0x0A000C48 status=OK value=0x0000030F
 [FOCUS] phase=init label=nand_c4c PA=0x0A000C4C status=OK value=0x00000000
 [FOCUS] phase=init label=icu_0080 PA=0x0F000080 status=OK value=0x00000004
-[FOCUS] phase=init label=pmu_0100 PA=0x0F000100 status=OK value=0x7F093023
+[FOCUS] phase=init label=pmu_0100 PA=0x0F000100 status=OK value=0xB8F9FC1D
 [FOCUS] phase=init label=ctx_2220 PA=0x00002220 status=OK value=0x0185F124
 [FOCUS] phase=init label=ctx_2228 PA=0x00002228 status=OK value=0xFFFFD760
 [FOCUS] phase=init label=ctx_2274 PA=0x00002274 status=OK value=0x80096894
@@ -36,7 +36,7 @@ tick_ms=66053 phase=init
 [FOCUS] phase=init label=objhdr_bfcc PA=0x0066BFCC status=OK value=0x8008AE98
 [REG_KEY] phase=init path="HKLM\Drivers\Active" status=OK
 [REG_SUBKEY] phase=init path="HKLM\Drivers\Active\17"
-[REG_VALUE] phase=init path="Drivers\Active\17" name="Hnd" data=DWORD(0x000DF730)
+[REG_VALUE] phase=init path="Drivers\Active\17" name="Hnd" data=DWORD(0x000E0E50)
 [REG_VALUE] phase=init path="Drivers\Active\17" name="Name" data=STR("DSK2:")
 [REG_VALUE] phase=init path="Drivers\Active\17" name="ClientInfo" data=DWORD(0x00000000)
 [REG_VALUE] phase=init path="Drivers\Active\17" name="Sckt" data=TYPE=4 SIZE=2
@@ -125,7 +125,7 @@ tick_ms=66053 phase=init
 [REG_KEY] phase=init path="HKLM\Drivers\BuiltIn" status=OK
 [REG_SUBKEY] phase=init path="HKLM\Drivers\BuiltIn\BEDiag"
 [REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="BEDiagWorkerStarted" data=DWORD(0x00000001)
-[REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="BEDiagInitTick" data=DWORD(0x000101FA)
+[REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="BEDiagInitTick" data=DWORD(0x0002BD8C)
 [REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="BEDiagLoaded" data=DWORD(0x00000001)
 [REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="BEDiagLastStatus" data=STR("ABORTED")
 [REG_VALUE] phase=init path="Drivers\BuiltIn\BEDiag" name="Order" data=DWORD(0x00000001)
@@ -239,21 +239,22 @@ tick_ms=66053 phase=init
 [REG_VALUE] phase=init path="Drivers\BuiltIn\NDIS" name="Index" data=DWORD(0x00000000)
 [REG_VALUE] phase=init path="Drivers\BuiltIn\NDIS" name="Prefix" data=STR("NDS")
 [REG_VALUE] phase=init path="Drivers\BuiltIn\NDIS" name="Dll" data=STR("NDIS.Dll")
+[REG_SUBKEY] phase=init path="HKLM\Drivers\BuiltIn\BDGMini"
 [REG_KEY] phase=init path="HKLM\System\StorageManager\Profiles" open_failed=87
 [REG_KEY] phase=init path="HKLM\System\StorageManager\AutoLoad" open_failed=87
-[BEDIAG_STAGE] build=activationproof1 stage=snapshot_init_done tick_ms=66151 context=0x00013070 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
+[BEDIAG_STAGE] build=activationproof1 stage=snapshot_init_done tick_ms=179705 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
 
 --- DRIVER STATE ---
 build=activationproof1
-tick_ms=67162
-init_tick_ms=66042
-worker_started=1 worker_thread_id=2161339602 stop_requested=1
+tick_ms=180717
+init_tick_ms=179596
+worker_started=1 worker_thread_id=2161528146 stop_requested=1
 active_key="Drivers\BuiltIn\BEDiag"
 serial_status=UNAVAILABLE serial_open_error=55 serial_retried=1
 file_status=OPEN file_path="\Windows\BEDiag_boot.txt"
-backlog_used=20516 backlog_overflow=0
+backlog_used=20584 backlog_overflow=0
 
 --- BEDIAG DONE ---
-tick_ms=67167
+tick_ms=180722
 status=ABORTED
-[BEDIAG_STAGE] build=activationproof1 stage=done tick_ms=67168 context=0x00013070 active_key="Drivers\BuiltIn\BEDiag" status=ABORTED serial_open_failed=55 retried=1
+[BEDIAG_STAGE] build=activationproof1 stage=done tick_ms=180723 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" status=ABORTED serial_open_failed=55 retried=1

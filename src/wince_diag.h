@@ -160,6 +160,12 @@ void maybe_probe_wince_obj_late_writer(machine_t *m, uc_engine *uc,
                                        uint32_t pc32, uint32_t insn);
 void maybe_probe_wince_delay_call_frame(machine_t *m, uc_engine *uc,
                                         uint32_t pc32, uint32_t insn);
+void maybe_record_wince_delay_touch(machine_t *m, bool is_write,
+                                    bool is_mmio, uint32_t pa,
+                                    unsigned size, uint64_t value,
+                                    uint32_t pc);
 void log_wince_producer_summary(const machine_t *m, const char *reason);
 void log_wince_obj_bootstrap_summary(const machine_t *m, const char *reason);
 void log_wince_delay_call_summary(const machine_t *m, const char *reason);
+void log_wince_resume_global_summary(const machine_t *m, uc_engine *uc,
+                                     const char *reason);

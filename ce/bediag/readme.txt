@@ -186,6 +186,21 @@ Fallback manual path:
 3. Soft reset the BE-300.
 4. Run BEDiagKick.exe if there is still no BEDiag_boot.txt.
 
+Hardware seed capture
+---------------------
+The current BEDiag build also emits `[REGION_RAW]` lines for the init snapshot
+of the key RAM families used by the emulator replay path. After copying
+`\Windows\BEDiag_boot.txt` back to the repo, regenerate the emulator seed header
+with:
+
+  python3 tools/extract_wince_hw_seed.py \
+      ce/bediag/BEDiagKick/BEDiag_boot.txt \
+      src/wince_hw_seed_data.h
+
+If the boot file does not yet contain `[REGION_RAW]` lines, the extractor will
+emit an empty header and `--wince-hw-seed` will be a no-op until a fresh device
+capture is produced.
+
 Interpretation
 --------------
 Use the first boot with BEDiag to decide whether the emulator gap is:

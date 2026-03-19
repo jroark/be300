@@ -14,10 +14,11 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "activationproof1"
+#define BEDIAG_BUILD_TAG         "hwseed1"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
+#define BEDIAG_RAW_CHUNK_SIZE    32u
 enum snapshot_phase_t {
     PHASE_INIT = 0,
     PHASE_PLUS1S = 1,
@@ -29,6 +30,7 @@ typedef struct {
     const char *name;
     DWORD base;
     DWORD size;
+    BOOL emit_raw;
     BOOL ok[PHASE_COUNT];
     DWORD crc[PHASE_COUNT];
     BYTE data[PHASE_COUNT][BEDIAG_MAX_REGION_SIZE];
@@ -56,16 +58,16 @@ static const char *g_phase_names[PHASE_COUNT] = {
 };
 
 static bediag_region_t g_regions[] = {
-    { "resume_ctx",    0x00002200u, 0x0100u, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "bootctx",       0x00006000u, 0x1000u, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "bootparam0",    0x0001D000u, 0x1000u, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "bootparam1",    0x0002D000u, 0x1000u, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "cb_tbl",        0x00051680u, 0x0480u, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "objptr",        0x00660000u, 0x0040u, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "obj_header",    0x0066BFC0u, 0x0020u, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "postboot_text", 0x00679400u, 0x0200u, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "vrc4173_cwin",  0x0A000C00u, 0x0050u, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "vr4131_safe",   0x0F000000u, 0x0120u, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
+    { "resume_ctx",    0x00002200u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "bootctx",       0x00006000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "bootparam0",    0x0001D000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "bootparam1",    0x0002D000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "cb_tbl",        0x00051680u, 0x0480u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "objptr",        0x00660000u, 0x0040u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "obj_header",    0x0066BFC0u, 0x0020u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "postboot_text", 0x00679400u, 0x0200u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "vrc4173_cwin",  0x0A000C00u, 0x0050u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "vr4131_safe",   0x0F000000u, 0x0120u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
 };
 
 static const focus_word_t g_focus_words[] = {
@@ -83,7 +85,11 @@ static const focus_word_t g_focus_words[] = {
     { 0x0066BFC0u, "objhdr_bfc0" },
     { 0x0066BFC4u, "objhdr_bfc4" },
     { 0x0066BFC8u, "objhdr_bfc8" },
-    { 0x0066BFCCu, "objhdr_bfcc" }
+    { 0x0066BFCCu, "objhdr_bfcc" },
+    { 0x006794ECu, "resume_glob_94ec" },
+    { 0x006794F0u, "resume_glob_94f0" },
+    { 0x006794F4u, "resume_glob_94f4" },
+    { 0x006794F8u, "resume_glob_94f8" }
 };
 
 static bediag_driver_t g_driver;
@@ -545,6 +551,26 @@ static void BeginSection(const char *title)
     FlushSinks();
 }
 
+static void FormatHexBytes(const BYTE *data, DWORD size, char *dst, DWORD dst_size)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    DWORD i;
+    DWORD out = 0;
+
+    if (!dst || dst_size == 0)
+        return;
+    dst[0] = '\0';
+    if (!data)
+        return;
+
+    for (i = 0; i < size && out + 2 < dst_size; i++) {
+        BYTE b = data[i];
+        dst[out++] = hex[(b >> 4) & 0x0F];
+        dst[out++] = hex[b & 0x0F];
+    }
+    dst[out] = '\0';
+}
+
 static const char *ChangeLabel(snapshot_phase_t phase, BOOL cur_ok, BOOL prev_ok, const BYTE *cur, const BYTE *prev, DWORD size)
 {
     if (phase == PHASE_INIT)
@@ -581,6 +607,24 @@ static void CapturePhase(snapshot_phase_t phase)
              region->ok[phase] ? "OK" : "PARTIAL",
              region->crc[phase],
              changed);
+
+        if (region->emit_raw && region->ok[phase]) {
+            DWORD off;
+            for (off = 0; off < region->size; off += BEDIAG_RAW_CHUNK_SIZE) {
+                DWORD chunk = region->size - off;
+                char hex[(BEDIAG_RAW_CHUNK_SIZE * 2u) + 1u];
+                if (chunk > BEDIAG_RAW_CHUNK_SIZE)
+                    chunk = BEDIAG_RAW_CHUNK_SIZE;
+                FormatHexBytes(region->data[phase] + off, chunk, hex, sizeof(hex));
+                Logf("[REGION_RAW] phase=%s name=%s PA=0x%08X off=0x%04X size=0x%02X data=%s\r\n",
+                     g_phase_names[phase],
+                     region->name,
+                     region->base,
+                     off,
+                     chunk,
+                     hex);
+            }
+        }
     }
     FlushSinks();
 }
