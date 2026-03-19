@@ -15,6 +15,7 @@ typedef struct {
 } wince_region_track_desc_t;
 
 static const wince_region_track_desc_t wince_region_track_descs[WINCE_REGION_TRACK_COUNT] = {
+    { "ctx_tlb_0x00002000",  WINCE_TRACE_CTX_PA_START,        WINCE_TRACE_CTX_PA_END },
     { "cb_tbl_0x00051680",   WINCE_TRACE_CB_PA_START,         WINCE_TRACE_CB_PA_END },
     { "bootparam_0x0001D000", WINCE_TRACE_BOOTPARAM0_PA_START, WINCE_TRACE_BOOTPARAM0_PA_END },
     { "bootparam_0x0002D000", WINCE_TRACE_BOOTPARAM1_PA_START, WINCE_TRACE_BOOTPARAM1_PA_END },
@@ -2760,6 +2761,22 @@ static bool wince_ctx_branch_track_slot(uint32_t pc32, uint16_t **count_out)
 static void log_wince_words32(uc_engine *uc, const char *tag,
                               uint32_t base, unsigned words);
 
+static const char *wince_ctx_tlb_loop_tag(uint32_t pc32)
+{
+    switch (pc32) {
+    case 0x80079844u: return "ALL_ctx_tlb_enter";
+    case 0x80079854u: return "ALL_ctx_tlb_load_slot";
+    case 0x80079864u: return "ALL_ctx_tlb_mtc0_entrylo0";
+    case 0x80079868u: return "ALL_ctx_tlb_mtc0_entrylo1";
+    case 0x8007986Cu: return "ALL_ctx_tlb_mtc0_pagemask";
+    case 0x80079870u: return "ALL_ctx_tlb_mtc0_entryhi";
+    case 0x80079874u: return "ALL_ctx_tlb_mtc0_index";
+    case 0x80079880u: return "ALL_ctx_tlb_tlbwi";
+    case 0x80079888u: return "ALL_ctx_tlb_branch";
+    default: return NULL;
+    }
+}
+
 static bool ptr_in_sdram(const machine_t *m, uint32_t ptr32)
 {
     return ((ptr32 & UINT32_C(0x1FFFFFFF)) < m->cfg.sdram_size);
@@ -2819,6 +2836,111 @@ static void log_wince_words32(uc_engine *uc, const char *tag,
         }
     }
     fprintf(stderr, "\n");
+}
+
+static void log_wince_ctx_tlb_table_overview(uc_engine *uc,
+                                             const char *phase,
+                                             uint32_t base)
+{
+    uint32_t nonzero_slots = 0;
+    uint32_t first_nonzero = UINT32_MAX;
+    uint32_t last_nonzero = UINT32_MAX;
+    uint32_t first_words[4] = {0};
+    uint32_t last_words[4] = {0};
+    bool first_valid = false;
+    bool last_valid = false;
+
+    for (uint32_t idx = 0; idx < 32u; idx++) {
+        uint32_t words[4] = {0};
+        bool valid = true;
+        for (uint32_t j = 0; j < 4u; j++) {
+            if (!read_guest_u32(uc, (uint64_t)base + (uint64_t)(idx * 16u) + (uint64_t)(j * 4u),
+                                &words[j])) {
+                valid = false;
+                break;
+            }
+        }
+        if (!valid)
+            continue;
+        bool slot_nonzero = (words[0] | words[1] | words[2] | words[3]) != 0u;
+        if (!slot_nonzero)
+            continue;
+        nonzero_slots++;
+        if (first_nonzero == UINT32_MAX) {
+            first_nonzero = idx;
+            memcpy(first_words, words, sizeof(first_words));
+            first_valid = true;
+        }
+        last_nonzero = idx;
+        memcpy(last_words, words, sizeof(last_words));
+        last_valid = true;
+    }
+
+    fprintf(stderr,
+            "[WINCE_CTX_TLB_TABLE] phase=%s base=0x%08X slots=32"
+            " nonzero_slots=%u first_nonzero=%s%u last_nonzero=%s%u",
+            phase, base, nonzero_slots,
+            first_valid ? "" : "NONE:", first_valid ? first_nonzero : 0u,
+            last_valid ? "" : "NONE:", last_valid ? last_nonzero : 0u);
+    if (first_valid) {
+        fprintf(stderr, " first=[%08X %08X %08X %08X]",
+                first_words[0], first_words[1], first_words[2], first_words[3]);
+    }
+    if (last_valid) {
+        fprintf(stderr, " last=[%08X %08X %08X %08X]",
+                last_words[0], last_words[1], last_words[2], last_words[3]);
+    }
+    fprintf(stderr, "\n");
+}
+
+static void log_wince_ctx_tlb_slot_state(machine_t *m,
+                                         uc_engine *uc,
+                                         const char *tag,
+                                         uint32_t pc32)
+{
+    uint64_t a0 = 0, a1 = 0, a2 = 0;
+    uint64_t t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+    uint64_t status = 0;
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+    uc_reg_read(uc, UC_MIPS_REG_T1, &t1);
+    uc_reg_read(uc, UC_MIPS_REG_T2, &t2);
+    uc_reg_read(uc, UC_MIPS_REG_T3, &t3);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+    uint32_t slot_words[4] = {0};
+    bool slot_ok[4] = { false, false, false, false };
+    uint32_t slot_idx = (uint32_t)a1;
+    uint32_t slot_base = UINT32_C(0xA0002000) + (slot_idx * 16u);
+    for (uint32_t j = 0; j < 4u; j++) {
+        slot_ok[j] = read_guest_u32(uc, (uint64_t)slot_base + (uint64_t)(j * 4u),
+                                    &slot_words[j]);
+    }
+
+    fprintf(stderr,
+            "[WINCE_CTX_TLB_SLOT] tag=%s pc=0x%08X slot=%u slot_base=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X"
+            " t=[%08X %08X %08X %08X]"
+            " cp0_idx=0x%08X elo0=0x%08X elo1=0x%08X mask=0x%08X"
+            " ehi=0x%08X ctx=0x%08X badv=0x%08X status=0x%08X"
+            " slot_words=[%s%08X %s%08X %s%08X %s%08X]\n",
+            tag, pc32, slot_idx, slot_base,
+            (uint32_t)a0, (uint32_t)a1, (uint32_t)a2,
+            (uint32_t)t0, (uint32_t)t1, (uint32_t)t2, (uint32_t)t3,
+            (uint32_t)m->shadow_cp0_index,
+            (uint32_t)m->shadow_cp0_entrylo0,
+            (uint32_t)m->shadow_cp0_entrylo1,
+            (uint32_t)m->shadow_cp0_pagemask,
+            (uint32_t)m->shadow_cp0_entryhi,
+            (uint32_t)m->shadow_cp0_context,
+            (uint32_t)m->shadow_cp0_badvaddr,
+            (uint32_t)status,
+            slot_ok[0] ? "" : "ERR:", slot_words[0],
+            slot_ok[1] ? "" : "ERR:", slot_words[1],
+            slot_ok[2] ? "" : "ERR:", slot_words[2],
+            slot_ok[3] ? "" : "ERR:", slot_words[3]);
 }
 
 static bool decode_branch_decision(uc_engine *uc, uint32_t pc32, uint32_t insn,
@@ -2895,13 +3017,34 @@ void maybe_probe_wince_ctx_path(machine_t *m, uc_engine *uc,
         return;
 
     const char *tag = wince_ctx_key_tag(pc32);
+    const char *tlb_tag = wince_ctx_tlb_loop_tag(pc32);
     bool is_key = (tag != NULL);
+    bool is_tlb_key = (tlb_tag != NULL);
     bool is_branch = (op == 0x01u || op == 0x04u || op == 0x05u ||
                       op == 0x06u || op == 0x07u);
     bool is_mtc0_status = (op == 0x10u && rs == 0x04u && rd == 12u && sel == 0u);
 
-    if (!is_key && !is_branch && !is_mtc0_status)
+    if (!is_key && !is_tlb_key && !is_branch && !is_mtc0_status)
         return;
+
+    if (is_tlb_key) {
+        static uint32_t tlb_table_overview_logs = 0;
+        static uint32_t tlb_slot_logs = 0;
+
+        if ((pc32 == 0x80079844u || pc32 == 0x80079890u) &&
+            tlb_table_overview_logs < 4u) {
+            log_wince_ctx_tlb_table_overview(uc, tlb_tag, 0xA0002000u);
+            tlb_table_overview_logs++;
+            m->wince_ctx_probe_logs++;
+        }
+
+        if ((pc32 == 0x80079854u || pc32 == 0x80079880u || pc32 == 0x80079888u) &&
+            tlb_slot_logs < 96u) {
+            log_wince_ctx_tlb_slot_state(m, uc, tlb_tag, pc32);
+            tlb_slot_logs++;
+            m->wince_ctx_probe_logs++;
+        }
+    }
 
     if (is_branch) {
         uint16_t *site_count = NULL;

@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed1"
+#define BEDIAG_BUILD_TAG         "hwseed2"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -58,6 +58,7 @@ static const char *g_phase_names[PHASE_COUNT] = {
 };
 
 static bediag_region_t g_regions[] = {
+    { "ctx_tlb",       0x00002000u, 0x0200u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "resume_ctx",    0x00002200u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "bootctx",       0x00006000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "bootparam0",    0x0001D000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
