@@ -15,7 +15,16 @@ typedef struct {
     uint32_t val;
 } wince_pa_seed_word_t;
 
+typedef struct {
+    const char *name;
+    uint32_t pa;
+    uint32_t size;
+    uint32_t crc32;
+    const uint8_t *data;
+} wince_pa_seed_region_t;
+
 #include "wince_probe_seed_data.h"
+#include "wince_hw_seed_data.h"
 #include "wince_kdata_probe_words.h"
 #include "wince_bootrom_words.h"
 
@@ -116,6 +125,50 @@ static void seed_wince_obj_bootstrap(machine_t *m)
             words[4].val, words[5].val, words[6].val);
 }
 
+static void write_pa_bytes_all_aliases(machine_t *m, uint32_t pa,
+                                       const uint8_t *data, uint32_t size)
+{
+    if (!m || !m->uc || !data || size == 0u)
+        return;
+
+    uint64_t addrs[] = {
+        (uint64_t)pa,
+        UINT64_C(0x0000000080000000) + (uint64_t)pa,
+        UINT64_C(0x00000000A0000000) + (uint64_t)pa,
+        (uint64_t)mips_sext(UINT32_C(0x80000000) + pa),
+        (uint64_t)mips_sext(UINT32_C(0xA0000000) + pa),
+    };
+
+    for (uint32_t i = 0; i < (uint32_t)(sizeof(addrs) / sizeof(addrs[0])); i++)
+        uc_mem_write(m->uc, addrs[i], data, size);
+}
+
+static void seed_wince_hw_regions(machine_t *m)
+{
+    if (!m || !m->uc || !m->cfg.wince_hw_seed || m->wince_hw_seed_active)
+        return;
+
+    if (wince_hw_seed_region_count == 0u) {
+        fprintf(stderr,
+                "[WINCE_HW_SEED] requested but no generated regions are available\n");
+        return;
+    }
+
+    m->wince_hw_seed_active = true;
+    fprintf(stderr,
+            "[WINCE_HW_SEED] applying %u captured regions\n",
+            wince_hw_seed_region_count);
+
+    for (uint32_t i = 0; i < wince_hw_seed_region_count; i++) {
+        const wince_pa_seed_region_t *r = &wince_hw_seed_regions[i];
+        write_pa_bytes_all_aliases(m, r->pa, r->data, r->size);
+        fprintf(stderr,
+                "[WINCE_HW_SEED] region=%s pa=0x%08X size=0x%04X crc32=0x%08X\n",
+                r->name ? r->name : "<unnamed>",
+                r->pa, r->size, r->crc32);
+    }
+}
+
 void seed_wince_probe_deferred(machine_t *m, uint32_t pc32)
 {
     if (!m || m->wince_deferred_seed_done)
@@ -182,6 +235,7 @@ void apply_wince_warm_profile(machine_t *m, const char *marker)
     seed_wince_kdata(m);
     seed_wince_probe_boot_safe(m);
     seed_wince_obj_bootstrap(m);
+    seed_wince_hw_regions(m);
 
     if (marker != NULL) {
         fprintf(stderr,

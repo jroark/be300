@@ -31,6 +31,58 @@ static inline bool pc_in_wince_delay_call_window(uint32_t pc32)
     return pc32 >= UINT32_C(0x800771F0) && pc32 < UINT32_C(0x80077370);
 }
 
+static uint8_t wince_delay_touch_kind_for_pa(bool is_mmio, uint32_t pa)
+{
+    if (is_mmio)
+        return WINCE_DELAY_TOUCH_MMIO;
+    if (pa >= WINCE_TRACE_BOOTCTX_PA_START && pa < WINCE_TRACE_BOOTCTX_PA_END)
+        return WINCE_DELAY_TOUCH_BOOTCTX;
+    if (pa >= WINCE_TRACE_BOOTPARAM0_PA_START && pa < WINCE_TRACE_BOOTPARAM0_PA_END)
+        return WINCE_DELAY_TOUCH_BOOTPARAM0;
+    if (pa >= WINCE_TRACE_BOOTPARAM1_PA_START && pa < WINCE_TRACE_BOOTPARAM1_PA_END)
+        return WINCE_DELAY_TOUCH_BOOTPARAM1;
+    if (pa >= WINCE_TRACE_CB_PA_START && pa < WINCE_TRACE_CB_PA_END)
+        return WINCE_DELAY_TOUCH_CB_TBL;
+    if (pa >= WINCE_TRACE_OBJPTR_PA_START && pa < WINCE_TRACE_OBJPTR_PA_END)
+        return WINCE_DELAY_TOUCH_OBJPTR;
+    if (pa >= WINCE_TRACE_OBJ_HEADER_PA_START && pa < WINCE_TRACE_OBJ_HEADER_PA_END)
+        return WINCE_DELAY_TOUCH_OBJ_HEADER;
+    if (pa >= WINCE_TRACE_RESUME_GLOBAL_PA_START && pa < WINCE_TRACE_RESUME_GLOBAL_PA_END)
+        return WINCE_DELAY_TOUCH_RESUME_GLOBAL;
+    return WINCE_DELAY_TOUCH_NONE;
+}
+
+static const char *wince_delay_touch_kind_name(uint8_t kind)
+{
+    switch (kind) {
+    case WINCE_DELAY_TOUCH_BOOTCTX: return "bootctx";
+    case WINCE_DELAY_TOUCH_BOOTPARAM0: return "bootparam0";
+    case WINCE_DELAY_TOUCH_BOOTPARAM1: return "bootparam1";
+    case WINCE_DELAY_TOUCH_CB_TBL: return "cb_tbl";
+    case WINCE_DELAY_TOUCH_OBJPTR: return "objptr";
+    case WINCE_DELAY_TOUCH_OBJ_HEADER: return "obj_header";
+    case WINCE_DELAY_TOUCH_RESUME_GLOBAL: return "resume_global";
+    case WINCE_DELAY_TOUCH_MMIO: return "mmio";
+    default: return "none";
+    }
+}
+
+static wince_delay_touch_summary_t *wince_delay_touch_summary_for_kind(
+    wince_delay_call_trace_t *t, uint8_t kind)
+{
+    switch (kind) {
+    case WINCE_DELAY_TOUCH_BOOTCTX: return &t->bootctx_touch;
+    case WINCE_DELAY_TOUCH_BOOTPARAM0: return &t->bootparam0_touch;
+    case WINCE_DELAY_TOUCH_BOOTPARAM1: return &t->bootparam1_touch;
+    case WINCE_DELAY_TOUCH_CB_TBL: return &t->cb_tbl_touch;
+    case WINCE_DELAY_TOUCH_OBJPTR: return &t->objptr_touch;
+    case WINCE_DELAY_TOUCH_OBJ_HEADER: return &t->obj_header_touch;
+    case WINCE_DELAY_TOUCH_RESUME_GLOBAL: return &t->resume_global_touch;
+    case WINCE_DELAY_TOUCH_MMIO: return &t->mmio_touch;
+    default: return NULL;
+    }
+}
+
 static const int wince_gpr_ids[32] = {
     UC_MIPS_REG_ZERO, UC_MIPS_REG_AT, UC_MIPS_REG_V0, UC_MIPS_REG_V1,
     UC_MIPS_REG_A0,   UC_MIPS_REG_A1, UC_MIPS_REG_A2, UC_MIPS_REG_A3,
@@ -1202,6 +1254,8 @@ bool wince_despec_read_hook(uc_engine *uc, uc_mem_type type,
                                    (uint64_t)mem_val, (uint32_t)pc64);
     wince_producer_record_read(m, pa, (uint32_t)pc64, (unsigned)size,
                                (uint64_t)mem_val);
+    maybe_record_wince_delay_touch(m, false, false, pa, (unsigned)size,
+                                   (uint64_t)mem_val, (uint32_t)pc64);
     return true;
 }
 
@@ -1229,6 +1283,7 @@ bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
 
     update_wince_region_tracks(m, uc, pa, pc, (unsigned)size, uval);
     wince_div_stack_watch_record_write(m, uc, (uint32_t)address, pc, (unsigned)size, uval);
+    maybe_record_wince_delay_touch(m, true, false, pa, (unsigned)size, uval, pc);
 
     if (pa < WINCE_TRACE_VEC_PA_END) {
         wince_pa_watch_update(m, &m->wince_vec_watch, "vectors",
@@ -3431,6 +3486,7 @@ void log_wince_stall_dump(machine_t *m, uint32_t pc32)
     log_wince_div_call_trace_summary(m, "STALL");
     log_wince_ctrl_hist_summary(m, "STALL", 24u);
     log_wince_producer_summary(m, "STALL");
+    log_wince_resume_global_summary(m, m->uc, "STALL");
     log_wince_obj_bootstrap_summary(m, "STALL");
     log_wince_delay_call_summary(m, "STALL");
 
@@ -3525,6 +3581,7 @@ enum {
     WINCE_PROD_OBJPTR,
     WINCE_PROD_OBJ_SLOT0,
     WINCE_PROD_OBJ_HEADER,
+    WINCE_PROD_RESUME_GLOBAL,
     WINCE_PROD_OBJ_TAIL_STATS,
     WINCE_PROD_OBJ,
 };
@@ -3538,6 +3595,7 @@ static const wince_producer_desc_t wince_producer_descs[WINCE_PRODUCER_FAMILY_CO
     { "objptr",      WINCE_TRACE_OBJPTR_PA_START,       WINCE_TRACE_OBJPTR_PA_END },
     { "obj_slot0",   WINCE_TRACE_OBJ_SLOT0_PA_START,    WINCE_TRACE_OBJ_SLOT0_PA_END },
     { "obj_header",  WINCE_TRACE_OBJ_HEADER_PA_START,   WINCE_TRACE_OBJ_HEADER_PA_END },
+    { "resume_global", WINCE_TRACE_RESUME_GLOBAL_PA_START, WINCE_TRACE_RESUME_GLOBAL_PA_END },
     { "obj_tail_stats", WINCE_TRACE_OBJ_TAIL_STATS_PA_START, WINCE_TRACE_OBJ_TAIL_STATS_PA_END },
     { "obj",         WINCE_TRACE_OBJ_PA_START,          WINCE_TRACE_OBJ_PA_END },
 };
@@ -3642,6 +3700,8 @@ void maybe_probe_wince_delay_call_frame(machine_t *m, uc_engine *uc,
 
     if (t->armed && !t->entered && pc32 == UINT32_C(0x80077210)) {
         uint64_t sp = 0, ra = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0, v0 = 0, v1 = 0;
+        uint32_t expected_return_pc =
+            (t->expected_return_pc != 0u) ? t->expected_return_pc : UINT32_C(0x80078040);
         uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
         uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
         uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
@@ -3651,13 +3711,12 @@ void maybe_probe_wince_delay_call_frame(machine_t *m, uc_engine *uc,
         uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
         uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
 
-        t->armed = false;
+        memset(t, 0, sizeof(*t));
         t->active = true;
         t->entered = true;
         t->call_pc = UINT32_C(0x80078038);
         t->target_pc = UINT32_C(0x80077210);
-        if (t->expected_return_pc == 0u)
-            t->expected_return_pc = UINT32_C(0x80078040);
+        t->expected_return_pc = expected_return_pc;
         t->entry_sp = (uint32_t)sp;
         t->entry_ra = (uint32_t)ra;
         t->entry_a0 = (uint32_t)a0;
@@ -3739,6 +3798,70 @@ void maybe_probe_wince_delay_call_frame(machine_t *m, uc_engine *uc,
         t->last_pc = pc32;
         t->last_pc_valid = true;
         (void)insn;
+    }
+}
+
+void maybe_record_wince_delay_touch(machine_t *m, bool is_write,
+                                    bool is_mmio, uint32_t pa,
+                                    unsigned size, uint64_t value,
+                                    uint32_t pc)
+{
+    if (!m || !m->wince_delay_call_trace.active)
+        return;
+
+    wince_delay_call_trace_t *t = &m->wince_delay_call_trace;
+    uint8_t kind = wince_delay_touch_kind_for_pa(is_mmio, pa);
+    if (kind == WINCE_DELAY_TOUCH_NONE)
+        return;
+
+    if (t->touch_count < WINCE_DELAY_TOUCH_EVENT_LIMIT) {
+        wince_delay_touch_event_t *e = &t->touches[t->touch_count++];
+        memset(e, 0, sizeof(*e));
+        e->valid = true;
+        e->is_write = is_write;
+        e->is_mmio = is_mmio;
+        e->size = (uint8_t)size;
+        e->kind = kind;
+        e->pc = pc;
+        e->pa = pa;
+        e->value = value;
+    }
+
+    wince_delay_touch_summary_t *summary = wince_delay_touch_summary_for_kind(t, kind);
+    if (summary) {
+        if (is_write) {
+            if (!summary->first_write_valid) {
+                summary->first_write_valid = true;
+                summary->first_write_pc = pc;
+                summary->first_write_pa = pa;
+                summary->first_write_val = value;
+            }
+        } else {
+            if (!summary->first_read_valid) {
+                summary->first_read_valid = true;
+                summary->first_read_pc = pc;
+                summary->first_read_pa = pa;
+                summary->first_read_val = value;
+            }
+        }
+    }
+
+    if (pa == UINT32_C(0x006794F0)) {
+        if (is_write) {
+            if (!t->resume_global_f0_first_write_valid) {
+                t->resume_global_f0_first_write_valid = true;
+                t->resume_global_f0_first_write_pc = pc;
+                t->resume_global_f0_first_write_pa = pa;
+                t->resume_global_f0_first_write_val = value;
+            }
+        } else {
+            if (!t->resume_global_f0_first_read_valid) {
+                t->resume_global_f0_first_read_valid = true;
+                t->resume_global_f0_first_read_pc = pc;
+                t->resume_global_f0_first_read_pa = pa;
+                t->resume_global_f0_first_read_val = value;
+            }
+        }
     }
 }
 
@@ -4637,6 +4760,79 @@ void log_wince_producer_summary(const machine_t *m, const char *reason)
     }
 }
 
+static void log_wince_delay_touch_summary(const char *reason, const char *name,
+                                          const wince_delay_touch_summary_t *s)
+{
+    char first_read_pc_str[20];
+    char first_read_pa_str[20];
+    char first_write_pc_str[20];
+    char first_write_pa_str[20];
+
+    if (s->first_read_valid) {
+        snprintf(first_read_pc_str, sizeof(first_read_pc_str), "0x%08X", s->first_read_pc);
+        snprintf(first_read_pa_str, sizeof(first_read_pa_str), "0x%08X", s->first_read_pa);
+    } else {
+        snprintf(first_read_pc_str, sizeof(first_read_pc_str), "NONE");
+        snprintf(first_read_pa_str, sizeof(first_read_pa_str), "NONE");
+    }
+
+    if (s->first_write_valid) {
+        snprintf(first_write_pc_str, sizeof(first_write_pc_str), "0x%08X", s->first_write_pc);
+        snprintf(first_write_pa_str, sizeof(first_write_pa_str), "0x%08X", s->first_write_pa);
+    } else {
+        snprintf(first_write_pc_str, sizeof(first_write_pc_str), "NONE");
+        snprintf(first_write_pa_str, sizeof(first_write_pa_str), "NONE");
+    }
+
+    fprintf(stderr,
+            "[WINCE_DELAY_TOUCH_SUMMARY] reason=%s family=%s"
+            " first_read_pc=%s first_read_pa=%s first_read_val=0x%08" PRIX64
+            " first_write_pc=%s first_write_pa=%s first_write_val=0x%08" PRIX64 "\n",
+            reason, name,
+            first_read_pc_str, first_read_pa_str,
+            s->first_read_valid ? s->first_read_val : UINT64_C(0),
+            first_write_pc_str, first_write_pa_str,
+            s->first_write_valid ? s->first_write_val : UINT64_C(0));
+}
+
+void log_wince_resume_global_summary(const machine_t *m, uc_engine *uc,
+                                     const char *reason)
+{
+    if (!m || !uc || !is_wince_boot_machine(m))
+        return;
+
+    uint32_t val_94ec = 0, val_94f0 = 0, val_94f4 = 0, val_94f8 = 0;
+    bool ok_94ec = read_guest_u32(uc, UINT32_C(0x806794EC), &val_94ec);
+    bool ok_94f0 = read_guest_u32(uc, UINT32_C(0x806794F0), &val_94f0);
+    bool ok_94f4 = read_guest_u32(uc, UINT32_C(0x806794F4), &val_94f4);
+    bool ok_94f8 = read_guest_u32(uc, UINT32_C(0x806794F8), &val_94f8);
+
+    const wince_producer_attr_t *p = &m->wince_producer[WINCE_PROD_RESUME_GLOBAL];
+    char first_read_pc_str[20];
+    char first_write_pc_str[20];
+    if (p->first_read_valid)
+        snprintf(first_read_pc_str, sizeof(first_read_pc_str), "0x%08X", p->first_read_pc);
+    else
+        snprintf(first_read_pc_str, sizeof(first_read_pc_str), "NONE");
+    if (p->first_write_valid)
+        snprintf(first_write_pc_str, sizeof(first_write_pc_str), "0x%08X", p->first_write_pc);
+    else
+        snprintf(first_write_pc_str, sizeof(first_write_pc_str), "NONE");
+
+    fprintf(stderr,
+            "[WINCE_RESUME_GLOBAL_SUMMARY] reason=%s"
+            " reads=%u writes=%u first_read_pc=%s first_write_pc=%s"
+            " cur_94ec=%s:0x%08X cur_94f0=%s:0x%08X"
+            " cur_94f4=%s:0x%08X cur_94f8=%s:0x%08X\n",
+            reason,
+            p->total_reads, p->total_writes,
+            first_read_pc_str, first_write_pc_str,
+            ok_94ec ? "OK" : "ERR", val_94ec,
+            ok_94f0 ? "OK" : "ERR", val_94f0,
+            ok_94f4 ? "OK" : "ERR", val_94f4,
+            ok_94f8 ? "OK" : "ERR", val_94f8);
+}
+
 void log_wince_obj_bootstrap_summary(const machine_t *m, const char *reason)
 {
     if (!m || !m->wince_obj_bootstrap_active)
@@ -4726,5 +4922,53 @@ void log_wince_delay_call_summary(const machine_t *m, const char *reason)
         for (uint32_t j = i; j < limit; j++)
             fprintf(stderr, " pc[%u]=0x%08X", j, t->pcs[j]);
         fprintf(stderr, "\n");
+    }
+
+    log_wince_delay_touch_summary(reason, "bootctx", &t->bootctx_touch);
+    log_wince_delay_touch_summary(reason, "bootparam0", &t->bootparam0_touch);
+    log_wince_delay_touch_summary(reason, "bootparam1", &t->bootparam1_touch);
+    log_wince_delay_touch_summary(reason, "cb_tbl", &t->cb_tbl_touch);
+    log_wince_delay_touch_summary(reason, "objptr", &t->objptr_touch);
+    log_wince_delay_touch_summary(reason, "obj_header", &t->obj_header_touch);
+    log_wince_delay_touch_summary(reason, "resume_global", &t->resume_global_touch);
+    log_wince_delay_touch_summary(reason, "mmio", &t->mmio_touch);
+
+    {
+        char f0_read_pc_str[20];
+        char f0_write_pc_str[20];
+        if (t->resume_global_f0_first_read_valid)
+            snprintf(f0_read_pc_str, sizeof(f0_read_pc_str), "0x%08X",
+                     t->resume_global_f0_first_read_pc);
+        else
+            snprintf(f0_read_pc_str, sizeof(f0_read_pc_str), "NONE");
+        if (t->resume_global_f0_first_write_valid)
+            snprintf(f0_write_pc_str, sizeof(f0_write_pc_str), "0x%08X",
+                     t->resume_global_f0_first_write_pc);
+        else
+            snprintf(f0_write_pc_str, sizeof(f0_write_pc_str), "NONE");
+        fprintf(stderr,
+                "[WINCE_DELAY_F0_SUMMARY] reason=%s"
+                " first_read_pc=%s first_read_val=0x%08" PRIX64
+                " first_write_pc=%s first_write_val=0x%08" PRIX64 "\n",
+                reason,
+                f0_read_pc_str,
+                t->resume_global_f0_first_read_valid ? t->resume_global_f0_first_read_val : UINT64_C(0),
+                f0_write_pc_str,
+                t->resume_global_f0_first_write_valid ? t->resume_global_f0_first_write_val : UINT64_C(0));
+    }
+
+    for (uint32_t i = 0; i < t->touch_count; i++) {
+        const wince_delay_touch_event_t *e = &t->touches[i];
+        if (!e->valid)
+            continue;
+        fprintf(stderr,
+                "[WINCE_DELAY_TOUCH] reason=%s idx=%u op=%c size=%u"
+                " family=%s pa=0x%08X pc=0x%08X val=0x%08" PRIX64 "\n",
+                reason, i,
+                e->is_write ? 'W' : 'R',
+                (unsigned)e->size,
+                wince_delay_touch_kind_name(e->kind),
+                e->pa, e->pc,
+                (uint64_t)(uint32_t)e->value);
     }
 }

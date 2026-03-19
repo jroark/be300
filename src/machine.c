@@ -166,6 +166,25 @@ static void reset_tlb_defer_state(machine_t *m)
 
 static void clear_synthetic_syscall_state(machine_t *m, bool clear_execve_watch)
 {
+    if (clear_execve_watch && m->execve_watch_active &&
+        m->pending_syscall_nr == 4011u) {
+        static uint32_t clear_execve_log = 0;
+        if (clear_execve_log < 32) {
+            uint64_t caller_pc = 0;
+            uc_reg_read(m->uc, UC_MIPS_REG_PC, &caller_pc);
+            fprintf(stderr,
+                    "[CLEAR_EXECVE_STATE] PC=0x%08" PRIX64
+                    " pend_exc=%u pend_epc=0x%08" PRIX64
+                    " nr=%u epc_wr=%u has_saved=%u\n",
+                    (uint64_t)(uint32_t)caller_pc,
+                    m->pending_excode,
+                    (uint64_t)(uint32_t)m->pending_epc,
+                    m->pending_syscall_nr,
+                    m->epc_was_written ? 1u : 0u,
+                    m->has_saved_exception ? 1u : 0u);
+            clear_execve_log++;
+        }
+    }
     m->pending_epc          = 0;
     m->pending_syscall_epc  = 0;
     m->pending_excode       = 0;
@@ -184,6 +203,8 @@ static void clear_synthetic_syscall_state(machine_t *m, bool clear_execve_watch)
     m->filemap_nopage_watch_ra = 0;
     m->filemap_nopage_watch_addr = 0;
     reset_tlb_defer_state(m);
+    m->execve_user_entry_valid = false;
+    m->execve_user_entry = 0;
     if (clear_execve_watch) {
         m->execve_watch_active = false;
         m->execve_entry_pc = 0;
@@ -743,14 +764,18 @@ static bool inject_kernel_kuseg_tlbs(machine_t *m, uint64_t pc, uint32_t kuseg_v
     ex_status |= 0x2u;  /* EXL=1 */
     uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
 
-    /* TLB refill vector: 0x80000000 if not already in exception, else general 0x80000180 */
+    /* Vector selection per MIPS spec:
+     *   - TLB Refill (no matching entry):  EXL=0 → 0x80000000, EXL=1 → 0x80000180
+     *   - TLB Invalid (entry V=0):         ALWAYS 0x80000180 (general exception)
+     *   - TLB Modified (entry V=1, D=0):   ALWAYS 0x80000180 (general exception)
+     * r.hit indicates a matching TLB entry exists (even if V=0 or D=0). */
     uint64_t vec;
     if (ex_status & 0x00400000u) {
         vec = mips_sext(0xBFC00380u);  /* BEV=1 */
-    } else if (was_exl) {
-        vec = mips_sext(0x80000180u);  /* general exception vector */
+    } else if (was_exl || r.hit) {
+        vec = mips_sext(0x80000180u);  /* general exception vector (TLB Invalid/Modified or nested) */
     } else {
-        vec = mips_sext(0x80000000u);  /* TLB refill vector */
+        vec = mips_sext(0x80000000u);  /* TLB refill vector (true TLB miss) */
     }
     uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
 
@@ -789,10 +814,18 @@ static bool inject_kernel_kuseg_tlbl(machine_t *m, uint64_t pc, uint32_t kuseg_v
     if (kuseg_va >= 0x80000000u)
         return false;
 
-    /* If shadow TLB has a confident entry, don't inject — populate instead */
+    /* If shadow TLB has a confident entry with V=1, don't inject — populate instead.
+     * If entry exists but V=0 (invalid), we still need to inject so do_page_fault runs. */
     tlb_lookup_result_t r = shadow_tlb_lookup(m, kuseg_va);
-    if (r.hit && r.confident)
-        return false;
+    if (r.hit && r.confident) {
+        bool odd_page = (((uint64_t)kuseg_va & r.page_bytes) != 0u);
+        uint32_t lo = odd_page ? r.lo1 : r.lo0;
+        if ((lo & 0x2u) != 0u) {
+            /* V=1: page is valid, don't inject — populate instead */
+            return false;
+        }
+        /* V=0: entry exists but invalid — inject as TLB Invalid (not Refill) */
+    }
 
     if (m->pending_excode != 0u)
         save_pending_exception(m);
@@ -819,10 +852,14 @@ static bool inject_kernel_kuseg_tlbl(machine_t *m, uint64_t pc, uint32_t kuseg_v
     ex_status |= 0x2u;
     uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
 
+    /* Vector selection per MIPS spec:
+     *   - TLB Refill (no matching entry):  EXL=0 → 0x80000000, EXL=1 → 0x80000180
+     *   - TLB Invalid (entry V=0):         ALWAYS 0x80000180 (general exception)
+     */
     uint64_t vec;
     if (ex_status & 0x00400000u) {
         vec = mips_sext(0xBFC00380u);
-    } else if (was_exl) {
+    } else if (was_exl || r.hit) {
         vec = mips_sext(0x80000180u);
     } else {
         vec = mips_sext(0x80000000u);
@@ -834,14 +871,17 @@ static bool inject_kernel_kuseg_tlbl(machine_t *m, uint64_t pc, uint32_t kuseg_v
         fprintf(stderr,
                 "[KERNEL_TLBL_INJECT] pc=0x%08X kuseg_va=0x%08X"
                 " entryhi=0x%08X ctx=0x%08X vec=0x%08" PRIX64
-                " status=0x%08" PRIX64 " was_exl=%u saved=%u\n",
+                " status=0x%08" PRIX64 " was_exl=%u saved=%u"
+                " tlb_hit=%u tlb_reason=%s\n",
                 (uint32_t)pc, kuseg_va,
                 (uint32_t)m->shadow_cp0_entryhi,
                 (uint32_t)m->shadow_cp0_context,
                 (uint64_t)(uint32_t)vec,
                 (uint64_t)(uint32_t)ex_status,
                 was_exl ? 1u : 0u,
-                m->has_saved_exception ? 1u : 0u);
+                m->has_saved_exception ? 1u : 0u,
+                r.hit ? 1u : 0u,
+                r.reason ? r.reason : "none");
         kernel_tlbl_inject_log++;
     }
     return true;
@@ -1289,6 +1329,92 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 
     m->cp0_count_ticks++;
     m->last_exec_pc = address;
+
+    /* Dead-simple probe: does prid_hook EVER fire at restore_all PCs
+     * while /sbin/init SYSCALL state is pending? */
+    if ((uint32_t)m->pending_syscall_epc == 0x8000184Cu &&
+        m->pending_syscall_nr == 4011u) {
+        if ((uint32_t)address == 0x80007C20u ||
+            (uint32_t)address == 0x80007C4Cu ||
+            (uint32_t)address == 0x800045B8u ||
+            (uint32_t)address == 0x80004640u) {
+            static uint32_t sbin_init_restore_probe = 0;
+            if (sbin_init_restore_probe < 64) {
+                fprintf(stderr,
+                        "[SBIN_INIT_RESTORE] PC=0x%08X pend_exc=%u"
+                        " pend_epc=0x%08" PRIX64 " epc_wr=%u"
+                        " has_saved=%u\n",
+                        (uint32_t)address, m->pending_excode,
+                        (uint64_t)(uint32_t)m->pending_epc,
+                        m->epc_was_written ? 1u : 0u,
+                        m->has_saved_exception ? 1u : 0u);
+                sbin_init_restore_probe++;
+            }
+        }
+        /* Periodic trace: log every 1000th instruction during batch #5
+         * (insn_count >= 160000000). Shows what happens after __bzero. */
+        if (m->insn_count >= 160000000ULL) {
+            static uint32_t batch5_trace_count = 0;
+            static uint32_t batch5_pc_trace_log = 0;
+            batch5_trace_count++;
+            if ((batch5_trace_count % 1000u) == 1u && batch5_pc_trace_log < 128) {
+                uint64_t trace_v0 = 0, trace_sp = 0, trace_ra = 0;
+                uc_reg_read(uc, UC_MIPS_REG_V0, &trace_v0);
+                uc_reg_read(uc, UC_MIPS_REG_SP, &trace_sp);
+                uc_reg_read(uc, UC_MIPS_REG_RA, &trace_ra);
+                fprintf(stderr,
+                        "[BATCH5_TRACE] #%u PC=0x%08X v0=0x%08" PRIX64
+                        " sp=0x%08" PRIX64 " ra=0x%08" PRIX64
+                        " pend_exc=%u\n",
+                        batch5_pc_trace_log,
+                        (uint32_t)address,
+                        trace_v0, trace_sp, trace_ra,
+                        m->pending_excode);
+                batch5_pc_trace_log++;
+            }
+        }
+    }
+
+    /* Targeted probe: log ALL MTC0 CP0_EPC and ERET instructions
+     * during the /sbin/init execve window (pending_syscall_epc == 0x8000184C).
+     * Also count prid_hook invocations at restore_all PCs. */
+    if ((uint32_t)m->pending_syscall_epc == 0x8000184Cu ||
+        (m->insn_count >= 159800000ULL && m->insn_count <= 160200000ULL)) {
+        uint32_t probe_insn = 0;
+        uc_mem_read(uc, address, &probe_insn, 4);
+        bool is_mtc0_epc = ((probe_insn & 0xFFE0FFFFu) == 0x40807000u);
+        bool is_eret = (probe_insn == 0x42000018u);
+        /* Also log if we're at any known restore_all PC */
+        bool is_restore_all_pc = ((uint32_t)address == 0x80007C20u ||
+                                  (uint32_t)address == 0x80007C4Cu ||
+                                  (uint32_t)address == 0x800045B8u ||
+                                  (uint32_t)address == 0x80004640u);
+        if (is_mtc0_epc || is_eret || is_restore_all_pc) {
+            static uint32_t restore_all_probe_log = 0;
+            if (restore_all_probe_log < 256) {
+                uint64_t probe_status = 0;
+                uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &probe_status);
+                fprintf(stderr,
+                        "[RESTORE_ALL_PROBE] PC=0x%08X insn=0x%08X"
+                        " pend_exc=%u pend_epc=0x%08" PRIX64
+                        " epc_wr=%u has_saved=%u execve_act=%u"
+                        " STATUS=0x%08" PRIX64 " nr=%u syscall_epc=0x%08" PRIX64
+                        " insn_count=%" PRIu64 "\n",
+                        (uint32_t)address, probe_insn,
+                        m->pending_excode,
+                        (uint64_t)(uint32_t)m->pending_epc,
+                        m->epc_was_written ? 1u : 0u,
+                        m->has_saved_exception ? 1u : 0u,
+                        m->execve_watch_active ? 1u : 0u,
+                        probe_status,
+                        m->pending_syscall_nr,
+                        (uint64_t)(uint32_t)m->pending_syscall_epc,
+                        m->insn_count);
+                restore_all_probe_log++;
+            }
+        }
+    }
+
     static uint32_t mfc0_cause_seen_log = 0;
     static uint32_t mfc0_epc_seen_log = 0;
     static uint32_t mfc0_cause_inject_log = 0;
@@ -3246,6 +3372,27 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * Outside that context, Unicorn's QEMU executes the real MTC0 EPC
      * instruction, keeping the CPU's internal CP0_EPC register consistent.
      */
+    if ((insn & 0xFFE0FFFFu) == 0x40807000u && m->pending_excode == 0) {
+        /* Diagnostic: MTC0 CP0_EPC with pending_excode==0 */
+        uint32_t rt_diag = (insn >> 16) & 0x1F;
+        uint64_t val_diag = 0;
+        uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt_diag, &val_diag);
+        static uint32_t mtc0_epc_lost_log = 0;
+        if (mtc0_epc_lost_log < 64) {
+            fprintf(stderr,
+                    "[MTC0_EPC_EXCODE0] val=0x%08" PRIX64 " PC=0x%08" PRIX64
+                    " execve_active=%u has_saved=%u saved_excode=%u"
+                    " nr=%u epc_written=%u\n",
+                    (uint64_t)(uint32_t)val_diag, (uint64_t)(uint32_t)address,
+                    m->execve_watch_active ? 1u : 0u,
+                    m->has_saved_exception ? 1u : 0u,
+                    m->saved_pending_excode,
+                    m->pending_syscall_nr,
+                    m->epc_was_written ? 1u : 0u);
+            mtc0_epc_lost_log++;
+        }
+        /* Don't intercept — let native MTC0 execute */
+    }
     if ((insn & 0xFFE0FFFFu) == 0x40807000u && m->pending_excode != 0) {
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t val = 0;
@@ -3293,6 +3440,17 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         }
         m->pending_epc      = val;   /* capture return address written by exit path */
         m->epc_was_written  = true;  /* arm the ERET intercept for the next ERET    */
+        /* Track execve user entry separately: if this MTC0 writes a
+         * kuseg address during an active execve, save it so that the
+         * ERET_EXECVE_NATIVE path (which fires when a timer interrupt
+         * resets epc_was_written via ERET_PASSTHROUGH + restore) can
+         * still correctly redirect to user space. */
+        if (m->execve_watch_active &&
+            m->pending_syscall_nr == 4011u &&
+            (uint32_t)val < 0x80000000u) {
+            m->execve_user_entry = (uint32_t)val;
+            m->execve_user_entry_valid = true;
+        }
         uint64_t next_pc = address + 4;
         uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
         return;
@@ -3349,9 +3507,46 @@ static void prid_hook(uc_engine *uc, uint64_t address,
      * and returns to the faulting instruction correctly.
      */
     if (insn == 0x42000018u) {
+        if (m->execve_watch_active || in_init_execve_syscall_window(m)) {
+            uint64_t eret_diag_status = 0;
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &eret_diag_status);
+            static uint32_t eret_trace_log = 0;
+            if (eret_trace_log < 256) {
+                fprintf(stderr,
+                        "[ERET_TRACE] PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
+                        " pend_exc=%u pend_epc=0x%08" PRIX64
+                        " epc_wr=%u has_saved=%u execve_act=%u nr=%u\n",
+                        (uint64_t)(uint32_t)address, eret_diag_status,
+                        m->pending_excode, (uint64_t)(uint32_t)m->pending_epc,
+                        m->epc_was_written ? 1u : 0u,
+                        m->has_saved_exception ? 1u : 0u,
+                        m->execve_watch_active ? 1u : 0u,
+                        m->pending_syscall_nr);
+                eret_trace_log++;
+            }
+        }
         if (m->pending_excode == 0 && m->has_saved_exception) {
             restore_pending_exception(m);
             return;
+        }
+        if (m->pending_excode == 0 && !m->has_saved_exception) {
+            /* Diagnostic: ERET during execve with all state lost */
+            uint64_t eret_status = 0;
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &eret_status);
+            static uint32_t eret_lost_log = 0;
+            if (eret_lost_log < 64) {
+                fprintf(stderr,
+                        "[ERET_STATE_LOST] PC=0x%08" PRIX64 " STATUS=0x%08" PRIX64
+                        " epc_written=%u nr=%u execve_user_valid=%u"
+                        " execve_user=0x%08X\n",
+                        (uint64_t)(uint32_t)address, eret_status,
+                        m->epc_was_written ? 1u : 0u,
+                        m->pending_syscall_nr,
+                        m->execve_user_entry_valid ? 1u : 0u,
+                        m->execve_user_entry);
+                eret_lost_log++;
+            }
+            /* Fall through to native ERET */
         }
         if (m->pending_excode != 0) {
             static uint32_t eret_pending_log = 0;
@@ -3715,6 +3910,66 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             if (m->pending_excode == MIPS_EXCCODE_SYS &&
                 m->execve_watch_active &&
                 !m->epc_was_written) {
+                /*
+                 * Check if the syscall's MTC0 CP0_EPC already wrote a user
+                 * entry point but epc_was_written was reset by a timer
+                 * interrupt's ERET_PASSTHROUGH + restore_pending_exception.
+                 * In that case, this is the ACTUAL syscall return ERET,
+                 * not a nested exception ERET.  Redirect to user space.
+                 */
+                if (m->execve_user_entry_valid &&
+                    (uint32_t)(status_snapshot & 0x2u) == 0u) {
+                    /* EXL=0 confirms this is post-restore_all (the MTC0
+                     * CP0_STATUS already cleared EXL).  Nested exception
+                     * ERETshave EXL=1 and are handled by ERET_PASSTHROUGH
+                     * above. */
+                    uint64_t user_entry = mips_sext(m->execve_user_entry);
+                    uint64_t status = status_snapshot & ~(uint64_t)0x2u;
+                    /* Quarantine IRQ delivery during first user instructions */
+                    status &= ~(uint64_t)0xFF01u;
+                    uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
+                    uc_reg_write(uc, UC_MIPS_REG_PC, &user_entry);
+
+                    static uint32_t eret_execve_user_log = 0;
+                    if (eret_execve_user_log < 64) {
+                        fprintf(stderr,
+                                "[ERET_EXECVE_USER_ENTRY] user_entry=0x%08X"
+                                " nr=%u PC=0x%08" PRIX64 " status=0x%08" PRIX64 "\n",
+                                m->execve_user_entry,
+                                m->pending_syscall_nr,
+                                (uint64_t)(uint32_t)address,
+                                (uint64_t)(uint32_t)status);
+                        eret_execve_user_log++;
+                    }
+
+                    uint64_t sp_val = 0;
+                    uc_reg_read(uc, UC_MIPS_REG_SP, &sp_val);
+                    arm_execve_user_handoff(m, user_entry, sp_val);
+
+                    /* Probe and populate user code page if needed */
+                    uint32_t probe = 0;
+                    uc_err re = uc_mem_read(uc, m->execve_user_entry, &probe, 4);
+                    if (probe == 0u) {
+                        shadow_tlb_populate(m, m->execve_user_entry, true,
+                                            "ERET_EXECVE_USER",
+                                            (uint32_t)address);
+                        re = uc_mem_read(uc, m->execve_user_entry, &probe, 4);
+                    }
+                    if (probe == 0u && m->kernel_vm_ready) {
+                        fprintf(stderr,
+                                "[ERET_EXECVE_USER_TLBL] target=0x%08X"
+                                " code_is_zero -> injecting TLBL\n",
+                                m->execve_user_entry);
+                        inject_kernel_kuseg_tlbl(m, (uint64_t)m->execve_user_entry,
+                                                  m->execve_user_entry);
+                    }
+
+                    m->execve_user_entry_valid = false;
+                    clear_synthetic_syscall_state(m, true);
+                    m->has_saved_exception = false;
+                    return;
+                }
+
                 /* Nested ERET during do_execve (timer IRQ, TLB refill, etc.)
                  * Let Unicorn execute the ERET natively — it reads CP0_EPC
                  * (set by the exception entry) and returns to the interrupted
@@ -4583,7 +4838,21 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             static uint32_t tlb_nested_suspend_log = 0;
             if (m->pending_excode != 0) {
                 if ((status & 0x2u) != 0u) {
+                    bool save_was_noop = m->has_saved_exception;
                     save_pending_exception(m);
+                    if (save_was_noop && m->execve_watch_active) {
+                        static uint32_t save_noop_log = 0;
+                        if (save_noop_log < 64) {
+                            fprintf(stderr,
+                                    "[TLB_NESTED_SAVE_NOOP] intno=%u PC=0x%08" PRIX64
+                                    " pending_excode=%u saved_excode=%u"
+                                    " clearing pending to 0!\n",
+                                    intno, (uint64_t)(uint32_t)pc,
+                                    m->pending_excode,
+                                    m->saved_pending_excode);
+                            save_noop_log++;
+                        }
+                    }
                     m->pending_epc          = 0;
                     m->pending_excode       = 0;
                     m->pending_cause        = 0;
@@ -4604,7 +4873,23 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                  * Do NOT call clear_synthetic_syscall_state — it destroys
                  * execve tracking and syscall metadata that must survive
                  * across TLB refill.  Do NOT set has_saved_exception=false. */
-                save_pending_exception(m);
+                {
+                    bool save_was_noop_exl0 = m->has_saved_exception;
+                    save_pending_exception(m);
+                    if (save_was_noop_exl0 && m->execve_watch_active) {
+                        static uint32_t save_noop_exl0_log = 0;
+                        if (save_noop_exl0_log < 64) {
+                            fprintf(stderr,
+                                    "[TLB_NESTED_SAVE_NOOP_EXL0] intno=%u PC=0x%08" PRIX64
+                                    " pending_excode=%u saved_excode=%u"
+                                    " clearing pending to 0!\n",
+                                    intno, (uint64_t)(uint32_t)pc,
+                                    m->pending_excode,
+                                    m->saved_pending_excode);
+                            save_noop_exl0_log++;
+                        }
+                    }
+                }
                 m->pending_epc          = 0;
                 m->pending_excode       = 0;
                 m->pending_cause        = 0;
@@ -5267,6 +5552,8 @@ void machine_mmio_history_record(machine_t *m, bool is_write, uint32_t pa,
     if (!m || !is_wince_boot_machine(m))
         return;
 
+    maybe_record_wince_delay_touch(m, is_write, true, pa, size, value, pc);
+
     uint32_t idx = m->mmio_hist_head % WINCE_MMIO_HISTORY_LEN;
     mmio_hist_entry_t *e = &m->mmio_hist[idx];
     e->pa = pa;
@@ -5867,8 +6154,17 @@ void machine_run(machine_t *m)
          * show where execution is spending time when silent. */
         if ((m->insn_count / BATCH_SIZE) % 100 == 0) {
             uint32_t pc32 = (uint32_t)pc;
-            fprintf(stderr, "[PROGRESS] insns=%" PRIu64 "M  PC=0x%08" PRIX64 "\n",
-                    m->insn_count / 1000000, (uint64_t)pc32);
+            fprintf(stderr, "[PROGRESS] insns=%" PRIu64 "M  PC=0x%08" PRIX64
+                    " pend_exc=%u pend_epc=0x%08" PRIX64
+                    " epc_wr=%u has_saved=%u execve_act=%u"
+                    " execve_user_v=%u\n",
+                    m->insn_count / 1000000, (uint64_t)pc32,
+                    m->pending_excode,
+                    (uint64_t)(uint32_t)m->pending_epc,
+                    m->epc_was_written ? 1u : 0u,
+                    m->has_saved_exception ? 1u : 0u,
+                    m->execve_watch_active ? 1u : 0u,
+                    m->execve_user_entry_valid ? 1u : 0u);
 
             bool stall_candidate = is_wince_boot_machine(m) &&
                                    !is_wince_spl_pc(pc32);
@@ -5916,13 +6212,119 @@ void machine_run(machine_t *m)
 
         uint64_t run_pc = 0;
         uc_reg_read(m->uc, UC_MIPS_REG_PC, &run_pc);
+        /* Extended batch trace: all batches while /sbin/init syscall is pending */
+        if ((uint32_t)m->pending_syscall_epc == 0x8000184Cu &&
+            m->pending_syscall_nr == 4011u) {
+            static uint32_t sbin_init_batch_log = 0;
+            if (sbin_init_batch_log < 512) {
+                uint64_t batch_status = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &batch_status);
+                fprintf(stderr,
+                        "[SBIN_INIT_BATCH] #%u PC=0x%08" PRIX64
+                        " STATUS=0x%08" PRIX64
+                        " pend_exc=%u pend_epc=0x%08" PRIX64
+                        " epc_wr=%u has_saved=%u execve_act=%u"
+                        " insn=%" PRIu64 "\n",
+                        sbin_init_batch_log, (uint64_t)(uint32_t)run_pc,
+                        batch_status,
+                        m->pending_excode,
+                        (uint64_t)(uint32_t)m->pending_epc,
+                        m->epc_was_written ? 1u : 0u,
+                        m->has_saved_exception ? 1u : 0u,
+                        m->execve_watch_active ? 1u : 0u,
+                        m->insn_count);
+                sbin_init_batch_log++;
+            }
+        }
+        /* Batch-level tracing during execve */
+        if (m->execve_watch_active && m->pending_syscall_nr == 4011u) {
+            static uint32_t execve_batch_log = 0;
+            if (execve_batch_log < 512) {
+                uint64_t batch_status = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &batch_status);
+                fprintf(stderr,
+                        "[EXECVE_BATCH] #%u PC=0x%08" PRIX64
+                        " STATUS=0x%08" PRIX64
+                        " pend_exc=%u pend_epc=0x%08" PRIX64
+                        " epc_wr=%u has_saved=%u\n",
+                        execve_batch_log, (uint64_t)(uint32_t)run_pc,
+                        batch_status,
+                        m->pending_excode,
+                        (uint64_t)(uint32_t)m->pending_epc,
+                        m->epc_was_written ? 1u : 0u,
+                        m->has_saved_exception ? 1u : 0u);
+                execve_batch_log++;
+            }
+        }
         uint32_t step_count = m->post_init_trace_window ? POST_INIT_BATCH_SIZE : BATCH_SIZE;
+
+        /* Snapshot execve state before batch to detect transitions */
+        bool pre_execve_active = m->execve_watch_active;
+        uint32_t pre_pending_excode = m->pending_excode;
+        bool pre_has_saved = m->has_saved_exception;
+        uint32_t pre_pending_syscall_epc = (uint32_t)m->pending_syscall_epc;
+        uint32_t pre_pending_syscall_nr = m->pending_syscall_nr;
+
         uc_err err = uc_emu_start(m->uc, run_pc, 0, 0, step_count);
+
+        /* Post-batch trace: use pre-saved epc so we catch batch #5 even
+         * when pending_syscall_nr is cleared mid-batch */
+        if (pre_execve_active && pre_pending_syscall_epc == 0x8000184Cu) {
+            static uint32_t execve_post_log = 0;
+            if (execve_post_log < 512) {
+                uint64_t post_pc = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_PC, &post_pc);
+                uint64_t post_status = 0;
+                uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &post_status);
+                fprintf(stderr,
+                        "[EXECVE_POST] #%u post_PC=0x%08" PRIX64
+                        " STATUS=0x%08" PRIX64
+                        " pend_exc=%u->%u pend_epc=0x%08" PRIX64
+                        " epc_wr=%u has_saved=%u->%u execve_act=%u->%u"
+                        " syscall_nr=%u->%u syscall_epc=0x%08X->0x%08" PRIX64
+                        " err=%d\n",
+                        execve_post_log, (uint64_t)(uint32_t)post_pc,
+                        post_status,
+                        pre_pending_excode, m->pending_excode,
+                        (uint64_t)(uint32_t)m->pending_epc,
+                        m->epc_was_written ? 1u : 0u,
+                        pre_has_saved ? 1u : 0u,
+                        m->has_saved_exception ? 1u : 0u,
+                        pre_execve_active ? 1u : 0u,
+                        m->execve_watch_active ? 1u : 0u,
+                        pre_pending_syscall_nr, m->pending_syscall_nr,
+                        pre_pending_syscall_epc,
+                        (uint64_t)(uint32_t)m->pending_syscall_epc,
+                        (int)err);
+                execve_post_log++;
+            }
+        }
 
         if (err != UC_ERR_OK) {
             uint64_t bad_pc = 0;
             uc_reg_read(m->uc, UC_MIPS_REG_PC, &bad_pc);
             if (err == UC_ERR_WRITE_UNMAPPED) {
+                /* Log all WRITE_UNMAPPED during /sbin/init execve window */
+                if ((uint32_t)m->pending_syscall_epc == 0x8000184Cu ||
+                    (m->insn_count >= 159700000ULL && m->insn_count <= 160500000ULL)) {
+                    static uint32_t execve_wunmap_log = 0;
+                    if (execve_wunmap_log < 256) {
+                        uint64_t wfault_addr = m->last_unmapped_valid
+                            ? m->last_unmapped_addr : 0;
+                        fprintf(stderr,
+                                "[EXECVE_WRITE_UNMAPPED] #%u PC=0x%08" PRIX64
+                                " faultVA=0x%08" PRIX64
+                                " pend_exc=%u syscall_epc=0x%08" PRIX64
+                                " insn=%" PRIu64 "\n",
+                                execve_wunmap_log,
+                                (uint64_t)(uint32_t)bad_pc,
+                                wfault_addr,
+                                m->pending_excode,
+                                (uint64_t)(uint32_t)m->pending_syscall_epc,
+                                m->insn_count);
+                        execve_wunmap_log++;
+                    }
+                }
                 /*
                  * Recovery for write faults mirrors the read-fault strategy:
                  * consult last fault VA + broad register candidates and map

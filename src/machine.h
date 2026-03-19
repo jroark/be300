@@ -148,7 +148,7 @@ typedef struct {
     uint64_t last_nz_to_zero_new;
 } wince_region_track_t;
 
-#define WINCE_PRODUCER_FAMILY_COUNT 10u
+#define WINCE_PRODUCER_FAMILY_COUNT 11u
 #define WINCE_OBJ_BOOTSTRAP_WORD_COUNT 7u
 typedef struct {
     const char *name;
@@ -176,6 +176,42 @@ typedef struct {
 } wince_producer_attr_t;
 
 #define WINCE_DELAY_CALL_TRACE_PC_LIMIT 128u
+#define WINCE_DELAY_TOUCH_EVENT_LIMIT 64u
+typedef enum {
+    WINCE_DELAY_TOUCH_NONE = 0,
+    WINCE_DELAY_TOUCH_BOOTCTX,
+    WINCE_DELAY_TOUCH_BOOTPARAM0,
+    WINCE_DELAY_TOUCH_BOOTPARAM1,
+    WINCE_DELAY_TOUCH_CB_TBL,
+    WINCE_DELAY_TOUCH_OBJPTR,
+    WINCE_DELAY_TOUCH_OBJ_HEADER,
+    WINCE_DELAY_TOUCH_RESUME_GLOBAL,
+    WINCE_DELAY_TOUCH_MMIO,
+} wince_delay_touch_kind_t;
+
+typedef struct {
+    bool     first_read_valid;
+    uint32_t first_read_pc;
+    uint32_t first_read_pa;
+    uint64_t first_read_val;
+    bool     first_write_valid;
+    uint32_t first_write_pc;
+    uint32_t first_write_pa;
+    uint64_t first_write_val;
+} wince_delay_touch_summary_t;
+
+typedef struct {
+    bool     valid;
+    bool     is_write;
+    bool     is_mmio;
+    uint8_t  size;
+    uint8_t  kind;
+    uint16_t reserved;
+    uint32_t pc;
+    uint32_t pa;
+    uint64_t value;
+} wince_delay_touch_event_t;
+
 typedef struct {
     bool     armed;
     bool     active;
@@ -206,6 +242,24 @@ typedef struct {
     uint32_t event_count;
     uint32_t pc_count;
     uint32_t pcs[WINCE_DELAY_CALL_TRACE_PC_LIMIT];
+    uint32_t touch_count;
+    wince_delay_touch_event_t touches[WINCE_DELAY_TOUCH_EVENT_LIMIT];
+    wince_delay_touch_summary_t bootctx_touch;
+    wince_delay_touch_summary_t bootparam0_touch;
+    wince_delay_touch_summary_t bootparam1_touch;
+    wince_delay_touch_summary_t cb_tbl_touch;
+    wince_delay_touch_summary_t objptr_touch;
+    wince_delay_touch_summary_t obj_header_touch;
+    wince_delay_touch_summary_t resume_global_touch;
+    wince_delay_touch_summary_t mmio_touch;
+    bool     resume_global_f0_first_read_valid;
+    uint32_t resume_global_f0_first_read_pc;
+    uint32_t resume_global_f0_first_read_pa;
+    uint64_t resume_global_f0_first_read_val;
+    bool     resume_global_f0_first_write_valid;
+    uint32_t resume_global_f0_first_write_pc;
+    uint32_t resume_global_f0_first_write_pa;
+    uint64_t resume_global_f0_first_write_val;
     uint32_t last_pc;
     bool     last_pc_valid;
 } wince_delay_call_trace_t;
@@ -381,6 +435,7 @@ typedef struct {
     bool        log_nand_legacy; /* log D7F8/D7FC indexed register traffic */
     bool        log_wince_stall; /* log WinCE post-NAND stall diagnostics */
     bool        wince_delay_skip; /* experimental: replay old skip at 0x80078038 */
+    bool        wince_hw_seed; /* experimental: replay captured BE-300 WinCE RAM regions */
     bool        wince_obj_bootstrap; /* experimental: seed stable objptr/header words for WinCE NAND boot */
     bool        trace_user_handoff; /* debug: first-fault and handoff VA->PA trace */
     const char *rom_path;     /* path to flat ROM image, loaded at PA_RESET_VECTOR */
@@ -478,6 +533,7 @@ struct machine_s {
     uint32_t wince_null_consecutive;
     bool     wince_nk_epoch_reset_done;
     bool     wince_deferred_seed_done;
+    bool     wince_hw_seed_active;
     bool     wince_obj_bootstrap_active;
     wince_obj_bootstrap_track_t wince_obj_bootstrap[WINCE_OBJ_BOOTSTRAP_WORD_COUNT];
     wince_delay_call_trace_t wince_delay_call_trace;
@@ -668,6 +724,13 @@ struct machine_s {
     bool     eret_nop_patch_pending;
     uint64_t eret_nop_patch_addr;
     uint32_t eret_nop_patch_orig;
+
+    /* Execve user entry address: set when MTC0 CP0_EPC writes a kuseg
+     * address during an active execve.  Survives save/restore cycles
+     * (unlike epc_was_written) so ERET_EXECVE_NATIVE can redirect to
+     * user space even after timer interrupts reset epc_was_written. */
+    bool     execve_user_entry_valid;
+    uint32_t execve_user_entry;
 
     /* After TLBWI/TLBWR executes, flush Unicorn's softmmu TLB at the next
      * instruction so stale TLB entries (e.g. D=0 → D=1 upgrade) don't
