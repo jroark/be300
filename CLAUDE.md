@@ -2,6 +2,7 @@
 
 ## Reference & Documentation
 I have access to real be300 hardware and a Virtual machine with eMbedded Visual C++ 3.0 (with the be300 SDK).
+I also have another VM with Platform Builder 3.0.
 - docs/Vr4131-um_200203.pdf - NEC vr4131 SOC Users Manual
 - docs/U14579EJ2V0UM00.pdf - NEC vrc4173 Companion Chip Users Manual
 - docs/hardware.txt - notes from Linux4be project developers
@@ -72,7 +73,6 @@ Push with: `git push -u origin <current branch>`
 - All kernels contain ramdisks
 - None of the linux kernels had much more than serial and framebuffer support, no NAND, no touchscreen, no compact flash support.
 - These kernels are from a project named Linux4be. They are development kernels and may contain mistakes.
-- `kernels/vmlinux-2.6`        — ELF32 MIPS LE, 2.6.8.1, built 2004-09-08.
 - `kernels/vmlinux`            - ELF 32-bit LSB executable, MIPS, MIPS-II version 1 (SYSV), statically linked, not stripped, too many notes (256)
   - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
 - `kernels/vmlinux_sdlregtest` - ELF32 MIPS LE, Linux version 2.4.18-mips (mouse@mouse.office.altlinux.ru) (gcc version 3.0.4) #325   20 14:06:02 MSK 2003
@@ -85,7 +85,6 @@ Push with: `git push -u origin <current branch>`
   - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
 
 **Kernel source**
-- `kernels/src/linux-2.6` - approximate kernel source of `kernels/vmlinux-2.6`
 - `kernels/src/linux-2.4.18` - approximate kernel source of 2.4.18 kernels
 
 **WinCE ELF loader**
@@ -117,12 +116,10 @@ Push with: `git push -u origin <current branch>`
    docker compose run --rm mips-dev /bin/bash
 
    # Inside the container
-   # rebuild and test a 2.6 & 2.4 kernel
+   # rebuild and test a 2.4 kernel
    mkdir -p build-docker && cd build-docker
    cmake ..
    make -j$(nproc)
-   timeout 180s ./be300 --kernel ../kernels/vmlinux-2.6 \
-     > docker_2.6_stdout.log 2> docker_2.6_stderr.log
    timeout 180s ./be300 --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" --kernel ../kernels/vmlinux-pgui-demo \
      > docker_2.4_stdout.log 2> docker_2.4_stderr.log
    ```
@@ -187,10 +184,7 @@ timeout 10s ./be300 --nand ../ce/restore_images/All_nand_300.bin --trace \
 # NOTE: These kernels never terminate on their own — they run until timeout
 # kills them (exit code 124). This is expected, NOT a failure. To check for
 # regressions, inspect stdout for successful boot markers like
-# "Freeing unused kernel memory" (2.6) or similar userspace-entry messages.
-timeout 180s ./be300 --kernel ../kernels/vmlinux-2.6 \
-  > docker_2.6_stdout.log 2> docker_2.6_stderr.log; \
-  grep -q "Freeing unused kernel memory" docker_2.6_stdout.log && echo "2.6 OK" || echo "2.6 FAIL"
+# "Freeing unused kernel memory" or similar userspace-entry messages.
 timeout 180s ./be300 --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" \
   --kernel ../kernels/vmlinux-pgui-demo \
   > docker_2.4_stdout.log 2> docker_2.4_stderr.log; \

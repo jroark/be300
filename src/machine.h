@@ -649,15 +649,37 @@ struct machine_s {
     uint32_t refill_insn_count;
     uint32_t general_insn_count;
 
+    /* Kernel VM readiness gate for TLBS/TLBL injection on kuseg accesses.
+     * Set once we observe the kernel has installed exception vectors
+     * (first TLBWI/TLBWR from kernel code), meaning the TLB refill
+     * handler at 0x80000000 contains valid code. */
+    bool     kernel_vm_ready;
+    bool     kuseg_gaps_unmapped;   /* true after kuseg gap regions are unmapped for do_execve */
+
     /* Runtime instruction patching: temporarily rewrite tlbwi -> tlbwr. */
     bool     tlbwi_patch_pending;
     uint64_t tlbwi_patch_addr;
     uint32_t tlbwi_patch_orig;
 
+    /* Runtime ERET NOP-patch: overwrite ERET with NOP to prevent the native
+     * ERET from reading stale CP0_EPC (which Unicorn doesn't let us write).
+     * The original ERET opcode is restored on the next prid_hook call at a
+     * different PC.  Used by ERET_KERNEL_TLB_OK / ERET_KERNEL_TLB_PGFAULT. */
+    bool     eret_nop_patch_pending;
+    uint64_t eret_nop_patch_addr;
+    uint32_t eret_nop_patch_orig;
+
     /* After TLBWI/TLBWR executes, flush Unicorn's softmmu TLB at the next
      * instruction so stale TLB entries (e.g. D=0 → D=1 upgrade) don't
      * prevent the retry store from succeeding. */
     bool     pending_tlb_flush;
+
+    /* Deferred PC redirect after ERET from injected TLB exception.
+     * The native ERET reads a stale CP0_EPC (which we can't write),
+     * overwriting our PC.  We store the desired PC here and apply it
+     * when the main loop restarts after uc_emu_stop. */
+    bool     pending_eret_redirect;
+    uint64_t pending_eret_redirect_pc;
 
     /* VR41xx→MIPS32 PFN fixup: after patching a GPR for MTC0 EntryLo,
      * restore the original value on the next instruction. */

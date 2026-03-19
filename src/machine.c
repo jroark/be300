@@ -18,6 +18,11 @@
 /* mips_sext, is_kseg_va32 moved to machine.h */
 /* is_wince_boot_cfg / is_wince_boot_machine are in machine.h */
 
+/* CP0 Cause ExcCode values (also defined before Unicorn hooks for local use) */
+#define MIPS_EXCCODE_TLBL 2u
+#define MIPS_EXCCODE_TLBS 3u
+#define MIPS_EXCCODE_SYS  8u
+
 #define VR4131_PCLK_HZ      UINT64_C(166000000)
 #define VR4131_CP0_COUNT_HZ (VR4131_PCLK_HZ / 2u)
 #define VR4131_RTC_HZ       UINT64_C(32768)
@@ -508,6 +513,10 @@ static bool emulate_load_at_pc(machine_t *m, uint64_t pc)
     return true;
 }
 
+/* Forward declaration */
+static void kuseg_store_writeback(machine_t *m, uint32_t kuseg_va,
+                                  uint32_t size_bytes);
+
 /*
  * Fallback for UC_ERR_WRITE_UNMAPPED in late execve/user-copy paths:
  * decode simple MIPS store ops and commit the write directly, then advance PC.
@@ -570,6 +579,16 @@ static bool emulate_store_on_write_unmapped(machine_t *m, uint64_t pc)
     if (we != UC_ERR_OK)
         return false;
 
+    /* Write back to SDRAM PA for kuseg coherence */
+    if (addr32 < 0x80000000u) {
+        uint32_t sz = 4;
+        if (op == 0x28u) sz = 1;       /* sb */
+        else if (op == 0x29u) sz = 2;   /* sh */
+        else if (op == 0x2Bu) sz = 4;   /* sw */
+        else if (op == 0x3Fu) sz = 8;   /* sd */
+        kuseg_store_writeback(m, addr32, sz);
+    }
+
     uint64_t next_pc = pc + 4u;
     uc_reg_write(m->uc, UC_MIPS_REG_PC, &next_pc);
 
@@ -617,6 +636,242 @@ static bool emulate_store_nearby_on_write_unmapped(machine_t *m, uint64_t bad_pc
         }
     }
     return false;
+}
+
+/*
+ * Decode a store instruction at `pc` and compute the effective target VA.
+ * Returns true if `pc` contains a recognized store (sb/sh/sw/sd/swl/swr).
+ */
+static bool decode_store_target_va(machine_t *m, uint64_t pc, uint32_t *target_va_out)
+{
+    uint32_t insn = 0;
+    if (!read_insn_best_effort(m->uc, pc, &insn))
+        return false;
+    uint32_t op = insn >> 26;
+    /* sb=0x28, sh=0x29, sw=0x2B, swl=0x2A, swr=0x2E, sd=0x3F, sc=0x38 */
+    if (!(op == 0x28u || op == 0x29u || op == 0x2Au || op == 0x2Bu ||
+          op == 0x2Eu || op == 0x38u || op == 0x3Fu))
+        return false;
+    uint32_t rs = (insn >> 21) & 0x1Fu;
+    int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+    uint64_t base = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_0 + (int)rs, &base);
+    *target_va_out = (uint32_t)((uint32_t)base + (uint32_t)imm);
+    return true;
+}
+
+/*
+ * Decode a load instruction at `pc` and compute the effective source VA.
+ * Returns true if `pc` contains a recognized load.
+ */
+static bool decode_load_source_va(machine_t *m, uint64_t pc, uint32_t *source_va_out)
+{
+    uint32_t insn = 0;
+    if (!read_insn_best_effort(m->uc, pc, &insn))
+        return false;
+    uint32_t op = insn >> 26;
+    /* lb=0x20, lh=0x21, lwl=0x22, lw=0x23, lbu=0x24, lhu=0x25, lwr=0x26, ll=0x30 */
+    if (!(op == 0x20u || op == 0x21u || op == 0x22u || op == 0x23u ||
+          op == 0x24u || op == 0x25u || op == 0x26u || op == 0x30u))
+        return false;
+    uint32_t rs = (insn >> 21) & 0x1Fu;
+    int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+    uint64_t base = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_0 + (int)rs, &base);
+    *source_va_out = (uint32_t)((uint32_t)base + (uint32_t)imm);
+    return true;
+}
+
+/*
+ * Inject a TLBS (TLB store miss) exception for a kernel-mode store to
+ * an unmapped kuseg VA. Sets up shadow CP0 state (BadVAddr, EntryHi,
+ * Context), saves any existing exception state, and redirects PC to
+ * the TLB refill vector.
+ *
+ * Returns true if the injection was performed.
+ */
+static bool inject_kernel_kuseg_tlbs(machine_t *m, uint64_t pc, uint32_t kuseg_va)
+{
+    if (!m->kernel_vm_ready)
+        return false;
+    if ((uint32_t)pc < 0x80000000u)
+        return false;  /* not kernel mode */
+    if (kuseg_va >= 0x80000000u)
+        return false;  /* not kuseg */
+
+    /* Check shadow TLB: if a valid D=1 entry exists, don't inject —
+     * the caller should populate and emulate instead. */
+    tlb_lookup_result_t r = shadow_tlb_lookup(m, kuseg_va);
+    if (r.hit && r.confident) {
+        /* Entry exists with valid translation. Check D (dirty) bit. */
+        bool odd_page = (((uint64_t)kuseg_va & r.page_bytes) != 0u);
+        uint32_t lo = odd_page ? r.lo1 : r.lo0;
+        if ((lo & 0x4u) != 0u) {
+            /* D=1: page is writable, don't inject — populate instead */
+            return false;
+        }
+        /* D=0: page exists but not writable — inject TLBS (dirty fault)
+         * so the kernel can upgrade the PTE to writable. */
+    }
+
+    /* Save existing exception state if we're nested (e.g. inside SYSCALL) */
+    if (m->pending_excode != 0u)
+        save_pending_exception(m);
+
+    /* Set up shadow CP0 for the TLB handler */
+    uint32_t asid = (uint32_t)(m->shadow_cp0_entryhi_live_valid
+                     ? m->shadow_cp0_entryhi_live
+                     : m->shadow_cp0_entryhi) & 0xFFu;
+    uint32_t ctx_base = (uint32_t)m->shadow_cp0_context & 0xFF800000u;
+    uint32_t ctx_badvpn2 = ((kuseg_va >> 9) & 0x007FFFF0u);
+    m->shadow_cp0_badvaddr = (uint64_t)kuseg_va;
+    m->shadow_cp0_entryhi = (uint64_t)((kuseg_va & 0xFFFFE000u) | asid);
+    m->shadow_cp0_context = (uint64_t)(ctx_base | ctx_badvpn2);
+
+    /* Set pending exception state */
+    m->pending_epc          = (uint32_t)pc;
+    m->pending_excode       = MIPS_EXCCODE_TLBS;
+    m->pending_cause        = (uint32_t)(MIPS_EXCCODE_TLBS << 2);
+    m->epc_was_written      = false;
+    m->pending_cause_served = false;
+    m->pending_epc_served   = false;
+
+    /* Set EXL=1 and choose vector based on previous EXL state */
+    uint64_t ex_status = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+    bool was_exl = (ex_status & 0x2u) != 0u;
+    ex_status |= 0x2u;  /* EXL=1 */
+    uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+
+    /* TLB refill vector: 0x80000000 if not already in exception, else general 0x80000180 */
+    uint64_t vec;
+    if (ex_status & 0x00400000u) {
+        vec = mips_sext(0xBFC00380u);  /* BEV=1 */
+    } else if (was_exl) {
+        vec = mips_sext(0x80000180u);  /* general exception vector */
+    } else {
+        vec = mips_sext(0x80000000u);  /* TLB refill vector */
+    }
+    uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
+
+    static uint32_t kernel_tlbs_inject_log = 0;
+    if (kernel_tlbs_inject_log < 256) {
+        fprintf(stderr,
+                "[KERNEL_TLBS_INJECT] pc=0x%08X kuseg_va=0x%08X"
+                " entryhi=0x%08X ctx=0x%08X vec=0x%08" PRIX64
+                " status=0x%08" PRIX64 " was_exl=%u saved=%u"
+                " tlb_hit=%u tlb_reason=%s\n",
+                (uint32_t)pc, kuseg_va,
+                (uint32_t)m->shadow_cp0_entryhi,
+                (uint32_t)m->shadow_cp0_context,
+                (uint64_t)(uint32_t)vec,
+                (uint64_t)(uint32_t)ex_status,
+                was_exl ? 1u : 0u,
+                m->has_saved_exception ? 1u : 0u,
+                r.hit ? 1u : 0u,
+                r.reason ? r.reason : "none");
+        kernel_tlbs_inject_log++;
+    }
+    return true;
+}
+
+/*
+ * Inject a TLBL (TLB load miss) exception for a kernel-mode read from
+ * an unmapped kuseg VA. Same mechanism as inject_kernel_kuseg_tlbs but
+ * with TLBL exception code.
+ */
+static bool inject_kernel_kuseg_tlbl(machine_t *m, uint64_t pc, uint32_t kuseg_va)
+{
+    if (!m->kernel_vm_ready)
+        return false;
+    if ((uint32_t)pc < 0x80000000u)
+        return false;
+    if (kuseg_va >= 0x80000000u)
+        return false;
+
+    /* If shadow TLB has a confident entry, don't inject — populate instead */
+    tlb_lookup_result_t r = shadow_tlb_lookup(m, kuseg_va);
+    if (r.hit && r.confident)
+        return false;
+
+    if (m->pending_excode != 0u)
+        save_pending_exception(m);
+
+    uint32_t asid = (uint32_t)(m->shadow_cp0_entryhi_live_valid
+                     ? m->shadow_cp0_entryhi_live
+                     : m->shadow_cp0_entryhi) & 0xFFu;
+    uint32_t ctx_base = (uint32_t)m->shadow_cp0_context & 0xFF800000u;
+    uint32_t ctx_badvpn2 = ((kuseg_va >> 9) & 0x007FFFF0u);
+    m->shadow_cp0_badvaddr = (uint64_t)kuseg_va;
+    m->shadow_cp0_entryhi = (uint64_t)((kuseg_va & 0xFFFFE000u) | asid);
+    m->shadow_cp0_context = (uint64_t)(ctx_base | ctx_badvpn2);
+
+    m->pending_epc          = (uint32_t)pc;
+    m->pending_excode       = MIPS_EXCCODE_TLBL;
+    m->pending_cause        = (uint32_t)(MIPS_EXCCODE_TLBL << 2);
+    m->epc_was_written      = false;
+    m->pending_cause_served = false;
+    m->pending_epc_served   = false;
+
+    uint64_t ex_status = 0;
+    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+    bool was_exl = (ex_status & 0x2u) != 0u;
+    ex_status |= 0x2u;
+    uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+
+    uint64_t vec;
+    if (ex_status & 0x00400000u) {
+        vec = mips_sext(0xBFC00380u);
+    } else if (was_exl) {
+        vec = mips_sext(0x80000180u);
+    } else {
+        vec = mips_sext(0x80000000u);
+    }
+    uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
+
+    static uint32_t kernel_tlbl_inject_log = 0;
+    if (kernel_tlbl_inject_log < 256) {
+        fprintf(stderr,
+                "[KERNEL_TLBL_INJECT] pc=0x%08X kuseg_va=0x%08X"
+                " entryhi=0x%08X ctx=0x%08X vec=0x%08" PRIX64
+                " status=0x%08" PRIX64 " was_exl=%u saved=%u\n",
+                (uint32_t)pc, kuseg_va,
+                (uint32_t)m->shadow_cp0_entryhi,
+                (uint32_t)m->shadow_cp0_context,
+                (uint64_t)(uint32_t)vec,
+                (uint64_t)(uint32_t)ex_status,
+                was_exl ? 1u : 0u,
+                m->has_saved_exception ? 1u : 0u);
+        kernel_tlbl_inject_log++;
+    }
+    return true;
+}
+
+/*
+ * After emulating a store to a kuseg VA, write the data back to the
+ * corresponding SDRAM PA so that kseg0/kseg1 views remain coherent.
+ */
+static void kuseg_store_writeback(machine_t *m, uint32_t kuseg_va,
+                                  uint32_t size_bytes)
+{
+    if (kuseg_va >= 0x80000000u)
+        return;
+    tlb_lookup_result_t r = shadow_tlb_lookup(m, kuseg_va);
+    if (!r.hit || !r.confident)
+        return;
+    uint64_t pa = r.pa_page + ((uint64_t)kuseg_va - r.va_page);
+    if (pa >= (uint64_t)m->cfg.sdram_size)
+        return;
+
+    uint8_t buf[8];
+    if (size_bytes > sizeof(buf))
+        size_bytes = sizeof(buf);
+    if (uc_mem_read(m->uc, (uint64_t)kuseg_va, buf, size_bytes) != UC_ERR_OK)
+        return;
+
+    /* Write to raw PA and kseg0 alias */
+    uc_mem_write(m->uc, pa, buf, size_bytes);
+    uc_mem_write(m->uc, 0x80000000u + pa, buf, size_bytes);
 }
 
 static bool insn_has_delay_slot(uint32_t insn)
@@ -890,10 +1145,7 @@ static uc_err write_mem_best_effort(uc_engine *uc, uint64_t address,
     return err;
 }
 
-/* CP0 Cause ExcCode values */
-#define MIPS_EXCCODE_TLBL 2u
-#define MIPS_EXCCODE_TLBS 3u
-#define MIPS_EXCCODE_SYS  8u
+/* MIPS_EXCCODE_* defined near top of file */
 
 /* ------------------------------------------------------------------ */
 /* Unicorn hooks                                                         */
@@ -949,6 +1201,92 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 {
     (void)size;
     machine_t *m = user_data;
+
+    /* Deferred redirect from ERET_KERNEL_TLB_OK/PGFAULT: the native ERET
+     * read a stale CP0_EPC, landing at the wrong PC. Write PC and stop
+     * execution so the main loop can apply the redirect reliably. Don't
+     * clear the flag — the main loop clears it after applying. */
+    if (m->pending_eret_redirect) {
+        static uint32_t eret_redir_prid_log = 0;
+        if (eret_redir_prid_log < 64) {
+            fprintf(stderr,
+                    "[ERET_REDIRECT_PRID] at_pc=0x%08" PRIX64
+                    " redir_pc=0x%08" PRIX64 "\n",
+                    (uint64_t)(uint32_t)address,
+                    (uint64_t)(uint32_t)m->pending_eret_redirect_pc);
+            eret_redir_prid_log++;
+        }
+        uc_reg_write(uc, UC_MIPS_REG_PC, &m->pending_eret_redirect_pc);
+        uc_emu_stop(uc);
+        return;
+    }
+
+    /* User-mode instruction fetch: when execution reaches a kuseg VA and the
+     * shadow TLB has no entry for that page, the code hasn't been demand-loaded.
+     * Inject TLBL so the kernel's page fault handler loads the ELF code page
+     * from the ramdisk.  If the shadow TLB has a valid entry, populate the
+     * kuseg flat mapping from SDRAM so the instruction bytes are correct.
+     *
+     * This is needed because kuseg 0x00000000-0x00FFFFFF shares Unicorn's PA
+     * region with kseg0 and cannot be unmapped — so instruction fetches don't
+     * trigger UC_ERR_FETCH_UNMAPPED for addresses in that range. */
+    if (m->kernel_vm_ready && (uint32_t)address < 0x80000000u &&
+        m->kuseg_gaps_unmapped) {
+        uint32_t upc = (uint32_t)address;
+        tlb_lookup_result_t rd = shadow_tlb_lookup(m, upc);
+        if (rd.hit && rd.confident) {
+            /* TLB entry exists — populate kuseg flat mapping from SDRAM */
+            shadow_tlb_populate(m, upc, true,
+                                "USER_FETCH_POPULATE", upc);
+        } else {
+            /* No TLB entry — inject TLBL for code page demand loading */
+            uint32_t asid = (uint32_t)(m->shadow_cp0_entryhi_live_valid
+                             ? m->shadow_cp0_entryhi_live
+                             : m->shadow_cp0_entryhi) & 0xFFu;
+            uint32_t ctx_base = (uint32_t)m->shadow_cp0_context & 0xFF800000u;
+            uint32_t ctx_badvpn2 = ((upc >> 9) & 0x007FFFF0u);
+            m->shadow_cp0_badvaddr = (uint64_t)upc;
+            m->shadow_cp0_entryhi = (uint64_t)((upc & 0xFFFFE000u) | asid);
+            m->shadow_cp0_context = (uint64_t)(ctx_base | ctx_badvpn2);
+
+            m->pending_epc          = upc;
+            m->pending_excode       = MIPS_EXCCODE_TLBL;
+            m->pending_cause        = (uint32_t)(MIPS_EXCCODE_TLBL << 2);
+            m->epc_was_written      = false;
+            m->pending_cause_served = false;
+            m->pending_epc_served   = false;
+
+            uint64_t ex_status = 0;
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+            bool was_exl = (ex_status & 0x2u) != 0u;
+            ex_status |= 0x2u;  /* EXL=1 */
+            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+
+            uint64_t vec = was_exl ?
+                           mips_sext(0x80000180u) :
+                           mips_sext(0x80000000u);
+            uc_reg_write(uc, UC_MIPS_REG_PC, &vec);
+
+            static uint32_t user_fetch_tlbl_log = 0;
+            if (user_fetch_tlbl_log < 128) {
+                fprintf(stderr,
+                        "[USER_FETCH_TLBL] pc=0x%08X"
+                        " entryhi=0x%08X ctx=0x%08X"
+                        " vec=0x%08" PRIX64 " status=0x%08" PRIX64
+                        " was_exl=%u\n",
+                        upc,
+                        (uint32_t)m->shadow_cp0_entryhi,
+                        (uint32_t)m->shadow_cp0_context,
+                        (uint64_t)(uint32_t)vec,
+                        (uint64_t)(uint32_t)ex_status,
+                        was_exl ? 1u : 0u);
+                user_fetch_tlbl_log++;
+            }
+            uc_emu_stop(uc);
+            return;
+        }
+    }
+
     m->cp0_count_ticks++;
     m->last_exec_pc = address;
     static uint32_t mfc0_cause_seen_log = 0;
@@ -1998,6 +2336,13 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         m->tlbwi_patch_pending = false;
     }
 
+    /* Restore a previous ERET NOP-patch (ERET was overwritten with NOP to
+     * prevent the native ERET from reading stale CP0_EPC). */
+    if (m->eret_nop_patch_pending && address != m->eret_nop_patch_addr) {
+        write_mem_best_effort(uc, m->eret_nop_patch_addr, &m->eret_nop_patch_orig, 4);
+        m->eret_nop_patch_pending = false;
+    }
+
     /*
      * MFC0 readback helper:
      * UC_HOOK_CODE fires before instruction execution. For native MFC0 reads
@@ -2360,6 +2705,40 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         strncpy(m->execve_watch_path, path, sizeof(m->execve_watch_path) - 1);
         m->execve_watch_path[sizeof(m->execve_watch_path) - 1] = '\0';
 
+        /* Unmap kuseg gap regions so kernel writes to user-space VAs during
+         * do_execve trigger WRITE_UNMAPPED → TLBS injection, allowing the
+         * kernel's page fault handler to allocate and populate user pages.
+         * Without this, the pre-mapped flat kuseg region absorbs writes at
+         * VA=PA (wrong), and user-space code/data is never loaded from the
+         * ELF binary on the ramdisk. */
+        if (m->kernel_vm_ready && !m->kuseg_gaps_unmapped) {
+            m->kuseg_gaps_unmapped = true;
+            static const struct { uint64_t base; uint64_t size; } kuseg_gaps[] = {
+                { 0x01000000u, 0x09000000u },
+                { 0x0B000000u, 0x04000000u },
+                { 0x0F001000u, 0x0EFFF000u },
+                { 0x20000000u, 0x60000000u },
+            };
+            for (int gi = 0; gi < 4; gi++) {
+                uc_err uerr = uc_mem_unmap(m->uc,
+                                           kuseg_gaps[gi].base,
+                                           kuseg_gaps[gi].size);
+                fprintf(stderr,
+                        "[KUSEG_UNMAP_EXECVE] 0x%08" PRIX64
+                        "-0x%08" PRIX64 ": %s\n",
+                        kuseg_gaps[gi].base,
+                        kuseg_gaps[gi].base + kuseg_gaps[gi].size - 1,
+                        uc_strerror(uerr));
+            }
+            /* Flush Unicorn's JIT translation buffer and softmmu TLB
+             * so stale cached translations for the old kuseg mappings
+             * are invalidated.  Without this, the JIT still directs
+             * kuseg accesses to the now-unmapped backing memory. */
+            uc_ctl_flush_tb(m->uc);
+            uc_ctl_flush_tlb(m->uc);
+            fprintf(stderr, "[KUSEG_UNMAP_EXECVE] flushed TB+TLB\n");
+        }
+
         if (do_execve_enter_log < 128) {
             fprintf(stderr,
                     "[DO_EXECVE_ENTER] pc=0x%08" PRIX64 " ra=0x%08" PRIX64
@@ -2572,6 +2951,17 @@ static void prid_hook(uc_engine *uc, uint64_t address,
          */
         if (insn == 0x42000002u || insn == 0x42000006u) {
             shadow_tlb_record_write(m, insn, (uint32_t)address);
+
+            /* Once we see any TLB write from kernel code, the kernel's
+             * exception vectors are installed and TLB refill is functional.
+             * Enable kernel-mode TLBS/TLBL injection for kuseg accesses. */
+            if (!m->kernel_vm_ready && !is_wince_boot_machine(m)) {
+                m->kernel_vm_ready = true;
+                fprintf(stderr,
+                        "[KERNEL_VM_READY] armed at PC=0x%08X (first TLBW%c)\n",
+                        (uint32_t)address,
+                        (insn == 0x42000002u) ? 'I' : 'R');
+            }
 
             uint32_t badvaddr = (uint32_t)m->shadow_cp0_badvaddr;
             uint32_t entryhi = (uint32_t)m->shadow_cp0_entryhi;
@@ -3009,6 +3399,130 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 eret_pending_log++;
             }
             /*
+             * ERET from kernel-mode TLBS/TLBL injection.
+             *
+             * When we injected a TLBS or TLBL exception from the WRITE/READ
+             * UNMAPPED handler, the kernel's TLB refill handler has run.
+             *
+             * The MIPS fast TLB refill at 0x80000000 loads the PTE from the
+             * page table. Two cases:
+             *
+             * (a) PTE valid: TLBWI installed a valid mapping → shadow TLB has
+             *     a confident entry → return to faulting instruction for retry.
+             *
+             * (b) PTE is zero (page not yet allocated): TLBWR wrote invalid
+             *     entries (lo=0) → shadow TLB has no confident entry.
+             *     On real hardware, the retry would TLB-miss again, and since
+             *     EXL=1, the second miss goes to 0x80000180 (general exception
+             *     vector) which calls do_page_fault → allocate → TLBWI.
+             *     We simulate this by redirecting to 0x80000180 with EXL=1
+             *     and the original fault info preserved.
+             */
+            if ((m->pending_excode == MIPS_EXCCODE_TLBS ||
+                 m->pending_excode == MIPS_EXCCODE_TLBL) &&
+                !m->epc_was_written) {
+                uint32_t fault_va = (uint32_t)m->shadow_cp0_badvaddr;
+                tlb_lookup_result_t eret_tlb = shadow_tlb_lookup(m, fault_va);
+                bool tlb_valid = eret_tlb.hit && eret_tlb.confident;
+
+                /* For TLBS, also check D (dirty/writable) bit */
+                if (tlb_valid && m->pending_excode == MIPS_EXCCODE_TLBS) {
+                    bool odd = (((uint64_t)fault_va & eret_tlb.page_bytes) != 0u);
+                    uint32_t lo = odd ? eret_tlb.lo1 : eret_tlb.lo0;
+                    if ((lo & 0x4u) == 0u)
+                        tlb_valid = false;  /* D=0, need do_page_fault to upgrade */
+                }
+
+                if (tlb_valid) {
+                    /* Case (a): TLB entry is valid, return to faulting insn.
+                     * Also populate the kuseg flat mapping from SDRAM so the
+                     * instruction/data at the VA is accessible. */
+                    shadow_tlb_populate(m, fault_va, true,
+                                        "ERET_KTLB_POPULATE",
+                                        (uint32_t)address);
+
+                    uint64_t fault_pc = m->pending_epc;
+                    uint64_t status = status_snapshot & ~(uint64_t)0x2u;
+                    uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+                    /* NOP-patch the ERET instruction to prevent the native
+                     * ERET from reading stale CP0_EPC (which we can't write).
+                     * The NOP executes harmlessly; uc_emu_stop then lets the
+                     * main loop apply the deferred PC redirect. */
+                    uint32_t nop = 0x00000000u;
+                    m->eret_nop_patch_orig = insn; /* 0x42000018 */
+                    m->eret_nop_patch_addr = address;
+                    write_mem_best_effort(uc, address, &nop, 4);
+                    uc_ctl_flush_tb(uc);
+                    m->eret_nop_patch_pending = true;
+
+                    m->pending_eret_redirect = true;
+                    m->pending_eret_redirect_pc = fault_pc;
+
+                    static uint32_t eret_ktlb_ok_log = 0;
+                    if (eret_ktlb_ok_log < 128) {
+                        fprintf(stderr,
+                                "[ERET_KERNEL_TLB_OK] excode=%u fault_pc=0x%08X"
+                                " fault_va=0x%08X pa=0x%08" PRIX64
+                                " status=0x%08" PRIX64 " has_saved=%u (NOP-patched)\n",
+                                m->pending_excode, (uint32_t)fault_pc,
+                                fault_va, eret_tlb.pa_page,
+                                (uint64_t)(uint32_t)status,
+                                m->has_saved_exception ? 1u : 0u);
+                        eret_ktlb_ok_log++;
+                    }
+
+                    m->pending_epc          = 0;
+                    m->pending_excode       = 0;
+                    m->pending_cause        = 0;
+                    m->epc_was_written      = false;
+                    m->pending_cause_served = false;
+                    m->pending_epc_served   = false;
+                    restore_pending_exception(m);
+                    uc_emu_stop(uc);
+                    return;
+                } else {
+                    /* Case (b): PTE was zero/invalid — redirect to general
+                     * exception vector (0x80000180) to trigger do_page_fault.
+                     * Keep EXL=1 and preserve pending TLBS/TLBL state.
+                     *
+                     * NOP-patch the ERET to prevent it from clearing EXL and
+                     * setting PC to stale CP0_EPC.  The NOP executes harmlessly,
+                     * then uc_emu_stop lets the main loop redirect to 0x80000180
+                     * with EXL still set and pending TLBS/TLBL state intact. */
+                    uint64_t gen_vec = mips_sext(0x80000180u);
+
+                    uint32_t nop = 0x00000000u;
+                    m->eret_nop_patch_orig = insn; /* 0x42000018 */
+                    m->eret_nop_patch_addr = address;
+                    write_mem_best_effort(uc, address, &nop, 4);
+                    uc_ctl_flush_tb(uc);
+                    m->eret_nop_patch_pending = true;
+
+                    m->pending_eret_redirect = true;
+                    m->pending_eret_redirect_pc = gen_vec;
+                    /* Re-arm MFC0 intercepts for the general handler */
+                    m->pending_cause_served = false;
+                    m->pending_epc_served   = false;
+
+                    static uint32_t eret_ktlb_pgfault_log = 0;
+                    if (eret_ktlb_pgfault_log < 128) {
+                        fprintf(stderr,
+                                "[ERET_KERNEL_TLB_PGFAULT] excode=%u fault_pc=0x%08X"
+                                " fault_va=0x%08X status=0x%08" PRIX64
+                                " -> 0x80000180 (do_page_fault) (NOP-patched)\n",
+                                m->pending_excode,
+                                (uint32_t)m->pending_epc,
+                                fault_va,
+                                status_snapshot);
+                        eret_ktlb_pgfault_log++;
+                    }
+                    uc_emu_stop(uc);
+                    return;
+                }
+            }
+
+            /*
              * Intercept the ERET when we can reliably determine the return address:
              *  (a) epc_was_written=true: restore_all or start_thread wrote EPC via MTC0 —
              *      always intercept regardless of execve state.
@@ -3104,6 +3618,58 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                                         (uint32_t)epc, probe, re);
                             }
                         }
+
+                        /*
+                         * Code page is still zero after all populate attempts.
+                         * On real hardware, the instruction fetch would TLB-miss
+                         * and trigger TLBL → do_page_fault → filemap_nopage →
+                         * reads the code from the ramdisk.
+                         *
+                         * Inject TLBL to make the kernel load the code page.
+                         */
+                        if (probe == 0u && m->kernel_vm_ready) {
+                            uint32_t user_pc = (uint32_t)epc;
+                            fprintf(stderr,
+                                    "[ERET_KUSEG_TLBL_INJECT] target=0x%08X"
+                                    " code_is_zero -> injecting TLBL\n",
+                                    user_pc);
+
+                            /* Save the current SYS exception state */
+                            save_pending_exception(m);
+
+                            /* Set up shadow CP0 for TLBL */
+                            uint32_t asid = (uint32_t)(
+                                m->shadow_cp0_entryhi_live_valid
+                                    ? m->shadow_cp0_entryhi_live
+                                    : m->shadow_cp0_entryhi) & 0xFFu;
+                            uint32_t ctx_base = (uint32_t)m->shadow_cp0_context
+                                                & 0xFF800000u;
+                            uint32_t ctx_badvpn2 = ((user_pc >> 9) & 0x007FFFF0u);
+                            m->shadow_cp0_badvaddr = (uint64_t)user_pc;
+                            m->shadow_cp0_entryhi = (uint64_t)(
+                                (user_pc & 0xFFFFE000u) | asid);
+                            m->shadow_cp0_context = (uint64_t)(
+                                ctx_base | ctx_badvpn2);
+
+                            m->pending_epc          = user_pc;
+                            m->pending_excode       = MIPS_EXCCODE_TLBL;
+                            m->pending_cause        = (uint32_t)(
+                                MIPS_EXCCODE_TLBL << 2);
+                            m->epc_was_written      = false;
+                            m->pending_cause_served = false;
+                            m->pending_epc_served   = false;
+
+                            /* Set EXL=1 (clear IE to prevent IRQ during refill) */
+                            uint64_t tlbl_status = status | 0x2u;
+                            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS,
+                                         &tlbl_status);
+
+                            uint64_t vec = (tlbl_status & 0x00400000u)
+                                ? mips_sext(0xBFC00380u)
+                                : mips_sext(0x80000000u);
+                            uc_reg_write(uc, UC_MIPS_REG_PC, &vec);
+                            return;
+                        }
                     }
                     (void)trace_user_handoff_entry_probe(m, "ERET",
                                                          (uint32_t)epc,
@@ -3149,20 +3715,18 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             if (m->pending_excode == MIPS_EXCCODE_SYS &&
                 m->execve_watch_active &&
                 !m->epc_was_written) {
-                uint64_t fault_pc = m->tlb_defer_fault_pc;
-                uint64_t status = status_snapshot & ~(uint64_t)0x2u;  /* clear EXL */
-                uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
-                uc_reg_write(uc, UC_MIPS_REG_PC, &fault_pc);
-                /* Do NOT re-arm pending_cause_served / pending_epc_served.
-                 * TLB refill handlers don't read Cause/EPC. */
+                /* Nested ERET during do_execve (timer IRQ, TLB refill, etc.)
+                 * Let Unicorn execute the ERET natively — it reads CP0_EPC
+                 * (set by the exception entry) and returns to the interrupted
+                 * instruction correctly.  Preserve SYS pending state. */
                 static uint32_t eret_tlb_pass_log = 0;
                 if (eret_tlb_pass_log < 64) {
                     fprintf(stderr,
-                            "[ERET_TLB_PASSTHROUGH] fault_pc=0x%08" PRIX64
-                            " pending_epc=0x%08" PRIX64 " nr=%u\n",
-                            (uint64_t)(uint32_t)fault_pc,
+                            "[ERET_EXECVE_NATIVE] pending_epc=0x%08" PRIX64
+                            " nr=%u PC=0x%08" PRIX64 "\n",
                             (uint64_t)(uint32_t)m->pending_epc,
-                            m->pending_syscall_nr);
+                            m->pending_syscall_nr,
+                            (uint64_t)(uint32_t)address);
                     eret_tlb_pass_log++;
                 }
                 return;
@@ -3251,6 +3815,23 @@ static void prid_hook(uc_engine *uc, uint64_t address,
 static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
 {
     machine_t *m = user_data;
+
+    /* Deferred redirect from ERET_KERNEL_TLB_OK/PGFAULT: the native ERET
+     * read a stale CP0_EPC we can't write, landing at the wrong PC.
+     * Override PC and return before any state-corrupting handlers fire. */
+    if (m->pending_eret_redirect) {
+        static uint32_t eret_redir_log = 0;
+        if (eret_redir_log < 64) {
+            fprintf(stderr,
+                    "[ERET_REDIRECT_INTR] intno=%u redir_pc=0x%08" PRIX64 "\n",
+                    intno, (uint64_t)(uint32_t)m->pending_eret_redirect_pc);
+            eret_redir_log++;
+        }
+        uc_reg_write(uc, UC_MIPS_REG_PC, &m->pending_eret_redirect_pc);
+        uc_emu_stop(uc);
+        return;
+    }
+
     static uint32_t intr_log_count[64];
     static uint32_t syscall_entry_log_count = 0;
     static uint32_t intr_log_count_27_detail = 0;
@@ -3759,23 +4340,59 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                         m->tlb_defer_owner_epc == syscall_epc) {
                         static uint32_t tlb_defer_drop_log = 0;
                         static uint32_t tlb_defer_retry_log = 0;
-                        /*
-                         * Repeated intno=26 notifications at the same owner_epc are
-                         * usually stale duplicates after we already forced one refill
-                         * entry; dropping those avoids SYSCALL+4 livelock.
-                         *
-                         * Keep intno=27 (store-side) on the retry path so the kernel
-                         * still gets a chance to establish writable mappings.
-                         */
+
+                        /* When kuseg gaps are unmapped, inject TLBS/TLBL for
+                         * real TLB misses instead of emulating or skipping. */
+                        if (m->kuseg_gaps_unmapped) {
+                            uint64_t real_pc = m->last_exec_pc;
+                            uint32_t target_va = 0;
+                            bool injected = false;
+                            if (intno == 27u &&
+                                decode_store_target_va(m, real_pc, &target_va) &&
+                                target_va < 0x80000000u) {
+                                tlb_lookup_result_t wr = shadow_tlb_lookup(m, target_va);
+                                bool has_writable = wr.hit && wr.confident &&
+                                    ((((((uint64_t)target_va & wr.page_bytes) != 0u)
+                                       ? wr.lo1 : wr.lo0) & 0x4u) != 0u);
+                                if (!has_writable) {
+                                    injected = inject_kernel_kuseg_tlbs(m, real_pc, target_va);
+                                } else {
+                                    shadow_tlb_populate(m, target_va, true,
+                                                        "DEFER2_STORE_POP",
+                                                        (uint32_t)real_pc);
+                                    uc_reg_write(uc, UC_MIPS_REG_PC, &real_pc);
+                                    injected = true;
+                                }
+                            } else if (intno == 26u &&
+                                       decode_load_source_va(m, real_pc, &target_va) &&
+                                       target_va < 0x80000000u) {
+                                tlb_lookup_result_t rd = shadow_tlb_lookup(m, target_va);
+                                if (rd.hit && rd.confident) {
+                                    shadow_tlb_populate(m, target_va, true,
+                                                        "DEFER2_LOAD_POP",
+                                                        (uint32_t)real_pc);
+                                    uc_reg_write(uc, UC_MIPS_REG_PC, &real_pc);
+                                    injected = true;
+                                } else {
+                                    injected = inject_kernel_kuseg_tlbl(m, real_pc, target_va);
+                                }
+                            }
+                            if (injected) {
+                                static uint32_t defer2_inject_log = 0;
+                                if (defer2_inject_log < 256) {
+                                    fprintf(stderr,
+                                            "[TLB_DEFER2_INJECT] intno=%u"
+                                            " real_pc=0x%08" PRIX64
+                                            " target_va=0x%08X count=%u\n",
+                                            intno, (uint64_t)(uint32_t)real_pc,
+                                            target_va, m->tlb_defer_count);
+                                    defer2_inject_log++;
+                                }
+                                return;
+                            }
+                        }
+
                         if (intno == 26u) {
-                            /*
-                             * TLB load-miss notification during do_execve.
-                             * The guest TLB has no entry for the kuseg page,
-                             * so Unicorn would re-notify forever if we just
-                             * restored PC.  Emulate the load instruction
-                             * directly (bypassing the guest TLB), advancing
-                             * past it so execution continues.
-                             */
                             uint64_t real_pc = m->last_exec_pc;
                             if (emulate_load_at_pc(m, real_pc)) {
                                 if (tlb_defer_drop_log < 64) {
@@ -3792,8 +4409,6 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                 }
                                 return;
                             }
-                            /* If load emulation fails, fall through to
-                             * TLB_DEFER_SKIP (restore PC only). */
                             uc_reg_write(uc, UC_MIPS_REG_PC, &real_pc);
                             if (tlb_defer_drop_log < 64) {
                                 fprintf(stderr,
@@ -3845,18 +4460,75 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                     /*
                      * Unicorn fires intno=26/27 as a notification-only event
                      * (EXL=0, PC set to SYSCALL+4) while execution is actually
-                     * deep inside do_execve.  The notification PC is in kseg0
-                     * (which never uses TLB), so there is no real TLB miss to
-                     * handle.  Running the TLB refill handler would fill a
-                     * garbage entry (wrong BadVAddr) and loop forever.
+                     * deep inside do_execve.
                      *
-                     * Fix: restore PC to the last instruction actually executed
-                     * (tracked by prid_hook) and let execution continue.  The
-                     * synthetic SYSCALL state is preserved.
+                     * When kuseg gap regions are unmapped, these are REAL TLB
+                     * misses: the kernel store/load to a kuseg VA failed because
+                     * the flat mapping is gone.  Inject TLBS/TLBL so the kernel's
+                     * TLB refill handler runs (page fault → allocate → TLBWI).
+                     *
+                     * When kuseg is still pre-mapped, these are stale notifications;
+                     * restore PC to last_exec_pc and continue.
                      */
                     m->tlb_defer_count++;
                     {
                         uint64_t real_pc = m->last_exec_pc;
+                        if (m->kuseg_gaps_unmapped &&
+                            (uint32_t)real_pc >= 0x80000000u) {
+                            /* Decode the real faulting instruction to get kuseg VA */
+                            uint32_t target_va = 0;
+                            bool injected = false;
+                            if (intno == 27u) {
+                                /* Store miss → TLBS */
+                                if (decode_store_target_va(m, real_pc, &target_va) &&
+                                    target_va < 0x80000000u) {
+                                    tlb_lookup_result_t wr = shadow_tlb_lookup(m, target_va);
+                                    bool has_writable = false;
+                                    if (wr.hit && wr.confident) {
+                                        bool odd = (((uint64_t)target_va & wr.page_bytes) != 0u);
+                                        uint32_t lo = odd ? wr.lo1 : wr.lo0;
+                                        has_writable = ((lo & 0x4u) != 0u);
+                                    }
+                                    if (!has_writable) {
+                                        injected = inject_kernel_kuseg_tlbs(m, real_pc, target_va);
+                                    } else {
+                                        shadow_tlb_populate(m, target_va, true,
+                                                            "DEFER_STORE_POP",
+                                                            (uint32_t)real_pc);
+                                        uc_reg_write(uc, UC_MIPS_REG_PC, &real_pc);
+                                        injected = true;  /* not really injected, but handled */
+                                    }
+                                }
+                            } else {
+                                /* Load miss → TLBL */
+                                if (decode_load_source_va(m, real_pc, &target_va) &&
+                                    target_va < 0x80000000u) {
+                                    tlb_lookup_result_t rd = shadow_tlb_lookup(m, target_va);
+                                    if (rd.hit && rd.confident) {
+                                        shadow_tlb_populate(m, target_va, true,
+                                                            "DEFER_LOAD_POP",
+                                                            (uint32_t)real_pc);
+                                        uc_reg_write(uc, UC_MIPS_REG_PC, &real_pc);
+                                        injected = true;
+                                    } else {
+                                        injected = inject_kernel_kuseg_tlbl(m, real_pc, target_va);
+                                    }
+                                }
+                            }
+                            if (injected) {
+                                static uint32_t defer_inject_log = 0;
+                                if (defer_inject_log < 256) {
+                                    fprintf(stderr,
+                                            "[TLB_DEFER_INJECT] intno=%u real_pc=0x%08" PRIX64
+                                            " target_va=0x%08X count=%u\n",
+                                            intno, (uint64_t)(uint32_t)real_pc,
+                                            target_va, m->tlb_defer_count);
+                                    defer_inject_log++;
+                                }
+                                return;
+                            }
+                        }
+                        /* Fall back to skip (stale notification or decode failure) */
                         uc_reg_write(uc, UC_MIPS_REG_PC, &real_pc);
                         static uint32_t tlb_defer_skip_log = 0;
                         if (tlb_defer_skip_log < 64) {
@@ -5233,6 +5905,15 @@ void machine_run(machine_t *m)
             }
         }
 
+        /* Apply deferred ERET redirect from injected TLB exception handler.
+         * The hook-based redirects (prid_hook/intr_hook) write PC and stop,
+         * but the instruction at the stale PC may have already executed.
+         * This is the final safety net: override PC before uc_emu_start. */
+        if (m->pending_eret_redirect) {
+            uc_reg_write(m->uc, UC_MIPS_REG_PC, &m->pending_eret_redirect_pc);
+            m->pending_eret_redirect = false;
+        }
+
         uint64_t run_pc = 0;
         uc_reg_read(m->uc, UC_MIPS_REG_PC, &run_pc);
         uint32_t step_count = m->post_init_trace_window ? POST_INIT_BATCH_SIZE : BATCH_SIZE;
@@ -5261,11 +5942,64 @@ void machine_run(machine_t *m)
                 m->last_unmapped_valid = false;
 
                 /*
+                 * Kernel-mode TLBS injection for kuseg writes.
+                 *
+                 * When kernel code stores to a kuseg VA and the shadow TLB has
+                 * no valid writable entry, inject a TLBS exception so the
+                 * kernel's page fault handler runs (allocates a page, sets up
+                 * PTEs, TLBWI, ERET → retry).
+                 *
+                 * If the shadow TLB DOES have a valid D=1 entry, populate the
+                 * Unicorn flat mapping from SDRAM, then fall through to emulate
+                 * the store.
+                 */
+                if (m->kernel_vm_ready && (uint32_t)bad_pc >= 0x80000000u) {
+                    uint32_t store_va = 0;
+                    if (decode_store_target_va(m, bad_pc, &store_va) &&
+                        store_va < 0x80000000u) {
+                        tlb_lookup_result_t wr = shadow_tlb_lookup(m, store_va);
+                        bool has_writable = false;
+                        if (wr.hit && wr.confident) {
+                            bool odd = (((uint64_t)store_va & wr.page_bytes) != 0u);
+                            uint32_t lo = odd ? wr.lo1 : wr.lo0;
+                            has_writable = ((lo & 0x4u) != 0u);  /* D bit */
+                        }
+                        if (!has_writable) {
+                            /* No TLB entry or D=0 → inject TLBS */
+                            if (inject_kernel_kuseg_tlbs(m, bad_pc, store_va)) {
+                                write_unmapped_recoveries++;
+                                continue;
+                            }
+                        } else {
+                            /* Valid D=1 entry → populate from SDRAM and emulate */
+                            shadow_tlb_populate(m, store_va, true,
+                                                "KSTORE_POPULATE",
+                                                (uint32_t)bad_pc);
+                        }
+                    }
+                }
+
+                /*
                  * Some Unicorn builds repeatedly report WRITE_UNMAPPED on
                  * the same store without completing it even after mapping.
                  * Decode/commit simple stores directly to break the livelock.
                  */
                 if (emulate_store_nearby_on_write_unmapped(m, bad_pc)) {
+                    /* After emulating the store, write back to SDRAM for
+                     * kuseg coherence if the store target was kuseg. */
+                    uint32_t wb_va = 0;
+                    if (decode_store_target_va(m, bad_pc, &wb_va) &&
+                        wb_va < 0x80000000u) {
+                        uint32_t insn = 0;
+                        read_insn_best_effort(m->uc, bad_pc, &insn);
+                        uint32_t op = insn >> 26;
+                        uint32_t sz = 4;
+                        if (op == 0x28u) sz = 1;       /* sb */
+                        else if (op == 0x29u) sz = 2;   /* sh */
+                        else if (op == 0x2Bu) sz = 4;   /* sw */
+                        else if (op == 0x3Fu) sz = 8;   /* sd */
+                        kuseg_store_writeback(m, wb_va, sz);
+                    }
                     write_unmapped_recoveries++;
                     continue;
                 }
@@ -5313,6 +6047,11 @@ void machine_run(machine_t *m)
                     if (va32 >= 0x80000000u && va32 <= 0xBFFFFFFFu) {
                         mapped = map_kseg_mirror_block(m, block);
                     } else if (va32 < 0x80000000u) {
+                        /* When kernel VM is ready and kuseg gaps are unmapped,
+                         * do NOT remap kuseg addresses — they must go through
+                         * TLB/page-fault injection for demand paging. */
+                        if (m->kernel_vm_ready && m->kuseg_gaps_unmapped)
+                            continue;
                         uc_err me32 = uc_mem_map(m->uc, block32, 0x100000,
                                                  UC_PROT_READ | UC_PROT_WRITE);
                         if (me32 == UC_ERR_OK || me32 == UC_ERR_MAP)
@@ -5368,6 +6107,35 @@ void machine_run(machine_t *m)
                 } else if (m->shadow_cp0_badvaddr != 0) {
                     badv = m->shadow_cp0_badvaddr;
                 }
+                /*
+                 * Kernel-mode TLBL injection for kuseg reads.
+                 * When kernel code reads from a kuseg VA and there's no
+                 * shadow TLB entry, inject TLBL so the kernel's page fault
+                 * handler populates the page from the ramdisk/filesystem.
+                 * If a valid TLB entry exists, populate from SDRAM and retry.
+                 */
+                if (m->kernel_vm_ready && (uint32_t)bad_pc >= 0x80000000u) {
+                    uint32_t load_va = 0;
+                    if (decode_load_source_va(m, bad_pc, &load_va) &&
+                        load_va < 0x80000000u) {
+                        tlb_lookup_result_t rd = shadow_tlb_lookup(m, load_va);
+                        if (rd.hit && rd.confident) {
+                            /* Populate from SDRAM and retry */
+                            shadow_tlb_populate(m, load_va, true,
+                                                "KLOAD_POPULATE",
+                                                (uint32_t)bad_pc);
+                            m->last_unmapped_valid = false;
+                            continue;
+                        } else {
+                            /* No entry → inject TLBL */
+                            if (inject_kernel_kuseg_tlbl(m, bad_pc, load_va)) {
+                                m->last_unmapped_valid = false;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 if ((uint32_t)bad_pc < 0x80000000u &&
                     m->pending_excode == 0u) {
                     uint32_t fault_va = (uint32_t)((badv != 0u) ? badv : bad_pc);
@@ -5549,6 +6317,11 @@ void machine_run(machine_t *m)
                     if (va32 >= 0x80000000u && va32 <= 0xBFFFFFFFu) {
                         mapped = map_kseg_mirror_block(m, block);
                     } else if (va32 < 0x80000000u) {
+                        /* When kernel VM is ready and kuseg gaps are unmapped,
+                         * do NOT remap kuseg addresses — they must go through
+                         * TLB/page-fault injection for demand paging. */
+                        if (m->kernel_vm_ready && m->kuseg_gaps_unmapped)
+                            continue;
                         /*
                          * User-space VA alias handling in Unicorn MIPS64:
                          * faults may surface with either raw 64-bit VA (e.g.
@@ -5590,6 +6363,95 @@ void machine_run(machine_t *m)
 
                 if (mapped_any)
                     continue;
+            }
+
+            /*
+             * UC_ERR_FETCH_UNMAPPED: instruction fetch from unmapped memory.
+             * For user-mode VAs (< 0x80000000), this is a TLBL on code fetch.
+             * The faulting VA is bad_pc itself (the PC we tried to fetch from).
+             *
+             * Two cases:
+             * (a) kernel_vm_ready and shadow TLB has a valid entry: populate
+             *     the kuseg flat mapping from SDRAM and retry.
+             * (b) No TLB entry: inject TLBL so the kernel's page fault handler
+             *     demand-loads the code page from the ELF/ramdisk.
+             */
+            if (err == UC_ERR_FETCH_UNMAPPED) {
+                uint32_t fetch_va = (uint32_t)bad_pc;
+                if (m->kernel_vm_ready && fetch_va < 0x80000000u) {
+                    tlb_lookup_result_t rd = shadow_tlb_lookup(m, fetch_va);
+                    if (rd.hit && rd.confident) {
+                        /* Valid TLB entry — populate kuseg from SDRAM and retry */
+                        shadow_tlb_populate(m, fetch_va, true,
+                                            "FETCH_POPULATE",
+                                            fetch_va);
+                        m->last_unmapped_valid = false;
+                        static uint32_t fetch_pop_log = 0;
+                        if (fetch_pop_log < 128) {
+                            fprintf(stderr,
+                                    "[FETCH_POPULATE] va=0x%08X pa=0x%08" PRIX64 "\n",
+                                    fetch_va, rd.pa_page);
+                            fetch_pop_log++;
+                        }
+                        continue;
+                    }
+                    /* No TLB entry → inject TLBL for the code page */
+                    uint32_t asid = (uint32_t)(m->shadow_cp0_entryhi_live_valid
+                                     ? m->shadow_cp0_entryhi_live
+                                     : m->shadow_cp0_entryhi) & 0xFFu;
+                    uint32_t ctx_base = (uint32_t)m->shadow_cp0_context & 0xFF800000u;
+                    uint32_t ctx_badvpn2 = ((fetch_va >> 9) & 0x007FFFF0u);
+                    m->shadow_cp0_badvaddr = (uint64_t)fetch_va;
+                    m->shadow_cp0_entryhi = (uint64_t)((fetch_va & 0xFFFFE000u) | asid);
+                    m->shadow_cp0_context = (uint64_t)(ctx_base | ctx_badvpn2);
+
+                    m->pending_epc          = fetch_va;
+                    m->pending_excode       = MIPS_EXCCODE_TLBL;
+                    m->pending_cause        = (uint32_t)(MIPS_EXCCODE_TLBL << 2);
+                    m->epc_was_written      = false;
+                    m->pending_cause_served = false;
+                    m->pending_epc_served   = false;
+
+                    uint64_t ex_status = 0;
+                    uc_reg_read(m->uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+                    bool was_exl = (ex_status & 0x2u) != 0u;
+                    ex_status |= 0x2u;  /* EXL=1 */
+                    uc_reg_write(m->uc, UC_MIPS_REG_CP0_STATUS, &ex_status);
+
+                    /* TLB refill vector (EXL was 0) or general vector (EXL was 1) */
+                    uint64_t vec = was_exl ?
+                                   mips_sext(0x80000180u) :
+                                   mips_sext(0x80000000u);
+                    uc_reg_write(m->uc, UC_MIPS_REG_PC, &vec);
+
+                    static uint32_t fetch_tlbl_log = 0;
+                    if (fetch_tlbl_log < 128) {
+                        fprintf(stderr,
+                                "[FETCH_TLBL_INJECT] fetch_va=0x%08X"
+                                " entryhi=0x%08X ctx=0x%08X"
+                                " vec=0x%08" PRIX64 " status=0x%08" PRIX64
+                                " was_exl=%u\n",
+                                fetch_va,
+                                (uint32_t)m->shadow_cp0_entryhi,
+                                (uint32_t)m->shadow_cp0_context,
+                                (uint64_t)(uint32_t)vec,
+                                (uint64_t)(uint32_t)ex_status,
+                                was_exl ? 1u : 0u);
+                        fetch_tlbl_log++;
+                    }
+                    m->last_unmapped_valid = false;
+                    continue;
+                }
+                /* Non-user or pre-VM: log and fall through to generic handler */
+                static uint32_t fetch_unmapped_log = 0;
+                if (fetch_unmapped_log < 16) {
+                    fprintf(stderr,
+                            "[FETCH_UNMAPPED] pc=0x%08" PRIX64
+                            " kernel_vm_ready=%u\n",
+                            (uint64_t)(uint32_t)bad_pc,
+                            m->kernel_vm_ready ? 1u : 0u);
+                    fetch_unmapped_log++;
+                }
             }
 
             /*
