@@ -23,6 +23,14 @@ typedef struct {
     const uint8_t *data;
 } wince_pa_seed_region_t;
 
+typedef struct {
+    const char *name;
+    uint32_t va;
+    uint32_t size;
+    uint32_t crc32;
+    const uint8_t *data;
+} wince_va_seed_region_t;
+
 #include "wince_probe_seed_data.h"
 #include "wince_hw_seed_data.h"
 #include "wince_kdata_probe_words.h"
@@ -143,6 +151,27 @@ static void write_pa_bytes_all_aliases(machine_t *m, uint32_t pa,
         uc_mem_write(m->uc, addrs[i], data, size);
 }
 
+static void write_va_bytes(machine_t *m, uint32_t va,
+                           const uint8_t *data, uint32_t size)
+{
+    uc_err err;
+    uint64_t addr;
+
+    if (!m || !m->uc || !data || size == 0u)
+        return;
+
+    addr = (uint64_t)va;
+    err = uc_mem_write(m->uc, addr, data, size);
+    if (err == UC_ERR_OK)
+        return;
+
+    {
+        uint64_t block = addr & ~UINT64_C(0xFFFFF);
+        uc_mem_map(m->uc, block, UINT64_C(0x100000), UC_PROT_READ | UC_PROT_WRITE);
+        uc_mem_write(m->uc, addr, data, size);
+    }
+}
+
 static void seed_wince_hw_regions(machine_t *m)
 {
     if (!m || !m->uc || !m->cfg.wince_hw_seed || m->wince_hw_seed_active)
@@ -156,8 +185,9 @@ static void seed_wince_hw_regions(machine_t *m)
 
     m->wince_hw_seed_active = true;
     fprintf(stderr,
-            "[WINCE_HW_SEED] applying %u captured regions\n",
-            wince_hw_seed_region_count);
+            "[WINCE_HW_SEED] applying %u captured PA regions and %u captured VA regions\n",
+            wince_hw_seed_region_count,
+            wince_hw_vseed_region_count);
 
     for (uint32_t i = 0; i < wince_hw_seed_region_count; i++) {
         const wince_pa_seed_region_t *r = &wince_hw_seed_regions[i];
@@ -174,6 +204,15 @@ static void seed_wince_hw_regions(machine_t *m)
                 "[WINCE_HW_SEED] region=%s pa=0x%08X size=0x%04X crc32=0x%08X\n",
                 r->name ? r->name : "<unnamed>",
                 r->pa, r->size, r->crc32);
+    }
+
+    for (uint32_t i = 0; i < wince_hw_vseed_region_count; i++) {
+        const wince_va_seed_region_t *r = &wince_hw_vseed_regions[i];
+        write_va_bytes(m, r->va, r->data, r->size);
+        fprintf(stderr,
+                "[WINCE_HW_SEED] vregion=%s va=0x%08X size=0x%04X crc32=0x%08X\n",
+                r->name ? r->name : "<unnamed>",
+                r->va, r->size, r->crc32);
     }
 
     if (m->cfg.wince_hw_seed_clear_callback_slot) {

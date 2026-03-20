@@ -2678,6 +2678,54 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     if (!read_insn_best_effort(uc, address, &insn))
         return;
 
+    if (is_wince_boot_machine(m))
+        m->wince_code_hook_seq++;
+
+    if (is_wince_boot_machine(m)) {
+        uint64_t reg_sp = 0, reg_ra = 0;
+        uint32_t sp32 = 0, ra32 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_SP, &reg_sp);
+        uc_reg_read(uc, UC_MIPS_REG_RA, &reg_ra);
+        sp32 = (uint32_t)reg_sp;
+        ra32 = (uint32_t)reg_ra;
+
+        if (m->cfg.wince_collapse_double_helper_entry &&
+            (uint32_t)address == UINT32_C(0x80096790) &&
+            insn == UINT32_C(0x27BDFFD8) &&
+            m->wince_prev_hook_valid &&
+            m->wince_prev_hook_pc == UINT32_C(0x80096790) &&
+            m->wince_prev_hook_ra == ra32 &&
+            m->wince_prev_hook_seq + 1u == m->wince_code_hook_seq &&
+            m->wince_prev_hook_sp == sp32 + UINT32_C(0x28)) {
+            static uint32_t wince_helper_collapse_logs = 0;
+            uint64_t next_pc = UINT64_C(0x80096794);
+            if (m->cfg.log_wince_stall && wince_helper_collapse_logs < 64u) {
+                fprintf(stderr,
+                        "[WINCE_HELPER_COLLAPSE] hook_seq=%llu prev_hook_seq=%llu"
+                        " pc=0x%08X prev_sp=0x%08X sp=0x%08X ra=0x%08X"
+                        " next_pc=0x80096794\n",
+                        (unsigned long long)m->wince_code_hook_seq,
+                        (unsigned long long)m->wince_prev_hook_seq,
+                        (uint32_t)address,
+                        m->wince_prev_hook_sp, sp32, ra32);
+                wince_helper_collapse_logs++;
+            }
+            m->wince_prev_hook_seq = m->wince_code_hook_seq;
+            m->wince_prev_hook_pc = (uint32_t)address;
+            m->wince_prev_hook_sp = sp32;
+            m->wince_prev_hook_ra = ra32;
+            m->wince_prev_hook_valid = true;
+            uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+            return;
+        }
+
+        m->wince_prev_hook_seq = m->wince_code_hook_seq;
+        m->wince_prev_hook_pc = (uint32_t)address;
+        m->wince_prev_hook_sp = sp32;
+        m->wince_prev_hook_ra = ra32;
+        m->wince_prev_hook_valid = true;
+    }
+
     if (maybe_skip_wince_bootmode_delay_call(m, uc, (uint32_t)address, insn))
         return;
     if (maybe_emulate_wince_objptr_init_call(m, uc, (uint32_t)address, insn))
