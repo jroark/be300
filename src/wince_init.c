@@ -161,11 +161,25 @@ static void seed_wince_hw_regions(machine_t *m)
 
     for (uint32_t i = 0; i < wince_hw_seed_region_count; i++) {
         const wince_pa_seed_region_t *r = &wince_hw_seed_regions[i];
+        if (m->cfg.wince_hw_seed_skip_caller_frame &&
+            r->name != NULL &&
+            strcmp(r->name, "caller_frame") == 0) {
+            fprintf(stderr,
+                    "[WINCE_HW_SEED] skip region=%s pa=0x%08X size=0x%04X crc32=0x%08X reason=caller_frame_disabled\n",
+                    r->name, r->pa, r->size, r->crc32);
+            continue;
+        }
         write_pa_bytes_all_aliases(m, r->pa, r->data, r->size);
         fprintf(stderr,
                 "[WINCE_HW_SEED] region=%s pa=0x%08X size=0x%04X crc32=0x%08X\n",
                 r->name ? r->name : "<unnamed>",
                 r->pa, r->size, r->crc32);
+    }
+
+    if (m->cfg.wince_hw_seed_clear_callback_slot) {
+        write_pa_u32_all_aliases(m, UINT32_C(0x006694F4), 0u);
+        fprintf(stderr,
+                "[WINCE_HW_SEED] clear_callback_slot pa=0x006694F4 old_use=jalr_a3 now=0x00000000\n");
     }
 }
 
