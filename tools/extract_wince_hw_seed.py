@@ -20,7 +20,9 @@ RAW_RE = re.compile(
 VREGION_RE = re.compile(
     r'^\[VREGION\] phase=(?P<phase>\w+) name=(?P<name>\S+) '
     r'VA=0x(?P<va>[0-9A-Fa-f]+) size=0x(?P<size>[0-9A-Fa-f]+) '
-    r'status=(?P<status>\w+) crc32=0x(?P<crc>[0-9A-Fa-f]+)'
+    r'status=(?P<status>\w+)'
+    r'(?: valid_prefix=0x(?P<valid_prefix>[0-9A-Fa-f]+))? '
+    r'crc32=0x(?P<crc>[0-9A-Fa-f]+)'
 )
 
 VRAW_RE = re.compile(
@@ -73,13 +75,25 @@ def parse_boot_log(path: Path):
             continue
 
         m = VREGION_RE.match(line)
-        if m and m.group("phase") == "init" and m.group("status") == "OK":
+        if m and m.group("phase") == "init":
             name = m.group("name")
+            status = m.group("status")
+            valid_prefix = int(m.group("valid_prefix") or "0", 16)
+            if status == "OK":
+                emit_size = int(m.group("size"), 16)
+                complete = True
+            elif status == "PARTIAL" and valid_prefix != 0:
+                emit_size = valid_prefix
+                complete = False
+            else:
+                continue
             vregions[name] = {
                 "name": name,
                 "va": int(m.group("va"), 16),
-                "size": int(m.group("size"), 16),
+                "size": emit_size,
+                "full_size": int(m.group("size"), 16),
                 "crc32": int(m.group("crc"), 16),
+                "complete": complete,
             }
             continue
 
@@ -125,7 +139,7 @@ def extract_regions(regions, raw_chunks, addr_key: str, label: str):
             raise SystemExit(f"{name}: missing {label} coverage for one or more bytes")
 
         crc32 = zlib.crc32(bytes(buf)) & 0xFFFFFFFF
-        if crc32 != meta["crc32"]:
+        if meta.get("complete", True) and crc32 != meta["crc32"]:
             raise SystemExit(
                 f"{name}: CRC mismatch boot=0x{meta['crc32']:08X} generated=0x{crc32:08X}"
             )
