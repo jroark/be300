@@ -6564,28 +6564,39 @@ void machine_run(machine_t *m)
                  * Unicorn flat mapping from SDRAM, then fall through to emulate
                  * the store.
                  */
-                if (m->kernel_vm_ready && (uint32_t)bad_pc >= 0x80000000u) {
+                if ((uint32_t)bad_pc >= 0x80000000u) {
                     uint32_t store_va = 0;
                     if (decode_store_target_va(m, bad_pc, &store_va) &&
                         store_va < 0x80000000u) {
-                        tlb_lookup_result_t wr = shadow_tlb_lookup(m, store_va);
-                        bool has_writable = false;
-                        if (wr.hit && wr.confident) {
-                            bool odd = (((uint64_t)store_va & wr.page_bytes) != 0u);
-                            uint32_t lo = odd ? wr.lo1 : wr.lo0;
-                            has_writable = ((lo & 0x4u) != 0u);  /* D bit */
-                        }
-                        if (!has_writable) {
-                            /* No TLB entry or D=0 → inject TLBS */
-                            if (inject_kernel_kuseg_tlbs(m, bad_pc, store_va)) {
-                                write_unmapped_recoveries++;
-                                continue;
+                        if (m->kernel_vm_ready) {
+                            tlb_lookup_result_t wr = shadow_tlb_lookup(m, store_va);
+                            bool has_writable = false;
+                            if (wr.hit && wr.confident) {
+                                bool odd = (((uint64_t)store_va & wr.page_bytes) != 0u);
+                                uint32_t lo = odd ? wr.lo1 : wr.lo0;
+                                has_writable = ((lo & 0x4u) != 0u);  /* D bit */
                             }
-                        } else {
-                            /* Valid D=1 entry → populate from SDRAM and emulate */
-                            shadow_tlb_populate(m, store_va, true,
-                                                "KSTORE_POPULATE",
-                                                (uint32_t)bad_pc);
+                            if (!has_writable) {
+                                /* No TLB entry or D=0 → inject TLBS */
+                                if (inject_kernel_kuseg_tlbs(m, bad_pc, store_va)) {
+                                    write_unmapped_recoveries++;
+                                    continue;
+                                }
+                            } else {
+                                /* Valid D=1 entry → populate from SDRAM and emulate */
+                                shadow_tlb_populate(m, store_va, true,
+                                                    "KSTORE_POPULATE",
+                                                    (uint32_t)bad_pc);
+                            }
+                        }
+                    } else if (decode_store_target_va(m, bad_pc, &store_va) &&
+                               store_va >= 0xC0000000u &&
+                               (m->kernel_vm_ready || is_wince_boot_machine(m))) {
+                        if (shadow_tlb_populate_kernel_mapped(m, store_va,
+                                                              "KSTORE_KMAPPED",
+                                                              (uint32_t)bad_pc)) {
+                            write_unmapped_recoveries++;
+                            continue;
                         }
                     }
                 }
@@ -6748,11 +6759,11 @@ void machine_run(machine_t *m)
                  * handler populates the page from the ramdisk/filesystem.
                  * If a valid TLB entry exists, populate from SDRAM and retry.
                  */
-                if (m->kernel_vm_ready && (uint32_t)bad_pc >= 0x80000000u) {
+                if ((uint32_t)bad_pc >= 0x80000000u) {
                     uint32_t load_va = 0;
                     if (decoded_load_valid)
                         load_va = decoded_load_va;
-                    if (decoded_load_valid && load_va < 0x80000000u) {
+                    if (decoded_load_valid && load_va < 0x80000000u && m->kernel_vm_ready) {
                         tlb_lookup_result_t rd = shadow_tlb_lookup(m, load_va);
                         if (rd.hit && rd.confident) {
                             /* Populate from SDRAM and retry */
@@ -6768,7 +6779,8 @@ void machine_run(machine_t *m)
                                 continue;
                             }
                         }
-                    } else if (decoded_load_valid && load_va >= 0xC0000000u) {
+                    } else if (decoded_load_valid && load_va >= 0xC0000000u &&
+                               (m->kernel_vm_ready || is_wince_boot_machine(m))) {
                         if (shadow_tlb_populate_kernel_mapped(m, load_va,
                                                               "KLOAD_KMAPPED",
                                                               (uint32_t)bad_pc)) {
