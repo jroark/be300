@@ -29,6 +29,8 @@ static void usage(const char *prog)
         "                        Experimental: after WinCE HW seed, clear PA 0x006694F4\n"
         "  --wince-hw-seed-skip-caller-frame\n"
         "                        Experimental: do not replay the caller_frame seed region\n"
+        "  --wince-hw-seed-clear-future-frame\n"
+        "                        Experimental: after WinCE HW seed, clear PA 0x00001760/64\n"
         "  --wince-obj-bootstrap Experimental: seed narrow WinCE objptr/header words\n"
         "  --trace-user-handoff  Debug first user handoff fault/map details (verbose)\n"
         "  --ram <file>          Preload a raw RAM image at PA 0x00000000\n"
@@ -56,6 +58,7 @@ int main(int argc, char *argv[])
         .wince_hw_seed = false,
         .wince_hw_seed_clear_callback_slot = false,
         .wince_hw_seed_skip_caller_frame = false,
+        .wince_hw_seed_clear_future_frame = false,
         .wince_obj_bootstrap = false,
         .trace_user_handoff = false,
         .rom_path       = NULL,
@@ -93,6 +96,8 @@ int main(int argc, char *argv[])
             cfg.wince_hw_seed_clear_callback_slot = true;
         } else if (strcmp(argv[i], "--wince-hw-seed-skip-caller-frame") == 0) {
             cfg.wince_hw_seed_skip_caller_frame = true;
+        } else if (strcmp(argv[i], "--wince-hw-seed-clear-future-frame") == 0) {
+            cfg.wince_hw_seed_clear_future_frame = true;
         } else if (strcmp(argv[i], "--wince-obj-bootstrap") == 0) {
             cfg.wince_obj_bootstrap = true;
         } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {

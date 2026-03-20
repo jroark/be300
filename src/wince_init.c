@@ -181,6 +181,13 @@ static void seed_wince_hw_regions(machine_t *m)
         fprintf(stderr,
                 "[WINCE_HW_SEED] clear_callback_slot pa=0x006694F4 old_use=jalr_a3 now=0x00000000\n");
     }
+
+    if (m->cfg.wince_hw_seed_clear_future_frame) {
+        write_pa_u32_all_aliases(m, UINT32_C(0x00001760), 0u);
+        write_pa_u32_all_aliases(m, UINT32_C(0x00001764), 0u);
+        fprintf(stderr,
+                "[WINCE_HW_SEED] clear_future_frame pa=0x00001760,0x00001764 old_use=future_s0_ra now=0x00000000\n");
+    }
 }
 
 void seed_wince_probe_deferred(machine_t *m, uint32_t pc32)

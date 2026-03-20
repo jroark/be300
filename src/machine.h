@@ -148,7 +148,7 @@ typedef struct {
     uint64_t last_nz_to_zero_new;
 } wince_region_track_t;
 
-#define WINCE_PRODUCER_FAMILY_COUNT 13u
+#define WINCE_PRODUCER_FAMILY_COUNT 14u
 #define WINCE_OBJ_BOOTSTRAP_WORD_COUNT 7u
 typedef struct {
     const char *name;
@@ -453,6 +453,7 @@ typedef struct {
     bool        wince_hw_seed; /* experimental: replay captured BE-300 WinCE RAM regions */
     bool        wince_hw_seed_clear_callback_slot; /* experimental: after hw seed, clear PA 0x006694F4 */
     bool        wince_hw_seed_skip_caller_frame; /* experimental: do not replay caller_frame region */
+    bool        wince_hw_seed_clear_future_frame; /* experimental: after hw seed, clear PA 0x00001760/64 */
     bool        wince_obj_bootstrap; /* experimental: seed stable objptr/header words for WinCE NAND boot */
     bool        trace_user_handoff; /* debug: first-fault and handoff VA->PA trace */
     const char *rom_path;     /* path to flat ROM image, loaded at PA_RESET_VECTOR */
