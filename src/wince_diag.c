@@ -3950,22 +3950,34 @@ void maybe_probe_wince_obj_dispatch(machine_t *m, uc_engine *uc,
     case 0x80078BF0u: tag = "slot0_load"; break;
     case 0x80078BF4u: tag = "slot0_jalr"; break;
     case 0x80078BFCu: tag = "slot0_post_jalr"; break;
+    case 0x8008AE98u: tag = "slot0_entry_8ae98"; break;
     default: break;
     }
     if (tag == NULL)
         return;
 
     static uint32_t logs = 0;
-    if (logs >= 64u)
+    if (logs >= 96u)
         return;
 
-    uint64_t ra = 0, sp = 0, a0 = 0, v0 = 0, t6 = 0, t7 = 0, t8 = 0;
+    uint64_t ra = 0, sp = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    uint64_t v0 = 0, s0 = 0, s1 = 0, t0 = 0, t1 = 0, t6 = 0, t7 = 0, t8 = 0;
     uint32_t objptr = 0, objsig = 0;
     uint32_t obj_w0 = 0, obj_w1 = 0, obj_w2 = 0, obj_w3 = 0;
+    uint32_t a0_w[8] = {0};
+    bool a0_ok[8] = {false};
+    char a0_desc[64], t8_desc[64];
     uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
     uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
     uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
     uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+    uc_reg_read(uc, UC_MIPS_REG_T1, &t1);
     uc_reg_read(uc, UC_MIPS_REG_T6, &t6);
     uc_reg_read(uc, UC_MIPS_REG_T7, &t7);
     uc_reg_read(uc, UC_MIPS_REG_T8, &t8);
@@ -3977,16 +3989,43 @@ void maybe_probe_wince_obj_dispatch(machine_t *m, uc_engine *uc,
         read_guest_u32(uc, objptr + 8u, &obj_w2);
         read_guest_u32(uc, objptr + 12u, &obj_w3);
     }
+    for (uint32_t i = 0; i < (sizeof(a0_w) / sizeof(a0_w[0])); i++)
+        a0_ok[i] = read_guest_u32(uc, (uint32_t)a0 + (i * 4u), &a0_w[i]);
+
+    wince_diag_format_va_word(m, uc, (uint32_t)a0, a0_desc, sizeof(a0_desc));
+    wince_diag_format_va_word(m, uc, (uint32_t)t8, t8_desc, sizeof(t8_desc));
 
     fprintf(stderr,
             "[WINCE_OBJ_DISPATCH] tag=%s pc=0x%08X insn=0x%08X"
-            " ra=0x%08X sp=0x%08X a0=0x%08X v0=0x%08X"
-            " t6=0x%08X t7=0x%08X t8=0x%08X"
+            " ra=0x%08X sp=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+            " v0=0x%08X s0=0x%08X s1=0x%08X"
+            " t0=0x%08X t1=0x%08X t6=0x%08X t7=0x%08X t8=0x%08X"
             " objptr=0x%08X objsig=0x%08X obj_w=[%08X %08X %08X %08X]\n",
             tag, pc32, insn,
-            (uint32_t)ra, (uint32_t)sp, (uint32_t)a0, (uint32_t)v0,
-            (uint32_t)t6, (uint32_t)t7, (uint32_t)t8,
+            (uint32_t)ra, (uint32_t)sp,
+            (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+            (uint32_t)v0, (uint32_t)s0, (uint32_t)s1,
+            (uint32_t)t0, (uint32_t)t1, (uint32_t)t6, (uint32_t)t7, (uint32_t)t8,
             objptr, objsig, obj_w0, obj_w1, obj_w2, obj_w3);
+    fprintf(stderr,
+            "[WINCE_OBJ_DISPATCH_PTRS] tag=%s pc=0x%08X a0_ptr=%s t8_ptr=%s\n",
+            tag, pc32, a0_desc, t8_desc);
+    fprintf(stderr,
+            "[WINCE_OBJ_DISPATCH_A0] tag=%s pc=0x%08X"
+            " a0_w=[%s%08X %s%08X %s%08X %s%08X %s%08X %s%08X %s%08X %s%08X]\n",
+            tag, pc32,
+            a0_ok[0] ? "" : "ERR:", a0_w[0],
+            a0_ok[1] ? "" : "ERR:", a0_w[1],
+            a0_ok[2] ? "" : "ERR:", a0_w[2],
+            a0_ok[3] ? "" : "ERR:", a0_w[3],
+            a0_ok[4] ? "" : "ERR:", a0_w[4],
+            a0_ok[5] ? "" : "ERR:", a0_w[5],
+            a0_ok[6] ? "" : "ERR:", a0_w[6],
+            a0_ok[7] ? "" : "ERR:", a0_w[7]);
+    if (pc32 == 0x80078BF4u || pc32 == 0x80078BFCu || pc32 == 0x8008AE98u)
+        wince_div_log_obj_exec_slots(m, uc, "WINCE_OBJ_DISPATCH_CB",
+                                     pc32, (uint32_t)sp, (uint32_t)ra);
     logs++;
 }
 
