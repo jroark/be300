@@ -5,6 +5,7 @@
 #include <inttypes.h>
 #include "wince_diag.h"
 #include "machine.h"
+#include "tlb_shadow.h"
 
 /* Constants are in wince_diag.h */
 
@@ -439,6 +440,41 @@ static void wince_diag_format_va_word(machine_t *m, uc_engine *uc, uint32_t va,
     snprintf(buf, buf_size, "0x%08X(pa=MISS,val=MISS)", va);
 }
 
+static void wince_diag_log_tlb_lookup(const char *tag, const char *label,
+                                      tlb_lookup_result_t r)
+{
+    if (!tag || !label)
+        return;
+
+    fprintf(stderr,
+            "[%s] label=%s"
+            " query_va=0x%08X query_vpn2=0x%08X"
+            " hit=%u confident=%u reason=%s source_idx=%u"
+            " entryhi=0x%08X entryhi_vpn2=0x%08X entryhi_asid=0x%02X"
+            " current_asid_valid=%u current_asid=0x%02X"
+            " pagemask=0x%08X lo0=0x%08X lo1=0x%08X"
+            " va_page=0x%08llX pa_page=0x%08llX"
+            " page_bytes=0x%08llX page_offset=0x%08llX"
+            " pair_valid=%u pair_va_page=0x%08llX pair_pa_page=0x%08llX"
+            " pair_page_bytes=0x%08llX\n",
+            tag, label,
+            r.query_va, r.query_vpn2,
+            r.hit ? 1u : 0u, r.confident ? 1u : 0u, r.reason ? r.reason : "NULL",
+            r.source_idx,
+            r.entryhi, r.entryhi_vpn2,
+            r.entryhi_asid,
+            r.current_asid_valid ? 1u : 0u, r.current_asid,
+            r.pagemask, r.lo0, r.lo1,
+            (unsigned long long)r.va_page,
+            (unsigned long long)r.pa_page,
+            (unsigned long long)r.page_bytes,
+            (unsigned long long)r.page_offset,
+            r.pair_valid ? 1u : 0u,
+            (unsigned long long)r.pair_va_page,
+            (unsigned long long)r.pair_pa_page,
+            (unsigned long long)r.pair_page_bytes);
+}
+
 static void wince_div_log_resume_globals(machine_t *m, uc_engine *uc,
                                          const char *tag,
                                          uint32_t pc32, uint32_t sp32, uint32_t ra32)
@@ -532,6 +568,7 @@ void log_wince_midbody_9c_state(machine_t *m, uc_engine *uc,
     uint64_t k0 = 0, gp = 0, fp = 0, status = 0;
     uint32_t pc32, sp32, ra32, s032, a032, a232, t032;
     uint32_t pending_epc = 0, pending_cause = 0;
+    uint32_t s0_page_va = 0, obj_va = 0;
     char s0_2b8_desc[64], s0_2bc_desc[64], s0_2c0_desc[64], s0_2c4_desc[64], s0_2c8_desc[64];
     char sp_20_desc[64], sp_24_desc[64], sp_28_desc[64], sp_2c_desc[64];
     char a0_desc[64], a2_desc[64], t0_desc[64];
@@ -565,12 +602,14 @@ void log_wince_midbody_9c_state(machine_t *m, uc_engine *uc,
     a032 = (uint32_t)a0;
     a232 = (uint32_t)a2;
     t032 = (uint32_t)t0;
+    s0_page_va = s032 & UINT32_C(0xFFFFF000);
+    obj_va = s032 + UINT32_C(0x000002C0);
     pending_epc = m->pending_epc;
     pending_cause = m->pending_cause;
 
     wince_diag_format_va_word(m, uc, s032 + UINT32_C(0x000002B8), s0_2b8_desc, sizeof(s0_2b8_desc));
     wince_diag_format_va_word(m, uc, s032 + UINT32_C(0x000002BC), s0_2bc_desc, sizeof(s0_2bc_desc));
-    wince_diag_format_va_word(m, uc, s032 + UINT32_C(0x000002C0), s0_2c0_desc, sizeof(s0_2c0_desc));
+    wince_diag_format_va_word(m, uc, obj_va, s0_2c0_desc, sizeof(s0_2c0_desc));
     wince_diag_format_va_word(m, uc, s032 + UINT32_C(0x000002C4), s0_2c4_desc, sizeof(s0_2c4_desc));
     wince_diag_format_va_word(m, uc, s032 + UINT32_C(0x000002C8), s0_2c8_desc, sizeof(s0_2c8_desc));
     wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x00000020), sp_20_desc, sizeof(sp_20_desc));
@@ -580,7 +619,7 @@ void log_wince_midbody_9c_state(machine_t *m, uc_engine *uc,
     wince_diag_format_va_word(m, uc, a032, a0_desc, sizeof(a0_desc));
     wince_diag_format_va_word(m, uc, a232, a2_desc, sizeof(a2_desc));
     wince_diag_format_va_word(m, uc, t032, t0_desc, sizeof(t0_desc));
-    wince_diag_format_va_word(m, uc, s032 & UINT32_C(0xFFFFF000), s0_page_desc, sizeof(s0_page_desc));
+    wince_diag_format_va_word(m, uc, s0_page_va, s0_page_desc, sizeof(s0_page_desc));
     wince_diag_format_va_word(m, uc, sp32 & UINT32_C(0xFFFFF000), sp_page_desc, sizeof(sp_page_desc));
 
     fprintf(stderr,
@@ -607,6 +646,11 @@ void log_wince_midbody_9c_state(machine_t *m, uc_engine *uc,
             s0_2b8_desc, s0_2bc_desc, s0_2c0_desc, s0_2c4_desc, s0_2c8_desc,
             sp_20_desc, sp_24_desc, sp_28_desc, sp_2c_desc,
             a0_desc, a2_desc, t0_desc);
+
+    wince_diag_log_tlb_lookup("WINCE_DIV_9C_TLB", "s0_page",
+                              shadow_tlb_lookup(m, s0_page_va));
+    wince_diag_log_tlb_lookup("WINCE_DIV_9C_TLB", "obj_va",
+                              shadow_tlb_lookup(m, obj_va));
 
     wince_div_log_resume_globals(m, uc, "WINCE_DIV_9C_GLOBALS", pc32, sp32, ra32);
     wince_div_log_obj_exec_slots(m, uc, "WINCE_DIV_9C_OBJ", pc32, sp32, ra32);

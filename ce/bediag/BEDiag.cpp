@@ -42,6 +42,7 @@ typedef struct {
     DWORD size;
     BOOL emit_raw;
     BOOL ok[PHASE_COUNT];
+    DWORD valid_prefix[PHASE_COUNT];
     DWORD crc[PHASE_COUNT];
     BYTE data[PHASE_COUNT][BEDIAG_MAX_REGION_SIZE];
 } bediag_vregion_t;
@@ -594,16 +595,20 @@ static BOOL SafeReadPhysicalBytes(DWORD phys_addr, BYTE *out, DWORD size)
     return ok;
 }
 
-static BOOL ReadVirtualBytes(DWORD virt_addr, BYTE *out, DWORD size)
+static BOOL ReadVirtualBytes(DWORD virt_addr, BYTE *out, DWORD size, DWORD *valid_prefix)
 {
     DWORD i;
 
+    if (valid_prefix)
+        *valid_prefix = 0;
     if (!out || size == 0)
         return FALSE;
 
     for (i = 0; i < size; i++) {
         __try {
             out[i] = *((volatile BYTE *)(virt_addr + i));
+            if (valid_prefix)
+                *valid_prefix = i + 1u;
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             memset(out + i, 0, size - i);
             g_had_error = TRUE;
@@ -614,15 +619,17 @@ static BOOL ReadVirtualBytes(DWORD virt_addr, BYTE *out, DWORD size)
     return TRUE;
 }
 
-static BOOL SafeReadVirtualBytes(DWORD virt_addr, BYTE *out, DWORD size)
+static BOOL SafeReadVirtualBytes(DWORD virt_addr, BYTE *out, DWORD size, DWORD *valid_prefix)
 {
     BOOL ok;
 
     ok = FALSE;
     __try {
-        ok = ReadVirtualBytes(virt_addr, out, size);
+        ok = ReadVirtualBytes(virt_addr, out, size, valid_prefix);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         memset(out, 0, size);
+        if (valid_prefix)
+            *valid_prefix = 0;
         g_had_error = TRUE;
         ok = FALSE;
     }
@@ -723,7 +730,8 @@ static void CaptureVirtualPhase(snapshot_phase_t phase)
         const char *changed;
 
         region = &g_vregions[i];
-        region->ok[phase] = SafeReadVirtualBytes(region->base, region->data[phase], region->size);
+        region->ok[phase] = SafeReadVirtualBytes(region->base, region->data[phase], region->size,
+                                                 &region->valid_prefix[phase]);
         region->crc[phase] = Crc32(region->data[phase], region->size);
         changed = ChangeLabel(phase,
                               region->ok[phase],
@@ -732,19 +740,20 @@ static void CaptureVirtualPhase(snapshot_phase_t phase)
                               phase == PHASE_INIT ? NULL : region->data[phase - 1],
                               region->size);
 
-        Logf("[VREGION] phase=%s name=%s VA=0x%08X size=0x%04X status=%s crc32=0x%08X changed_vs_prev=%s\r\n",
+        Logf("[VREGION] phase=%s name=%s VA=0x%08X size=0x%04X status=%s valid_prefix=0x%04X crc32=0x%08X changed_vs_prev=%s\r\n",
              g_phase_names[phase],
              region->name,
              region->base,
              region->size,
              region->ok[phase] ? "OK" : "PARTIAL",
+             region->valid_prefix[phase],
              region->crc[phase],
              changed);
 
-        if (region->emit_raw && region->ok[phase]) {
+        if (region->emit_raw && region->valid_prefix[phase] != 0u) {
             DWORD off;
-            for (off = 0; off < region->size; off += BEDIAG_RAW_CHUNK_SIZE) {
-                DWORD chunk = region->size - off;
+            for (off = 0; off < region->valid_prefix[phase]; off += BEDIAG_RAW_CHUNK_SIZE) {
+                DWORD chunk = region->valid_prefix[phase] - off;
                 char hex[(BEDIAG_RAW_CHUNK_SIZE * 2u) + 1u];
                 if (chunk > BEDIAG_RAW_CHUNK_SIZE)
                     chunk = BEDIAG_RAW_CHUNK_SIZE;
@@ -786,7 +795,8 @@ static BOOL GetVirtualSnapshotWord(snapshot_phase_t phase, DWORD va, DWORD *out)
         region = &g_vregions[i];
         if (va < region->base || va + 4u > region->base + region->size)
             continue;
-        if (!region->ok[phase])
+        if (!region->ok[phase] &&
+            (va - region->base + 4u) > region->valid_prefix[phase])
             return FALSE;
         *out = ReadLE32(region->data[phase] + (va - region->base));
         return TRUE;
