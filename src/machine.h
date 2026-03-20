@@ -300,6 +300,8 @@ typedef struct {
     bool     active;
     bool     completed;
     bool     seen_target;
+    bool     callback_active;
+    bool     callback_completed;
     uint32_t call_pc;
     uint32_t target_pc;
     uint32_t return_pc;
@@ -315,8 +317,19 @@ typedef struct {
     uint32_t step_logs;
     uint32_t last_pc;
     uint32_t last_sp;
+    uint32_t callback_entry_pc;
+    uint32_t callback_entry_ra;
+    uint32_t callback_entry_sp;
+    uint32_t callback_return_pc;
+    uint32_t callback_return_ra;
+    uint32_t callback_sp_at_return;
+    uint32_t callback_min_sp;
+    uint32_t callback_max_sp;
+    uint32_t callback_events;
+    uint32_t callback_step_logs;
     bool     last_valid;
     int32_t  sp_drift;
+    int32_t  callback_sp_drift;
 } wince_div_call_trace_t;
 
 #define WINCE_DIV_STACK_WINDOW_COUNT 2u
