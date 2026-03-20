@@ -1827,11 +1827,68 @@ static void wince_div_prearm_step_log(machine_t *m, uc_engine *uc,
     prearm_logs++;
 }
 
+static void wince_div_dump_callback_window(machine_t *m, uc_engine *uc)
+{
+    static bool dumped = false;
+    uint32_t va;
+
+    (void)m;
+
+    if (dumped || !uc)
+        return;
+    dumped = true;
+
+    for (va = UINT32_C(0x00011680); va < UINT32_C(0x00011740); va += 4u) {
+        uint32_t word = 0;
+        uc_err err = uc_mem_read(uc, (uint64_t)va, &word, sizeof(word));
+        fprintf(stderr,
+                "[WINCE_CALLBACK_DUMP] va=0x%08X insn=0x%08X%s\n",
+                va, (err == UC_ERR_OK) ? word : 0u,
+                (err == UC_ERR_OK) ? "" : " ERR");
+    }
+}
+
+static void wince_div_log_callback_frame(machine_t *m, uc_engine *uc,
+                                         const char *tag,
+                                         uint32_t pc32, uint32_t sp32,
+                                         uint32_t ra32,
+                                         uint32_t helper_sp_ref)
+{
+    uint64_t s0 = 0, v0 = 0;
+    char cur_s0_desc[64], cur_ra_desc[64], cur_t9_desc[64], cur_t8_desc[64];
+    char ref_s0_desc[64], ref_ra_desc[64], ref_t9_desc[64], ref_t8_desc[64];
+
+    if (!m || !uc || !tag)
+        return;
+
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+
+    wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x18), cur_s0_desc, sizeof(cur_s0_desc));
+    wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x1C), cur_ra_desc, sizeof(cur_ra_desc));
+    wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x20), cur_t9_desc, sizeof(cur_t9_desc));
+    wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x24), cur_t8_desc, sizeof(cur_t8_desc));
+    wince_diag_format_va_word(m, uc, helper_sp_ref + UINT32_C(0x18), ref_s0_desc, sizeof(ref_s0_desc));
+    wince_diag_format_va_word(m, uc, helper_sp_ref + UINT32_C(0x1C), ref_ra_desc, sizeof(ref_ra_desc));
+    wince_diag_format_va_word(m, uc, helper_sp_ref + UINT32_C(0x20), ref_t9_desc, sizeof(ref_t9_desc));
+    wince_diag_format_va_word(m, uc, helper_sp_ref + UINT32_C(0x24), ref_t8_desc, sizeof(ref_t8_desc));
+
+    fprintf(stderr,
+            "[%s] pc=0x%08X sp=0x%08X ra=0x%08X s0=0x%08X v0=0x%08X"
+            " cur_s0slot=%s cur_raslot=%s cur_t9slot=%s cur_t8slot=%s"
+            " helper_sp_ref=0x%08X ref_s0slot=%s ref_raslot=%s"
+            " ref_t9slot=%s ref_t8slot=%s\n",
+            tag, pc32, sp32, ra32, (uint32_t)s0, (uint32_t)v0,
+            cur_s0_desc, cur_ra_desc, cur_t9_desc, cur_t8_desc,
+            helper_sp_ref, ref_s0_desc, ref_ra_desc, ref_t9_desc, ref_t8_desc);
+}
+
 void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint32_t insn)
 {
     wince_div_call_trace_t *t = &m->wince_div_call_trace;
     bool arm_site = (pc32 == 0x80096900u && insn == 0x0C0259E4u);
     bool caller_body_pc = (pc32 >= 0x800967FCu && pc32 <= 0x8009692Cu);
+    bool callback_window_pc = (pc32 >= 0x000116B0u && pc32 <= 0x00011740u);
     bool helper_body_pc =
         ((pc32 >= 0x80096790u && pc32 <= 0x800967F4u) ||
          pc32 == 0x8008B0ACu ||
@@ -1840,7 +1897,8 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
         (pc32 >= 0x80079640u && pc32 <= 0x80079894u) ||
         (pc32 >= 0x8007A640u && pc32 <= 0x8007A780u) ||
         (pc32 >= 0x800A7DCCu && pc32 <= 0x800A7E10u);
-    if (!arm_site && !t->active && !caller_body_pc && !helper_body_pc && !upstream_pc)
+    if (!arm_site && !t->active && !t->callback_active &&
+        !caller_body_pc && !helper_body_pc && !callback_window_pc && !upstream_pc)
         return;
 
     uint64_t sp = 0, ra = 0;
@@ -1848,6 +1906,14 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
     uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
     uint32_t sp32 = (uint32_t)sp;
     uint32_t ra32 = (uint32_t)ra;
+
+    if (t->callback_active) {
+        if (sp32 < t->callback_min_sp)
+            t->callback_min_sp = sp32;
+        if (sp32 > t->callback_max_sp)
+            t->callback_max_sp = sp32;
+        t->callback_events++;
+    }
 
     if (arm_site) {
         memset(t, 0, sizeof(*t));
@@ -1909,6 +1975,36 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
         }
 
         return;
+    }
+
+    if (pc32 == 0x000116B0u && ra32 == 0x800967DCu && !t->callback_active) {
+        t->callback_active = true;
+        t->callback_completed = false;
+        t->callback_entry_pc = pc32;
+        t->callback_entry_ra = ra32;
+        t->callback_entry_sp = sp32;
+        t->callback_return_pc = 0u;
+        t->callback_return_ra = 0u;
+        t->callback_sp_at_return = 0u;
+        t->callback_min_sp = sp32;
+        t->callback_max_sp = sp32;
+        t->callback_events = 1u;
+        t->callback_step_logs = 0u;
+        t->callback_sp_drift = 0;
+
+        if (m->cfg.log_wince_stall) {
+            wince_div_dump_callback_window(m, uc);
+            wince_div_log_callback_frame(m, uc,
+                                         "WINCE_DIV_CALLBACK_FRAME_ENTRY",
+                                         pc32, sp32, ra32, sp32);
+        }
+    }
+
+    if (t->callback_active && callback_window_pc && t->callback_step_logs < 96u) {
+        wince_div_step_log(m, uc, pc32, insn, sp32, ra32,
+                           "WINCE_DIV_CALLBACK_STEP",
+                           0u, UINT32_MAX, false);
+        t->callback_step_logs++;
     }
 
     /* Pre-arm caller provenance logging for the full caller body. */
@@ -2204,6 +2300,30 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
         }
 
         if (pc32 == 0x800967DCu) {
+            if (t->callback_active) {
+                t->callback_active = false;
+                t->callback_completed = true;
+                t->callback_return_pc = pc32;
+                t->callback_return_ra = ra32;
+                t->callback_sp_at_return = sp32;
+                t->callback_sp_drift =
+                    (int32_t)((int32_t)sp32 - (int32_t)t->callback_entry_sp);
+                if (m->cfg.log_wince_stall) {
+                    fprintf(stderr,
+                            "[WINCE_DIV_CALLBACK_RETURN] pc=0x%08X ra=0x%08X"
+                            " entry_sp=0x%08X return_sp=0x%08X drift=%d"
+                            " min_sp=0x%08X max_sp=0x%08X events=%u steps=%u\n",
+                            pc32, ra32,
+                            t->callback_entry_sp, t->callback_sp_at_return,
+                            t->callback_sp_drift,
+                            t->callback_min_sp, t->callback_max_sp,
+                            t->callback_events, t->callback_step_logs);
+                    wince_div_log_callback_frame(m, uc,
+                                                 "WINCE_DIV_CALLBACK_FRAME_RETURN",
+                                                 pc32, sp32, ra32,
+                                                 t->callback_entry_sp);
+                }
+            }
             static uint32_t helper_post_jalr_logs = 0;
             if (m->cfg.log_wince_stall && helper_post_jalr_logs < 32u) {
                 uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, s0 = 0, v0 = 0;
@@ -2869,14 +2989,26 @@ void log_wince_div_call_trace_summary(const machine_t *m, const char *reason)
             " sp_before=0x%08X sp_target=0x%08X sp_return=0x%08X"
             " drift=%d sp_min=0x%08X sp_max=0x%08X"
             " events=%u seen_target=%u target_hits=%u nested_calls=%u"
-            " repeat_hits=%u step_logs=%u\n",
+            " repeat_hits=%u step_logs=%u"
+            " callback_active=%u callback_completed=%u"
+            " callback_entry=0x%08X callback_return=0x%08X"
+            " callback_entry_ra=0x%08X callback_return_ra=0x%08X"
+            " callback_sp_entry=0x%08X callback_sp_return=0x%08X"
+            " callback_drift=%d callback_sp_min=0x%08X callback_sp_max=0x%08X"
+            " callback_events=%u callback_steps=%u\n",
             reason,
             t->active ? 1u : 0u, t->completed ? 1u : 0u,
             t->call_pc, t->target_pc, t->return_pc,
             t->sp_before_call, t->sp_at_target, t->sp_at_return,
             t->sp_drift, t->sp_min, t->sp_max, t->events,
             t->seen_target ? 1u : 0u,
-            t->target_hits, t->nested_calls, t->repeat_hits, t->step_logs);
+            t->target_hits, t->nested_calls, t->repeat_hits, t->step_logs,
+            t->callback_active ? 1u : 0u, t->callback_completed ? 1u : 0u,
+            t->callback_entry_pc, t->callback_return_pc,
+            t->callback_entry_ra, t->callback_return_ra,
+            t->callback_entry_sp, t->callback_sp_at_return,
+            t->callback_sp_drift, t->callback_min_sp, t->callback_max_sp,
+            t->callback_events, t->callback_step_logs);
 }
 
 void log_wince_div_hist_summary(const machine_t *m,

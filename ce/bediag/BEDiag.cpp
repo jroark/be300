@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed5"
+#define BEDIAG_BUILD_TAG         "hwseed6"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -59,6 +59,7 @@ static const char *g_phase_names[PHASE_COUNT] = {
 
 static bediag_region_t g_regions[] = {
     { "ctx_high_page", 0x00001000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "callback_page", 0x00011000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "ctx_tlb",       0x00002000u, 0x0200u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "resume_ctx",    0x00002200u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "caller_frame",  0x00001700u, 0x00C0u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
@@ -95,6 +96,12 @@ static const focus_word_t g_focus_words[] = {
     { 0x00001AC0u, "ctxhi_1ac0" },
     { 0x00001AC4u, "ctxhi_1ac4" },
     { 0x00001AC8u, "ctxhi_1ac8" },
+    { 0x000116B0u, "callback_16b0" },
+    { 0x000116B4u, "callback_16b4" },
+    { 0x000116B8u, "callback_16b8" },
+    { 0x000116BCu, "callback_16bc" },
+    { 0x000116C0u, "callback_16c0" },
+    { 0x000116C4u, "callback_16c4" },
     { 0x00660000u, "objptr_0000" },
     { 0x0066BFC0u, "objhdr_bfc0" },
     { 0x0066BFC4u, "objhdr_bfc4" },
