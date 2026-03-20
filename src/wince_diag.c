@@ -20,6 +20,7 @@ static const wince_region_track_desc_t wince_region_track_descs[WINCE_REGION_TRA
     { "bootparam_0x0001D000", WINCE_TRACE_BOOTPARAM0_PA_START, WINCE_TRACE_BOOTPARAM0_PA_END },
     { "bootparam_0x0002D000", WINCE_TRACE_BOOTPARAM1_PA_START, WINCE_TRACE_BOOTPARAM1_PA_END },
     { "bootctx_0x00006000",   WINCE_TRACE_BOOTCTX_PA_START,    WINCE_TRACE_BOOTCTX_PA_END },
+    { "obj_exec_page_0x00669000", WINCE_TRACE_OBJ_EXEC_PAGE_PA_START, WINCE_TRACE_OBJ_EXEC_PAGE_PA_END },
 };
 
 static inline bool pc_in_wince_fail_corridor(uint32_t pc32)
@@ -46,6 +47,8 @@ static uint8_t wince_delay_touch_kind_for_pa(bool is_mmio, uint32_t pa)
         return WINCE_DELAY_TOUCH_CB_TBL;
     if (pa >= WINCE_TRACE_OBJPTR_PA_START && pa < WINCE_TRACE_OBJPTR_PA_END)
         return WINCE_DELAY_TOUCH_OBJPTR;
+    if (pa >= WINCE_TRACE_OBJ_EXEC_PAGE_PA_START && pa < WINCE_TRACE_OBJ_EXEC_PAGE_PA_END)
+        return WINCE_DELAY_TOUCH_OBJ_EXEC_PAGE;
     if (pa >= WINCE_TRACE_OBJ_HEADER_PA_START && pa < WINCE_TRACE_OBJ_HEADER_PA_END)
         return WINCE_DELAY_TOUCH_OBJ_HEADER;
     if (pa >= WINCE_TRACE_RESUME_GLOBAL_PA_START && pa < WINCE_TRACE_RESUME_GLOBAL_PA_END)
@@ -61,6 +64,7 @@ static const char *wince_delay_touch_kind_name(uint8_t kind)
     case WINCE_DELAY_TOUCH_BOOTPARAM1: return "bootparam1";
     case WINCE_DELAY_TOUCH_CB_TBL: return "cb_tbl";
     case WINCE_DELAY_TOUCH_OBJPTR: return "objptr";
+    case WINCE_DELAY_TOUCH_OBJ_EXEC_PAGE: return "obj_exec_page";
     case WINCE_DELAY_TOUCH_OBJ_HEADER: return "obj_header";
     case WINCE_DELAY_TOUCH_RESUME_GLOBAL: return "resume_global";
     case WINCE_DELAY_TOUCH_MMIO: return "mmio";
@@ -77,6 +81,7 @@ static wince_delay_touch_summary_t *wince_delay_touch_summary_for_kind(
     case WINCE_DELAY_TOUCH_BOOTPARAM1: return &t->bootparam1_touch;
     case WINCE_DELAY_TOUCH_CB_TBL: return &t->cb_tbl_touch;
     case WINCE_DELAY_TOUCH_OBJPTR: return &t->objptr_touch;
+    case WINCE_DELAY_TOUCH_OBJ_EXEC_PAGE: return &t->obj_exec_page_touch;
     case WINCE_DELAY_TOUCH_OBJ_HEADER: return &t->obj_header_touch;
     case WINCE_DELAY_TOUCH_RESUME_GLOBAL: return &t->resume_global_touch;
     case WINCE_DELAY_TOUCH_MMIO: return &t->mmio_touch;
@@ -1297,6 +1302,9 @@ void wince_despec_first_touch_check(machine_t *m, bool is_write,
     } else if (pa >= WINCE_TRACE_OBJPTR_PA_START && pa < WINCE_TRACE_OBJPTR_PA_END) {
         family = "objptr";
         flag = &m->wince_despec_touch_objptr;
+    } else if (pa >= WINCE_TRACE_OBJ_EXEC_PAGE_PA_START && pa < WINCE_TRACE_OBJ_EXEC_PAGE_PA_END) {
+        family = "obj_exec_page";
+        flag = &m->wince_despec_touch_obj_exec_page;
     } else if (pa >= WINCE_TRACE_OBJ_PA_START && pa < WINCE_TRACE_OBJ_PA_END) {
         family = "obj";
         flag = &m->wince_despec_touch_obj;
@@ -1406,6 +1414,16 @@ bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
                     m->wince_objptr_nonzero ? 1u : 0u,
                     pa, pc, (unsigned)size, uval);
             m->wince_pa_watch_logs++;
+        }
+    } else if (pa >= WINCE_TRACE_OBJ_EXEC_PAGE_PA_START &&
+               pa < WINCE_TRACE_OBJ_EXEC_PAGE_PA_END) {
+        static uint32_t obj_exec_logs = 0;
+        if (m->cfg.log_wince_stall && obj_exec_logs < 96u) {
+            fprintf(stderr,
+                    "[WINCE_OBJ_EXEC_WATCH] pa=0x%08X pc=0x%08X"
+                    " size=%u val=0x%016" PRIX64 "\n",
+                    pa, pc, (unsigned)size, uval);
+            obj_exec_logs++;
         }
     } else if (pa >= WINCE_TRACE_RESUME_GLOBAL_PA_START &&
                pa < WINCE_TRACE_RESUME_GLOBAL_PA_END) {
@@ -3817,6 +3835,7 @@ enum {
     WINCE_PROD_BOOTPARAM1,
     WINCE_PROD_CB_TBL,
     WINCE_PROD_OBJPTR,
+    WINCE_PROD_OBJ_EXEC_PAGE,
     WINCE_PROD_OBJ_SLOT0,
     WINCE_PROD_OBJ_HEADER,
     WINCE_PROD_RESUME_GLOBAL,
@@ -3831,6 +3850,7 @@ static const wince_producer_desc_t wince_producer_descs[WINCE_PRODUCER_FAMILY_CO
     { "bootparam1",  WINCE_TRACE_BOOTPARAM1_PA_START,  WINCE_TRACE_BOOTPARAM1_PA_END },
     { "cb_tbl",      WINCE_TRACE_CB_PA_START,           WINCE_TRACE_CB_PA_END },
     { "objptr",      WINCE_TRACE_OBJPTR_PA_START,       WINCE_TRACE_OBJPTR_PA_END },
+    { "obj_exec_page", WINCE_TRACE_OBJ_EXEC_PAGE_PA_START, WINCE_TRACE_OBJ_EXEC_PAGE_PA_END },
     { "obj_slot0",   WINCE_TRACE_OBJ_SLOT0_PA_START,    WINCE_TRACE_OBJ_SLOT0_PA_END },
     { "obj_header",  WINCE_TRACE_OBJ_HEADER_PA_START,   WINCE_TRACE_OBJ_HEADER_PA_END },
     { "resume_global", WINCE_TRACE_RESUME_GLOBAL_PA_START, WINCE_TRACE_RESUME_GLOBAL_PA_END },
@@ -5167,6 +5187,7 @@ void log_wince_delay_call_summary(const machine_t *m, const char *reason)
     log_wince_delay_touch_summary(reason, "bootparam1", &t->bootparam1_touch);
     log_wince_delay_touch_summary(reason, "cb_tbl", &t->cb_tbl_touch);
     log_wince_delay_touch_summary(reason, "objptr", &t->objptr_touch);
+    log_wince_delay_touch_summary(reason, "obj_exec_page", &t->obj_exec_page_touch);
     log_wince_delay_touch_summary(reason, "obj_header", &t->obj_header_touch);
     log_wince_delay_touch_summary(reason, "resume_global", &t->resume_global_touch);
     log_wince_delay_touch_summary(reason, "mmio", &t->mmio_touch);

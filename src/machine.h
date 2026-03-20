@@ -118,7 +118,7 @@ typedef struct {
     uint64_t last_value;
 } wince_pa_watch_t;
 
-#define WINCE_REGION_TRACK_COUNT 5u
+#define WINCE_REGION_TRACK_COUNT 6u
 typedef struct {
     uint32_t start_pa;
     uint32_t end_pa; /* exclusive */
@@ -148,7 +148,7 @@ typedef struct {
     uint64_t last_nz_to_zero_new;
 } wince_region_track_t;
 
-#define WINCE_PRODUCER_FAMILY_COUNT 11u
+#define WINCE_PRODUCER_FAMILY_COUNT 12u
 #define WINCE_OBJ_BOOTSTRAP_WORD_COUNT 7u
 typedef struct {
     const char *name;
@@ -184,6 +184,7 @@ typedef enum {
     WINCE_DELAY_TOUCH_BOOTPARAM1,
     WINCE_DELAY_TOUCH_CB_TBL,
     WINCE_DELAY_TOUCH_OBJPTR,
+    WINCE_DELAY_TOUCH_OBJ_EXEC_PAGE,
     WINCE_DELAY_TOUCH_OBJ_HEADER,
     WINCE_DELAY_TOUCH_RESUME_GLOBAL,
     WINCE_DELAY_TOUCH_MMIO,
@@ -249,6 +250,7 @@ typedef struct {
     wince_delay_touch_summary_t bootparam1_touch;
     wince_delay_touch_summary_t cb_tbl_touch;
     wince_delay_touch_summary_t objptr_touch;
+    wince_delay_touch_summary_t obj_exec_page_touch;
     wince_delay_touch_summary_t obj_header_touch;
     wince_delay_touch_summary_t resume_global_touch;
     wince_delay_touch_summary_t mmio_touch;
@@ -546,6 +548,7 @@ struct machine_s {
     bool     wince_despec_touch_nand_c38;     /* PA 0x0A000C38 */
     bool     wince_despec_touch_cb_tbl;       /* PA 0x51680-0x51B00 */
     bool     wince_despec_touch_objptr;       /* PA 0x660000-0x660040 */
+    bool     wince_despec_touch_obj_exec_page;/* PA 0x669000-0x66A000 */
     bool     wince_despec_touch_obj;          /* PA 0x66BFC0-0x680000 */
     bool     wince_despec_touch_bootctx;      /* PA 0x6000-0x7000 */
     bool     wince_despec_touch_bootparam0;   /* PA 0x1D000-0x1E000 */
