@@ -315,6 +315,10 @@ typedef struct {
     uint32_t nested_calls;
     uint32_t repeat_hits;
     uint32_t step_logs;
+    uint64_t arm_hook_seq;
+    uint64_t first_target_hook_seq;
+    uint64_t second_target_hook_seq;
+    uint64_t last_hook_seq;
     uint32_t last_pc;
     uint32_t last_sp;
     uint32_t callback_entry_pc;
@@ -454,6 +458,7 @@ typedef struct {
     bool        wince_hw_seed_clear_callback_slot; /* experimental: after hw seed, clear PA 0x006694F4 */
     bool        wince_hw_seed_skip_caller_frame; /* experimental: do not replay caller_frame region */
     bool        wince_hw_seed_clear_future_frame; /* experimental: after hw seed, clear PA 0x00001760/64 */
+    bool        wince_collapse_double_helper_entry; /* experimental: skip duplicate helper target at 0x80096790 */
     bool        wince_obj_bootstrap; /* experimental: seed stable objptr/header words for WinCE NAND boot */
     bool        trace_user_handoff; /* debug: first-fault and handoff VA->PA trace */
     const char *rom_path;     /* path to flat ROM image, loaded at PA_RESET_VECTOR */
@@ -780,6 +785,12 @@ struct machine_s {
     uint32_t tlb_defer_owner_epc;    /* syscall EPC that owns current DEFER state  */
     uint64_t tlb_defer_fault_pc;     /* real fault PC saved at DEFER entry for ERET return */
     uint64_t last_exec_pc;           /* last PC seen by prid_hook (code hook) */
+    uint64_t wince_code_hook_seq;    /* monotonically increasing WinCE code-hook counter */
+    uint64_t wince_prev_hook_seq;
+    uint32_t wince_prev_hook_pc;
+    uint32_t wince_prev_hook_sp;
+    uint32_t wince_prev_hook_ra;
+    bool     wince_prev_hook_valid;
     uint32_t tlb_exl_drop_defer_count; /* IRQ gate deferrals while EXL unexpectedly cleared */
 
     /* open_exec fd-leak compensation.

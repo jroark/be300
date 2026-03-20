@@ -2357,3 +2357,9 @@ static const wince_pa_seed_region_t wince_hw_seed_regions[] = {
 };
 
 static const uint32_t wince_hw_seed_region_count = UINT32_C(14);
+
+static const wince_va_seed_region_t wince_hw_vseed_regions[1] = {
+    { NULL, UINT32_C(0), UINT32_C(0), UINT32_C(0), NULL },
+};
+
+static const uint32_t wince_hw_vseed_region_count = UINT32_C(0);

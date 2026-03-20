@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed6"
+#define BEDIAG_BUILD_TAG         "hwseed7"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -35,6 +35,16 @@ typedef struct {
     DWORD crc[PHASE_COUNT];
     BYTE data[PHASE_COUNT][BEDIAG_MAX_REGION_SIZE];
 } bediag_region_t;
+
+typedef struct {
+    const char *name;
+    DWORD base;
+    DWORD size;
+    BOOL emit_raw;
+    BOOL ok[PHASE_COUNT];
+    DWORD crc[PHASE_COUNT];
+    BYTE data[PHASE_COUNT][BEDIAG_MAX_REGION_SIZE];
+} bediag_vregion_t;
 
 typedef struct {
     DWORD pa;
@@ -74,6 +84,10 @@ static bediag_region_t g_regions[] = {
     { "postboot_text", 0x00679400u, 0x0200u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "vrc4173_cwin",  0x0A000C00u, 0x0050u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "vr4131_safe",   0x0F000000u, 0x0120u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
+};
+
+static bediag_vregion_t g_vregions[] = {
+    { "user_obj_page", 0x0818F000u, 0x1000u, TRUE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
 };
 
 static const focus_word_t g_focus_words[] = {
@@ -117,6 +131,16 @@ static const focus_word_t g_focus_words[] = {
     { 0x006794F0u, "resume_glob_94f0" },
     { 0x006794F4u, "resume_glob_94f4" },
     { 0x006794F8u, "resume_glob_94f8" }
+};
+
+static const focus_word_t g_virtual_focus_words[] = {
+    { 0x0818FB68u, "userobj_fb68" },
+    { 0x0818FC20u, "userobj_fc20" },
+    { 0x0818FE20u, "userobj_fe20" },
+    { 0x0818FE24u, "userobj_fe24" },
+    { 0x0818FE28u, "userobj_fe28" },
+    { 0x0818FE2Cu, "userobj_fe2c" },
+    { 0x0818FE30u, "userobj_fe30" }
 };
 
 static bediag_driver_t g_driver;
@@ -570,6 +594,41 @@ static BOOL SafeReadPhysicalBytes(DWORD phys_addr, BYTE *out, DWORD size)
     return ok;
 }
 
+static BOOL ReadVirtualBytes(DWORD virt_addr, BYTE *out, DWORD size)
+{
+    DWORD i;
+
+    if (!out || size == 0)
+        return FALSE;
+
+    for (i = 0; i < size; i++) {
+        __try {
+            out[i] = *((volatile BYTE *)(virt_addr + i));
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            memset(out + i, 0, size - i);
+            g_had_error = TRUE;
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+static BOOL SafeReadVirtualBytes(DWORD virt_addr, BYTE *out, DWORD size)
+{
+    BOOL ok;
+
+    ok = FALSE;
+    __try {
+        ok = ReadVirtualBytes(virt_addr, out, size);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        memset(out, 0, size);
+        g_had_error = TRUE;
+        ok = FALSE;
+    }
+    return ok;
+}
+
 static void BeginSection(const char *title)
 {
     TryOpenSecondaryFile();
@@ -656,6 +715,53 @@ static void CapturePhase(snapshot_phase_t phase)
     FlushSinks();
 }
 
+static void CaptureVirtualPhase(snapshot_phase_t phase)
+{
+    int i;
+    for (i = 0; i < (int)(sizeof(g_vregions) / sizeof(g_vregions[0])); i++) {
+        bediag_vregion_t *region;
+        const char *changed;
+
+        region = &g_vregions[i];
+        region->ok[phase] = SafeReadVirtualBytes(region->base, region->data[phase], region->size);
+        region->crc[phase] = Crc32(region->data[phase], region->size);
+        changed = ChangeLabel(phase,
+                              region->ok[phase],
+                              phase == PHASE_INIT ? FALSE : region->ok[phase - 1],
+                              region->data[phase],
+                              phase == PHASE_INIT ? NULL : region->data[phase - 1],
+                              region->size);
+
+        Logf("[VREGION] phase=%s name=%s VA=0x%08X size=0x%04X status=%s crc32=0x%08X changed_vs_prev=%s\r\n",
+             g_phase_names[phase],
+             region->name,
+             region->base,
+             region->size,
+             region->ok[phase] ? "OK" : "PARTIAL",
+             region->crc[phase],
+             changed);
+
+        if (region->emit_raw && region->ok[phase]) {
+            DWORD off;
+            for (off = 0; off < region->size; off += BEDIAG_RAW_CHUNK_SIZE) {
+                DWORD chunk = region->size - off;
+                char hex[(BEDIAG_RAW_CHUNK_SIZE * 2u) + 1u];
+                if (chunk > BEDIAG_RAW_CHUNK_SIZE)
+                    chunk = BEDIAG_RAW_CHUNK_SIZE;
+                FormatHexBytes(region->data[phase] + off, chunk, hex, sizeof(hex));
+                Logf("[VREGION_RAW] phase=%s name=%s VA=0x%08X off=0x%04X size=0x%02X data=%s\r\n",
+                     g_phase_names[phase],
+                     region->name,
+                     region->base,
+                     off,
+                     chunk,
+                     hex);
+            }
+        }
+    }
+    FlushSinks();
+}
+
 static BOOL GetSnapshotWord(snapshot_phase_t phase, DWORD pa, DWORD *out)
 {
     int i;
@@ -667,6 +773,22 @@ static BOOL GetSnapshotWord(snapshot_phase_t phase, DWORD pa, DWORD *out)
         if (!region->ok[phase])
             return FALSE;
         *out = ReadLE32(region->data[phase] + (pa - region->base));
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL GetVirtualSnapshotWord(snapshot_phase_t phase, DWORD va, DWORD *out)
+{
+    int i;
+    for (i = 0; i < (int)(sizeof(g_vregions) / sizeof(g_vregions[0])); i++) {
+        bediag_vregion_t *region;
+        region = &g_vregions[i];
+        if (va < region->base || va + 4u > region->base + region->size)
+            continue;
+        if (!region->ok[phase])
+            return FALSE;
+        *out = ReadLE32(region->data[phase] + (va - region->base));
         return TRUE;
     }
     return FALSE;
@@ -692,6 +814,31 @@ static void EmitFocusWords(snapshot_phase_t phase)
              g_phase_names[phase],
              g_focus_words[i].label,
              g_focus_words[i].pa,
+             value);
+    }
+    FlushSinks();
+}
+
+static void EmitVirtualFocusWords(snapshot_phase_t phase)
+{
+    int i;
+    for (i = 0; i < (int)(sizeof(g_virtual_focus_words) / sizeof(g_virtual_focus_words[0])); i++) {
+        DWORD value;
+        BOOL ok;
+
+        ok = GetVirtualSnapshotWord(phase, g_virtual_focus_words[i].pa, &value);
+        if (!ok) {
+            Logf("[VFOCUS] phase=%s label=%s VA=0x%08X status=UNREADABLE\r\n",
+                 g_phase_names[phase],
+                 g_virtual_focus_words[i].label,
+                 g_virtual_focus_words[i].pa);
+            continue;
+        }
+
+        Logf("[VFOCUS] phase=%s label=%s VA=0x%08X status=OK value=0x%08X\r\n",
+             g_phase_names[phase],
+             g_virtual_focus_words[i].label,
+             g_virtual_focus_words[i].pa,
              value);
     }
     FlushSinks();
@@ -934,7 +1081,9 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
     BeginSection("SNAPSHOT INIT");
     Logf("tick_ms=%lu phase=%s\r\n", GetTickCount(), g_phase_names[PHASE_INIT]);
     CapturePhase(PHASE_INIT);
+    CaptureVirtualPhase(PHASE_INIT);
     EmitFocusWords(PHASE_INIT);
+    EmitVirtualFocusWords(PHASE_INIT);
     CaptureRegistryState(PHASE_INIT);
     LogStage("snapshot_init_done", NULL);
 
@@ -949,7 +1098,9 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
         BeginSection("SNAPSHOT +1S");
         Logf("tick_ms=%lu phase=%s\r\n", GetTickCount(), g_phase_names[PHASE_PLUS1S]);
         CapturePhase(PHASE_PLUS1S);
+        CaptureVirtualPhase(PHASE_PLUS1S);
         EmitFocusWords(PHASE_PLUS1S);
+        EmitVirtualFocusWords(PHASE_PLUS1S);
         CaptureRegistryState(PHASE_PLUS1S);
         LogStage("snapshot_1s_done", NULL);
     }
@@ -964,7 +1115,9 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
         BeginSection("SNAPSHOT +5S");
         Logf("tick_ms=%lu phase=%s\r\n", GetTickCount(), g_phase_names[PHASE_PLUS5S]);
         CapturePhase(PHASE_PLUS5S);
+        CaptureVirtualPhase(PHASE_PLUS5S);
         EmitFocusWords(PHASE_PLUS5S);
+        EmitVirtualFocusWords(PHASE_PLUS5S);
         CaptureRegistryState(PHASE_PLUS5S);
         LogStage("snapshot_5s_done", NULL);
     }
