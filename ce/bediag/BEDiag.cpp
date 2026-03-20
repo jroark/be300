@@ -14,11 +14,12 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed7"
+#define BEDIAG_BUILD_TAG         "hwseed8"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
 #define BEDIAG_RAW_CHUNK_SIZE    32u
+#define BEDIAG_TLB_ENTRY_COUNT   32u
 enum snapshot_phase_t {
     PHASE_INIT = 0,
     PHASE_PLUS1S = 1,
@@ -51,6 +52,11 @@ typedef struct {
     DWORD pa;
     const char *label;
 } focus_word_t;
+
+typedef struct {
+    DWORD va;
+    const char *label;
+} tlb_query_t;
 
 typedef struct {
     DWORD init_tick;
@@ -144,6 +150,11 @@ static const focus_word_t g_virtual_focus_words[] = {
     { 0x0818FE30u, "userobj_fe30" }
 };
 
+static const tlb_query_t g_tlb_queries[] = {
+    { 0x0818F000u, "user_obj_page" },
+    { 0xFFFFD000u, "helper_high_page" }
+};
+
 static bediag_driver_t g_driver;
 static HANDLE g_serial = INVALID_HANDLE_VALUE;
 static HANDLE g_file = INVALID_HANDLE_VALUE;
@@ -165,6 +176,43 @@ static const WCHAR *g_file_roots[] = {
     L"\\"
 };
 
+extern "C" void ReadTlbEntryAsm(DWORD index, DWORD *out_words);
+
+__asm(
+    ".set noreorder;"
+    ".globl ReadTlbEntryAsm;"
+    "ReadTlbEntryAsm:"
+    "mfc0 t4, $0;"
+    "mfc0 t5, $2;"
+    "mfc0 t6, $3;"
+    "mfc0 t7, $5;"
+    "mfc0 t8, $10;"
+    "mtc0 a0, $0;"
+    "nop;"
+    "nop;"
+    "tlbr;"
+    "nop;"
+    "nop;"
+    "mfc0 t0, $2;"
+    "mfc0 t1, $3;"
+    "mfc0 t2, $5;"
+    "mfc0 t3, $10;"
+    "sw t0, 0(a1);"
+    "sw t1, 4(a1);"
+    "sw t2, 8(a1);"
+    "sw t3, 12(a1);"
+    "mtc0 t4, $0;"
+    "mtc0 t5, $2;"
+    "mtc0 t6, $3;"
+    "mtc0 t7, $5;"
+    "mtc0 t8, $10;"
+    "nop;"
+    "nop;"
+    "jr ra;"
+    "nop;"
+    ".set reorder;"
+);
+
 static void CopyWide(WCHAR *dst, DWORD dst_cch, const WCHAR *src)
 {
     DWORD i;
@@ -176,6 +224,131 @@ static void CopyWide(WCHAR *dst, DWORD dst_cch, const WCHAR *src)
     for (i = 0; i + 1 < dst_cch && src[i] != L'\0'; i++)
         dst[i] = src[i];
     dst[i] = L'\0';
+}
+
+static unsigned __int64 TlbPairBytesFromPageMask(DWORD pagemask)
+{
+    unsigned __int64 pair_bytes;
+
+    pair_bytes = ((unsigned __int64)(pagemask | 0x1FFFu) + 1u);
+    if (pair_bytes < 0x2000u)
+        pair_bytes = 0x2000u;
+    if ((pair_bytes & 0xFFFu) != 0u)
+        pair_bytes = (pair_bytes + 0xFFFu) & ~(unsigned __int64)0xFFFu;
+    if ((pair_bytes & (pair_bytes - 1u)) != 0u) {
+        unsigned __int64 p2;
+        p2 = 0x2000u;
+        while (p2 < pair_bytes && p2 < (((unsigned __int64)1) << 31))
+            p2 <<= 1;
+        pair_bytes = p2;
+    }
+    return pair_bytes;
+}
+
+static unsigned __int64 TlbLeafBytesFromPageMask(DWORD pagemask)
+{
+    unsigned __int64 pair_bytes;
+
+    pair_bytes = TlbPairBytesFromPageMask(pagemask);
+    if (pair_bytes < 0x2000u)
+        return 0x1000u;
+    return pair_bytes >> 1;
+}
+
+static BOOL TlbEntryMatchesVa(DWORD va, DWORD entryhi, DWORD pagemask)
+{
+    unsigned __int64 pair_bytes;
+    DWORD mask;
+
+    pair_bytes = TlbPairBytesFromPageMask(pagemask);
+    mask = ~((DWORD)(pair_bytes - 1u));
+    return ((va & mask) == (entryhi & mask));
+}
+
+static void DumpTlbPhase(snapshot_phase_t phase)
+{
+    DWORD entries[BEDIAG_TLB_ENTRY_COUNT][4];
+    DWORD i;
+    BOOL any_nonzero;
+
+    memset(entries, 0, sizeof(entries));
+    any_nonzero = FALSE;
+
+    for (i = 0; i < BEDIAG_TLB_ENTRY_COUNT; i++) {
+        ReadTlbEntryAsm(i, entries[i]);
+        if ((entries[i][0] | entries[i][1] | entries[i][2] | entries[i][3]) != 0u)
+            any_nonzero = TRUE;
+    }
+
+    Logf("[TLB_TABLE] phase=%s slots=%lu any_nonzero=%u\r\n",
+         g_phase_names[phase],
+         BEDIAG_TLB_ENTRY_COUNT,
+         any_nonzero ? 1u : 0u);
+
+    for (i = 0; i < BEDIAG_TLB_ENTRY_COUNT; i++) {
+        DWORD lo0, lo1, mask, hi;
+        lo0 = entries[i][0];
+        lo1 = entries[i][1];
+        mask = entries[i][2];
+        hi = entries[i][3];
+        if ((lo0 | lo1 | mask | hi) == 0u)
+            continue;
+        Logf("[TLB_ENTRY] phase=%s idx=%lu lo0=0x%08lX lo1=0x%08lX mask=0x%08lX hi=0x%08lX\r\n",
+             g_phase_names[phase], i, lo0, lo1, mask, hi);
+    }
+
+    for (i = 0; i < (sizeof(g_tlb_queries) / sizeof(g_tlb_queries[0])); i++) {
+        DWORD idx;
+        BOOL matched;
+        matched = FALSE;
+        for (idx = 0; idx < BEDIAG_TLB_ENTRY_COUNT; idx++) {
+            DWORD lo0, lo1, mask, hi, lo;
+            unsigned __int64 leaf_bytes, pa_page, pfn;
+            BOOL odd_page, valid;
+
+            lo0 = entries[idx][0];
+            lo1 = entries[idx][1];
+            mask = entries[idx][2];
+            hi = entries[idx][3];
+            if ((lo0 | lo1 | mask | hi) == 0u)
+                continue;
+            if (!TlbEntryMatchesVa(g_tlb_queries[i].va, hi, mask))
+                continue;
+
+            matched = TRUE;
+            leaf_bytes = TlbLeafBytesFromPageMask(mask);
+            odd_page = ((leaf_bytes != 0u) &&
+                        ((((unsigned __int64)g_tlb_queries[i].va) & leaf_bytes) != 0u)) ? TRUE : FALSE;
+            lo = odd_page ? lo1 : lo0;
+            valid = (lo & 0x2u) != 0u;
+            pfn = ((unsigned __int64)((lo >> 6) & 0xFFFFFu)) << 10;
+            if (leaf_bytes != 0u)
+                pa_page = pfn & ~(leaf_bytes - 1u);
+            else
+                pa_page = pfn;
+
+            Logf("[TLB_MATCH] phase=%s label=%s VA=0x%08lX idx=%lu hi=0x%08lX mask=0x%08lX lo=0x%08lX odd=%u valid=%u global=%u asid=0x%02lX leaf_bytes=0x%08I64X pa_page=0x%08I64X\r\n",
+                 g_phase_names[phase],
+                 g_tlb_queries[i].label,
+                 g_tlb_queries[i].va,
+                 idx,
+                 hi,
+                 mask,
+                 lo,
+                 odd_page ? 1u : 0u,
+                 valid ? 1u : 0u,
+                 ((lo0 & 0x1u) != 0u && (lo1 & 0x1u) != 0u) ? 1u : 0u,
+                 hi & 0xFFu,
+                 leaf_bytes,
+                 pa_page);
+        }
+        if (!matched) {
+            Logf("[TLB_MATCH] phase=%s label=%s VA=0x%08lX status=NO_MATCH\r\n",
+                 g_phase_names[phase],
+                 g_tlb_queries[i].label,
+                 g_tlb_queries[i].va);
+        }
+    }
 }
 
 static void CopyAnsi(char *dst, DWORD dst_cch, const char *src)
@@ -1092,6 +1265,7 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
     Logf("tick_ms=%lu phase=%s\r\n", GetTickCount(), g_phase_names[PHASE_INIT]);
     CapturePhase(PHASE_INIT);
     CaptureVirtualPhase(PHASE_INIT);
+    DumpTlbPhase(PHASE_INIT);
     EmitFocusWords(PHASE_INIT);
     EmitVirtualFocusWords(PHASE_INIT);
     CaptureRegistryState(PHASE_INIT);
