@@ -1,3 +1,0 @@
-
-image=vmlinux
-label=linux4be
