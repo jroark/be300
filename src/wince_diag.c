@@ -468,6 +468,55 @@ static void wince_div_log_resume_globals(machine_t *m, uc_engine *uc,
             (uint32_t)v0);
 }
 
+static void wince_div_log_obj_exec_slots(machine_t *m, uc_engine *uc,
+                                         const char *tag,
+                                         uint32_t pc32, uint32_t sp32, uint32_t ra32)
+{
+    uint32_t d4 = 0, d8 = 0, ec = 0, f0 = 0, f4 = 0, f8 = 0, v508 = 0, v50c = 0, v510 = 0;
+    bool ok_d4 = false, ok_d8 = false, ok_ec = false, ok_f0 = false, ok_f4 = false;
+    bool ok_f8 = false, ok_508 = false, ok_50c = false, ok_510 = false;
+    char desc_d8[64], desc_ec[64], desc_f4[64], desc_510[64];
+
+    if (!m || !uc || !tag)
+        return;
+
+    ok_d4 = read_pa_u32_all_aliases(m, UINT32_C(0x006694D4), &d4);
+    ok_d8 = read_pa_u32_all_aliases(m, UINT32_C(0x006694D8), &d8);
+    ok_ec = read_pa_u32_all_aliases(m, UINT32_C(0x006694EC), &ec);
+    ok_f0 = read_pa_u32_all_aliases(m, UINT32_C(0x006694F0), &f0);
+    ok_f4 = read_pa_u32_all_aliases(m, UINT32_C(0x006694F4), &f4);
+    ok_f8 = read_pa_u32_all_aliases(m, UINT32_C(0x006694F8), &f8);
+    ok_508 = read_pa_u32_all_aliases(m, UINT32_C(0x00669508), &v508);
+    ok_50c = read_pa_u32_all_aliases(m, UINT32_C(0x0066950C), &v50c);
+    ok_510 = read_pa_u32_all_aliases(m, UINT32_C(0x00669510), &v510);
+
+    wince_diag_format_va_word(m, uc, d8, desc_d8, sizeof(desc_d8));
+    wince_diag_format_va_word(m, uc, ec, desc_ec, sizeof(desc_ec));
+    wince_diag_format_va_word(m, uc, f4, desc_f4, sizeof(desc_f4));
+    wince_diag_format_va_word(m, uc, v510, desc_510, sizeof(desc_510));
+
+    fprintf(stderr,
+            "[%s] pc=0x%08X sp=0x%08X ra=0x%08X"
+            " 694D4=%s0x%08X 694D8=%s0x%08X 694EC=%s0x%08X"
+            " 694F0=%s0x%08X 694F4=%s0x%08X 694F8=%s0x%08X"
+            " 69508=%s0x%08X 6950C=%s0x%08X 69510=%s0x%08X\n",
+            tag, pc32, sp32, ra32,
+            ok_d4 ? "" : "ERR:", d4,
+            ok_d8 ? "" : "ERR:", d8,
+            ok_ec ? "" : "ERR:", ec,
+            ok_f0 ? "" : "ERR:", f0,
+            ok_f4 ? "" : "ERR:", f4,
+            ok_f8 ? "" : "ERR:", f8,
+            ok_508 ? "" : "ERR:", v508,
+            ok_50c ? "" : "ERR:", v50c,
+            ok_510 ? "" : "ERR:", v510);
+
+    fprintf(stderr,
+            "[%s_PTRS] pc=0x%08X"
+            " p694D8=%s p694EC=%s p694F4=%s p69510=%s\n",
+            tag, pc32, desc_d8, desc_ec, desc_f4, desc_510);
+}
+
 void log_wince_midbody_9c_state(machine_t *m, uc_engine *uc,
                                 const char *reason, uint32_t pc_hint)
 {
@@ -553,6 +602,7 @@ void log_wince_midbody_9c_state(machine_t *m, uc_engine *uc,
             a0_desc, a2_desc, t0_desc);
 
     wince_div_log_resume_globals(m, uc, "WINCE_DIV_9C_GLOBALS", pc32, sp32, ra32);
+    wince_div_log_obj_exec_slots(m, uc, "WINCE_DIV_9C_OBJ", pc32, sp32, ra32);
 }
 
 static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t phase)
@@ -2087,6 +2137,9 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
 
         if (pc32 == 0x80079660u ||
             pc32 == 0x80096894u ||
+            pc32 == 0x800968ACu ||
+            pc32 == 0x800968B0u ||
+            pc32 == 0x800968B4u ||
             pc32 == 0x800968B8u ||
             pc32 == 0x8007A660u ||
             pc32 == 0x8007A680u ||
@@ -2113,6 +2166,12 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                     tag = "WINCE_DIV_UPSTREAM_CALLER";
                 else if (pc32 == 0x80096894u)
                     tag = "WINCE_DIV_ALT_ENTRY";
+                else if (pc32 == 0x800968ACu)
+                    tag = "WINCE_DIV_MIDBODY_LOAD_A3";
+                else if (pc32 == 0x800968B0u)
+                    tag = "WINCE_DIV_MIDBODY_LOAD_A1";
+                else if (pc32 == 0x800968B4u)
+                    tag = "WINCE_DIV_MIDBODY_LOAD_A0";
                 else if (pc32 == 0x800968B8u)
                     tag = "WINCE_DIV_MIDBODY_CALL_B8";
                 else if (pc32 == 0x8007A660u)
@@ -2142,6 +2201,16 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                         tag, pc32, insn, sp32, ra32,
                         (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
                         (uint32_t)v0, (uint32_t)s0, (uint32_t)t0, t->events);
+                if (pc32 == 0x80096894u ||
+                    pc32 == 0x800968ACu ||
+                    pc32 == 0x800968B0u ||
+                    pc32 == 0x800968B4u ||
+                    pc32 == 0x800968B8u ||
+                    pc32 == 0x800968C0u ||
+                    pc32 == 0x800968E4u) {
+                    wince_div_log_obj_exec_slots(m, uc, "WINCE_DIV_UPSTREAM_OBJ",
+                                                 pc32, sp32, ra32);
+                }
                 upstream_logs++;
             }
         }
@@ -2161,6 +2230,8 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                         " helper_ra=0x800968C0\n",
                         pc32, sp32, ra32, (uint32_t)s0,
                         (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3);
+                wince_div_log_obj_exec_slots(m, uc, "WINCE_DIV_HELPER_CALL_B8_OBJ",
+                                             pc32, sp32, ra32);
                 midbody_b8_logs++;
             }
         }
@@ -2179,6 +2250,8 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                         " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X\n",
                         pc32, sp32, ra32, (uint32_t)s0,
                         (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3);
+                wince_div_log_obj_exec_slots(m, uc, "WINCE_DIV_HELPER_ENTRY_C0_OBJ",
+                                             pc32, sp32, ra32);
                 helper_entry_c0_logs++;
             }
         }
@@ -2216,6 +2289,8 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                         pc32, sp32, ra32, (uint32_t)s0,
                         (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
                         abs_a0_ok ? "" : "ERR:", abs_a0);
+                wince_div_log_obj_exec_slots(m, uc, "WINCE_DIV_HELPER_JAL_B0AC_OBJ",
+                                             pc32, sp32, ra32);
                 helper_jal_b0ac_logs++;
             }
         }
@@ -2275,6 +2350,8 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                         " ret_after_jalr=0x800967DC\n",
                         pc32, sp32, ra32, (uint32_t)s0,
                         (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3);
+                wince_div_log_obj_exec_slots(m, uc, "WINCE_DIV_HELPER_JALR_A3_OBJ",
+                                             pc32, sp32, ra32);
                 helper_jalr_logs++;
             }
         }
