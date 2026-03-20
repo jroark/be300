@@ -1933,6 +1933,77 @@ static void wince_div_log_callback_frame(machine_t *m, uc_engine *uc,
             helper_sp_ref, ref_s0_desc, ref_ra_desc, ref_t9_desc, ref_t8_desc);
 }
 
+static void wince_div_log_restore_chain_slots(machine_t *m, uc_engine *uc,
+                                              const char *tag,
+                                              uint32_t pc32, uint32_t sp32,
+                                              uint32_t ra32)
+{
+    uint32_t ctx_va = UINT32_C(0xA0002200);
+    uint32_t saved_sp = 0;
+    uint32_t saved_ra = 0;
+    bool saved_sp_ok = false;
+    bool saved_ra_ok = false;
+    char ctx_saved_sp_desc[64];
+    char ctx_saved_ra_desc[64];
+    char future_s0_desc[64];
+    char future_ra_desc[64];
+    char caller_s0_desc[64];
+    char caller_ra_desc[64];
+    char stack0_desc[64];
+    char cur_sp20_desc[64];
+    char cur_sp24_desc[64];
+
+    if (!m || !uc || !tag)
+        return;
+
+    wince_diag_format_va_word(m, uc, ctx_va + UINT32_C(0x6C),
+                              ctx_saved_sp_desc, sizeof(ctx_saved_sp_desc));
+    wince_diag_format_va_word(m, uc, ctx_va + UINT32_C(0x74),
+                              ctx_saved_ra_desc, sizeof(ctx_saved_ra_desc));
+    wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x20),
+                              cur_sp20_desc, sizeof(cur_sp20_desc));
+    wince_diag_format_va_word(m, uc, sp32 + UINT32_C(0x24),
+                              cur_sp24_desc, sizeof(cur_sp24_desc));
+
+    saved_sp_ok = wince_diag_read_va_via_shadow_tlb(m, uc, ctx_va + UINT32_C(0x6C),
+                                                    &saved_sp, NULL);
+    saved_ra_ok = wince_diag_read_va_via_shadow_tlb(m, uc, ctx_va + UINT32_C(0x74),
+                                                    &saved_ra, NULL);
+    if (saved_sp_ok) {
+        wince_diag_format_va_word(m, uc, saved_sp,
+                                  stack0_desc, sizeof(stack0_desc));
+        wince_diag_format_va_word(m, uc, saved_sp - UINT32_C(0x54),
+                                  future_s0_desc, sizeof(future_s0_desc));
+        wince_diag_format_va_word(m, uc, saved_sp - UINT32_C(0x50),
+                                  future_ra_desc, sizeof(future_ra_desc));
+        wince_diag_format_va_word(m, uc, saved_sp - UINT32_C(0x2C),
+                                  caller_s0_desc, sizeof(caller_s0_desc));
+        wince_diag_format_va_word(m, uc, saved_sp - UINT32_C(0x28),
+                                  caller_ra_desc, sizeof(caller_ra_desc));
+    } else {
+        snprintf(stack0_desc, sizeof(stack0_desc), "unknown");
+        snprintf(future_s0_desc, sizeof(future_s0_desc), "unknown");
+        snprintf(future_ra_desc, sizeof(future_ra_desc), "unknown");
+        snprintf(caller_s0_desc, sizeof(caller_s0_desc), "unknown");
+        snprintf(caller_ra_desc, sizeof(caller_ra_desc), "unknown");
+    }
+
+    fprintf(stderr,
+            "[%s] pc=0x%08X sp=0x%08X ra=0x%08X"
+            " ctx_saved_sp=%s ctx_saved_ra=%s"
+            " saved_sp_rt=%s saved_ra_rt=%s"
+            " stack0=%s future_s0=%s future_ra=%s"
+            " caller_s0=%s caller_ra=%s"
+            " cur_sp20=%s cur_sp24=%s\n",
+            tag, pc32, sp32, ra32,
+            ctx_saved_sp_desc, ctx_saved_ra_desc,
+            saved_sp_ok ? "ok" : "miss",
+            saved_ra_ok ? "ok" : "miss",
+            stack0_desc, future_s0_desc, future_ra_desc,
+            caller_s0_desc, caller_ra_desc,
+            cur_sp20_desc, cur_sp24_desc);
+}
+
 void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint32_t insn)
 {
     wince_div_call_trace_t *t = &m->wince_div_call_trace;
@@ -2135,7 +2206,13 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
             }
         }
 
-        if (pc32 == 0x80079660u ||
+        if (pc32 == 0x80079640u ||
+            pc32 == 0x80079648u ||
+            pc32 == 0x80079650u ||
+            pc32 == 0x80079658u ||
+            pc32 == 0x80079660u ||
+            pc32 == 0x80079668u ||
+            pc32 == 0x80079714u ||
             pc32 == 0x80096894u ||
             pc32 == 0x800968ACu ||
             pc32 == 0x800968B0u ||
@@ -2162,8 +2239,20 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                 uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
                 uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
                 uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
-                if (pc32 == 0x80079660u)
+                if (pc32 == 0x80079640u)
+                    tag = "WINCE_DIV_UPSTREAM_CALL_5E70";
+                else if (pc32 == 0x80079648u)
+                    tag = "WINCE_DIV_UPSTREAM_CALL_5FEC";
+                else if (pc32 == 0x80079650u)
+                    tag = "WINCE_DIV_UPSTREAM_CALL_AAAC";
+                else if (pc32 == 0x80079658u)
+                    tag = "WINCE_DIV_UPSTREAM_CALL_7A65C";
+                else if (pc32 == 0x80079660u)
                     tag = "WINCE_DIV_UPSTREAM_CALLER";
+                else if (pc32 == 0x80079668u)
+                    tag = "WINCE_DIV_UPSTREAM_POST_CTX";
+                else if (pc32 == 0x80079714u)
+                    tag = "WINCE_DIV_UPSTREAM_MTC0_STATUS";
                 else if (pc32 == 0x80096894u)
                     tag = "WINCE_DIV_ALT_ENTRY";
                 else if (pc32 == 0x800968ACu)
@@ -2201,6 +2290,43 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                         tag, pc32, insn, sp32, ra32,
                         (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
                         (uint32_t)v0, (uint32_t)s0, (uint32_t)t0, t->events);
+                if (pc32 == 0x80079640u ||
+                    pc32 == 0x80079648u ||
+                    pc32 == 0x80079650u ||
+                    pc32 == 0x80079658u ||
+                    pc32 == 0x80079660u ||
+                    pc32 == 0x80079668u ||
+                    pc32 == 0x80079714u ||
+                    pc32 == 0x8007A660u ||
+                    pc32 == 0x8007A680u ||
+                    pc32 == 0x8007A76Cu ||
+                    pc32 == 0x800A7DCCu) {
+                    const char *slots_tag = "WINCE_DIV_RESTORE_CHAIN";
+                    if (pc32 == 0x80079640u)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_5E70";
+                    else if (pc32 == 0x80079648u)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_5FEC";
+                    else if (pc32 == 0x80079650u)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_AAAC";
+                    else if (pc32 == 0x80079658u)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_7A65C";
+                    else if (pc32 == 0x80079660u)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_PRE_CTX";
+                    else if (pc32 == 0x80079668u)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_POST_CTX";
+                    else if (pc32 == 0x80079714u)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_MTC0_STATUS";
+                    else if (pc32 == 0x8007A660u)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_7A660";
+                    else if (pc32 == 0x8007A680u)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_7A680";
+                    else if (pc32 == 0x8007A76Cu)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_7A76C";
+                    else if (pc32 == 0x800A7DCCu)
+                        slots_tag = "WINCE_DIV_RESTORE_CHAIN_A7DCC";
+                    wince_div_log_restore_chain_slots(m, uc, slots_tag,
+                                                      pc32, sp32, ra32);
+                }
                 if (pc32 == 0x80096894u ||
                     pc32 == 0x800968ACu ||
                     pc32 == 0x800968B0u ||
@@ -4309,6 +4435,7 @@ enum {
     WINCE_PROD_BOOTPARAM1,
     WINCE_PROD_CB_TBL,
     WINCE_PROD_FUTURE_FRAME,
+    WINCE_PROD_CTX_SAVED_PAIR,
     WINCE_PROD_OBJPTR,
     WINCE_PROD_OBJ_EXEC_PAGE,
     WINCE_PROD_OBJ_SLOT0,
@@ -4325,6 +4452,7 @@ static const wince_producer_desc_t wince_producer_descs[WINCE_PRODUCER_FAMILY_CO
     { "bootparam1",  WINCE_TRACE_BOOTPARAM1_PA_START,  WINCE_TRACE_BOOTPARAM1_PA_END },
     { "cb_tbl",      WINCE_TRACE_CB_PA_START,           WINCE_TRACE_CB_PA_END },
     { "future_frame", UINT32_C(0x00001760),             UINT32_C(0x00001768) },
+    { "ctx_saved_pair", UINT32_C(0x0000226C),           UINT32_C(0x00002278) },
     { "objptr",      WINCE_TRACE_OBJPTR_PA_START,       WINCE_TRACE_OBJPTR_PA_END },
     { "obj_exec_page", WINCE_TRACE_OBJ_EXEC_PAGE_PA_START, WINCE_TRACE_OBJ_EXEC_PAGE_PA_END },
     { "obj_slot0",   WINCE_TRACE_OBJ_SLOT0_PA_START,    WINCE_TRACE_OBJ_SLOT0_PA_END },
