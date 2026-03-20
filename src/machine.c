@@ -5912,6 +5912,7 @@ machine_t *machine_create(const machine_config_t *cfg)
     m->wince_despec_touch_nand_c38 = false;
     m->wince_despec_touch_cb_tbl = false;
     m->wince_despec_touch_objptr = false;
+    m->wince_despec_touch_obj_exec_page = false;
     m->wince_despec_touch_obj = false;
     m->wince_despec_touch_bootctx = false;
     m->wince_despec_touch_bootparam0 = false;
@@ -5958,6 +5959,7 @@ machine_t *machine_create(const machine_config_t *cfg)
             { WINCE_TRACE_BOOTPARAM1_PA_START, WINCE_TRACE_BOOTPARAM1_PA_END - 1u, "bootparam1" },
             { WINCE_TRACE_CB_PA_START,  WINCE_TRACE_CB_PA_END - 1u,  "cb_tbl" },
             { WINCE_TRACE_OBJPTR_PA_START, WINCE_TRACE_OBJPTR_PA_END - 1u, "obj_ptr" },
+            { WINCE_TRACE_OBJ_EXEC_PAGE_PA_START, WINCE_TRACE_OBJ_EXEC_PAGE_PA_END - 1u, "obj_exec_page" },
             { WINCE_TRACE_OBJ_PA_START, WINCE_TRACE_OBJ_PA_END - 1u, "obj" },
             { WINCE_TRACE_GATE_PA_START, WINCE_TRACE_GATE_PA_END - 1u, "gate" },
             { WINCE_TRACE_GATE_SRC_PA_START, WINCE_TRACE_GATE_SRC_PA_END - 1u, "gate_src" },
@@ -5992,7 +5994,8 @@ machine_t *machine_create(const machine_config_t *cfg)
                     " vec=0x%08X-0x%08X ctx=0x%08X-0x%08X"
                     " bootctx=0x%08X-0x%08X bootparam0=0x%08X-0x%08X"
                     " bootparam1=0x%08X-0x%08X"
-                    " cb=0x%08X-0x%08X objptr=0x%08X-0x%08X obj=0x%08X-0x%08X gate=0x%08X-0x%08X"
+                    " cb=0x%08X-0x%08X objptr=0x%08X-0x%08X"
+                    " obj_exec_page=0x%08X-0x%08X obj=0x%08X-0x%08X gate=0x%08X-0x%08X"
                     " gate_src=0x%08X-0x%08X stack=0x%08X-0x%08X"
                     " caller_frame=0x%08X-0x%08X"
                     " resume_global=0x%08X-0x%08X s0_obj=0x%08X-0x%08X aliases=5\n",
@@ -6003,6 +6006,7 @@ machine_t *machine_create(const machine_config_t *cfg)
                     WINCE_TRACE_BOOTPARAM1_PA_START, WINCE_TRACE_BOOTPARAM1_PA_END - 1u,
                     WINCE_TRACE_CB_PA_START, WINCE_TRACE_CB_PA_END - 1u,
                     WINCE_TRACE_OBJPTR_PA_START, WINCE_TRACE_OBJPTR_PA_END - 1u,
+                    WINCE_TRACE_OBJ_EXEC_PAGE_PA_START, WINCE_TRACE_OBJ_EXEC_PAGE_PA_END - 1u,
                     WINCE_TRACE_OBJ_PA_START, WINCE_TRACE_OBJ_PA_END - 1u,
                     WINCE_TRACE_GATE_PA_START, WINCE_TRACE_GATE_PA_END - 1u,
                     WINCE_TRACE_GATE_SRC_PA_START, WINCE_TRACE_GATE_SRC_PA_END - 1u,
@@ -6044,6 +6048,7 @@ machine_t *machine_create(const machine_config_t *cfg)
             { UINT32_C(0x00679400), UINT32_C(0x006795FF), "cb_globals" },
             { WINCE_TRACE_CB_PA_START, WINCE_TRACE_CB_PA_END - 1u, "cb_tbl" },
             { WINCE_TRACE_OBJPTR_PA_START, WINCE_TRACE_OBJPTR_PA_END - 1u, "objptr" },
+            { WINCE_TRACE_OBJ_EXEC_PAGE_PA_START, WINCE_TRACE_OBJ_EXEC_PAGE_PA_END - 1u, "obj_exec_page" },
             { WINCE_TRACE_OBJ_PA_START, WINCE_TRACE_OBJ_PA_END - 1u, "obj" },
             { WINCE_TRACE_BOOTCTX_PA_START, WINCE_TRACE_BOOTCTX_PA_END - 1u, "bootctx" },
             { WINCE_TRACE_BOOTPARAM0_PA_START, WINCE_TRACE_BOOTPARAM0_PA_END - 1u, "bootparam0" },
