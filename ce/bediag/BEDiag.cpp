@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed3"
+#define BEDIAG_BUILD_TAG         "hwseed4"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -68,6 +68,7 @@ static bediag_region_t g_regions[] = {
     { "cb_tbl",        0x00051680u, 0x0480u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "objptr",        0x00660000u, 0x0040u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "obj_header",    0x0066BFC0u, 0x0020u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "obj_exec_page", 0x00669000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "postboot_text", 0x00679400u, 0x0200u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "vrc4173_cwin",  0x0A000C00u, 0x0050u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "vr4131_safe",   0x0F000000u, 0x0120u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
@@ -93,6 +94,12 @@ static const focus_word_t g_focus_words[] = {
     { 0x0066BFC4u, "objhdr_bfc4" },
     { 0x0066BFC8u, "objhdr_bfc8" },
     { 0x0066BFCCu, "objhdr_bfcc" },
+    { 0x006697C0u, "objexec_97c0" },
+    { 0x00669A78u, "objexec_9a78" },
+    { 0x00669A7Cu, "objexec_9a7c" },
+    { 0x00669A80u, "objexec_9a80" },
+    { 0x00669A84u, "objexec_9a84" },
+    { 0x00669A88u, "objexec_9a88" },
     { 0x006794ECu, "resume_glob_94ec" },
     { 0x006794F0u, "resume_glob_94f0" },
     { 0x006794F4u, "resume_glob_94f4" },
