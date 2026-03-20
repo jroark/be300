@@ -325,7 +325,14 @@ static wince_div_stack_window_trace_t *wince_div_stack_find_window(
 {
     if (!w)
         return NULL;
-    for (uint32_t i = 0; i < WINCE_DIV_STACK_WINDOW_COUNT; i++) {
+
+    /* The callee frame is intentionally nested inside the broader caller
+     * window. For overlapping addresses, prefer the narrower callee frame so
+     * helper prologue/epilogue traffic is attributed to the active helper
+     * rather than absorbed into the caller bucket. */
+    static const uint32_t preferred_order[WINCE_DIV_STACK_WINDOW_COUNT] = { 1u, 0u };
+    for (uint32_t n = 0; n < WINCE_DIV_STACK_WINDOW_COUNT; n++) {
+        uint32_t i = preferred_order[n];
         if (w->windows[i].base == w->windows[i].end)
             continue;
         if (!addr32_in_window(addr, w->windows[i].base, w->windows[i].end))
@@ -1428,7 +1435,10 @@ bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
     wince_despec_first_touch_check(m, true, pa, (uint32_t)size, uval, pc);
 
     update_wince_region_tracks(m, uc, pa, pc, (unsigned)size, uval);
-    wince_div_stack_watch_record_write(m, uc, (uint32_t)address, pc, (unsigned)size, uval);
+    /* Keep stack-window attribution on the step-decoded path only.
+     * The generic MEM_WRITE hook can see aliased / post-translation addresses
+     * that are still useful for PA-family diagnostics, but they have proven
+     * misleading for caller-vs-callee frame ownership. */
     maybe_record_wince_delay_touch(m, true, false, pa, (unsigned)size, uval, pc);
 
     if (pa < WINCE_TRACE_VEC_PA_END) {
