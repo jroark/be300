@@ -865,12 +865,31 @@ skip:
  */
 static bool inject_kernel_kuseg_tlbs(machine_t *m, uint64_t pc, uint32_t kuseg_va)
 {
-    if (!m->kernel_vm_ready)
+    static uint32_t tlbs_entry_log = 0;
+    if (!m->kernel_vm_ready) {
+        if (tlbs_entry_log < 32) {
+            fprintf(stderr, "[TLBS_ENTRY] SKIP vm_not_ready pc=0x%08X va=0x%08X\n",
+                    (uint32_t)pc, kuseg_va);
+            tlbs_entry_log++;
+        }
         return false;
-    if ((uint32_t)pc < 0x80000000u)
+    }
+    if ((uint32_t)pc < 0x80000000u) {
+        if (tlbs_entry_log < 32) {
+            fprintf(stderr, "[TLBS_ENTRY] SKIP user_pc pc=0x%08X va=0x%08X\n",
+                    (uint32_t)pc, kuseg_va);
+            tlbs_entry_log++;
+        }
         return false;  /* not kernel mode */
-    if (kuseg_va >= 0x80000000u)
+    }
+    if (kuseg_va >= 0x80000000u) {
+        if (tlbs_entry_log < 32) {
+            fprintf(stderr, "[TLBS_ENTRY] SKIP not_kuseg pc=0x%08X va=0x%08X\n",
+                    (uint32_t)pc, kuseg_va);
+            tlbs_entry_log++;
+        }
         return false;  /* not kuseg */
+    }
 
     /* Check shadow TLB: if a valid D=1 entry exists, don't inject —
      * the caller should populate and emulate instead. */
@@ -1503,13 +1522,14 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 sbin_init_restore_probe++;
             }
         }
-        /* Periodic trace: log every 1000th instruction during batch #5
-         * (insn_count >= 160000000). Shows what happens after __bzero. */
-        if (m->insn_count >= 160000000ULL) {
+        /* Periodic trace: log every 2000th instruction while /sbin/init
+         * SYSCALL is pending and has_saved is false (i.e., we're in the
+         * SYSCALL's own execution, not a nested TLB exception). */
+        if (!m->has_saved_exception && m->pending_excode == 8u) {
             static uint32_t batch5_trace_count = 0;
             static uint32_t batch5_pc_trace_log = 0;
             batch5_trace_count++;
-            if ((batch5_trace_count % 1000u) == 1u && batch5_pc_trace_log < 128) {
+            if ((batch5_trace_count % 2000u) == 1u && batch5_pc_trace_log < 128) {
                 uint64_t trace_v0 = 0, trace_sp = 0, trace_ra = 0;
                 uc_reg_read(uc, UC_MIPS_REG_V0, &trace_v0);
                 uc_reg_read(uc, UC_MIPS_REG_SP, &trace_sp);
@@ -4933,6 +4953,34 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                     defer_inject_log++;
                                 }
                                 return;
+                            } else {
+                                /* Decode succeeded but injection failed, or decode failed */
+                                static uint32_t defer_noinject_log = 0;
+                                if (defer_noinject_log < 128) {
+                                    uint32_t dbg_insn = 0;
+                                    uc_mem_read(uc, real_pc, &dbg_insn, 4);
+                                    fprintf(stderr,
+                                            "[TLB_DEFER_NOINJECT] intno=%u real_pc=0x%08" PRIX64
+                                            " target_va=0x%08X insn=0x%08X"
+                                            " kuseg_unmap=%u count=%u\n",
+                                            intno, (uint64_t)(uint32_t)real_pc,
+                                            target_va, dbg_insn,
+                                            m->kuseg_gaps_unmapped ? 1u : 0u,
+                                            m->tlb_defer_count);
+                                    defer_noinject_log++;
+                                }
+                            }
+                        } else {
+                            /* kuseg_gaps_unmapped is false or real_pc is user mode */
+                            static uint32_t defer_nogap_log = 0;
+                            if (defer_nogap_log < 64) {
+                                fprintf(stderr,
+                                        "[TLB_DEFER_NOGAP] intno=%u real_pc=0x%08" PRIX64
+                                        " kuseg_unmap=%u count=%u\n",
+                                        intno, (uint64_t)(uint32_t)real_pc,
+                                        m->kuseg_gaps_unmapped ? 1u : 0u,
+                                        m->tlb_defer_count);
+                                defer_nogap_log++;
                             }
                         }
                         /* Fall back to skip (stale notification or decode failure) */
@@ -6456,25 +6504,29 @@ void machine_run(machine_t *m)
             uint64_t bad_pc = 0;
             uc_reg_read(m->uc, UC_MIPS_REG_PC, &bad_pc);
             if (err == UC_ERR_WRITE_UNMAPPED) {
-                /* Log all WRITE_UNMAPPED during /sbin/init execve window */
-                if ((uint32_t)m->pending_syscall_epc == 0x8000184Cu ||
-                    (m->insn_count >= 159700000ULL && m->insn_count <= 160500000ULL)) {
-                    static uint32_t execve_wunmap_log = 0;
-                    if (execve_wunmap_log < 256) {
-                        uint64_t wfault_addr = m->last_unmapped_valid
-                            ? m->last_unmapped_addr : 0;
+                /* Log ALL WRITE_UNMAPPED events with kuseg-range fault addresses
+                 * to track padzero/clear_user faults during execve */
+                {
+                    static uint32_t all_wunmap_log = 0;
+                    uint64_t wfault_addr = m->last_unmapped_valid
+                        ? m->last_unmapped_addr : 0;
+                    if (all_wunmap_log < 128) {
                         fprintf(stderr,
-                                "[EXECVE_WRITE_UNMAPPED] #%u PC=0x%08" PRIX64
+                                "[WRITE_UNMAPPED_ALL] #%u PC=0x%08" PRIX64
                                 " faultVA=0x%08" PRIX64
-                                " pend_exc=%u syscall_epc=0x%08" PRIX64
-                                " insn=%" PRIu64 "\n",
-                                execve_wunmap_log,
+                                " last_valid=%u pend_exc=%u has_saved=%u"
+                                " kuseg_unmap=%u vm_ready=%u"
+                                " syscall_epc=0x%08" PRIX64 "\n",
+                                all_wunmap_log,
                                 (uint64_t)(uint32_t)bad_pc,
                                 wfault_addr,
+                                m->last_unmapped_valid ? 1u : 0u,
                                 m->pending_excode,
-                                (uint64_t)(uint32_t)m->pending_syscall_epc,
-                                m->insn_count);
-                        execve_wunmap_log++;
+                                m->has_saved_exception ? 1u : 0u,
+                                m->kuseg_gaps_unmapped ? 1u : 0u,
+                                m->kernel_vm_ready ? 1u : 0u,
+                                (uint64_t)(uint32_t)m->pending_syscall_epc);
+                        all_wunmap_log++;
                     }
                 }
                 /*
@@ -6538,6 +6590,22 @@ void machine_run(machine_t *m)
                  * the same store without completing it even after mapping.
                  * Decode/commit simple stores directly to break the livelock.
                  */
+                {
+                    static uint32_t wunmap_emu_log = 0;
+                    uint32_t emu_store_va = 0;
+                    bool emu_decoded = decode_store_target_va(m, bad_pc, &emu_store_va);
+                    if (wunmap_emu_log < 128 && m->kuseg_gaps_unmapped) {
+                        uint32_t emu_insn = 0;
+                        read_insn_best_effort(m->uc, bad_pc, &emu_insn);
+                        fprintf(stderr,
+                                "[WUNMAP_FALLBACK] PC=0x%08" PRIX64
+                                " badv=0x%08" PRIX64
+                                " decoded=%u store_va=0x%08X insn=0x%08X\n",
+                                (uint64_t)(uint32_t)bad_pc, badv,
+                                emu_decoded ? 1u : 0u, emu_store_va, emu_insn);
+                        wunmap_emu_log++;
+                    }
+                }
                 if (emulate_store_nearby_on_write_unmapped(m, bad_pc)) {
                     /* After emulating the store, write back to SDRAM for
                      * kuseg coherence if the store target was kuseg. */
