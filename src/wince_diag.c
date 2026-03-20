@@ -1832,11 +1832,15 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
     wince_div_call_trace_t *t = &m->wince_div_call_trace;
     bool arm_site = (pc32 == 0x80096900u && insn == 0x0C0259E4u);
     bool caller_body_pc = (pc32 >= 0x800967FCu && pc32 <= 0x8009692Cu);
+    bool helper_body_pc =
+        ((pc32 >= 0x80096790u && pc32 <= 0x800967F4u) ||
+         pc32 == 0x8008B0ACu ||
+         pc32 == 0x000116B0u);
     bool upstream_pc =
         (pc32 >= 0x80079640u && pc32 <= 0x80079894u) ||
         (pc32 >= 0x8007A640u && pc32 <= 0x8007A780u) ||
         (pc32 >= 0x800A7DCCu && pc32 <= 0x800A7E10u);
-    if (!arm_site && !t->active && !caller_body_pc && !upstream_pc)
+    if (!arm_site && !t->active && !caller_body_pc && !helper_body_pc && !upstream_pc)
         return;
 
     uint64_t sp = 0, ra = 0;
@@ -1987,6 +1991,7 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
 
         if (pc32 == 0x80079660u ||
             pc32 == 0x80096894u ||
+            pc32 == 0x800968B8u ||
             pc32 == 0x8007A660u ||
             pc32 == 0x8007A680u ||
             pc32 == 0x8007A76Cu ||
@@ -2012,6 +2017,8 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                     tag = "WINCE_DIV_UPSTREAM_CALLER";
                 else if (pc32 == 0x80096894u)
                     tag = "WINCE_DIV_ALT_ENTRY";
+                else if (pc32 == 0x800968B8u)
+                    tag = "WINCE_DIV_MIDBODY_CALL_B8";
                 else if (pc32 == 0x8007A660u)
                     tag = "WINCE_DIV_UPSTREAM_SEED";
                 else if (pc32 == 0x8007A680u)
@@ -2040,6 +2047,225 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                         (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
                         (uint32_t)v0, (uint32_t)s0, (uint32_t)t0, t->events);
                 upstream_logs++;
+            }
+        }
+
+        if (pc32 == 0x800968B8u) {
+            static uint32_t midbody_b8_logs = 0;
+            if (m->cfg.log_wince_stall && midbody_b8_logs < 32u) {
+                uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, s0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_CALL_B8] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+                        " helper_ra=0x800968C0\n",
+                        pc32, sp32, ra32, (uint32_t)s0,
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3);
+                midbody_b8_logs++;
+            }
+        }
+
+        if (pc32 == 0x80096790u && ra32 == 0x800968C0u) {
+            static uint32_t helper_entry_c0_logs = 0;
+            if (m->cfg.log_wince_stall && helper_entry_c0_logs < 32u) {
+                uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, s0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_ENTRY_C0] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X\n",
+                        pc32, sp32, ra32, (uint32_t)s0,
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3);
+                helper_entry_c0_logs++;
+            }
+        }
+
+        if (pc32 == 0x800967A0u) {
+            static uint32_t helper_gate_logs = 0;
+            if (m->cfg.log_wince_stall && helper_gate_logs < 32u) {
+                uint64_t a3 = 0, s0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_GATE] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " s0=0x%08X a3=0x%08X branch=%s\n",
+                        pc32, sp32, ra32, (uint32_t)s0, (uint32_t)a3,
+                        ((uint32_t)a3 == 0u) ? "SKIP_TO_967F0" : "FALL_TO_967A8");
+                helper_gate_logs++;
+            }
+        }
+
+        if (pc32 == 0x800967C4u) {
+            static uint32_t helper_jal_b0ac_logs = 0;
+            if (m->cfg.log_wince_stall && helper_jal_b0ac_logs < 32u) {
+                uint32_t abs_a0 = 0;
+                bool abs_a0_ok = wince_diag_read_va_via_shadow_tlb(m, uc, 0xFFFFDAC0u,
+                                                                   &abs_a0, NULL);
+                uint64_t a1 = 0, a2 = 0, a3 = 0, s0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_JAL_B0AC] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " s0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+                        " delay_a0_from_ffffdac0=%s0x%08X ret_after_call=0x800967CC\n",
+                        pc32, sp32, ra32, (uint32_t)s0,
+                        (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+                        abs_a0_ok ? "" : "ERR:", abs_a0);
+                helper_jal_b0ac_logs++;
+            }
+        }
+
+        if (pc32 == 0x8008B0ACu) {
+            static uint32_t helper_b0ac_entry_logs = 0;
+            if (m->cfg.log_wince_stall && helper_b0ac_entry_logs < 32u) {
+                uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, s0 = 0, v0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_B0AC_ENTRY] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X v0=0x%08X\n",
+                        pc32, sp32, ra32, (uint32_t)s0,
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2,
+                        (uint32_t)a3, (uint32_t)v0);
+                helper_b0ac_entry_logs++;
+            }
+        }
+
+        if (pc32 == 0x800967CCu) {
+            static uint32_t helper_post_b0ac_logs = 0;
+            if (m->cfg.log_wince_stall && helper_post_b0ac_logs < 32u) {
+                uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, s0 = 0, v0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_POST_B0AC] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X v0=0x%08X\n",
+                        pc32, sp32, ra32, (uint32_t)s0,
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2,
+                        (uint32_t)a3, (uint32_t)v0);
+                helper_post_b0ac_logs++;
+            }
+        }
+
+        if (pc32 == 0x800967D4u) {
+            static uint32_t helper_jalr_logs = 0;
+            if (m->cfg.log_wince_stall && helper_jalr_logs < 32u) {
+                uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, s0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_JALR_A3] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3(target)=0x%08X"
+                        " ret_after_jalr=0x800967DC\n",
+                        pc32, sp32, ra32, (uint32_t)s0,
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3);
+                helper_jalr_logs++;
+            }
+        }
+
+        if (pc32 == 0x000116B0u) {
+            static uint32_t callback_entry_logs = 0;
+            if (m->cfg.log_wince_stall && callback_entry_logs < 32u) {
+                uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, s0 = 0, v0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_CALLBACK_ENTRY] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X v0=0x%08X\n",
+                        pc32, sp32, ra32, (uint32_t)s0,
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2,
+                        (uint32_t)a3, (uint32_t)v0);
+                callback_entry_logs++;
+            }
+        }
+
+        if (pc32 == 0x800967DCu) {
+            static uint32_t helper_post_jalr_logs = 0;
+            if (m->cfg.log_wince_stall && helper_post_jalr_logs < 32u) {
+                uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, s0 = 0, v0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+                uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+                uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+                uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_POST_JALR] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X v0=0x%08X\n",
+                        pc32, sp32, ra32, (uint32_t)s0,
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2,
+                        (uint32_t)a3, (uint32_t)v0);
+                helper_post_jalr_logs++;
+            }
+        }
+
+        if (pc32 == 0x800967ECu) {
+            static uint32_t helper_restore_s0_logs = 0;
+            if (m->cfg.log_wince_stall && helper_restore_s0_logs < 32u) {
+                uint32_t saved_s0 = 0;
+                uint64_t cur_s0 = 0;
+                bool saved_s0_ok = (uc_mem_read(uc, mips_sext(sp32 + 0x18u), &saved_s0, 4) == UC_ERR_OK);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &cur_s0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_RESTORE_S0] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " saved_s0=[sp+0x18]=%s0x%08X current_s0=0x%08X\n",
+                        pc32, sp32, ra32,
+                        saved_s0_ok ? "" : "ERR:", saved_s0,
+                        (uint32_t)cur_s0);
+                helper_restore_s0_logs++;
+            }
+        }
+
+        if (pc32 == 0x800967F0u) {
+            static uint32_t helper_restore_ra_logs = 0;
+            if (m->cfg.log_wince_stall && helper_restore_ra_logs < 32u) {
+                uint32_t saved_ra = 0;
+                uint64_t cur_s0 = 0;
+                bool saved_ra_ok = (uc_mem_read(uc, mips_sext(sp32 + 0x1Cu), &saved_ra, 4) == UC_ERR_OK);
+                uc_reg_read(uc, UC_MIPS_REG_S0, &cur_s0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_RESTORE_RA] pc=0x%08X sp=0x%08X ra=0x%08X"
+                        " saved_ra=[sp+0x1C]=%s0x%08X current_s0=0x%08X\n",
+                        pc32, sp32, ra32,
+                        saved_ra_ok ? "" : "ERR:", saved_ra,
+                        (uint32_t)cur_s0);
+                helper_restore_ra_logs++;
+            }
+        }
+
+        if (pc32 == 0x800967F4u) {
+            static uint32_t helper_jr_ra_logs = 0;
+            if (m->cfg.log_wince_stall && helper_jr_ra_logs < 32u) {
+                uint64_t cur_s0 = 0;
+                uc_reg_read(uc, UC_MIPS_REG_S0, &cur_s0);
+                fprintf(stderr,
+                        "[WINCE_DIV_HELPER_JR_RA] pc=0x%08X sp=0x%08X ra=0x%08X s0=0x%08X\n",
+                        pc32, sp32, ra32, (uint32_t)cur_s0);
+                helper_jr_ra_logs++;
             }
         }
 
