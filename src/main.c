@@ -72,6 +72,7 @@ int main(int argc, char *argv[])
         .wince_hw_seed_force_alt_entry_prologue = false,
         .wince_hw_seed_skip_caller_frame = false,
         .wince_hw_seed_clear_future_frame = false,
+        .wince_hw_seed_clear_caller_save_pair = false,
         .wince_vr4131_tlbr_roundtrip = false,
         .wince_collapse_double_helper_entry = false,
         .wince_obj_bootstrap = false,
@@ -119,6 +120,8 @@ int main(int argc, char *argv[])
             cfg.wince_hw_seed_skip_caller_frame = true;
         } else if (strcmp(argv[i], "--wince-hw-seed-clear-future-frame") == 0) {
             cfg.wince_hw_seed_clear_future_frame = true;
+        } else if (strcmp(argv[i], "--wince-hw-seed-clear-caller-save-pair") == 0) {
+            cfg.wince_hw_seed_clear_caller_save_pair = true;
         } else if (strcmp(argv[i], "--wince-vr4131-tlbr-roundtrip") == 0) {
             cfg.wince_vr4131_tlbr_roundtrip = true;
         } else if (strcmp(argv[i], "--wince-collapse-double-helper-entry") == 0) {
