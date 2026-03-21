@@ -2657,17 +2657,29 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 m->shadow_cp0_entryhi_live_valid = true;
             }
             const char *name = cp0_reg_name(m->cp0_readback_rd, m->cp0_readback_sel);
+            uint32_t mfc0_pc = (uint32_t)(m->cp0_readback_next_pc - 4u);
+            bool wince_ctx_row_readback =
+                is_wince_boot_machine(m) &&
+                mfc0_pc >= 0x80079814u && mfc0_pc <= 0x80079820u;
             if (name != NULL &&
                 cp0_is_tlb_diag_reg(m->cp0_readback_rd, m->cp0_readback_sel) &&
-                tlb_trace_window_active(m) &&
+                (tlb_trace_window_active(m) || wince_ctx_row_readback) &&
                 mfc0_cp0_readback_log < 512) {
                 fprintf(stderr,
                         "[MFC0_CP0] rd=%s rt=$%u val=0x%08" PRIX64
-                        " mfc0_pc=0x%08" PRIX64 " next_pc=0x%08" PRIX64 "\n",
+                        " mfc0_pc=0x%08" PRIX64 " next_pc=0x%08" PRIX64
+                        " shadow=[idx=0x%08X lo0=0x%08X lo1=0x%08X"
+                        " hi=0x%08X mask=0x%08X ctx=0x%08X]\n",
                         name, (unsigned)m->cp0_readback_rt,
                         (uint64_t)(uint32_t)val,
-                        (uint64_t)(uint32_t)(m->cp0_readback_next_pc - 4u),
-                        (uint64_t)(uint32_t)address);
+                        (uint64_t)mfc0_pc,
+                        (uint64_t)(uint32_t)address,
+                        (uint32_t)m->shadow_cp0_index,
+                        (uint32_t)m->shadow_cp0_entrylo0,
+                        (uint32_t)m->shadow_cp0_entrylo1,
+                        (uint32_t)m->shadow_cp0_entryhi,
+                        (uint32_t)m->shadow_cp0_pagemask,
+                        (uint32_t)m->shadow_cp0_context);
                 mfc0_cp0_readback_log++;
             }
         }
@@ -3233,14 +3245,50 @@ static void prid_hook(uc_engine *uc, uint64_t address,
          * executes, so the hardware TLB gets the correct PA.
          * The shadow copy retains the original VR41xx value. */
         if (sel == 0u && (rd == 2u || rd == 3u) && rt != 0u) {
+            bool skip_fixup = false;
+            uint32_t ctx_row_word = 0;
+            bool ctx_row_ok = false;
+            if (is_wince_boot_machine(m) &&
+                ((uint32_t)address == 0x80079684u || (uint32_t)address == 0x8007968Cu)) {
+                uint32_t idx = (uint32_t)m->shadow_cp0_index & 0x3Fu;
+                uint32_t row_va = 0xA0002000u + (idx * 16u) + ((rd == 3u) ? 4u : 0u);
+                ctx_row_ok = (uc_mem_read(uc, row_va, &ctx_row_word, sizeof(ctx_row_word)) == UC_ERR_OK);
+                if (ctx_row_ok && ctx_row_word == (uint32_t)val)
+                    skip_fixup = true;
+            }
             uint32_t orig_pfn = ((uint32_t)val >> 6) & 0xFFFFFu;
             uint32_t flags = (uint32_t)val & 0x3Fu;
             uint64_t corrected = (uint64_t)(((orig_pfn >> 2) << 6) | flags);
+            static uint32_t mtc0_pfn_fixup_log = 0;
+            bool wince_ctx_restore_fixup =
+                is_wince_boot_machine(m) &&
+                (uint32_t)address >= 0x80079684u &&
+                (uint32_t)address <= 0x8007968Cu;
+            if ((wince_ctx_restore_fixup || tlb_trace_window_active(m)) &&
+                mtc0_pfn_fixup_log < 128) {
+                fprintf(stderr,
+                        "[MTC0_PFN_FIXUP] rd=%s rt=$%u pc=0x%08" PRIX64
+                        " orig=0x%08" PRIX64 " corrected=0x%08" PRIX64
+                        " orig_pfn=0x%05X corrected_pfn=0x%05X flags=0x%02X"
+                        " skip=%u ctx_row=%s0x%08X\n",
+                        cp0_reg_name(rd, sel), rt,
+                        (uint64_t)(uint32_t)address,
+                        (uint64_t)(uint32_t)val,
+                        (uint64_t)(uint32_t)corrected,
+                        orig_pfn, (orig_pfn >> 2), flags,
+                        skip_fixup ? 1u : 0u,
+                        ctx_row_ok ? "" : "ERR:", ctx_row_word);
+                mtc0_pfn_fixup_log++;
+            }
+            if (skip_fixup)
+                goto skip_entrylo_fixup;
             /* Save original GPR value, write corrected, restore after MTC0 */
             m->pending_gpr_restore = true;
             m->pending_gpr_reg = UC_MIPS_REG_0 + (int)rt;
             m->pending_gpr_val = val;
             uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &corrected);
+skip_entrylo_fixup:
+            ;
         }
 
         const char *name = cp0_reg_name(rd, sel);
