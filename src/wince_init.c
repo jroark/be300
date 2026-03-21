@@ -253,6 +253,17 @@ static void seed_wince_hw_regions(machine_t *m)
         fprintf(stderr,
                 "[WINCE_HW_SEED] clear_caller_save_pair pa=0x000017D8,0x000017DC old_use=caller_save_s0_ra now=0x00000000\n");
     }
+
+    if (m->cfg.wince_hw_seed_clear_caller_save_window) {
+        write_pa_u32_all_aliases(m, UINT32_C(0x000017D8), 0u);
+        write_pa_u32_all_aliases(m, UINT32_C(0x000017DC), 0u);
+        write_pa_u32_all_aliases(m, UINT32_C(0x000017E0), 0u);
+        write_pa_u32_all_aliases(m, UINT32_C(0x000017E4), 0u);
+        fprintf(stderr,
+                "[WINCE_HW_SEED] clear_caller_save_window"
+                " pa=0x000017D8..0x000017E4"
+                " old_use=caller_save_s0_ra_tail now=0x00000000\n");
+    }
 }
 
 void seed_wince_probe_deferred(machine_t *m, uint32_t pc32)

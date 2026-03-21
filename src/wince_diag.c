@@ -5153,6 +5153,7 @@ enum {
     WINCE_PROD_CALLBACK_SAVED_PAIR,
     WINCE_PROD_FUTURE_FRAME,
     WINCE_PROD_CALLER_SAVE_PAIR,
+    WINCE_PROD_CALLER_SAVE_WINDOW,
     WINCE_PROD_CTX_SAVED_PAIR,
     WINCE_PROD_OBJPTR,
     WINCE_PROD_OBJ_EXEC_PAGE,
@@ -5178,6 +5179,7 @@ static const wince_producer_desc_t wince_producer_descs[WINCE_PRODUCER_FAMILY_CO
     { "callback_saved_pair", UINT32_C(0x00001758),      UINT32_C(0x00001760) },
     { "future_frame", UINT32_C(0x00001760),             UINT32_C(0x00001768) },
     { "caller_save_pair", UINT32_C(0x000017D8),         UINT32_C(0x000017E0) },
+    { "caller_save_window", UINT32_C(0x000017D8),       UINT32_C(0x000017E8) },
     { "ctx_saved_pair", UINT32_C(0x0000226C),           UINT32_C(0x00002278) },
     { "objptr",      WINCE_TRACE_OBJPTR_PA_START,       WINCE_TRACE_OBJPTR_PA_END },
     { "obj_exec_page", WINCE_TRACE_OBJ_EXEC_PAGE_PA_START, WINCE_TRACE_OBJ_EXEC_PAGE_PA_END },
@@ -6915,24 +6917,28 @@ void log_wince_future_frame_summary(machine_t *m, uc_engine *uc,
 
     const wince_producer_attr_t *future = &m->wince_producer[WINCE_PROD_FUTURE_FRAME];
     const wince_producer_attr_t *caller_save = &m->wince_producer[WINCE_PROD_CALLER_SAVE_PAIR];
+    const wince_producer_attr_t *caller_save_window = &m->wince_producer[WINCE_PROD_CALLER_SAVE_WINDOW];
     const wince_producer_attr_t *caller_s0 = &m->wince_producer[WINCE_PROD_CALLER_RESTORE_S0];
     const wince_producer_attr_t *caller_ra = &m->wince_producer[WINCE_PROD_CALLER_RESTORE_RA];
     uint32_t cur_1760 = 0, cur_1764 = 0, cur_17b0 = 0, cur_17b4 = 0;
-    uint32_t cur_17d8 = 0, cur_17dc = 0;
+    uint32_t cur_17d8 = 0, cur_17dc = 0, cur_17e0 = 0, cur_17e4 = 0;
     bool ok_1760 = read_pa_u32_all_aliases(m, UINT32_C(0x00001760), &cur_1760);
     bool ok_1764 = read_pa_u32_all_aliases(m, UINT32_C(0x00001764), &cur_1764);
     bool ok_17b0 = read_pa_u32_all_aliases(m, UINT32_C(0x000017B0), &cur_17b0);
     bool ok_17b4 = read_pa_u32_all_aliases(m, UINT32_C(0x000017B4), &cur_17b4);
     bool ok_17d8 = read_pa_u32_all_aliases(m, UINT32_C(0x000017D8), &cur_17d8);
     bool ok_17dc = read_pa_u32_all_aliases(m, UINT32_C(0x000017DC), &cur_17dc);
+    bool ok_17e0 = read_pa_u32_all_aliases(m, UINT32_C(0x000017E0), &cur_17e0);
+    bool ok_17e4 = read_pa_u32_all_aliases(m, UINT32_C(0x000017E4), &cur_17e4);
 
     fprintf(stderr,
             "[WINCE_FUTURE_FRAME_SUMMARY] reason=%s"
             " cur_1760=%s0x%08X cur_1764=%s0x%08X"
             " cur_17B0=%s0x%08X cur_17B4=%s0x%08X"
-            " cur_17D8=%s0x%08X cur_17DC=%s0x%08X"
+            " cur_17D8=%s0x%08X cur_17DC=%s0x%08X cur_17E0=%s0x%08X cur_17E4=%s0x%08X"
             " future_reads=%u future_writes=%u future_first_read=%s0x%08X future_first_write=%s0x%08X"
             " caller_save_reads=%u caller_save_writes=%u caller_save_first_read=%s0x%08X caller_save_first_write=%s0x%08X"
+            " caller_save_window_reads=%u caller_save_window_writes=%u caller_save_window_first_read=%s0x%08X caller_save_window_first_write=%s0x%08X"
             " caller_s0_reads=%u caller_s0_writes=%u caller_s0_first_read=%s0x%08X caller_s0_first_write=%s0x%08X"
             " caller_ra_reads=%u caller_ra_writes=%u caller_ra_first_read=%s0x%08X caller_ra_first_write=%s0x%08X\n",
             reason,
@@ -6942,12 +6948,17 @@ void log_wince_future_frame_summary(machine_t *m, uc_engine *uc,
             ok_17b4 ? "" : "ERR:", cur_17b4,
             ok_17d8 ? "" : "ERR:", cur_17d8,
             ok_17dc ? "" : "ERR:", cur_17dc,
+            ok_17e0 ? "" : "ERR:", cur_17e0,
+            ok_17e4 ? "" : "ERR:", cur_17e4,
             future->total_reads, future->total_writes,
             future->first_read_valid ? "" : "NONE:", future->first_read_pc,
             future->first_write_valid ? "" : "NONE:", future->first_write_pc,
             caller_save->total_reads, caller_save->total_writes,
             caller_save->first_read_valid ? "" : "NONE:", caller_save->first_read_pc,
             caller_save->first_write_valid ? "" : "NONE:", caller_save->first_write_pc,
+            caller_save_window->total_reads, caller_save_window->total_writes,
+            caller_save_window->first_read_valid ? "" : "NONE:", caller_save_window->first_read_pc,
+            caller_save_window->first_write_valid ? "" : "NONE:", caller_save_window->first_write_pc,
             caller_s0->total_reads, caller_s0->total_writes,
             caller_s0->first_read_valid ? "" : "NONE:", caller_s0->first_read_pc,
             caller_s0->first_write_valid ? "" : "NONE:", caller_s0->first_write_pc,
