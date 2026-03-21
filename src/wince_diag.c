@@ -29,6 +29,16 @@ static inline bool pc_in_wince_fail_corridor(uint32_t pc32)
     return pc32 >= WINCE_FAIL_CORRIDOR_START && pc32 <= WINCE_FAIL_CORRIDOR_END;
 }
 
+static bool is_wince_callback_slot_family(const char *name)
+{
+    if (!name)
+        return false;
+    return strcmp(name, "obj_cb_pageptr") == 0 ||
+           strcmp(name, "obj_cb_target") == 0 ||
+           strcmp(name, "obj_cb_jalr") == 0 ||
+           strcmp(name, "obj_cb_dispatch") == 0;
+}
+
 static inline bool pc_in_wince_delay_call_window(uint32_t pc32)
 {
     return pc32 >= UINT32_C(0x800771F0) && pc32 < UINT32_C(0x80077370);
@@ -4592,6 +4602,10 @@ enum {
     WINCE_PROD_CTX_SAVED_PAIR,
     WINCE_PROD_OBJPTR,
     WINCE_PROD_OBJ_EXEC_PAGE,
+    WINCE_PROD_OBJ_CB_PAGEPTR,
+    WINCE_PROD_OBJ_CB_TARGET,
+    WINCE_PROD_OBJ_CB_JALR,
+    WINCE_PROD_OBJ_CB_DISPATCH,
     WINCE_PROD_OBJ_SLOT0,
     WINCE_PROD_OBJ_HEADER,
     WINCE_PROD_RESUME_GLOBAL,
@@ -4609,6 +4623,10 @@ static const wince_producer_desc_t wince_producer_descs[WINCE_PRODUCER_FAMILY_CO
     { "ctx_saved_pair", UINT32_C(0x0000226C),           UINT32_C(0x00002278) },
     { "objptr",      WINCE_TRACE_OBJPTR_PA_START,       WINCE_TRACE_OBJPTR_PA_END },
     { "obj_exec_page", WINCE_TRACE_OBJ_EXEC_PAGE_PA_START, WINCE_TRACE_OBJ_EXEC_PAGE_PA_END },
+    { "obj_cb_pageptr", UINT32_C(0x006694D8),           UINT32_C(0x006694DC) },
+    { "obj_cb_target", UINT32_C(0x006694EC),            UINT32_C(0x006694F0) },
+    { "obj_cb_jalr", UINT32_C(0x006694F4),              UINT32_C(0x006694F8) },
+    { "obj_cb_dispatch", UINT32_C(0x00669510),          UINT32_C(0x00669514) },
     { "obj_slot0",   WINCE_TRACE_OBJ_SLOT0_PA_START,    WINCE_TRACE_OBJ_SLOT0_PA_END },
     { "obj_header",  WINCE_TRACE_OBJ_HEADER_PA_START,   WINCE_TRACE_OBJ_HEADER_PA_END },
     { "resume_global", WINCE_TRACE_RESUME_GLOBAL_PA_START, WINCE_TRACE_RESUME_GLOBAL_PA_END },
@@ -4957,6 +4975,13 @@ void wince_producer_record_write(machine_t *m, uint32_t pa, uint32_t pc,
                         p->name, pa, pc, size,
                         (uint64_t)(value & write_value_mask(size)));
             }
+            if (m->cfg.log_wince_stall && is_wince_callback_slot_family(p->name)) {
+                fprintf(stderr,
+                        "[WINCE_CALLBACK_SLOT_TOUCH] family=%s kind=first_write"
+                        " pa=0x%08X pc=0x%08X size=%u val=0x%08" PRIX64 "\n",
+                        p->name, pa, pc, size,
+                        (uint64_t)(value & write_value_mask(size)));
+            }
         }
         if (!is_zero && !p->first_nz_write_valid) {
             p->first_nz_write_valid = true;
@@ -4970,6 +4995,13 @@ void wince_producer_record_write(machine_t *m, uint32_t pa, uint32_t pc,
                         "[WINCE_OBJ_WRITE_PROBE] family=%s kind=first_nz_write"
                         " pa=0x%08X pc=0x%08X size=%u val=0x%08" PRIX64
                         " before_null_read=yes\n",
+                        p->name, pa, pc, size,
+                        (uint64_t)(value & write_value_mask(size)));
+            }
+            if (m->cfg.log_wince_stall && is_wince_callback_slot_family(p->name)) {
+                fprintf(stderr,
+                        "[WINCE_CALLBACK_SLOT_TOUCH] family=%s kind=first_nz_write"
+                        " pa=0x%08X pc=0x%08X size=%u val=0x%08" PRIX64 "\n",
                         p->name, pa, pc, size,
                         (uint64_t)(value & write_value_mask(size)));
             }
@@ -5002,6 +5034,15 @@ void wince_producer_record_read(machine_t *m, uint32_t pa, uint32_t pc,
             p->any_write_before_read = (p->total_writes > 0);
             if (p->total_writes > 0 && write_value_is_zero(size, value))
                 p->read_found_zero_after_writes = true;
+            if (m->cfg.log_wince_stall && is_wince_callback_slot_family(p->name)) {
+                fprintf(stderr,
+                        "[WINCE_CALLBACK_SLOT_TOUCH] family=%s kind=first_read"
+                        " pa=0x%08X pc=0x%08X size=%u val=0x%08" PRIX64
+                        " write_before_read=%s\n",
+                        p->name, pa, pc, size,
+                        (uint64_t)(value & write_value_mask(size)),
+                        p->any_write_before_read ? "yes" : "no");
+            }
         }
     }
 }

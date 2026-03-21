@@ -221,6 +221,12 @@ static void seed_wince_hw_regions(machine_t *m)
                 "[WINCE_HW_SEED] clear_callback_slot pa=0x006694F4 old_use=jalr_a3 now=0x00000000\n");
     }
 
+    if (m->cfg.wince_hw_seed_clear_callback_target) {
+        write_pa_u32_all_aliases(m, UINT32_C(0x006694EC), 0u);
+        fprintf(stderr,
+                "[WINCE_HW_SEED] clear_callback_target pa=0x006694EC old_use=callback_target now=0x00000000\n");
+    }
+
     if (m->cfg.wince_hw_seed_clear_future_frame) {
         write_pa_u32_all_aliases(m, UINT32_C(0x00001760), 0u);
         write_pa_u32_all_aliases(m, UINT32_C(0x00001764), 0u);
