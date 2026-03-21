@@ -157,8 +157,10 @@ void maybe_probe_wince_producer_pcs(machine_t *m, uc_engine *uc,
 void maybe_probe_wince_77FE4_internals(machine_t *m, uc_engine *uc,
                                         uint32_t pc32, uint32_t insn);
 void maybe_probe_wince_dispatcher_corridor(machine_t *m, uc_engine *uc,
-                                            uint32_t pc32, uint32_t insn);
+                                           uint32_t pc32, uint32_t insn);
 void maybe_probe_wince_obj_late_writer(machine_t *m, uc_engine *uc,
+                                       uint32_t pc32, uint32_t insn);
+void maybe_probe_wince_ctx_save_writer(machine_t *m, uc_engine *uc,
                                        uint32_t pc32, uint32_t insn);
 void maybe_probe_wince_delay_call_frame(machine_t *m, uc_engine *uc,
                                         uint32_t pc32, uint32_t insn);
