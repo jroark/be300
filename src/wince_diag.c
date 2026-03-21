@@ -6904,3 +6904,41 @@ void log_wince_callback_arm_summary(machine_t *m, uc_engine *uc,
             jalr->first_read_valid ? "" : "NONE:", jalr->first_read_pc,
             jalr->first_write_valid ? "" : "NONE:", jalr->first_write_pc);
 }
+
+void log_wince_future_frame_summary(machine_t *m, uc_engine *uc,
+                                    const char *reason)
+{
+    if (!m || !uc || !is_wince_boot_machine(m))
+        return;
+
+    const wince_producer_attr_t *future = &m->wince_producer[WINCE_PROD_FUTURE_FRAME];
+    const wince_producer_attr_t *caller_s0 = &m->wince_producer[WINCE_PROD_CALLER_RESTORE_S0];
+    const wince_producer_attr_t *caller_ra = &m->wince_producer[WINCE_PROD_CALLER_RESTORE_RA];
+    uint32_t cur_1760 = 0, cur_1764 = 0, cur_17b0 = 0, cur_17b4 = 0;
+    bool ok_1760 = read_pa_u32_all_aliases(m, UINT32_C(0x00001760), &cur_1760);
+    bool ok_1764 = read_pa_u32_all_aliases(m, UINT32_C(0x00001764), &cur_1764);
+    bool ok_17b0 = read_pa_u32_all_aliases(m, UINT32_C(0x000017B0), &cur_17b0);
+    bool ok_17b4 = read_pa_u32_all_aliases(m, UINT32_C(0x000017B4), &cur_17b4);
+
+    fprintf(stderr,
+            "[WINCE_FUTURE_FRAME_SUMMARY] reason=%s"
+            " cur_1760=%s0x%08X cur_1764=%s0x%08X"
+            " cur_17B0=%s0x%08X cur_17B4=%s0x%08X"
+            " future_reads=%u future_writes=%u future_first_read=%s0x%08X future_first_write=%s0x%08X"
+            " caller_s0_reads=%u caller_s0_writes=%u caller_s0_first_read=%s0x%08X caller_s0_first_write=%s0x%08X"
+            " caller_ra_reads=%u caller_ra_writes=%u caller_ra_first_read=%s0x%08X caller_ra_first_write=%s0x%08X\n",
+            reason,
+            ok_1760 ? "" : "ERR:", cur_1760,
+            ok_1764 ? "" : "ERR:", cur_1764,
+            ok_17b0 ? "" : "ERR:", cur_17b0,
+            ok_17b4 ? "" : "ERR:", cur_17b4,
+            future->total_reads, future->total_writes,
+            future->first_read_valid ? "" : "NONE:", future->first_read_pc,
+            future->first_write_valid ? "" : "NONE:", future->first_write_pc,
+            caller_s0->total_reads, caller_s0->total_writes,
+            caller_s0->first_read_valid ? "" : "NONE:", caller_s0->first_read_pc,
+            caller_s0->first_write_valid ? "" : "NONE:", caller_s0->first_write_pc,
+            caller_ra->total_reads, caller_ra->total_writes,
+            caller_ra->first_read_valid ? "" : "NONE:", caller_ra->first_read_pc,
+            caller_ra->first_write_valid ? "" : "NONE:", caller_ra->first_write_pc);
+}
