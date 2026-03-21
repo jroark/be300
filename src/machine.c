@@ -5900,7 +5900,7 @@ machine_t *machine_create(const machine_config_t *cfg)
      * We fill in the "free" kuseg gaps between those regions.  Host OS uses
      * lazy mmap so large holes cost no physical host RAM until touched.
      */
-    {
+    if (!wince_boot) {
         static const struct { uint32_t base; uint32_t size; const char *name; } gaps[] = {
             { 0x01000000u, 0x09000000u, "0x01000000–0x09FFFFFF" }, /* after SDRAM, before VRC4173 */
             { 0x0B000000u, 0x04000000u, "0x0B000000–0x0EFFFFFF" }, /* after VRC4173, before IO */
@@ -5920,6 +5920,10 @@ machine_t *machine_create(const machine_config_t *cfg)
             else
                 fprintf(stderr, "[MACHINE] user-space pre-mapped %s\n", gaps[gi].name);
         }
+    } else {
+        fprintf(stderr,
+                "[MACHINE] user-space pre-map disabled for WinCE/NAND boot"
+                " (preserve guest TLB faults)\n");
     }
 
     /*
