@@ -2115,6 +2115,65 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
     uint32_t ra32 = (uint32_t)ra;
     uint64_t hook_seq = m->wince_code_hook_seq;
 
+    if (m->cfg.log_wince_stall &&
+        pc32 >= 0x80096800u && pc32 <= 0x80096904u) {
+        static uint32_t prearm_logs = 0;
+        static uint32_t prearm_store_logs = 0;
+        uint32_t future_s0_addr = sp32 - 0x08u;
+        uint32_t future_ra_addr = sp32 - 0x04u;
+        uint32_t future_s0 = 0;
+        uint32_t future_ra = 0;
+        bool future_s0_ok = (uc_mem_read(uc, mips_sext(future_s0_addr), &future_s0, 4) == UC_ERR_OK);
+        bool future_ra_ok = (uc_mem_read(uc, mips_sext(future_ra_addr), &future_ra, 4) == UC_ERR_OK);
+
+        if (prearm_logs < 96u) {
+            fprintf(stderr,
+                    "[WINCE_DIV_PREARM_SLOT_STATE] pc=0x%08X insn=0x%08X"
+                    " sp=0x%08X ra=0x%08X"
+                    " future_s0@0x%08X=%s0x%08X"
+                    " future_ra@0x%08X=%s0x%08X\n",
+                    pc32, insn, sp32, ra32,
+                    future_s0_addr, future_s0_ok ? "" : "ERR:", future_s0,
+                    future_ra_addr, future_ra_ok ? "" : "ERR:", future_ra);
+            prearm_logs++;
+        }
+
+        if (insn == 0x0C0259E4u && prearm_logs < 128u) {
+            fprintf(stderr,
+                    "[WINCE_DIV_HELPER_ARM_SITE] pc=0x%08X ret=0x%08X"
+                    " sp=0x%08X future_s0@0x%08X=%s0x%08X"
+                    " future_ra@0x%08X=%s0x%08X\n",
+                    pc32, pc32 + 8u, sp32,
+                    future_s0_addr, future_s0_ok ? "" : "ERR:", future_s0,
+                    future_ra_addr, future_ra_ok ? "" : "ERR:", future_ra);
+            prearm_logs++;
+        }
+
+        {
+            uint32_t op = (insn >> 26) & 0x3Fu;
+            if (op == 0x28u || op == 0x29u || op == 0x2Bu) {
+                uint32_t rs = (insn >> 21) & 0x1Fu;
+                uint32_t rt = (insn >> 16) & 0x1Fu;
+                int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+                uint64_t base = 0;
+                uint64_t rt_value = 0;
+                uint32_t eff_addr = 0;
+                uc_reg_read(uc, UC_MIPS_REG_0 + (int)rs, &base);
+                uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &rt_value);
+                eff_addr = (uint32_t)((uint32_t)base + (uint32_t)imm);
+                if ((eff_addr == future_s0_addr || eff_addr == future_ra_addr) &&
+                    prearm_store_logs < 32u) {
+                    fprintf(stderr,
+                            "[WINCE_DIV_PREARM_STORE] pc=0x%08X insn=0x%08X"
+                            " addr=0x%08X rt=$%u val=0x%08X target=%s\n",
+                            pc32, insn, eff_addr, rt, (uint32_t)rt_value,
+                            (eff_addr == future_s0_addr) ? "future_s0" : "future_ra");
+                    prearm_store_logs++;
+                }
+            }
+        }
+    }
+
     if (t->callback_active) {
         if (sp32 < t->callback_min_sp)
             t->callback_min_sp = sp32;
