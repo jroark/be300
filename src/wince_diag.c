@@ -6874,3 +6874,33 @@ void log_wince_delay_call_summary(const machine_t *m, const char *reason)
                 (uint64_t)(uint32_t)e->value);
     }
 }
+
+void log_wince_callback_arm_summary(machine_t *m, uc_engine *uc,
+                                    const char *reason)
+{
+    if (!m || !uc || !is_wince_boot_machine(m))
+        return;
+
+    const wince_producer_attr_t *target = &m->wince_producer[WINCE_PROD_OBJ_CB_TARGET];
+    const wince_producer_attr_t *jalr = &m->wince_producer[WINCE_PROD_OBJ_CB_JALR];
+    uint32_t cur_target = 0, cur_jalr = 0;
+    bool cur_target_ok = read_pa_u32_all_aliases(m, UINT32_C(0x006694EC), &cur_target);
+    bool cur_jalr_ok = read_pa_u32_all_aliases(m, UINT32_C(0x006694F4), &cur_jalr);
+
+    fprintf(stderr,
+            "[WINCE_CALLBACK_ARM_SUMMARY] reason=%s"
+            " cur_694EC=%s0x%08X cur_694F4=%s0x%08X"
+            " target_reads=%u target_writes=%u target_first_read=%s0x%08X"
+            " target_first_write=%s0x%08X"
+            " jalr_reads=%u jalr_writes=%u jalr_first_read=%s0x%08X"
+            " jalr_first_write=%s0x%08X\n",
+            reason,
+            cur_target_ok ? "" : "ERR:", cur_target,
+            cur_jalr_ok ? "" : "ERR:", cur_jalr,
+            target->total_reads, target->total_writes,
+            target->first_read_valid ? "" : "NONE:", target->first_read_pc,
+            target->first_write_valid ? "" : "NONE:", target->first_write_pc,
+            jalr->total_reads, jalr->total_writes,
+            jalr->first_read_valid ? "" : "NONE:", jalr->first_read_pc,
+            jalr->first_write_valid ? "" : "NONE:", jalr->first_write_pc);
+}
