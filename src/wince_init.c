@@ -233,6 +233,13 @@ static void seed_wince_hw_regions(machine_t *m)
                 "[WINCE_HW_SEED] clear_caller_restore_s0 pa=0x000017B0 old_use=caller_restore_s0 now=0x00000000\n");
     }
 
+    if (m->cfg.wince_hw_seed_force_alt_entry_prologue) {
+        write_pa_u32_all_aliases(m, UINT32_C(0x00002274), UINT32_C(0x80096800));
+        fprintf(stderr,
+                "[WINCE_HW_SEED] force_alt_entry_prologue"
+                " pa=0x00002274 old_use=ctx_saved_ra now=0x80096800\n");
+    }
+
     if (m->cfg.wince_hw_seed_clear_future_frame) {
         write_pa_u32_all_aliases(m, UINT32_C(0x00001760), 0u);
         write_pa_u32_all_aliases(m, UINT32_C(0x00001764), 0u);

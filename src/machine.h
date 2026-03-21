@@ -461,6 +461,7 @@ typedef struct {
     bool        wince_hw_seed_clear_callback_slot; /* experimental: after hw seed, clear PA 0x006694F4 */
     bool        wince_hw_seed_clear_callback_target; /* experimental: after hw seed, clear PA 0x006694EC */
     bool        wince_hw_seed_clear_caller_restore_s0; /* experimental: after hw seed, clear PA 0x000017B0 */
+    bool        wince_hw_seed_force_alt_entry_prologue; /* experimental: after hw seed, force ctx saved RA from 0x80096894 to 0x80096800 */
     bool        wince_hw_seed_skip_caller_frame; /* experimental: do not replay caller_frame region */
     bool        wince_hw_seed_clear_future_frame; /* experimental: after hw seed, clear PA 0x00001760/64 */
     bool        wince_collapse_double_helper_entry; /* experimental: skip duplicate helper target at 0x80096790 */
