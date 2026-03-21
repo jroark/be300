@@ -4074,21 +4074,13 @@ skip_entrylo_fixup:
                      * exception vector (0x80000180) to trigger do_page_fault.
                      * Keep EXL=1 and preserve pending TLBS/TLBL state.
                      *
-                     * NOP-patch the ERET to prevent it from clearing EXL and
-                     * setting PC to stale CP0_EPC.  The NOP executes harmlessly,
-                     * then uc_emu_stop lets the main loop redirect to 0x80000180
-                     * with EXL still set and pending TLBS/TLBL state intact. */
+                     * Skip the ERET by writing PC directly to the general
+                     * exception vector.  This avoids NOP-patching (which
+                     * fails because the decoded ERET in the current TB
+                     * still executes, reading stale CP0_EPC).  Same pattern
+                     * as the TLB_OK PC-skip fix (commit 675a5f75). */
                     uint64_t gen_vec = mips_sext(0x80000180u);
-
-                    uint32_t nop = 0x00000000u;
-                    m->eret_nop_patch_orig = insn; /* 0x42000018 */
-                    m->eret_nop_patch_addr = address;
-                    write_mem_best_effort(uc, address, &nop, 4);
-                    uc_ctl_flush_tb(uc);
-                    m->eret_nop_patch_pending = true;
-
-                    m->pending_eret_redirect = true;
-                    m->pending_eret_redirect_pc = gen_vec;
+                    uc_reg_write(uc, UC_MIPS_REG_PC, &gen_vec);
                     /* Re-arm MFC0 intercepts for the general handler */
                     m->pending_cause_served = false;
                     m->pending_epc_served   = false;
@@ -4098,14 +4090,13 @@ skip_entrylo_fixup:
                         fprintf(stderr,
                                 "[ERET_KERNEL_TLB_PGFAULT] excode=%u fault_pc=0x%08X"
                                 " fault_va=0x%08X status=0x%08" PRIX64
-                                " -> 0x80000180 (do_page_fault) (NOP-patched)\n",
+                                " -> 0x80000180 (do_page_fault) (PC-skip)\n",
                                 m->pending_excode,
                                 (uint32_t)m->pending_epc,
                                 fault_va,
                                 status_snapshot);
                         eret_ktlb_pgfault_log++;
                     }
-                    uc_emu_stop(uc);
                     return;
                 }
             }
