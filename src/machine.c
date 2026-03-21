@@ -2698,16 +2698,19 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             m->wince_prev_hook_seq + 1u == m->wince_code_hook_seq &&
             m->wince_prev_hook_sp == sp32 + UINT32_C(0x28)) {
             static uint32_t wince_helper_collapse_logs = 0;
-            uint64_t next_pc = UINT64_C(0x80096794);
+            uint64_t a3 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
             if (m->cfg.log_wince_stall && wince_helper_collapse_logs < 64u) {
                 fprintf(stderr,
                         "[WINCE_HELPER_COLLAPSE] hook_seq=%llu prev_hook_seq=%llu"
                         " pc=0x%08X prev_sp=0x%08X sp=0x%08X ra=0x%08X"
-                        " next_pc=0x80096794\n",
+                        " a3=0x%08X action=%s\n",
                         (unsigned long long)m->wince_code_hook_seq,
                         (unsigned long long)m->wince_prev_hook_seq,
                         (uint32_t)address,
-                        m->wince_prev_hook_sp, sp32, ra32);
+                        m->wince_prev_hook_sp, sp32, ra32,
+                        (uint32_t)a3,
+                        ((uint32_t)a3 == 0u) ? "early_return" : "resume_96794");
                 wince_helper_collapse_logs++;
             }
             m->wince_prev_hook_seq = m->wince_code_hook_seq;
@@ -2715,7 +2718,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
             m->wince_prev_hook_sp = sp32;
             m->wince_prev_hook_ra = ra32;
             m->wince_prev_hook_valid = true;
-            uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+            if ((uint32_t)a3 == 0u && ra32 >= UINT32_C(0x80000000)) {
+                uint64_t restore_sp = mips_sext(sp32 + UINT32_C(0x28));
+                uint64_t next_pc = mips_sext(ra32);
+                uc_reg_write(uc, UC_MIPS_REG_SP, &restore_sp);
+                uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+            } else {
+                uint64_t next_pc = UINT64_C(0x80096794);
+                uc_reg_write(uc, UC_MIPS_REG_PC, &next_pc);
+            }
             return;
         }
 

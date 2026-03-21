@@ -2967,6 +2967,23 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
             }
         }
 
+        if (pc32 == 0x80096914u || pc32 == 0x80096924u) {
+            static uint32_t restore_slot_pre_load_logs = 0;
+            if (restore_slot_pre_load_logs < 32u) {
+                char slot20[96];
+                char slot24[96];
+                wince_diag_format_va_word(m, uc, sp32 + 0x20u,
+                                          slot20, sizeof(slot20));
+                wince_diag_format_va_word(m, uc, sp32 + 0x24u,
+                                          slot24, sizeof(slot24));
+                fprintf(stderr,
+                        "[WINCE_DIV_RESTORE_SLOT_PRE_LOAD] pc=0x%08X sp=0x%08X"
+                        " slot20=%s slot24=%s\n",
+                        pc32, sp32, slot20, slot24);
+                restore_slot_pre_load_logs++;
+            }
+        }
+
         /* --- Corridor ra restore at 0x80096924 (lw ra, 0x24(sp)) --- */
         if (pc32 == 0x80096924u) {
             static uint32_t ra_restore_logs = 0;
@@ -3206,6 +3223,65 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                         " store_va=0x%08X store_pa=%s ra=0x%08X\n",
                         pc32, sp32, store_va, pa_desc, ra32);
                 ra_store_logs++;
+            }
+        }
+
+        if (pc32 >= 0x80096800u && pc32 <= 0x8009692Cu) {
+            static bool restore_slot_map_init = false;
+            static bool prev_slot20_ok = false;
+            static bool prev_slot24_ok = false;
+            static uint32_t prev_slot20_pa = 0, prev_slot20_val = 0;
+            static uint32_t prev_slot24_pa = 0, prev_slot24_val = 0;
+            static uint32_t restore_slot_map_logs = 0;
+            uint32_t slot20_pa = 0, slot20_val = 0;
+            uint32_t slot24_pa = 0, slot24_val = 0;
+            bool slot20_ok = wince_diag_read_va_via_shadow_tlb(
+                    m, uc, sp32 + 0x20u, &slot20_val, &slot20_pa);
+            bool slot24_ok = wince_diag_read_va_via_shadow_tlb(
+                    m, uc, sp32 + 0x24u, &slot24_val, &slot24_pa);
+            if (!restore_slot_map_init ||
+                slot20_ok != prev_slot20_ok ||
+                slot24_ok != prev_slot24_ok ||
+                slot20_pa != prev_slot20_pa ||
+                slot24_pa != prev_slot24_pa ||
+                slot20_val != prev_slot20_val ||
+                slot24_val != prev_slot24_val) {
+                if (restore_slot_map_logs < 64u) {
+                    fprintf(stderr,
+                            "[WINCE_DIV_RESTORE_SLOT_MAP] pc=0x%08X sp=0x%08X"
+                            " slot20=0x%08X(hit=%u pa=0x%08X val=0x%08X)"
+                            " slot24=0x%08X(hit=%u pa=0x%08X val=0x%08X)\n",
+                            pc32, sp32,
+                            sp32 + 0x20u, slot20_ok ? 1u : 0u,
+                            slot20_pa, slot20_val,
+                            sp32 + 0x24u, slot24_ok ? 1u : 0u,
+                            slot24_pa, slot24_val);
+                    restore_slot_map_logs++;
+                }
+                restore_slot_map_init = true;
+                prev_slot20_ok = slot20_ok;
+                prev_slot24_ok = slot24_ok;
+                prev_slot20_pa = slot20_pa;
+                prev_slot20_val = slot20_val;
+                prev_slot24_pa = slot24_pa;
+                prev_slot24_val = slot24_val;
+            }
+        }
+
+        if (pc32 == 0x80096804u || pc32 == 0x8009680Cu) {
+            static uint32_t restore_slot_post_store_logs = 0;
+            if (restore_slot_post_store_logs < 32u) {
+                char slot20[96];
+                char slot24[96];
+                wince_diag_format_va_word(m, uc, sp32 + 0x20u,
+                                          slot20, sizeof(slot20));
+                wince_diag_format_va_word(m, uc, sp32 + 0x24u,
+                                          slot24, sizeof(slot24));
+                fprintf(stderr,
+                        "[WINCE_DIV_RESTORE_SLOT_POST_STORE] pc=0x%08X sp=0x%08X"
+                        " slot20=%s slot24=%s\n",
+                        pc32, sp32, slot20, slot24);
+                restore_slot_post_store_logs++;
             }
         }
 
