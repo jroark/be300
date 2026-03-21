@@ -341,7 +341,7 @@ typedef struct {
 
 #define WINCE_DIV_STACK_WINDOW_COUNT 2u
 #define WINCE_DIV_STACK_PHASE_COUNT 4u
-#define WINCE_DIV_STACK_SLOT_COUNT 2u
+#define WINCE_DIV_STACK_SLOT_COUNT 4u
 typedef struct {
     uint32_t addr;
     uint32_t reads;

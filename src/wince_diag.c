@@ -424,8 +424,13 @@ static void update_wince_region_tracks(machine_t *m, uc_engine *uc, uint32_t pa,
 
 static const char *wince_div_stack_slot_name(uint32_t idx)
 {
-    return (idx == 0u) ? "s0_slot_sp_plus_20" :
-           (idx == 1u) ? "ra_slot_sp_plus_24" : "slot_unknown";
+    switch (idx) {
+    case 0u: return "helper_return_s0";
+    case 1u: return "helper_return_ra";
+    case 2u: return "caller_save_s0";
+    case 3u: return "caller_save_ra";
+    default: return "slot_unknown";
+    }
 }
 
 static const char *wince_div_stack_window_name(uint32_t idx)
@@ -609,6 +614,73 @@ static void wince_diag_format_va_word(machine_t *m, uc_engine *uc, uint32_t va,
     }
 
     snprintf(buf, buf_size, "0x%08X(pa=MISS,val=MISS)", va);
+}
+
+static void wince_diag_log_matching_shadow_tlbs(machine_t *m, uint32_t va,
+                                                const char *tag, uint32_t pc32)
+{
+    static uint32_t tlb_match_logs = 0;
+    if (!m || !m->cfg.log_wince_stall)
+        return;
+    if (tlb_match_logs >= 128u)
+        return;
+
+    uint32_t best_idx = 0xFFFFFFFFu;
+    uint32_t best_seq = 0u;
+    uint32_t matches = 0u;
+
+    for (uint32_t i = 0; i < 64u; i++) {
+        if (!m->shadow_tlb_valid[i])
+            continue;
+        if (!tlb_entry_matches_va(va, m->shadow_tlb_entryhi[i],
+                                  m->shadow_tlb_pagemask[i]))
+            continue;
+        matches++;
+        if (m->shadow_tlb_seq[i] >= best_seq) {
+            best_seq = m->shadow_tlb_seq[i];
+            best_idx = i;
+        }
+    }
+
+    fprintf(stderr,
+            "[WINCE_VA_MATCH] tag=%s pc=0x%08X va=0x%08X matches=%u"
+            " chosen=%s%u\n",
+            tag ? tag : "unknown", pc32, va, matches,
+            (best_idx == 0xFFFFFFFFu) ? "NONE:" : "", best_idx);
+    tlb_match_logs++;
+
+    for (uint32_t i = 0; i < 64u && tlb_match_logs < 128u; i++) {
+        if (!m->shadow_tlb_valid[i])
+            continue;
+        uint32_t hi = m->shadow_tlb_entryhi[i];
+        uint32_t pm = m->shadow_tlb_pagemask[i];
+        if (!tlb_entry_matches_va(va, hi, pm))
+            continue;
+
+        uint64_t page_bytes = tlb_leaf_bytes_from_pagemask(pm);
+        bool odd_page = (page_bytes >= 0x1000u) && (((uint64_t)va & page_bytes) != 0u);
+        uint32_t lo = odd_page ? m->shadow_tlb_lo1[i] : m->shadow_tlb_lo0[i];
+        uint32_t pa = 0u;
+        bool valid = false;
+        if (page_bytes >= 0x1000u && (lo & 0x2u) != 0u) {
+            uint64_t pfn = (uint64_t)((lo >> 6) & 0xFFFFFu);
+            uint64_t pa_page = (pfn << 10) & ~(page_bytes - 1u);
+            uint64_t page_offset = (uint64_t)va & (page_bytes - 1u);
+            pa = (uint32_t)(pa_page + page_offset);
+            valid = true;
+        }
+
+        fprintf(stderr,
+                "[WINCE_VA_MATCH_ENTRY] tag=%s pc=0x%08X va=0x%08X"
+                " idx=%u seq=%u hi=0x%08X mask=0x%08X"
+                " lo0=0x%08X lo1=0x%08X odd=%u valid=%u pa=%s0x%08X\n",
+                tag ? tag : "unknown", pc32, va,
+                i, m->shadow_tlb_seq[i], hi, pm,
+                m->shadow_tlb_lo0[i], m->shadow_tlb_lo1[i],
+                odd_page ? 1u : 0u, valid ? 1u : 0u,
+                valid ? "" : "NONE:", valid ? pa : 0u);
+        tlb_match_logs++;
+    }
 }
 
 static void wince_diag_log_tlb_lookup(const char *tag, const char *label,
@@ -887,7 +959,7 @@ static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t 
         /* Log TLB-aware read result for diagnostics */
         static uint32_t tlb_read_logs = 0;
         if (tlb_read_logs < 128u) {
-            const char *slot_name = (i == 0) ? "s0_slot" : "ra_slot";
+            const char *slot_name = wince_div_stack_slot_name(i);
             if (tlb_hit) {
                 fprintf(stderr,
                         "[WINCE_DIV_STACK_TLB_READ] phase=%u slot=%s va=0x%08X"
@@ -921,7 +993,7 @@ static void wince_div_stack_capture_phase(machine_t *m, uc_engine *uc, uint32_t 
             bool c_ok = c_direct || c_tlb;
             if (correct_slot_logs < 32u) {
                 fprintf(stderr,
-                        "[WINCE_DIV_CORRECT_SLOT_READ] phase=%u name=%s"
+                "[WINCE_DIV_CORRECT_SLOT_READ] phase=%u name=%s"
                         " va=0x%08X tlb_hit=%u pa=0x%08X value=0x%08X ok=%u\n",
                         phase, cslots[ci].name, cva,
                         c_tlb ? 1u : 0u, c_tlb ? cpa : (cva & 0x1FFFFFFFu),
@@ -954,19 +1026,23 @@ static void wince_div_stack_watch_arm(machine_t *m, uc_engine *uc,
     w->windows[0].end = w->caller_window_end;
     w->windows[1].base = w->callee_window_start;
     w->windows[1].end = w->callee_window_end;
-    w->slots[0].addr = sp_before_call - 0x08u; /* SP return + 0x20 */
-    w->slots[1].addr = sp_before_call - 0x04u; /* SP return + 0x24 */
+    w->slots[0].addr = sp_before_call - 0x08u; /* helper return path: sp+0x20 */
+    w->slots[1].addr = sp_before_call - 0x04u; /* helper return path: sp+0x24 */
+    w->slots[2].addr = sp_before_call + 0x20u; /* caller save path: sp+0x20 */
+    w->slots[3].addr = sp_before_call + 0x24u; /* caller save path: sp+0x24 */
     wince_div_stack_capture_phase(m, uc, 0u);
 
     if (m->wince_div_logs < 256u) {
         fprintf(stderr,
                 "[WINCE_DIV_STACK_ARM] call_pc=0x%08X arm_sp=0x%08X"
                 " caller=[0x%08X,0x%08X) callee=[0x%08X,0x%08X)"
-                " s0_slot=0x%08X ra_slot=0x%08X\n",
+                " helper_s0=0x%08X helper_ra=0x%08X"
+                " caller_s0=0x%08X caller_ra=0x%08X\n",
                 w->arm_pc, w->arm_sp,
                 w->caller_window_start, w->caller_window_end,
                 w->callee_window_start, w->callee_window_end,
-                w->slots[0].addr, w->slots[1].addr);
+                w->slots[0].addr, w->slots[1].addr,
+                w->slots[2].addr, w->slots[3].addr);
         m->wince_div_logs++;
     }
 }
@@ -3377,6 +3453,8 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                         "[WINCE_DIV_CALLER_S0_STORE] pc=0x%08X sp=0x%08X"
                         " store_va=0x%08X store_pa=%s s0=0x%08X\n",
                         pc32, sp32, store_va, pa_desc, (uint32_t)s0_val);
+                wince_diag_log_matching_shadow_tlbs(m, store_va,
+                                                    "caller_s0_store", pc32);
                 s0_store_logs++;
             }
         }
@@ -3395,6 +3473,8 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                         "[WINCE_DIV_CALLER_RA_STORE] pc=0x%08X sp=0x%08X"
                         " store_va=0x%08X store_pa=%s ra=0x%08X\n",
                         pc32, sp32, store_va, pa_desc, ra32);
+                wince_diag_log_matching_shadow_tlbs(m, store_va,
+                                                    "caller_ra_store", pc32);
                 ra_store_logs++;
             }
         }
@@ -3429,6 +3509,10 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                             slot20_pa, slot20_val,
                             sp32 + 0x24u, slot24_ok ? 1u : 0u,
                             slot24_pa, slot24_val);
+                    wince_diag_log_matching_shadow_tlbs(m, sp32 + 0x20u,
+                                                        "restore_slot20_map", pc32);
+                    wince_diag_log_matching_shadow_tlbs(m, sp32 + 0x24u,
+                                                        "restore_slot24_map", pc32);
                     restore_slot_map_logs++;
                 }
                 restore_slot_map_init = true;
