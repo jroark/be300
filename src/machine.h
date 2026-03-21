@@ -148,7 +148,7 @@ typedef struct {
     uint64_t last_nz_to_zero_new;
 } wince_region_track_t;
 
-#define WINCE_PRODUCER_FAMILY_COUNT 22u
+#define WINCE_PRODUCER_FAMILY_COUNT 23u
 #define WINCE_OBJ_BOOTSTRAP_WORD_COUNT 7u
 typedef struct {
     const char *name;
@@ -465,6 +465,7 @@ typedef struct {
     bool        wince_hw_seed_skip_caller_frame; /* experimental: do not replay caller_frame region */
     bool        wince_hw_seed_clear_future_frame; /* experimental: after hw seed, clear PA 0x00001760/64 */
     bool        wince_hw_seed_clear_caller_save_pair; /* experimental: after hw seed, clear PA 0x000017D8/DC */
+    bool        wince_hw_seed_clear_caller_save_window; /* experimental: after hw seed, clear PA 0x000017D8..0x000017E4 */
     bool        wince_vr4131_tlbr_roundtrip; /* experimental: preserve VR4131-style ctx_tlb rows during WinCE tlbr save-back */
     bool        wince_collapse_double_helper_entry; /* experimental: skip duplicate helper target at 0x80096790 */
     bool        wince_obj_bootstrap; /* experimental: seed stable objptr/header words for WinCE NAND boot */
