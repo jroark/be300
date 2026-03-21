@@ -687,6 +687,8 @@ struct machine_s {
     bool     saved_epc_was_written;
     bool     saved_pending_cause_served;
     bool     saved_pending_epc_served;
+    enum { SAVE_REASON_NONE = 0, SAVE_REASON_TLB, SAVE_REASON_KERNEL_RI } saved_exception_reason;
+    bool     eret_ri_exl_fixup;    /* clear EXL on next prid_hook after RI suppress */
 
     /* CP0 shadow state for TLB/refill diagnostics (Unicorn API lacks CP0 accessors). */
     uint64_t shadow_cp0_index;

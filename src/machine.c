@@ -309,6 +309,7 @@ static void restore_pending_exception(machine_t *m)
     m->pending_cause_served = m->saved_pending_cause_served;
     m->pending_epc_served   = m->saved_pending_epc_served;
     m->has_saved_exception  = false;
+    m->saved_exception_reason = SAVE_REASON_NONE;
 }
 
 static void update_irq_lines(machine_t *m)
@@ -2649,6 +2650,17 @@ static void prid_hook(uc_engine *uc, uint64_t address,
         m->eret_nop_patch_pending = false;
     }
 
+    /* Clear EXL that was set by the KERNEL_RI_SPURIOUS handler to suppress
+     * the deferred RI exception from a native ERET.  Now that we're executing
+     * at the correct address, restore EXL=0 so the kernel continues normally. */
+    if (m->eret_ri_exl_fixup) {
+        uint64_t fixup_status = 0;
+        uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &fixup_status);
+        fixup_status &= ~(uint64_t)0x2u;  /* clear EXL */
+        uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &fixup_status);
+        m->eret_ri_exl_fixup = false;
+    }
+
     /*
      * MFC0 readback helper:
      * UC_HOOK_CODE fires before instruction execution. For native MFC0 reads
@@ -3897,6 +3909,18 @@ skip_entrylo_fixup:
             }
         }
         if (m->pending_excode == 0 && m->has_saved_exception) {
+            if (m->saved_exception_reason == SAVE_REASON_KERNEL_RI) {
+                static uint32_t eret_ri_restore_log = 0;
+                if (eret_ri_restore_log < 64) {
+                    fprintf(stderr,
+                            "[ERET_RI_RESTORE] PC=0x%08" PRIX64
+                            " restoring saved_excode=%u saved_epc=0x%08" PRIX64 "\n",
+                            (uint64_t)(uint32_t)address,
+                            m->saved_pending_excode,
+                            (uint64_t)(uint32_t)m->saved_pending_epc);
+                    eret_ri_restore_log++;
+                }
+            }
             restore_pending_exception(m);
             return;
         }
@@ -4008,29 +4032,25 @@ skip_entrylo_fixup:
                                         (uint32_t)address);
 
                     uint64_t fault_pc = m->pending_epc;
+
+                    /* Clear EXL (the ERET we're skipping would have cleared it). */
                     uint64_t status = status_snapshot & ~(uint64_t)0x2u;
                     uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status);
 
-                    /* NOP-patch the ERET instruction to prevent the native
-                     * ERET from reading stale CP0_EPC (which we can't write).
-                     * The NOP executes harmlessly; uc_emu_stop then lets the
-                     * main loop apply the deferred PC redirect. */
-                    uint32_t nop = 0x00000000u;
-                    m->eret_nop_patch_orig = insn; /* 0x42000018 */
-                    m->eret_nop_patch_addr = address;
-                    write_mem_best_effort(uc, address, &nop, 4);
-                    uc_ctl_flush_tb(uc);
-                    m->eret_nop_patch_pending = true;
-
-                    m->pending_eret_redirect = true;
-                    m->pending_eret_redirect_pc = fault_pc;
+                    /* Skip the ERET by writing PC directly to the fault address.
+                     * This avoids NOP-patching and uc_emu_stop entirely: the
+                     * ERET instruction does NOT execute, so there's no stale
+                     * CP0_EPC read.  This follows the same pattern as the
+                     * standby/suspend/hibernate skip at machine.c:3854. */
+                    uint64_t fault_pc_sext = mips_sext((uint32_t)fault_pc);
+                    uc_reg_write(uc, UC_MIPS_REG_PC, &fault_pc_sext);
 
                     static uint32_t eret_ktlb_ok_log = 0;
                     if (eret_ktlb_ok_log < 128) {
                         fprintf(stderr,
                                 "[ERET_KERNEL_TLB_OK] excode=%u fault_pc=0x%08X"
                                 " fault_va=0x%08X pa=0x%08" PRIX64
-                                " status=0x%08" PRIX64 " has_saved=%u (NOP-patched)\n",
+                                " status=0x%08" PRIX64 " has_saved=%u (PC-skip)\n",
                                 m->pending_excode, (uint32_t)fault_pc,
                                 fault_va, eret_tlb.pa_page,
                                 (uint64_t)(uint32_t)status,
@@ -4045,7 +4065,9 @@ skip_entrylo_fixup:
                     m->pending_cause_served = false;
                     m->pending_epc_served   = false;
                     restore_pending_exception(m);
-                    uc_emu_stop(uc);
+                    /* No uc_emu_stop needed: PC was redirected to fault_pc
+                     * and the ERET is skipped.  Execution continues within
+                     * the same batch at the faulting instruction. */
                     return;
                 } else {
                     /* Case (b): PTE was zero/invalid — redirect to general
@@ -4705,6 +4727,109 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             }
             uc_emu_stop(uc);
         }
+        return;
+    }
+
+    /*
+     * intno=12 (RI) at a kernel-mode PC while pending_eret_redirect is active.
+     *
+     * Root cause: ERET_KERNEL_TLB_OK NOP-patches the ERET instruction and
+     * calls uc_emu_stop, but Unicorn's TCG has already decoded the ERET.
+     * The native ERET executes before uc_emu_stop takes effect, reading a
+     * stale CP0_EPC (e.g. SYSCALL+4 from the original exception entry).
+     * Unicorn lands at the wrong PC and raises intno=12 for the instruction
+     * there.  The uc_emu_stop then fires, ending the batch.  The main loop
+     * applies pending_eret_redirect to correct the PC.
+     *
+     * Fix: just return without modifying any synthetic state.  The batch
+     * will end (uc_emu_stop is already pending), and pending_eret_redirect
+     * will correct the PC for the next batch.
+     */
+    if ((uint32_t)pc >= 0x80000000u && intno == 12u &&
+        m->pending_eret_redirect) {
+        static uint32_t kernel_ri_eret_redir_log = 0;
+        if (kernel_ri_eret_redir_log < 64) {
+            fprintf(stderr,
+                    "[KERNEL_RI_ERET_REDIR] intno=%u pc=0x%08X"
+                    " redir_pc=0x%08" PRIX64 " pend_exc=%u"
+                    " last_exec_pc=0x%08X — suppressing (uc_emu_stop pending)\n",
+                    intno, (uint32_t)pc,
+                    (uint64_t)(uint32_t)m->pending_eret_redirect_pc,
+                    m->pending_excode,
+                    (uint32_t)m->last_exec_pc);
+            kernel_ri_eret_redir_log++;
+        }
+        return;  /* uc_emu_stop will end batch; main loop applies redirect */
+    }
+
+    /*
+     * intno=12 (RI) at a kernel-mode PC during a pending synthetic exception
+     * WITHOUT pending_eret_redirect.  This happens when the native ERET
+     * executes (from a stale decoded TB) and lands at a stale CP0_EPC,
+     * but the batch didn't go through ERET_KERNEL_TLB_OK's uc_emu_stop path.
+     *
+     * The registers at this point reflect mid-do_execve state (ra/sp/v0
+     * are inside the kernel), not the syscall return context.  The instruction
+     * at the reported PC is valid (e.g. beqz) — the RI is spurious.
+     *
+     * Fix: force PC back to the faulting instruction (last_exec_pc + 4,
+     * i.e. the instruction after the NOP'd ERET) or stop the batch so the
+     * main loop can sort things out.  For now, just suppress and stop.
+     */
+    if ((uint32_t)pc >= 0x80000000u && intno == 12u &&
+        m->pending_excode != 0) {
+        uint32_t ri_insn_at_last = 0;
+        uc_mem_read(uc, (uint32_t)m->last_exec_pc, &ri_insn_at_last, 4);
+        static uint32_t kernel_ri_spurious_log = 0;
+        if (kernel_ri_spurious_log < 64) {
+            uint64_t ri_ra = 0, ri_sp = 0, ri_v0 = 0;
+            uc_reg_read(uc, UC_MIPS_REG_RA, &ri_ra);
+            uc_reg_read(uc, UC_MIPS_REG_SP, &ri_sp);
+            uc_reg_read(uc, UC_MIPS_REG_V0, &ri_v0);
+            fprintf(stderr,
+                    "[KERNEL_RI_SPURIOUS] intno=%u pc=0x%08X pend_exc=%u"
+                    " pend_epc=0x%08X last_exec=0x%08X insn@last=0x%08X"
+                    " ra=0x%08X sp=0x%08X v0=0x%08X eret_redir=%u"
+                    " nop_patch_pending=%u nop_patch_addr=0x%08X\n",
+                    intno, (uint32_t)pc,
+                    m->pending_excode,
+                    (uint32_t)m->pending_epc,
+                    (uint32_t)m->last_exec_pc,
+                    ri_insn_at_last,
+                    (uint32_t)ri_ra, (uint32_t)ri_sp, (uint32_t)ri_v0,
+                    m->pending_eret_redirect ? 1u : 0u,
+                    m->eret_nop_patch_pending ? 1u : 0u,
+                    (uint32_t)m->eret_nop_patch_addr);
+            kernel_ri_spurious_log++;
+        }
+        /* If nop_patch_pending is true, this RI is a deferred exception from
+         * a native ERET that executed despite the NOP-patch (already-decoded TB).
+         *
+         * The RI persists across batches because Unicorn's internal exception
+         * state is not cleared by PC writes alone.  To break the cycle:
+         *  1. Set EXL=1 to suppress further exception delivery.
+         *  2. Redirect PC to the correct fault address.
+         *  3. Set pending_eret_redirect so the main loop applies the
+         *     redirect AFTER this batch (which uc_emu_stop will end).
+         *  4. A flag (eret_ri_exl_fixup) tells the next prid_hook to
+         *     clear EXL once execution resumes at the correct address. */
+        if (m->eret_nop_patch_pending) {
+            uint64_t redir = m->pending_eret_redirect_pc;
+            uc_reg_write(uc, UC_MIPS_REG_PC, &redir);
+
+            /* Set EXL=1 to suppress exception re-delivery */
+            uint64_t ri_status = 0;
+            uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &ri_status);
+            ri_status |= 0x2u;  /* set EXL */
+            uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &ri_status);
+
+            /* Re-arm the redirect for the main loop */
+            m->pending_eret_redirect = true;
+            /* pending_eret_redirect_pc still has the correct value */
+
+            m->eret_ri_exl_fixup = true;
+        }
+        uc_emu_stop(uc);
         return;
     }
 
