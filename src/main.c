@@ -27,6 +27,8 @@ static void usage(const char *prog)
         "  --wince-hw-seed       Experimental: replay captured BE-300 WinCE RAM state\n"
         "  --wince-hw-seed-clear-callback-slot\n"
         "                        Experimental: after WinCE HW seed, clear PA 0x006694F4\n"
+        "  --wince-hw-seed-clear-callback-target\n"
+        "                        Experimental: after WinCE HW seed, clear PA 0x006694EC\n"
         "  --wince-hw-seed-skip-caller-frame\n"
         "                        Experimental: do not replay the caller_frame seed region\n"
         "  --wince-hw-seed-clear-future-frame\n"
@@ -59,6 +61,7 @@ int main(int argc, char *argv[])
         .wince_delay_skip = false,
         .wince_hw_seed = false,
         .wince_hw_seed_clear_callback_slot = false,
+        .wince_hw_seed_clear_callback_target = false,
         .wince_hw_seed_skip_caller_frame = false,
         .wince_hw_seed_clear_future_frame = false,
         .wince_collapse_double_helper_entry = false,
@@ -97,6 +100,8 @@ int main(int argc, char *argv[])
             cfg.wince_hw_seed = true;
         } else if (strcmp(argv[i], "--wince-hw-seed-clear-callback-slot") == 0) {
             cfg.wince_hw_seed_clear_callback_slot = true;
+        } else if (strcmp(argv[i], "--wince-hw-seed-clear-callback-target") == 0) {
+            cfg.wince_hw_seed_clear_callback_target = true;
         } else if (strcmp(argv[i], "--wince-hw-seed-skip-caller-frame") == 0) {
             cfg.wince_hw_seed_skip_caller_frame = true;
         } else if (strcmp(argv[i], "--wince-hw-seed-clear-future-frame") == 0) {
