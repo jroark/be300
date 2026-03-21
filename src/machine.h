@@ -464,6 +464,7 @@ typedef struct {
     bool        wince_hw_seed_force_alt_entry_prologue; /* experimental: after hw seed, force ctx saved RA from 0x80096894 to 0x80096800 */
     bool        wince_hw_seed_skip_caller_frame; /* experimental: do not replay caller_frame region */
     bool        wince_hw_seed_clear_future_frame; /* experimental: after hw seed, clear PA 0x00001760/64 */
+    bool        wince_vr4131_tlbr_roundtrip; /* experimental: preserve VR4131-style ctx_tlb rows during WinCE tlbr save-back */
     bool        wince_collapse_double_helper_entry; /* experimental: skip duplicate helper target at 0x80096790 */
     bool        wince_obj_bootstrap; /* experimental: seed stable objptr/header words for WinCE NAND boot */
     bool        trace_user_handoff; /* debug: first-fault and handoff VA->PA trace */

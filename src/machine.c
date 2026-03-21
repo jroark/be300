@@ -93,6 +93,14 @@ static bool cp0_is_tlb_diag_reg(uint32_t rd, uint32_t sel)
 
 /* cp0_shadow_write moved to tlb_shadow.c */
 
+static inline uint32_t wince_reverse_entrylo_pfn_fixup(uint32_t canon)
+{
+    uint32_t canon_pfn = (canon >> 6) & 0xFFFFFu;
+    uint32_t flags = canon & 0x3Fu;
+    uint32_t raw_pfn = canon_pfn << 2;
+    return (raw_pfn << 6) | flags;
+}
+
 
 
 static inline bool execve_pc_in_do_execve(uint64_t pc)
@@ -2798,6 +2806,73 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     maybe_probe_wince_ctx_launch(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_ctx_save_writer(m, uc, (uint32_t)address, insn);
     maybe_probe_wince_obj_late_writer(m, uc, (uint32_t)address, insn);
+
+    if (is_wince_boot_machine(m) &&
+        m->cfg.wince_vr4131_tlbr_roundtrip &&
+        (uint32_t)address == 0x80079824u) {
+        uint64_t a0 = 0, t0 = 0, t1 = 0, t3 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+        uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+        uc_reg_read(uc, UC_MIPS_REG_T1, &t1);
+        uc_reg_read(uc, UC_MIPS_REG_T3, &t3);
+
+        uint32_t row[4] = {0, 0, 0, 0};
+        bool row_ok[4] = {false, false, false, false};
+        uint32_t row_base = (uint32_t)a0;
+        if ((row_base & 0xFFFFF000u) == 0xA0002000u) {
+            row_ok[0] = read_guest_u32(uc, row_base + 0u, &row[0]);
+            row_ok[1] = read_guest_u32(uc, row_base + 4u, &row[1]);
+            row_ok[2] = read_guest_u32(uc, row_base + 8u, &row[2]);
+            row_ok[3] = read_guest_u32(uc, row_base + 12u, &row[3]);
+        }
+
+        uint32_t old_t0 = (uint32_t)t0;
+        uint32_t old_t1 = (uint32_t)t1;
+        uint32_t old_t3 = (uint32_t)t3;
+        uint32_t new_t0 = old_t0;
+        uint32_t new_t1 = old_t1;
+        uint32_t new_t3 = old_t3;
+
+        if (row_ok[0]) {
+            uint32_t raw_t0 = wince_reverse_entrylo_pfn_fixup(old_t0);
+            if (raw_t0 == row[0] && row[0] != old_t0)
+                new_t0 = row[0];
+        }
+        if (row_ok[1]) {
+            uint32_t raw_t1 = wince_reverse_entrylo_pfn_fixup(old_t1);
+            if (raw_t1 == row[1] && row[1] != old_t1)
+                new_t1 = row[1];
+        }
+        if (row_ok[3] && old_t3 == 0u && row[3] != 0u)
+            new_t3 = row[3];
+
+        if (new_t0 != old_t0)
+            uc_reg_write(uc, UC_MIPS_REG_T0, &new_t0);
+        if (new_t1 != old_t1)
+            uc_reg_write(uc, UC_MIPS_REG_T1, &new_t1);
+        if (new_t3 != old_t3)
+            uc_reg_write(uc, UC_MIPS_REG_T3, &new_t3);
+
+        if ((new_t0 != old_t0 || new_t1 != old_t1 || new_t3 != old_t3) &&
+            m->cfg.log_wince_stall) {
+            static uint32_t roundtrip_fix_logs = 0;
+            if (roundtrip_fix_logs < 128u) {
+                uint32_t row_idx = (row_base >= 0xA0002000u) ?
+                    ((row_base - 0xA0002000u) >> 4) : 0u;
+                fprintf(stderr,
+                        "[WINCE_TLBR_ROUNDTRIP_FIX] pc=0x%08X row=%u base=0x%08X"
+                        " t0:0x%08X->0x%08X t1:0x%08X->0x%08X"
+                        " t3:0x%08X->0x%08X row=[%s0x%08X %s0x%08X %s0x%08X %s0x%08X]\n",
+                        (uint32_t)address, row_idx, row_base,
+                        old_t0, new_t0, old_t1, new_t1, old_t3, new_t3,
+                        row_ok[0] ? "" : "ERR:", row[0],
+                        row_ok[1] ? "" : "ERR:", row[1],
+                        row_ok[2] ? "" : "ERR:", row[2],
+                        row_ok[3] ? "" : "ERR:", row[3]);
+                roundtrip_fix_logs++;
+            }
+        }
+    }
 
     /* WinCE NK last-PC ring: keep last 256 PCs for postmortem.
      * Only active when --log-wince-stall is set and PC is in NK range. */
