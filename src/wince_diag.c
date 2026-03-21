@@ -218,6 +218,9 @@ static bool is_wince_ctx_tlb_mutator_pc(uint32_t pc)
     case 0x80079380u:
     case 0x800793B0u:
     case 0x800793E0u:
+    case 0x80079824u:
+    case 0x80079828u:
+    case 0x8007982Cu:
     case 0x80079830u:
         return true;
     default:
@@ -3759,6 +3762,9 @@ static const char *wince_ctx_key_tag(uint32_t pc32)
     case 0x80079658u: return "ALL_call_7a65c";
     case 0x80079660u: return "ALL_pre_ctx_call";
     case 0x80079830u: return "ALL_ctx_mask_clear_store";
+    case 0x80079824u: return "ALL_ctx_row_store_w0";
+    case 0x80079828u: return "ALL_ctx_row_store_w1";
+    case 0x8007982Cu: return "ALL_ctx_row_store_w2";
     case 0x80079844u: return "ALL_ctx_fn_entry";
     case 0x80079890u: return "ALL_ctx_fn_return";
     case 0x80079668u: return "ALL_after_ctx_fn";
@@ -3785,6 +3791,9 @@ static const char *wince_ctx_phase_tag(uint32_t pc32)
     case 0x80079658u: return "ALL_call_7a65c";
     case 0x80079660u: return "ALL_pre_ctx_call";
     case 0x80079830u: return "ALL_ctx_mask_clear_store";
+    case 0x80079824u: return "ALL_ctx_row_store_w0";
+    case 0x80079828u: return "ALL_ctx_row_store_w1";
+    case 0x8007982Cu: return "ALL_ctx_row_store_w2";
     case 0x80079844u: return "ALL_ctx_fn_entry";
     case 0x80079890u: return "ALL_ctx_fn_return";
     case 0x80079668u: return "ALL_post_ctx_call";
@@ -6181,6 +6190,9 @@ void maybe_probe_wince_ctx_save_writer(machine_t *m, uc_engine *uc,
           pc32 == 0x80079380u ||
           pc32 == 0x800793B0u ||
           pc32 == 0x800793E0u ||
+          pc32 == 0x80079824u ||
+          pc32 == 0x80079828u ||
+          pc32 == 0x8007982Cu ||
           pc32 == 0x80079830u))
         return;
 
@@ -6246,6 +6258,15 @@ void maybe_probe_wince_ctx_save_writer(machine_t *m, uc_engine *uc,
         break;
     case 0x800793E0u:
         log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_saved_mask2_clear_store");
+        break;
+    case 0x80079824u:
+        log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_tlb_row_store_w0");
+        break;
+    case 0x80079828u:
+        log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_tlb_row_store_w1");
+        break;
+    case 0x8007982Cu:
+        log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_tlb_row_store_w2");
         break;
     case 0x80079830u:
         log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_tlb_mask_clear_store");
