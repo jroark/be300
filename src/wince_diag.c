@@ -5750,6 +5750,103 @@ static void log_wince_ctxsave_store(machine_t *m, uc_engine *uc,
             (uint32_t)t0, (uint32_t)t1, (uint32_t)t2, (uint32_t)t3);
 }
 
+void maybe_probe_wince_ctx_launch(machine_t *m, uc_engine *uc,
+                                  uint32_t pc32, uint32_t insn)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+
+    bool in_restore_window = (pc32 >= 0x80079640u && pc32 <= 0x800797E4u);
+    bool in_alt_entry_window = (pc32 >= 0x80096800u && pc32 <= 0x8009689Cu);
+    bool in_ctxsave_window = (pc32 >= 0x800792A0u && pc32 <= 0x80079330u);
+    if (!in_restore_window && !in_alt_entry_window && !in_ctxsave_window)
+        return;
+
+    static uint32_t logs = 0;
+    static uint32_t seq = 0;
+    static bool have_prev = false;
+    static uint32_t prev_pc = 0;
+    static uint32_t prev_sp = 0;
+    static uint32_t prev_ra = 0;
+    static bool dumped_ctxsave_ctrl_tail = false;
+    if (logs >= 320u)
+        return;
+
+    uint64_t sp = 0, ra = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    uint64_t v0 = 0, v1 = 0, s0 = 0, s1 = 0, t0 = 0, t1 = 0;
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+    uc_reg_read(uc, UC_MIPS_REG_T1, &t1);
+
+    uint32_t sp32 = (uint32_t)sp;
+    uint32_t ra32 = (uint32_t)ra;
+
+    uint32_t ctx_saved_sp = 0, ctx_saved_ra = 0;
+    uint32_t caller_frame_s0 = 0, caller_frame_ra = 0, caller_frame_poison = 0;
+    uint32_t caller_restore_s0 = 0, caller_restore_ra = 0;
+    uint32_t sp_w0 = 0, sp_w1 = 0;
+    bool ctx_saved_sp_ok = read_guest_u32(uc, 0xA000226Cu, &ctx_saved_sp);
+    bool ctx_saved_ra_ok = read_guest_u32(uc, 0xA0002274u, &ctx_saved_ra);
+    bool caller_frame_s0_ok = read_guest_u32(uc, 0xA0001780u, &caller_frame_s0);
+    bool caller_frame_ra_ok = read_guest_u32(uc, 0xA0001784u, &caller_frame_ra);
+    bool caller_frame_poison_ok = read_guest_u32(uc, 0xA000178Cu, &caller_frame_poison);
+    bool caller_restore_s0_ok = read_guest_u32(uc, 0xA00017B0u, &caller_restore_s0);
+    bool caller_restore_ra_ok = read_guest_u32(uc, 0xA00017B4u, &caller_restore_ra);
+    bool sp_w0_ok = read_guest_u32(uc, sp32, &sp_w0);
+    bool sp_w1_ok = read_guest_u32(uc, sp32 + 4u, &sp_w1);
+
+    const char *tag = in_ctxsave_window ? "ctxsave" :
+                      (in_alt_entry_window ? "alt_entry" : "restore");
+    int32_t d_sp = have_prev ? (int32_t)sp32 - (int32_t)prev_sp : 0;
+    int32_t d_ra = have_prev ? (int32_t)ra32 - (int32_t)prev_ra : 0;
+
+    fprintf(stderr,
+            "[WINCE_CTX_LAUNCH] seq=%u tag=%s pc=0x%08X insn=0x%08X"
+            " prev_pc=0x%08X sp=0x%08X ra=0x%08X dSP=%d dRA=%d"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+            " v0=0x%08X v1=0x%08X s0=0x%08X s1=0x%08X"
+            " t0=0x%08X t1=0x%08X"
+            " ctx_saved=[%s%08X %s%08X]"
+            " caller_frame=[%s%08X %s%08X %s%08X]"
+            " caller_restore=[%s%08X %s%08X]"
+            " sp_w=[%s%08X %s%08X]\n",
+            seq, tag, pc32, insn,
+            have_prev ? prev_pc : 0u, sp32, ra32, d_sp, d_ra,
+            (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+            (uint32_t)v0, (uint32_t)v1, (uint32_t)s0, (uint32_t)s1,
+            (uint32_t)t0, (uint32_t)t1,
+            ctx_saved_sp_ok ? "" : "ERR:", ctx_saved_sp,
+            ctx_saved_ra_ok ? "" : "ERR:", ctx_saved_ra,
+            caller_frame_s0_ok ? "" : "ERR:", caller_frame_s0,
+            caller_frame_ra_ok ? "" : "ERR:", caller_frame_ra,
+            caller_frame_poison_ok ? "" : "ERR:", caller_frame_poison,
+            caller_restore_s0_ok ? "" : "ERR:", caller_restore_s0,
+            caller_restore_ra_ok ? "" : "ERR:", caller_restore_ra,
+            sp_w0_ok ? "" : "ERR:", sp_w0,
+            sp_w1_ok ? "" : "ERR:", sp_w1);
+
+    if (pc32 == 0x800792BCu && !dumped_ctxsave_ctrl_tail) {
+        dumped_ctxsave_ctrl_tail = true;
+        log_wince_ctrl_hist_summary(m, "CTXSAVE_ENTRY", 20u);
+    }
+
+    have_prev = true;
+    prev_pc = pc32;
+    prev_sp = sp32;
+    prev_ra = ra32;
+    logs++;
+    seq++;
+}
+
 void maybe_probe_wince_ctx_save_writer(machine_t *m, uc_engine *uc,
                                        uint32_t pc32, uint32_t insn)
 {
