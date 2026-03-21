@@ -37,6 +37,8 @@ static void usage(const char *prog)
         "                        Experimental: do not replay the caller_frame seed region\n"
         "  --wince-hw-seed-clear-future-frame\n"
         "                        Experimental: after WinCE HW seed, clear PA 0x00001760/64\n"
+        "  --wince-vr4131-tlbr-roundtrip\n"
+        "                        Experimental: preserve raw VR4131 ctx_tlb rows during tlbr save-back\n"
         "  --wince-collapse-double-helper-entry\n"
         "                        Experimental: skip duplicate WinCE helper entry at 0x80096790\n"
         "  --wince-obj-bootstrap Experimental: seed narrow WinCE objptr/header words\n"
@@ -70,6 +72,7 @@ int main(int argc, char *argv[])
         .wince_hw_seed_force_alt_entry_prologue = false,
         .wince_hw_seed_skip_caller_frame = false,
         .wince_hw_seed_clear_future_frame = false,
+        .wince_vr4131_tlbr_roundtrip = false,
         .wince_collapse_double_helper_entry = false,
         .wince_obj_bootstrap = false,
         .trace_user_handoff = false,
@@ -116,6 +119,8 @@ int main(int argc, char *argv[])
             cfg.wince_hw_seed_skip_caller_frame = true;
         } else if (strcmp(argv[i], "--wince-hw-seed-clear-future-frame") == 0) {
             cfg.wince_hw_seed_clear_future_frame = true;
+        } else if (strcmp(argv[i], "--wince-vr4131-tlbr-roundtrip") == 0) {
+            cfg.wince_vr4131_tlbr_roundtrip = true;
         } else if (strcmp(argv[i], "--wince-collapse-double-helper-entry") == 0) {
             cfg.wince_collapse_double_helper_entry = true;
         } else if (strcmp(argv[i], "--wince-obj-bootstrap") == 0) {
