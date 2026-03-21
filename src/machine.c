@@ -3253,7 +3253,15 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 uint32_t idx = (uint32_t)m->shadow_cp0_index & 0x3Fu;
                 uint32_t row_va = 0xA0002000u + (idx * 16u) + ((rd == 3u) ? 4u : 0u);
                 ctx_row_ok = (uc_mem_read(uc, row_va, &ctx_row_word, sizeof(ctx_row_word)) == UC_ERR_OK);
-                if (ctx_row_ok && ctx_row_word == (uint32_t)val)
+                if (rd == 2u &&
+                    m->wince_ctx_entrylo0_last_valid &&
+                    m->wince_ctx_entrylo0_last_pc == 0x80079368u &&
+                    m->wince_ctx_entrylo0_last_val == (uint32_t)val)
+                    skip_fixup = true;
+                if (rd == 3u &&
+                    m->wince_ctx_entrylo1_last_valid &&
+                    m->wince_ctx_entrylo1_last_pc == 0x80079370u &&
+                    m->wince_ctx_entrylo1_last_val == (uint32_t)val)
                     skip_fixup = true;
             }
             uint32_t orig_pfn = ((uint32_t)val >> 6) & 0xFFFFFu;
@@ -3270,14 +3278,21 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                         "[MTC0_PFN_FIXUP] rd=%s rt=$%u pc=0x%08" PRIX64
                         " orig=0x%08" PRIX64 " corrected=0x%08" PRIX64
                         " orig_pfn=0x%05X corrected_pfn=0x%05X flags=0x%02X"
-                        " skip=%u ctx_row=%s0x%08X\n",
+                        " skip=%u ctx_row=%s0x%08X"
+                        " last_ctx=[lo0:%u@0x%08X=0x%08X lo1:%u@0x%08X=0x%08X]\n",
                         cp0_reg_name(rd, sel), rt,
                         (uint64_t)(uint32_t)address,
                         (uint64_t)(uint32_t)val,
                         (uint64_t)(uint32_t)corrected,
                         orig_pfn, (orig_pfn >> 2), flags,
                         skip_fixup ? 1u : 0u,
-                        ctx_row_ok ? "" : "ERR:", ctx_row_word);
+                        ctx_row_ok ? "" : "ERR:", ctx_row_word,
+                        m->wince_ctx_entrylo0_last_valid ? 1u : 0u,
+                        m->wince_ctx_entrylo0_last_pc,
+                        m->wince_ctx_entrylo0_last_val,
+                        m->wince_ctx_entrylo1_last_valid ? 1u : 0u,
+                        m->wince_ctx_entrylo1_last_pc,
+                        m->wince_ctx_entrylo1_last_val);
                 mtc0_pfn_fixup_log++;
             }
             if (skip_fixup)

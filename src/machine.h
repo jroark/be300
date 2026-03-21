@@ -696,6 +696,12 @@ struct machine_s {
     uint64_t shadow_cp0_entryhi_live; /* latest MFC0 EntryHi readback (current ASID hint) */
     uint64_t shadow_cp0_epc;
     bool     shadow_cp0_entryhi_live_valid;
+    bool     wince_ctx_entrylo0_last_valid;
+    bool     wince_ctx_entrylo1_last_valid;
+    uint32_t wince_ctx_entrylo0_last_pc;
+    uint32_t wince_ctx_entrylo1_last_pc;
+    uint32_t wince_ctx_entrylo0_last_val;
+    uint32_t wince_ctx_entrylo1_last_val;
 
     /* Minimal shadow TLB cache captured from tlbwi/tlbwr instructions.
      * Used to resolve kuseg VA->PA at ERET/handoff time when the single

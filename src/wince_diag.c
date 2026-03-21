@@ -1665,6 +1665,23 @@ bool wince_pa_watch_write_hook(uc_engine *uc, uc_mem_type type,
     } else if (pa >= WINCE_TRACE_CTX_PA_START && pa < WINCE_TRACE_CTX_PA_END) {
         wince_pa_watch_update(m, &m->wince_ctx_watch, "ctx2200",
                               pa, pc, (unsigned)size, uval);
+        if ((pa == 0x00002288u || pa == 0x0000228Cu) &&
+            m->cfg.log_wince_stall && m->wince_pa_watch_logs < 240u) {
+            fprintf(stderr,
+                    "[WINCE_CTX_ENTRYLO_WRITE] pa=0x%08X pc=0x%08X size=%u"
+                    " val=0x%016" PRIX64 "\n",
+                    pa, pc, (unsigned)size, uval);
+            m->wince_pa_watch_logs++;
+        }
+        if (pa == 0x00002288u) {
+            m->wince_ctx_entrylo0_last_valid = true;
+            m->wince_ctx_entrylo0_last_pc = pc;
+            m->wince_ctx_entrylo0_last_val = (uint32_t)uval;
+        } else if (pa == 0x0000228Cu) {
+            m->wince_ctx_entrylo1_last_valid = true;
+            m->wince_ctx_entrylo1_last_pc = pc;
+            m->wince_ctx_entrylo1_last_val = (uint32_t)uval;
+        }
     } else if (pa >= WINCE_TRACE_CB_PA_START && pa < WINCE_TRACE_CB_PA_END) {
         bool is_zero = write_value_is_zero((unsigned)size, uval);
         m->wince_cb_writes++;
@@ -6239,6 +6256,9 @@ void maybe_probe_wince_ctx_launch(machine_t *m, uc_engine *uc,
     uint32_t sp_w0 = 0, sp_w1 = 0;
     bool ctx_saved_sp_ok = read_guest_u32(uc, 0xA000226Cu, &ctx_saved_sp);
     bool ctx_saved_ra_ok = read_guest_u32(uc, 0xA0002274u, &ctx_saved_ra);
+    uint32_t ctx_lo0 = 0, ctx_lo1 = 0;
+    bool ctx_lo0_ok = read_guest_u32(uc, 0xA0002288u, &ctx_lo0);
+    bool ctx_lo1_ok = read_guest_u32(uc, 0xA000228Cu, &ctx_lo1);
     bool caller_frame_s0_ok = read_guest_u32(uc, 0xA0001780u, &caller_frame_s0);
     bool caller_frame_ra_ok = read_guest_u32(uc, 0xA0001784u, &caller_frame_ra);
     bool caller_frame_poison_ok = read_guest_u32(uc, 0xA000178Cu, &caller_frame_poison);
@@ -6276,6 +6296,18 @@ void maybe_probe_wince_ctx_launch(machine_t *m, uc_engine *uc,
             caller_restore_ra_ok ? "" : "ERR:", caller_restore_ra,
             sp_w0_ok ? "" : "ERR:", sp_w0,
             sp_w1_ok ? "" : "ERR:", sp_w1);
+
+    if (pc32 >= 0x80079680u && pc32 <= 0x8007968Cu) {
+        fprintf(stderr,
+                "[WINCE_CTX_ENTRYLO_LOAD] pc=0x%08X insn=0x%08X"
+                " t0=0x%08X t1=0x%08X"
+                " ctx_lo=[%s%08X %s%08X] cp0_idx=0x%08X\n",
+                pc32, insn,
+                (uint32_t)t0, (uint32_t)t1,
+                ctx_lo0_ok ? "" : "ERR:", ctx_lo0,
+                ctx_lo1_ok ? "" : "ERR:", ctx_lo1,
+                (uint32_t)m->shadow_cp0_index);
+    }
 
     if (pc32 == 0x800792BCu && !dumped_ctxsave_ctrl_tail) {
         dumped_ctxsave_ctrl_tail = true;
