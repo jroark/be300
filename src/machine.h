@@ -148,7 +148,7 @@ typedef struct {
     uint64_t last_nz_to_zero_new;
 } wince_region_track_t;
 
-#define WINCE_PRODUCER_FAMILY_COUNT 23u
+#define WINCE_PRODUCER_FAMILY_COUNT 24u
 #define WINCE_OBJ_BOOTSTRAP_WORD_COUNT 7u
 typedef struct {
     const char *name;

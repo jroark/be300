@@ -487,6 +487,39 @@ static bool read_guest_va_value_direct(uc_engine *uc, uint32_t va32,
     return true;
 }
 
+static bool decode_wince_lw_effective_va(uc_engine *uc, uint32_t insn_va,
+                                         uint32_t *out_insn,
+                                         uint32_t *out_base_reg,
+                                         uint32_t *out_base_val,
+                                         uint32_t *out_eff_va)
+{
+    uint32_t insn = 0;
+    uint64_t base_val64 = 0;
+    uint32_t base_reg = 0;
+    int16_t imm = 0;
+
+    if (!uc || !out_eff_va)
+        return false;
+    if (!read_guest_u32_direct(uc, insn_va, &insn))
+        return false;
+    if ((insn >> 26) != 0x23u)
+        return false;
+
+    base_reg = (insn >> 21) & 0x1Fu;
+    imm = (int16_t)(insn & 0xFFFFu);
+    if (!wince_read_gpr_by_index(uc, base_reg, &base_val64))
+        return false;
+
+    if (out_insn)
+        *out_insn = insn;
+    if (out_base_reg)
+        *out_base_reg = base_reg;
+    if (out_base_val)
+        *out_base_val = (uint32_t)base_val64;
+    *out_eff_va = (uint32_t)base_val64 + (uint32_t)imm;
+    return true;
+}
+
 static uint32_t fnv1a32_update(uint32_t hash, const void *buf, size_t size)
 {
     const uint8_t *p = buf;
@@ -3410,18 +3443,78 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
             }
         }
 
+        if (pc32 == 0x8009690Cu) {
+            static uint32_t callback_load_logs = 0;
+            if (callback_load_logs < 32u) {
+                uint64_t at = 0, v0 = 0;
+                uint32_t load_va = 0, va_word = 0, pa_word = 0;
+                uint32_t load_insn = 0, load_base_reg = 0, load_base_val = 0;
+                bool load_ok = false, va_ok = false, pa_ok = false;
+                uc_reg_read(uc, UC_MIPS_REG_AT, &at);
+                uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                load_ok = decode_wince_lw_effective_va(uc, pc32, &load_insn,
+                                                       &load_base_reg,
+                                                       &load_base_val,
+                                                       &load_va);
+                if (load_ok) {
+                    va_ok = read_guest_u32(uc, load_va, &va_word);
+                    pa_ok = read_pa_u32_all_aliases(m,
+                                                    load_va & UINT32_C(0x1FFFFFFF),
+                                                    &pa_word);
+                }
+                fprintf(stderr,
+                        "[WINCE_DIV_CALLBACK_LOAD] phase=pre pc=0x%08X"
+                        " sp=0x%08X ra=0x%08X at=0x%08X load_pc=0x%08X"
+                        " load_insn=%s0x%08X base_r=%u base_v=%s0x%08X"
+                        " load_va=%s0x%08X cur_v0=0x%08X va_word=%s0x%08X"
+                        " pa_word=%s0x%08X\n",
+                        pc32, sp32, ra32, (uint32_t)at, pc32,
+                        load_ok ? "" : "ERR:", load_insn,
+                        load_base_reg, load_ok ? "" : "ERR:", load_base_val,
+                        load_ok ? "" : "ERR:", load_va,
+                        (uint32_t)v0,
+                        va_ok ? "" : "ERR:", va_word,
+                        pa_ok ? "" : "ERR:", pa_word);
+                callback_load_logs++;
+            }
+        }
+
         if (pc32 == 0x80096910u) {
             static uint32_t callback_branch_logs = 0;
             if (callback_branch_logs < 32u) {
-                uint64_t v0 = 0;
+                uint64_t at = 0, v0 = 0;
+                uint32_t load_va = 0, va_word = 0, pa_word = 0;
+                uint32_t load_pc = pc32 - 4u, load_insn = 0;
+                uint32_t load_base_reg = 0, load_base_val = 0;
+                bool load_ok = false, va_ok = false, pa_ok = false;
+                uc_reg_read(uc, UC_MIPS_REG_AT, &at);
                 uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+                load_ok = decode_wince_lw_effective_va(uc, load_pc, &load_insn,
+                                                       &load_base_reg,
+                                                       &load_base_val,
+                                                       &load_va);
+                if (load_ok) {
+                    va_ok = read_guest_u32(uc, load_va, &va_word);
+                    pa_ok = read_pa_u32_all_aliases(m,
+                                                    load_va & UINT32_C(0x1FFFFFFF),
+                                                    &pa_word);
+                }
                 wince_div_log_resume_globals(m, uc, "WINCE_DIV_CALLBACK_STATE",
                                              pc32, sp32, ra32);
                 fprintf(stderr,
                         "[WINCE_DIV_CALLBACK_BRANCH] pc=0x%08X sp=0x%08X"
-                        " ra=0x%08X v0=0x%08X beql_taken=%u target=0x80096924\n",
+                        " ra=0x%08X v0=0x%08X beql_taken=%u target=0x80096924"
+                        " at=0x%08X load_pc=0x%08X load_insn=%s0x%08X"
+                        " base_r=%u base_v=%s0x%08X load_va=%s0x%08X"
+                        " va_word=%s0x%08X pa_word=%s0x%08X\n",
                         pc32, sp32, ra32, (uint32_t)v0,
-                        ((uint32_t)v0 == 0u) ? 1u : 0u);
+                        ((uint32_t)v0 == 0u) ? 1u : 0u,
+                        (uint32_t)at, load_pc,
+                        load_ok ? "" : "ERR:", load_insn,
+                        load_base_reg, load_ok ? "" : "ERR:", load_base_val,
+                        load_ok ? "" : "ERR:", load_va,
+                        va_ok ? "" : "ERR:", va_word,
+                        pa_ok ? "" : "ERR:", pa_word);
                 callback_branch_logs++;
             }
         }
@@ -5161,6 +5254,7 @@ enum {
     WINCE_PROD_CALLER_RESTORE_RA,
     WINCE_PROD_OBJ_CB_PAGEPTR,
     WINCE_PROD_OBJ_CB_TARGET,
+    WINCE_PROD_OBJ_CB_STATE,
     WINCE_PROD_OBJ_CB_JALR,
     WINCE_PROD_OBJ_CB_DISPATCH,
     WINCE_PROD_OBJ_SLOT0,
@@ -5187,6 +5281,7 @@ static const wince_producer_desc_t wince_producer_descs[WINCE_PRODUCER_FAMILY_CO
     { "caller_restore_ra", UINT32_C(0x000017B4),        UINT32_C(0x000017B8) },
     { "obj_cb_pageptr", UINT32_C(0x006694D8),           UINT32_C(0x006694DC) },
     { "obj_cb_target", UINT32_C(0x006694EC),            UINT32_C(0x006694F0) },
+    { "obj_cb_state", UINT32_C(0x006694F0),             UINT32_C(0x006694F4) },
     { "obj_cb_jalr", UINT32_C(0x006694F4),              UINT32_C(0x006694F8) },
     { "obj_cb_dispatch", UINT32_C(0x00669510),          UINT32_C(0x00669514) },
     { "obj_slot0",   WINCE_TRACE_OBJ_SLOT0_PA_START,    WINCE_TRACE_OBJ_SLOT0_PA_END },
@@ -6907,6 +7002,29 @@ void log_wince_callback_arm_summary(machine_t *m, uc_engine *uc,
             jalr->total_reads, jalr->total_writes,
             jalr->first_read_valid ? "" : "NONE:", jalr->first_read_pc,
             jalr->first_write_valid ? "" : "NONE:", jalr->first_write_pc);
+}
+
+void log_wince_ctx_saved_summary(machine_t *m, uc_engine *uc,
+                                 const char *reason)
+{
+    if (!m || !uc || !is_wince_boot_machine(m))
+        return;
+
+    const wince_producer_attr_t *ctx_saved = &m->wince_producer[WINCE_PROD_CTX_SAVED_PAIR];
+    uint32_t cur_sp = 0, cur_ra = 0;
+    bool ok_sp = read_pa_u32_all_aliases(m, UINT32_C(0x0000226C), &cur_sp);
+    bool ok_ra = read_pa_u32_all_aliases(m, UINT32_C(0x00002274), &cur_ra);
+
+    fprintf(stderr,
+            "[WINCE_CTX_SAVED_SUMMARY] reason=%s"
+            " cur_226C=%s0x%08X cur_2274=%s0x%08X"
+            " reads=%u writes=%u first_read=%s0x%08X first_write=%s0x%08X\n",
+            reason,
+            ok_sp ? "" : "ERR:", cur_sp,
+            ok_ra ? "" : "ERR:", cur_ra,
+            ctx_saved->total_reads, ctx_saved->total_writes,
+            ctx_saved->first_read_valid ? "" : "NONE:", ctx_saved->first_read_pc,
+            ctx_saved->first_write_valid ? "" : "NONE:", ctx_saved->first_write_pc);
 }
 
 void log_wince_future_frame_summary(machine_t *m, uc_engine *uc,
