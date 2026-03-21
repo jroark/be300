@@ -4438,6 +4438,37 @@ skip_entrylo_fixup:
  * (SYSCALL) when we are in an active SYSCALL entry.
  */
 
+/*
+ * Route a user-space exception to the kernel general exception vector.
+ * Sets EXL, redirects PC to 0x80000180, and sets up synthetic EPC/Cause
+ * so the kernel exception handler can dispatch it.
+ */
+static void route_user_exception_to_kernel(machine_t *m, uc_engine *uc,
+                                           uint32_t intno,
+                                           uint64_t user_pc, uint64_t status)
+{
+    uint64_t exc_status = status | 0x2u;  /* set EXL */
+    uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exc_status);
+    uint64_t exc_vec = mips_sext(0x80000180u);
+    uc_reg_write(uc, UC_MIPS_REG_PC, &exc_vec);
+
+    m->pending_epc = user_pc;
+    m->pending_excode = 10u;  /* RI (Reserved Instruction) — approximate */
+    m->pending_cause = (uint32_t)(10u << 2);
+    m->epc_was_written = false;
+    m->pending_cause_served = false;
+    m->pending_epc_served = false;
+
+    static uint32_t user_exc_log = 0;
+    if (user_exc_log < 64) {
+        fprintf(stderr,
+                "[USER_EXCEPTION] intno=%u pc=0x%08" PRIX64
+                " -> exception vector 0x80000180\n",
+                intno, (uint64_t)(uint32_t)user_pc);
+        user_exc_log++;
+    }
+}
+
 static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
 {
     machine_t *m = user_data;
@@ -4613,6 +4644,34 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
                                     (uint64_t)(uint32_t)next_pc);
                             handoff_skip_nop_log++;
                         }
+                    } else if (intno == 12u && handoff_insn != 0xFFFFFFFFu &&
+                               handoff_insn != 0u) {
+                        /*
+                         * Real instruction that emulate_load_at_pc can't handle
+                         * and isn't a zero-word gap.  Route to the kernel
+                         * exception handler — this is the same intno=12 event
+                         * that the normal user-exception path handles; the
+                         * quarantine was just swallowing it.
+                         */
+                        static uint32_t stuck_log = 0;
+                        if (stuck_log < 16) {
+                            fprintf(stderr,
+                                    "[HANDOFF_STUCK_INSN] pc=0x%08X insn=0x%08X op=%u\n",
+                                    (uint32_t)restore_pc, handoff_insn,
+                                    handoff_insn >> 26);
+                            stuck_log++;
+                        }
+
+                        /* Re-read status since we overwrote it with user_status above */
+                        uint64_t cur_status;
+                        uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &cur_status);
+                        route_user_exception_to_kernel(m, uc, intno,
+                                                      restore_pc, cur_status);
+
+                        /* Disable handoff FSM — we're done */
+                        m->execve_user_handoff_state = 0;
+                        m->execve_user_handoff_active = false;
+                        return;
                     }
                 }
             }
@@ -4655,27 +4714,7 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
      * Set EPC = current PC, EXL = 1, redirect to general exception vector.
      */
     if ((uint32_t)pc < 0x80000000u && intno == 12u) {
-        uint64_t user_epc = pc;
-        uint64_t exc_status = status | 0x2u;  /* set EXL */
-        uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exc_status);
-        /* Store EPC for the kernel handler */
-        uint64_t exc_vec = 0x80000180u;
-        uc_reg_write(uc, UC_MIPS_REG_PC, &exc_vec);
-        static uint32_t user_exc_log = 0;
-        if (user_exc_log < 64) {
-            fprintf(stderr,
-                    "[USER_EXCEPTION] intno=%u pc=0x%08" PRIX64
-                    " -> exception vector 0x80000180\n",
-                    intno, (uint64_t)(uint32_t)pc);
-            user_exc_log++;
-        }
-        /* Set synthetic exception state so the kernel can read EPC/Cause */
-        m->pending_epc = user_epc;
-        m->pending_excode = 10u;  /* RI (Reserved Instruction) — approximate */
-        m->pending_cause = (uint32_t)(10u << 2);
-        m->epc_was_written = false;
-        m->pending_cause_served = false;
-        m->pending_epc_served = false;
+        route_user_exception_to_kernel(m, uc, intno, pc, status);
         return;
     }
 
