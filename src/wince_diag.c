@@ -4027,6 +4027,107 @@ static void log_wince_ctx_tlb_slot_state(machine_t *m,
             slot_ok[3] ? "" : "ERR:", slot_words[3]);
 }
 
+static void log_wince_ctx_row_setup(machine_t *m, uc_engine *uc,
+                                    uint32_t pc32, uint32_t insn,
+                                    uint32_t op, uint32_t rs,
+                                    uint32_t rt, uint32_t rd, uint32_t sel)
+{
+    static uint32_t logs = 0;
+    static bool have_prev = false;
+    static uint32_t prev_pc = 0;
+    static uint32_t prev_a0 = 0, prev_a1 = 0;
+    static uint32_t prev_t0 = 0, prev_t1 = 0, prev_t2 = 0, prev_t3 = 0;
+
+    if (logs >= 96u)
+        return;
+
+    uint64_t ra = 0, sp = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    uint64_t v0 = 0, v1 = 0, s0 = 0, s1 = 0;
+    uint64_t t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+    uint64_t status = 0;
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+    uc_reg_read(uc, UC_MIPS_REG_T1, &t1);
+    uc_reg_read(uc, UC_MIPS_REG_T2, &t2);
+    uc_reg_read(uc, UC_MIPS_REG_T3, &t3);
+    uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status);
+
+    uint32_t row[4] = {0, 0, 0, 0};
+    bool row_ok[4] = {false, false, false, false};
+    uint32_t a0_32 = (uint32_t)a0;
+    if ((a0_32 & 0xFFFFF000u) == 0xA0002000u) {
+        row_ok[0] = read_guest_u32(uc, a0_32 + 0u, &row[0]);
+        row_ok[1] = read_guest_u32(uc, a0_32 + 4u, &row[1]);
+        row_ok[2] = read_guest_u32(uc, a0_32 + 8u, &row[2]);
+        row_ok[3] = read_guest_u32(uc, a0_32 + 12u, &row[3]);
+    }
+
+    fprintf(stderr,
+            "[WINCE_CTX_ROW_SETUP] pc=0x%08X insn=0x%08X"
+            " op=0x%02X rs=%u rt=%u rd=%u sel=%u funct=0x%02X"
+            " prev_pc=0x%08X"
+            " ra=0x%08X sp=0x%08X"
+            " a=[0x%08X 0x%08X 0x%08X 0x%08X]"
+            " v=[0x%08X 0x%08X] s=[0x%08X 0x%08X]"
+            " t=[0x%08X 0x%08X 0x%08X 0x%08X]"
+            " prev_t=[0x%08X 0x%08X 0x%08X 0x%08X]"
+            " prev_a=[0x%08X 0x%08X] status=0x%08X"
+            " cp0=[idx=0x%08X lo0=0x%08X lo1=0x%08X"
+            " hi=0x%08X mask=0x%08X ctx=0x%08X hi_live=%s0x%08X]"
+            " readback=[pending=%u rt=%u rd=%u sel=%u next_pc=0x%08X]"
+            " row=[%s0x%08X %s0x%08X %s0x%08X %s0x%08X]\n",
+            pc32, insn,
+            op, rs, rt, rd, sel, insn & 0x3Fu,
+            have_prev ? prev_pc : 0u,
+            (uint32_t)ra, (uint32_t)sp,
+            (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+            (uint32_t)v0, (uint32_t)v1, (uint32_t)s0, (uint32_t)s1,
+            (uint32_t)t0, (uint32_t)t1, (uint32_t)t2, (uint32_t)t3,
+            have_prev ? prev_t0 : 0u,
+            have_prev ? prev_t1 : 0u,
+            have_prev ? prev_t2 : 0u,
+            have_prev ? prev_t3 : 0u,
+            have_prev ? prev_a0 : 0u,
+            have_prev ? prev_a1 : 0u,
+            (uint32_t)status,
+            (uint32_t)m->shadow_cp0_index,
+            (uint32_t)m->shadow_cp0_entrylo0,
+            (uint32_t)m->shadow_cp0_entrylo1,
+            (uint32_t)m->shadow_cp0_entryhi,
+            (uint32_t)m->shadow_cp0_pagemask,
+            (uint32_t)m->shadow_cp0_context,
+            m->shadow_cp0_entryhi_live_valid ? "" : "ERR:",
+            (uint32_t)m->shadow_cp0_entryhi_live,
+            m->cp0_readback_pending ? 1u : 0u,
+            (unsigned)m->cp0_readback_rt,
+            (unsigned)m->cp0_readback_rd,
+            (unsigned)m->cp0_readback_sel,
+            (uint32_t)m->cp0_readback_next_pc,
+            row_ok[0] ? "" : "ERR:", row[0],
+            row_ok[1] ? "" : "ERR:", row[1],
+            row_ok[2] ? "" : "ERR:", row[2],
+            row_ok[3] ? "" : "ERR:", row[3]);
+
+    prev_pc = pc32;
+    prev_a0 = (uint32_t)a0;
+    prev_a1 = (uint32_t)a1;
+    prev_t0 = (uint32_t)t0;
+    prev_t1 = (uint32_t)t1;
+    prev_t2 = (uint32_t)t2;
+    prev_t3 = (uint32_t)t3;
+    have_prev = true;
+    logs++;
+}
+
 static bool decode_branch_decision(uc_engine *uc, uint32_t pc32, uint32_t insn,
                                    uint32_t op, uint32_t rs, uint32_t rt,
                                    bool *taken_out, uint32_t *target_out,
@@ -4104,12 +4205,20 @@ void maybe_probe_wince_ctx_path(machine_t *m, uc_engine *uc,
     const char *tlb_tag = wince_ctx_tlb_loop_tag(pc32);
     bool is_key = (tag != NULL);
     bool is_tlb_key = (tlb_tag != NULL);
+    bool is_row_setup = (pc32 >= 0x80079800u && pc32 <= 0x80079830u);
     bool is_branch = (op == 0x01u || op == 0x04u || op == 0x05u ||
                       op == 0x06u || op == 0x07u);
     bool is_mtc0_status = (op == 0x10u && rs == 0x04u && rd == 12u && sel == 0u);
 
-    if (!is_key && !is_tlb_key && !is_branch && !is_mtc0_status)
+    if (!is_key && !is_tlb_key && !is_row_setup && !is_branch && !is_mtc0_status)
         return;
+
+    if (is_row_setup) {
+        log_wince_ctx_row_setup(m, uc, pc32, insn, op, rs, rt, rd, sel);
+        m->wince_ctx_probe_logs++;
+        if (m->wince_ctx_probe_logs >= 1024u)
+            return;
+    }
 
     if (is_tlb_key) {
         static uint32_t tlb_table_overview_logs = 0;
