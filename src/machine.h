@@ -321,6 +321,9 @@ typedef struct {
     uint64_t last_hook_seq;
     uint32_t last_pc;
     uint32_t last_sp;
+    uint32_t callback_target_pc;
+    uint32_t callback_window_start;
+    uint32_t callback_window_end;
     uint32_t callback_entry_pc;
     uint32_t callback_entry_ra;
     uint32_t callback_entry_sp;
