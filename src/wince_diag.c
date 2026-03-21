@@ -5694,6 +5694,129 @@ static void log_wince_late_writer_store(machine_t *m, uc_engine *uc, bool *seen_
             (uint32_t)v0, (uint32_t)v1);
 }
 
+static void log_wince_ctxsave_store(machine_t *m, uc_engine *uc,
+                                    uint32_t pc32, uint32_t insn,
+                                    const char *note)
+{
+    if (!m || !uc)
+        return;
+
+    uint32_t opcode = (insn >> 26) & 0x3Fu;
+    if (opcode != 0x28u && opcode != 0x29u &&
+        opcode != 0x2Au && opcode != 0x2Bu)
+        return;
+
+    uint32_t rs_idx = (insn >> 21) & 0x1Fu;
+    uint32_t rt_idx = (insn >> 16) & 0x1Fu;
+    int32_t imm = (int32_t)(int16_t)(insn & 0xFFFFu);
+    uint64_t rs_val = 0, rt_val = 0;
+    uint64_t ra = 0, sp = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    uint64_t v0 = 0, v1 = 0, s0 = 0, s1 = 0, t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+
+    wince_read_gpr_by_index(uc, rs_idx, &rs_val);
+    wince_read_gpr_by_index(uc, rt_idx, &rt_val);
+    uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+    uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+    uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+    uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+    uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+    uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+    uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+    uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+    uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+    uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+    uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+    uc_reg_read(uc, UC_MIPS_REG_T1, &t1);
+    uc_reg_read(uc, UC_MIPS_REG_T2, &t2);
+    uc_reg_read(uc, UC_MIPS_REG_T3, &t3);
+
+    uint32_t target_va = (uint32_t)rs_val + (uint32_t)imm;
+    uint32_t target_pa = target_va & UINT32_C(0x1FFFFFFF);
+
+    fprintf(stderr,
+            "[WINCE_CTXSAVE_STORE] pc=0x%08X insn=0x%08X note=%s"
+            " rs=%u rt=%u base=0x%08X val=0x%08X"
+            " target_va=0x%08X target_pa=0x%08X"
+            " ra=0x%08X sp=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+            " v0=0x%08X v1=0x%08X s0=0x%08X s1=0x%08X"
+            " t0=0x%08X t1=0x%08X t2=0x%08X t3=0x%08X\n",
+            pc32, insn, note,
+            rs_idx, rt_idx, (uint32_t)rs_val, (uint32_t)rt_val,
+            target_va, target_pa,
+            (uint32_t)ra, (uint32_t)sp,
+            (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+            (uint32_t)v0, (uint32_t)v1, (uint32_t)s0, (uint32_t)s1,
+            (uint32_t)t0, (uint32_t)t1, (uint32_t)t2, (uint32_t)t3);
+}
+
+void maybe_probe_wince_ctx_save_writer(machine_t *m, uc_engine *uc,
+                                       uint32_t pc32, uint32_t insn)
+{
+    if (!is_wince_boot_machine(m) || !m->cfg.log_wince_stall)
+        return;
+    if (pc32 < 0x800792BCu || pc32 > 0x80079330u)
+        return;
+
+    static uint32_t ctxsave_logs = 0;
+    if (ctxsave_logs < 96u) {
+        uint64_t ra = 0, sp = 0, a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+        uint64_t v0 = 0, v1 = 0, s0 = 0, s1 = 0, t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+        uc_reg_read(uc, UC_MIPS_REG_RA, &ra);
+        uc_reg_read(uc, UC_MIPS_REG_SP, &sp);
+        uc_reg_read(uc, UC_MIPS_REG_A0, &a0);
+        uc_reg_read(uc, UC_MIPS_REG_A1, &a1);
+        uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
+        uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
+        uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
+        uc_reg_read(uc, UC_MIPS_REG_V1, &v1);
+        uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+        uc_reg_read(uc, UC_MIPS_REG_S1, &s1);
+        uc_reg_read(uc, UC_MIPS_REG_T0, &t0);
+        uc_reg_read(uc, UC_MIPS_REG_T1, &t1);
+        uc_reg_read(uc, UC_MIPS_REG_T2, &t2);
+        uc_reg_read(uc, UC_MIPS_REG_T3, &t3);
+        fprintf(stderr,
+                "[WINCE_CTXSAVE_STEP] pc=0x%08X insn=0x%08X"
+                " ra=0x%08X sp=0x%08X"
+                " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+                " v0=0x%08X v1=0x%08X s0=0x%08X s1=0x%08X"
+                " t0=0x%08X t1=0x%08X t2=0x%08X t3=0x%08X\n",
+                pc32, insn,
+                (uint32_t)ra, (uint32_t)sp,
+                (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+                (uint32_t)v0, (uint32_t)v1, (uint32_t)s0, (uint32_t)s1,
+                (uint32_t)t0, (uint32_t)t1, (uint32_t)t2, (uint32_t)t3);
+        ctxsave_logs++;
+    }
+
+    switch (pc32) {
+    case 0x80079328u:
+        log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_saved_sp_store");
+        break;
+    case 0x80079330u:
+        log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_saved_ra_store");
+        break;
+    case 0x800792BCu:
+        log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_w0_store");
+        break;
+    case 0x800792C8u:
+        log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_w3_store");
+        break;
+    case 0x800792D0u:
+        log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_w5_store");
+        break;
+    case 0x800792F8u:
+        log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_s1_store");
+        break;
+    case 0x8007931Cu:
+        log_wince_ctxsave_store(m, uc, pc32, insn, "ctx_obj_dispatch_store");
+        break;
+    default:
+        break;
+    }
+}
+
 void maybe_probe_wince_obj_late_writer(machine_t *m, uc_engine *uc,
                                        uint32_t pc32, uint32_t insn)
 {
