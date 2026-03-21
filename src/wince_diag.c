@@ -2722,15 +2722,48 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
             static uint32_t helper_restore_ra_logs = 0;
             if (m->cfg.log_wince_stall && helper_restore_ra_logs < 32u) {
                 uint32_t saved_ra = 0;
+                uint32_t expected_s0 = 0;
+                uint32_t expected_ra = 0;
+                uint32_t current_s0 = 0;
+                uint32_t current_ra = 0;
                 uint64_t cur_s0 = 0;
                 bool saved_ra_ok = (uc_mem_read(uc, mips_sext(sp32 + 0x1Cu), &saved_ra, 4) == UC_ERR_OK);
+                bool expected_s0_ok = false;
+                bool expected_ra_ok = false;
+                bool current_s0_ok = (uc_mem_read(uc, mips_sext(sp32 + 0x18u), &current_s0, 4) == UC_ERR_OK);
+                bool current_ra_ok = saved_ra_ok;
                 uc_reg_read(uc, UC_MIPS_REG_S0, &cur_s0);
+                if (t->callback_entry_sp != 0u) {
+                    expected_s0_ok = (uc_mem_read(uc, mips_sext(t->callback_entry_sp + 0x18u),
+                                                  &expected_s0, 4) == UC_ERR_OK);
+                    expected_ra_ok = (uc_mem_read(uc, mips_sext(t->callback_entry_sp + 0x1Cu),
+                                                  &expected_ra, 4) == UC_ERR_OK);
+                    current_ra = saved_ra;
+                }
                 fprintf(stderr,
                         "[WINCE_DIV_HELPER_RESTORE_RA] pc=0x%08X sp=0x%08X ra=0x%08X"
                         " saved_ra=[sp+0x1C]=%s0x%08X current_s0=0x%08X\n",
                         pc32, sp32, ra32,
                         saved_ra_ok ? "" : "ERR:", saved_ra,
                         (uint32_t)cur_s0);
+                if (t->callback_entry_sp != 0u) {
+                    int32_t frame_delta = (int32_t)((int32_t)sp32 - (int32_t)t->callback_entry_sp);
+                    fprintf(stderr,
+                            "[WINCE_DIV_HELPER_ALIAS] pc=0x%08X callback_target=0x%08X"
+                            " entry_sp=0x%08X current_sp=0x%08X delta=%d"
+                            " expected_s0=[entry+0x18]=%s0x%08X"
+                            " expected_ra=[entry+0x1C]=%s0x%08X"
+                            " current_s0=[sp+0x18]=%s0x%08X"
+                            " current_ra=[sp+0x1C]=%s0x%08X"
+                            " shifted=%s\n",
+                            pc32, t->callback_target_pc,
+                            t->callback_entry_sp, sp32, frame_delta,
+                            expected_s0_ok ? "" : "ERR:", expected_s0,
+                            expected_ra_ok ? "" : "ERR:", expected_ra,
+                            current_s0_ok ? "" : "ERR:", current_s0,
+                            current_ra_ok ? "" : "ERR:", current_ra,
+                            (frame_delta == 0) ? "no" : "yes");
+                }
                 helper_restore_ra_logs++;
             }
         }
