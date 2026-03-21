@@ -175,5 +175,7 @@ void log_wince_obj_bootstrap_summary(const machine_t *m, const char *reason);
 void log_wince_delay_call_summary(const machine_t *m, const char *reason);
 void log_wince_resume_global_summary(const machine_t *m, uc_engine *uc,
                                      const char *reason);
+void log_wince_callback_arm_summary(machine_t *m, uc_engine *uc,
+                                    const char *reason);
 void log_wince_midbody_9c_state(machine_t *m, uc_engine *uc,
                                 const char *reason, uint32_t pc_hint);
