@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed8"
+#define BEDIAG_BUILD_TAG         "hwseed9"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -94,6 +94,7 @@ static bediag_region_t g_regions[] = {
 };
 
 static bediag_vregion_t g_vregions[] = {
+    { "callback_target_page", 0x00016000u, 0x1000u, TRUE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "user_obj_page", 0x0818F000u, 0x1000u, TRUE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
 };
 
@@ -117,12 +118,12 @@ static const focus_word_t g_focus_words[] = {
     { 0x00001AC0u, "ctxhi_1ac0" },
     { 0x00001AC4u, "ctxhi_1ac4" },
     { 0x00001AC8u, "ctxhi_1ac8" },
-    { 0x000116B0u, "callback_16b0" },
-    { 0x000116B4u, "callback_16b4" },
-    { 0x000116B8u, "callback_16b8" },
-    { 0x000116BCu, "callback_16bc" },
-    { 0x000116C0u, "callback_16c0" },
-    { 0x000116C4u, "callback_16c4" },
+    { 0x000116B0u, "callback_old_16b0" },
+    { 0x000116B4u, "callback_old_16b4" },
+    { 0x000116B8u, "callback_old_16b8" },
+    { 0x000116BCu, "callback_old_16bc" },
+    { 0x000116C0u, "callback_old_16c0" },
+    { 0x000116C4u, "callback_old_16c4" },
     { 0x00660000u, "objptr_0000" },
     { 0x0066BFC0u, "objhdr_bfc0" },
     { 0x0066BFC4u, "objhdr_bfc4" },
@@ -141,6 +142,12 @@ static const focus_word_t g_focus_words[] = {
 };
 
 static const focus_word_t g_virtual_focus_words[] = {
+    { 0x000162A0u, "callback_62a0" },
+    { 0x000162A4u, "callback_62a4" },
+    { 0x000162A8u, "callback_62a8" },
+    { 0x000162ACu, "callback_62ac" },
+    { 0x000162B0u, "callback_62b0" },
+    { 0x000162B4u, "callback_62b4" },
     { 0x0818FB68u, "userobj_fb68" },
     { 0x0818FC20u, "userobj_fc20" },
     { 0x0818FE20u, "userobj_fe20" },
@@ -151,6 +158,7 @@ static const focus_word_t g_virtual_focus_words[] = {
 };
 
 static const tlb_query_t g_tlb_queries[] = {
+    { 0x00016000u, "callback_target_page" },
     { 0x0818F000u, "user_obj_page" },
     { 0xFFFFD000u, "helper_high_page" }
 };

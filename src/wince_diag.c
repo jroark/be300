@@ -1931,18 +1931,29 @@ static void wince_div_prearm_step_log(machine_t *m, uc_engine *uc,
     prearm_logs++;
 }
 
-static void wince_div_dump_callback_window(machine_t *m, uc_engine *uc)
+static void wince_div_dump_callback_window(machine_t *m, uc_engine *uc,
+                                           uint32_t target_va)
 {
     static bool dumped = false;
+    uint32_t start_va;
+    uint32_t end_va;
     uint32_t va;
 
     (void)m;
 
-    if (dumped || !uc)
+    if (dumped || !uc || target_va == 0u)
         return;
     dumped = true;
 
-    for (va = UINT32_C(0x00011680); va < UINT32_C(0x00011740); va += 4u) {
+    start_va = target_va & UINT32_C(0xFFFFF000);
+    end_va = start_va + UINT32_C(0x0100);
+    if (target_va >= start_va + UINT32_C(0x40))
+        start_va = target_va - UINT32_C(0x40);
+    if (end_va < target_va + UINT32_C(0x80))
+        end_va = target_va + UINT32_C(0x80);
+    if (end_va > ((target_va & UINT32_C(0xFFFFF000)) + UINT32_C(0x1000)))
+        end_va = (target_va & UINT32_C(0xFFFFF000)) + UINT32_C(0x1000);
+    for (va = start_va; va < end_va; va += 4u) {
         uint32_t word = 0;
         uc_err err = uc_mem_read(uc, (uint64_t)va, &word, sizeof(word));
         fprintf(stderr,
@@ -2063,11 +2074,14 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
     wince_div_call_trace_t *t = &m->wince_div_call_trace;
     bool arm_site = (pc32 == 0x80096900u && insn == 0x0C0259E4u);
     bool caller_body_pc = (pc32 >= 0x800967FCu && pc32 <= 0x8009692Cu);
-    bool callback_window_pc = (pc32 >= 0x000116B0u && pc32 <= 0x00011740u);
+    bool callback_window_pc =
+        (t->callback_window_start != 0u &&
+         pc32 >= t->callback_window_start &&
+         pc32 < t->callback_window_end);
     bool helper_body_pc =
         ((pc32 >= 0x80096790u && pc32 <= 0x800967F4u) ||
          pc32 == 0x8008B0ACu ||
-         pc32 == 0x000116B0u);
+         (t->callback_target_pc != 0u && pc32 == t->callback_target_pc));
     bool upstream_pc =
         (pc32 >= 0x80079640u && pc32 <= 0x80079894u) ||
         (pc32 >= 0x8007A640u && pc32 <= 0x8007A780u) ||
@@ -2109,6 +2123,9 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
         t->last_valid = false;
         t->last_pc = 0u;
         t->last_sp = 0u;
+        t->callback_target_pc = 0u;
+        t->callback_window_start = 0u;
+        t->callback_window_end = 0u;
         wince_div_stack_watch_arm(m, uc, t->call_pc, t->sp_before_call);
 
         if (m->wince_div_logs < 224u) {
@@ -2184,7 +2201,10 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
         }
     }
 
-    if (pc32 == 0x000116B0u && ra32 == 0x800967DCu && !t->callback_active) {
+    if (t->callback_target_pc != 0u &&
+        pc32 == t->callback_target_pc &&
+        ra32 == 0x800967DCu &&
+        !t->callback_active) {
         t->callback_active = true;
         t->callback_completed = false;
         t->callback_entry_pc = pc32;
@@ -2200,7 +2220,7 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
         t->callback_sp_drift = 0;
 
         if (m->cfg.log_wince_stall) {
-            wince_div_dump_callback_window(m, uc);
+            wince_div_dump_callback_window(m, uc, t->callback_target_pc);
             wince_div_log_callback_frame(m, uc,
                                          "WINCE_DIV_CALLBACK_FRAME_ENTRY",
                                          pc32, sp32, ra32, sp32);
@@ -2580,19 +2600,25 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                 uc_reg_read(uc, UC_MIPS_REG_A2, &a2);
                 uc_reg_read(uc, UC_MIPS_REG_A3, &a3);
                 uc_reg_read(uc, UC_MIPS_REG_S0, &s0);
+                t->callback_target_pc = (uint32_t)a3;
+                t->callback_window_start = ((uint32_t)a3) & UINT32_C(0xFFFFF000);
+                t->callback_window_end = t->callback_window_start + UINT32_C(0x1000);
                 fprintf(stderr,
                         "[WINCE_DIV_HELPER_JALR_A3] pc=0x%08X sp=0x%08X ra=0x%08X"
                         " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3(target)=0x%08X"
-                        " ret_after_jalr=0x800967DC\n",
+                        " ret_after_jalr=0x800967DC"
+                        " callback_page=0x%08X\n",
                         pc32, sp32, ra32, (uint32_t)s0,
-                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3);
+                        (uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+                        t->callback_window_start);
                 wince_div_log_obj_exec_slots(m, uc, "WINCE_DIV_HELPER_JALR_A3_OBJ",
                                              pc32, sp32, ra32);
+                wince_div_dump_callback_window(m, uc, t->callback_target_pc);
                 helper_jalr_logs++;
             }
         }
 
-        if (pc32 == 0x000116B0u) {
+        if (t->callback_target_pc != 0u && pc32 == t->callback_target_pc) {
             static uint32_t callback_entry_logs = 0;
             if (m->cfg.log_wince_stall && callback_entry_logs < 32u) {
                 uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, s0 = 0, v0 = 0;
@@ -2604,10 +2630,11 @@ void wince_div_call_trace_step(machine_t *m, uc_engine *uc, uint32_t pc32, uint3
                 uc_reg_read(uc, UC_MIPS_REG_V0, &v0);
                 fprintf(stderr,
                         "[WINCE_DIV_HELPER_CALLBACK_ENTRY] pc=0x%08X sp=0x%08X ra=0x%08X"
-                        " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X v0=0x%08X\n",
+                        " s0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X v0=0x%08X"
+                        " callback_page=0x%08X\n",
                         pc32, sp32, ra32, (uint32_t)s0,
                         (uint32_t)a0, (uint32_t)a1, (uint32_t)a2,
-                        (uint32_t)a3, (uint32_t)v0);
+                        (uint32_t)a3, (uint32_t)v0, t->callback_window_start);
                 callback_entry_logs++;
             }
         }
@@ -3315,6 +3342,7 @@ void log_wince_div_call_trace_summary(const machine_t *m, const char *reason)
             " arm_hook_seq=%llu first_target_hook_seq=%llu"
             " second_target_hook_seq=%llu last_hook_seq=%llu"
             " callback_active=%u callback_completed=%u"
+            " callback_target=0x%08X callback_page=0x%08X"
             " callback_entry=0x%08X callback_return=0x%08X"
             " callback_entry_ra=0x%08X callback_return_ra=0x%08X"
             " callback_sp_entry=0x%08X callback_sp_return=0x%08X"
@@ -3332,6 +3360,7 @@ void log_wince_div_call_trace_summary(const machine_t *m, const char *reason)
             (unsigned long long)t->second_target_hook_seq,
             (unsigned long long)t->last_hook_seq,
             t->callback_active ? 1u : 0u, t->callback_completed ? 1u : 0u,
+            t->callback_target_pc, t->callback_window_start,
             t->callback_entry_pc, t->callback_return_pc,
             t->callback_entry_ra, t->callback_return_ra,
             t->callback_entry_sp, t->callback_sp_at_return,
