@@ -176,42 +176,43 @@ static const WCHAR *g_file_roots[] = {
     L"\\"
 };
 
-extern "C" void ReadTlbEntryAsm(DWORD index, DWORD *out_words);
+static void Logf(const char *fmt, ...);
 
-__asm(
-    ".set noreorder;"
-    ".globl ReadTlbEntryAsm;"
-    "ReadTlbEntryAsm:"
-    "mfc0 t4, $0;"
-    "mfc0 t5, $2;"
-    "mfc0 t6, $3;"
-    "mfc0 t7, $5;"
-    "mfc0 t8, $10;"
-    "mtc0 a0, $0;"
-    "nop;"
-    "nop;"
-    "tlbr;"
-    "nop;"
-    "nop;"
-    "mfc0 t0, $2;"
-    "mfc0 t1, $3;"
-    "mfc0 t2, $5;"
-    "mfc0 t3, $10;"
-    "sw t0, 0(a1);"
-    "sw t1, 4(a1);"
-    "sw t2, 8(a1);"
-    "sw t3, 12(a1);"
-    "mtc0 t4, $0;"
-    "mtc0 t5, $2;"
-    "mtc0 t6, $3;"
-    "mtc0 t7, $5;"
-    "mtc0 t8, $10;"
-    "nop;"
-    "nop;"
-    "jr ra;"
-    "nop;"
-    ".set reorder;"
-);
+static void ReadTlbEntryAsm(DWORD index, DWORD *out_words)
+{
+    (void)index;
+    (void)out_words;
+    __asm(
+        ".set noreorder;"
+        "mfc0 t4, $0;"
+        "mfc0 t5, $2;"
+        "mfc0 t6, $3;"
+        "mfc0 t7, $5;"
+        "mfc0 t8, $10;"
+        "mtc0 a0, $0;"
+        "nop;"
+        "nop;"
+        "tlbr;"
+        "nop;"
+        "nop;"
+        "mfc0 t0, $2;"
+        "mfc0 t1, $3;"
+        "mfc0 t2, $5;"
+        "mfc0 t3, $10;"
+        "sw t0, 0(a1);"
+        "sw t1, 4(a1);"
+        "sw t2, 8(a1);"
+        "sw t3, 12(a1);"
+        "mtc0 t4, $0;"
+        "mtc0 t5, $2;"
+        "mtc0 t6, $3;"
+        "mtc0 t7, $5;"
+        "mtc0 t8, $10;"
+        "nop;"
+        "nop;"
+        ".set reorder;"
+    );
+}
 
 static void CopyWide(WCHAR *dst, DWORD dst_cch, const WCHAR *src)
 {
