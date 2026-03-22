@@ -1868,16 +1868,28 @@ void mips_cpu_exception(struct cpu *cpu, int exccode, int tlb, uint64_t vaddr,
 			reg[COP0_ENTRYHI] = (int64_t)(int32_t)reg[COP0_ENTRYHI];
 		} else {
 			if (cpu->cd.mips.cpu_type.rev == MIPS_R4100) {
+				/*
+				 *  VR41xx: Context.BadVPN2 always uses
+				 *  the CPU's minimum page granularity
+				 *  (1KB, shift=11), independent of any
+				 *  TLB entry's PageMask.  Recompute from
+				 *  vaddr directly — the vaddr_vpn2 from
+				 *  the TLB scan was derived from per-entry
+				 *  masks and is wrong for Context when
+				 *  entries use non-minimum page sizes
+				 *  (e.g. PM_4K = 0x1800 on VR41xx).
+				 */
+				uint64_t r4100_vpn2 = vaddr >>
+				    PAGEMASK_SHIFT_R4100;
 				reg[COP0_CONTEXT] &=
 				    ~CONTEXT_BADVPN2_MASK_R4100;
-				reg[COP0_CONTEXT] |= ((vaddr_vpn2 <<
+				reg[COP0_CONTEXT] |= ((r4100_vpn2 <<
 				    CONTEXT_BADVPN2_SHIFT) &
 				    CONTEXT_BADVPN2_MASK_R4100);
 
-				/*  TODO:  fix these  */
 				reg[COP0_XCONTEXT] &= ~XCONTEXT_R_MASK;
 				reg[COP0_XCONTEXT] &= ~XCONTEXT_BADVPN2_MASK;
-				reg[COP0_XCONTEXT] |= (vaddr_vpn2 << XCONTEXT_BADVPN2_SHIFT) & XCONTEXT_BADVPN2_MASK;
+				reg[COP0_XCONTEXT] |= (r4100_vpn2 << XCONTEXT_BADVPN2_SHIFT) & XCONTEXT_BADVPN2_MASK;
 				reg[COP0_XCONTEXT] |= ((vaddr >> 62) & 0x3) << XCONTEXT_R_SHIFT;
 
 				/*  reg[COP0_PAGEMASK] = cpu->cd.mips.coproc[0]->tlbs[0].mask & PAGEMASK_MASK;  */
