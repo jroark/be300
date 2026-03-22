@@ -51,6 +51,8 @@
 #include "thirdparty/vrkiureg.h"
 #include "thirdparty/vr_rtcreg.h"
 
+#include "hw/rtc.h"
+
 
 /*  #define debug fatal  */
 
@@ -85,6 +87,9 @@ struct vr41xx_data {
 	uint16_t	sysint2;
 	uint16_t	msysint2;
 	struct interrupt giu_irq;
+
+	/*  VR4131 RTC (elapsed time counter with read-assist):  */
+	rtc_state_t	rtc;
 };
 
 
@@ -404,6 +409,9 @@ DEVICE_TICK(vr41xx)
 	if (d->pending_timer_interrupts > 0)
 		INTERRUPT_ASSERT(d->timer_irq);
 
+	/*  Advance VR4131 RTC elapsed-time counter each tick:  */
+	rtc_tick(&d->rtc, 1);
+
 	/*  KIU keyboard tick — disabled (no X11 keyboard input)  */
 }
 
@@ -613,27 +621,69 @@ DEVICE_ACCESS(vr41xx)
 	case 0xd2:	/*  RTCL1_H_REG_W  */
 		break;
 
-	case 0x108:
-		if (writeflag == MEM_READ)
-			odata = d->giuint;
-		else
-			d->giuint &= ~idata;
-		break;
-	/*  case 0x10a:
-		"High" part of GIU?
-		break;
-	*/
+	/*
+	 *  VR4131 RTC elapsed-time registers (offset 0x100-0x13e).
+	 *  On older VR41xx chips, ETIME lives at 0xc0; on VR4131 it moved
+	 *  to 0x100.  Dispatch to the be300 rtc_state_t read-assist counter.
+	 */
+	case 0x100:	/*  VR4131 ETIMELREG  */
+	case 0x102:	/*  VR4131 ETIMEMREG  */
+	case 0x104:	/*  VR4131 ETIMEHREG  */
+		if (d->cpumodel == 4131) {
+			uint32_t rtc_off = (uint32_t)(relative_addr - 0x100);
+			if (writeflag == MEM_READ)
+				odata = rtc_read(&d->rtc, rtc_off, (unsigned)len);
+			else
+				rtc_write(&d->rtc, rtc_off, (unsigned)len,
+				    (uint32_t)idata);
+			break;
+		}
+		goto unhandled;
 
-	case 0x13e:	/*  on 4181?  */
+	case 0x108:
+		if (d->cpumodel == 4131) {
+			/*  VR4131 ECMPLREG  */
+			if (writeflag == MEM_READ)
+				odata = rtc_read(&d->rtc, RTC_ECMPLREG,
+				    (unsigned)len);
+			else
+				rtc_write(&d->rtc, RTC_ECMPLREG, (unsigned)len,
+				    (uint32_t)idata);
+		} else {
+			/*  Older VR41xx: GIU interrupt register  */
+			if (writeflag == MEM_READ)
+				odata = d->giuint;
+			else
+				d->giuint &= ~idata;
+		}
+		break;
+	case 0x10a:	/*  VR4131 ECMPMREG  */
+	case 0x10c:	/*  VR4131 ECMPHREG  */
+		if (d->cpumodel == 4131) {
+			uint32_t rtc_off = (uint32_t)(relative_addr - 0x100);
+			if (writeflag == MEM_READ)
+				odata = rtc_read(&d->rtc, rtc_off, (unsigned)len);
+			else
+				rtc_write(&d->rtc, rtc_off, (unsigned)len,
+				    (uint32_t)idata);
+			break;
+		}
+		goto unhandled;
+
+	case 0x13e:	/*  on 4181? / VR4131 RTCINTREG  */
 	case 0x1de:	/*  on 4121?  */
 		/*  RTC interrupt register...  */
 		/*  Ack. timer interrupts?  */
 		INTERRUPT_DEASSERT(d->timer_irq);
 		if (d->pending_timer_interrupts > 0)
 			d->pending_timer_interrupts --;
+		if (d->cpumodel == 4131 && relative_addr == 0x13e)
+			rtc_write(&d->rtc, RTC_RTCINTREG, (unsigned)len,
+			    (uint32_t)idata);
 		break;
 
 	default:
+	unhandled:
 		if (writeflag == MEM_WRITE)
 			debug("[ vr41xx: unimplemented write to address "
 			    "0x%" PRIx64", data=0x%016" PRIx64" ]\n",
@@ -717,6 +767,9 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 	}
 
 	d->cpumodel = cpumodel;
+
+	/*  VR4131 RTC elapsed-time counter (read-assist for SPL polling):  */
+	rtc_init(&d->rtc);
 
 	/*  TODO: VRC4173 has the KIU at offset 0x100?  */
 	d->kiu_offset = 0x180;
