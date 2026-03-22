@@ -171,7 +171,11 @@ machine_t *be300_create(const machine_config_t *cfg)
             nand_init(&m->nand, m->nand_data, m->nand_size);
         }
 
-        /* Register NAND flash as a GXemul device */
+        /* Register VRC4173 latch (catch-all) BEFORE NAND so NAND takes priority */
+        extern void be300_register_vrc4173_latch(struct machine *, bool);
+        be300_register_vrc4173_latch(gxm, cfg->log_mmio);
+
+        /* Register NAND flash as a GXemul device (overlays latch) */
         extern void be300_register_nand(struct machine *, nand_state_t *, bool);
         be300_register_nand(gxm, &m->nand, cfg->log_mmio);
 
