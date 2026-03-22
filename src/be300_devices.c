@@ -150,23 +150,31 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
     uint32_t board_id = 0x00007100;
     memcpy(&latch->bytes[0x0A0C0], &board_id, 4);
 
-    /* Segment A: 0x0A000000 - 0x0A008000 (below SIU) */
-    struct be300_vrc4173_segment *seg_lo;
-    CHECK_ALLOCATION(seg_lo = malloc(sizeof(struct be300_vrc4173_segment)));
-    seg_lo->latch = latch;
-    seg_lo->offset_in_latch = 0;
-    memory_device_register(gxm->memory, "vrc4173_lo",
-        VRC4173_LATCH_BASE, 0x8000,
-        dev_be300_vrc4173_access, (void *)seg_lo, DM_DEFAULT, NULL);
+    /*
+     * Register latch segments that don't overlap with:
+     *   ns16550 SIU at 0x0A008680 (32 bytes, addr_mult=4)
+     *   NAND device at 0x0A00A000-0x0A00D800
+     */
+    struct {
+        const char *name;
+        uint64_t    base;
+        uint64_t    size;
+        uint32_t    offset;
+    } segs[] = {
+        { "vrc4173_0", 0x0A000000ULL, 0x8680,  0x0000 },  /* below SIU */
+        { "vrc4173_1", 0x0A0086C0ULL, 0x1940,  0x86C0 },  /* SIU..NAND gap */
+        { "vrc4173_2", 0x0A00E000ULL, 0x12000, 0xE000 },  /* above NAND */
+    };
 
-    /* Segment B: 0x0A00E000 - 0x0A020000 (above NAND) */
-    struct be300_vrc4173_segment *seg_hi;
-    CHECK_ALLOCATION(seg_hi = malloc(sizeof(struct be300_vrc4173_segment)));
-    seg_hi->latch = latch;
-    seg_hi->offset_in_latch = 0xE000;
-    memory_device_register(gxm->memory, "vrc4173_hi",
-        VRC4173_LATCH_BASE + 0xE000, 0x12000,
-        dev_be300_vrc4173_access, (void *)seg_hi, DM_DEFAULT, NULL);
+    for (int i = 0; i < 3; i++) {
+        struct be300_vrc4173_segment *seg;
+        CHECK_ALLOCATION(seg = malloc(sizeof(struct be300_vrc4173_segment)));
+        seg->latch = latch;
+        seg->offset_in_latch = segs[i].offset;
+        memory_device_register(gxm->memory, segs[i].name,
+            segs[i].base, segs[i].size,
+            dev_be300_vrc4173_access, (void *)seg, DM_DEFAULT, NULL);
+    }
 
-    fprintf(stderr, "[BE300] Registered VRC4173 latch (0x0A000000-0x0A008000, 0x0A00E000-0x0A020000)\n");
+    fprintf(stderr, "[BE300] Registered VRC4173 latch (3 segments, avoiding SIU/NAND)\n");
 }
