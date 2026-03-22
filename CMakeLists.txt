@@ -13,36 +13,20 @@ if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     endif()
 endif()
 
-# Compiler flags
-add_compile_options(-Wall -Wextra -g -O2)
+# Compiler flags — relax warnings for GXemul legacy code
+add_compile_options(-Wall -g -O2
+    -Wno-unused-parameter
+    -Wno-unused-variable
+    -Wno-sign-compare
+    -Wno-missing-field-initializers
+)
 
-# Find Unicorn
+# SDL2 (optional, for framebuffer display)
 find_package(PkgConfig QUIET)
 if(PKG_CONFIG_FOUND)
-    pkg_check_modules(UNICORN QUIET unicorn)
     pkg_check_modules(SDL2 QUIET sdl2)
 endif()
-
-if(NOT UNICORN_FOUND)
-    # Robust fallback for systems where pkg-config is not set up correctly
-    # Only searching standard system paths, NOT third_party
-    find_path(UNICORN_INCLUDE_DIRS NAMES unicorn/unicorn.h
-        HINTS /opt/homebrew/include /usr/local/include /usr/include
-    )
-    find_library(UNICORN_LIBRARIES NAMES unicorn
-        HINTS /opt/homebrew/lib /usr/local/lib /usr/lib
-    )
-    if(UNICORN_INCLUDE_DIRS AND UNICORN_LIBRARIES)
-        set(UNICORN_FOUND TRUE)
-        message(STATUS "Found Unicorn via fallback: ${UNICORN_LIBRARIES}")
-    else()
-        message(FATAL_ERROR "Unicorn not found! Please install it (e.g., 'brew install unicorn' or 'apt install libunicorn-dev').")
-    endif()
-endif()
-
-# Include directories
 find_package(SDL2 QUIET)
-include_directories(src ${UNICORN_INCLUDE_DIRS})
 if(SDL2_FOUND OR SDL2_LIBRARIES)
     include_directories(${SDL2_INCLUDE_DIRS})
     add_compile_definitions(HAVE_SDL2)
@@ -51,18 +35,61 @@ else()
     message(STATUS "SDL2 not found — building headless (no display)")
 endif()
 
-# Source files for the core emulator logic (shared between main and tests)
-set(BE300_CORE_SOURCES
-    src/machine.c
-    src/wince_diag.c
-    src/wince_init.c
-    src/probes.c
-    src/mem_alias.c
-    src/tlb_shadow.c
-    src/null_call.c
-    src/bus.c
+# Include directories
+include_directories(
+    src
+    gxemul/src/include
+)
+
+# ============================================================
+# GXemul MIPS CPU engine sources
+# ============================================================
+set(GXEMUL_SOURCES
+    # CPU core — only these 4 files are compiled standalone.
+    # cpu_mips.c #includes tmp_mips_head.c, tmp_mips_tail.c, cpu_dyntrans.c,
+    # memory_mips.c, memory_rw.c, cpu_mips_instr.c, tmp_mips_loadstore.c,
+    # tmp_mips_loadstore_multi.c, and memory_mips_v2p.c as templates.
+    gxemul/src/cpus/cpu.c
+    gxemul/src/cpus/cpu_mips.c
+    gxemul/src/cpus/cpu_mips_coproc.c
+    gxemul/src/cpus/cpu_mips_instr_unaligned.c
+
+    # Core framework
+    gxemul/src/core/memory.c
+    gxemul/src/core/interrupt.c
+    gxemul/src/core/timer.c
+    gxemul/src/core/settings.c
+    gxemul/src/core/misc.c
+    gxemul/src/core/debugmsg.c
+    gxemul/src/core/float_emul.c
+
+    # Console (serial I/O via stdin/stdout)
+    gxemul/src/console/console.c
+
+    # Devices
+    gxemul/src/devices/device.c
+    gxemul/src/devices/dev_vr41xx.c
+    gxemul/src/devices/dev_ram.c
+    gxemul/src/devices/dev_ns16550.c
+    gxemul/src/devices/dev_fb.c
+
+    # Symbol table (for debug output)
+    gxemul/src/symbol/symbol.c
+
+    # Machine registry and machine definitions
+    gxemul/src/machines/machine.c
+    gxemul/src/machines/machine_hpcmips.c
+
+    # Stubs for unused subsystems
+    gxemul/src/stubs.c
+)
+
+# ============================================================
+# BE-300 emulator sources
+# ============================================================
+set(BE300_SOURCES
+    src/machine_be300.c
     src/loader.c
-    src/macc.c
     src/ui.c
     src/hw/bcu.c
     src/hw/cmu.c
@@ -75,13 +102,8 @@ set(BE300_CORE_SOURCES
 )
 
 # Main executable
-add_executable(be300 src/main.c ${BE300_CORE_SOURCES})
-target_link_libraries(be300 ${UNICORN_LIBRARIES} ${SDL2_LIBRARIES})
+add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES})
+target_link_libraries(be300 m ${SDL2_LIBRARIES})
 
 # Tests
 enable_testing()
-
-add_executable(test_basic tests/test_basic.c ${BE300_CORE_SOURCES})
-target_link_libraries(test_basic ${UNICORN_LIBRARIES} ${SDL2_LIBRARIES})
-
-add_test(NAME basic_test COMMAND test_basic)
