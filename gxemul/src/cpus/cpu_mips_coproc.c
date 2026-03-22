@@ -587,9 +587,41 @@ void coproc_register_read(struct cpu *cpu,
 	if (cp->coproc_nr==0 && reg_nr==COP0_WIRED)	unimpl = 0;
 	if (cp->coproc_nr==0 && reg_nr==COP0_BADVADDR)	unimpl = 0;
 	if (cp->coproc_nr==0 && reg_nr==COP0_COUNT) {
-		/*  TODO: Increase count in a more meaningful way!  */
-		cp->reg[COP0_COUNT] = (int32_t) (cp->reg[COP0_COUNT] + 1);
+		/*
+		 *  Return Count that reflects instructions executed so far
+		 *  in the current dyntrans batch, rather than just +1 per
+		 *  read. This makes the calibration loop work correctly:
+		 *  Count advances at instruction rate, not at MFC0 rate.
+		 *
+		 *  n_translated_instrs tracks instructions executed since
+		 *  the start of the current batch. We add this to the
+		 *  stored Count (which is updated at batch boundaries).
+		 */
+		int32_t base_count = (int32_t) cp->reg[COP0_COUNT];
+		int32_t actual_count = base_count +
+		    cpu->n_translated_instrs -
+		    cpu->cd.mips.count_register_read_count;
+
+		/*  Each read should still show forward progress  */
 		cpu->cd.mips.count_register_read_count ++;
+
+		/*  Return the actual count as the register value  */
+		cp->reg[COP0_COUNT] = (int64_t)(int32_t) actual_count;
+
+		/*
+		 *  Check if Count crossed Compare mid-batch.
+		 *  The kernel's calibration loop reads Count in a tight
+		 *  loop and writes Compare before the dyntrans batch ends,
+		 *  so the end-of-batch crossing check never fires.
+		 */
+		if (cpu->cd.mips.compare_register_set) {
+			int32_t compare = (int32_t) cp->reg[COP0_COMPARE];
+			if ((compare - base_count) > 0 &&
+			    (compare - actual_count) <= 0) {
+				INTERRUPT_ASSERT(cpu->cd.mips.irq_compare);
+			}
+		}
+
 		unimpl = 0;
 	}
 	if (cp->coproc_nr==0 && reg_nr==COP0_ENTRYHI)	unimpl = 0;
