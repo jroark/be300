@@ -10,22 +10,19 @@ I also have another VM with Platform Builder 3.0.
 ## Source Code Layout
 
 **Core emulation (src/)**
-- `machine.c` — Main emulation: prid_hook (per-instruction), intr_hook (per-exception), machine_create/run/stop, IRQ injection, execve helpers
-- `machine.h` — machine_t struct, machine_config_t, shared inline helpers
-- `bus.c` / `bus.h` — VRC4173 companion chip MMIO, VR4131 I/O region dispatch
-- `loader.c` / `loader.h` — ELF kernel loader, B000FF NAND SPL parser
-- `macc.c` / `macc.h` — MACC (multiply-accumulate) instruction emulation
-- `ui.c` / `ui.h` — SDL2 display window (optional, gated on HAVE_SDL2)
+- `machine_be300.c` — Machine setup (GXemul framework init, VR4131 CPU, device registration, kernel loading) and main emulation loop
+- `be300.h` — be300_state_t struct, machine_config_t, physical address map constants
+- `loader.c` / `loader.h` — ELF kernel loader, B000FF NAND SPL parser (uses GXemul store_buf)
+- `ui.c` / `ui.h` — Display stub (GXemul dev_fb handles framebuffer; SDL2 integration TODO)
+- `main.c` — CLI argument parsing, calls be300_create/be300_run/be300_destroy
 
-**WinCE support (src/)**
-- `wince_diag.c` / `wince_diag.h` — Diagnostic logging: DIV stack watch, call tracing, context probing, PA watch hooks, stall dumps (all gated on --log-wince-stall)
-- `wince_init.c` / `wince_init.h` — Boot-time seeding: exception vectors, kdata, warm profiles, bootrom window
-
-**Emulation subsystems (src/)**
-- `mem_alias.c` / `mem_alias.h` — kseg0/kseg1/kuseg memory aliasing, PA coherence
-- `tlb_shadow.c` / `tlb_shadow.h` — Shadow TLB recording, VA→PA translation, user handoff tracing
-- `null_call.c` / `null_call.h` — Null function pointer call recovery (Linux & WinCE)
-- `probes.c` / `probes.h` — Kernel diagnostic probe hooks (initcall, pgui, IRQ, RCU, page fault, etc.)
+**GXemul CPU engine (gxemul/)**
+- `gxemul/src/cpus/` — VR4131 MIPS CPU: instruction execution, CP0, TLB, dyntrans
+- `gxemul/src/core/` — Memory, interrupt, timer, settings, console framework
+- `gxemul/src/devices/` — dev_vr41xx (VR4131 ICU/timer), dev_ns16550 (UART), dev_fb, dev_ram
+- `gxemul/src/machines/machine_hpcmips.c` — BE-300 machine definition (framebuffer, SIU, bootinfo)
+- `gxemul/src/stubs.c` — Minimal stubs for unused GXemul subsystems (debugger, x11, diskimage)
+- `gxemul/config.h` — MIPS-only build configuration
 
 **Hardware peripherals (src/hw/)**
 - `bcu.c/h` — Bus Control Unit
@@ -66,7 +63,9 @@ Push with: `git push -u origin <current branch>`
 
 ## Project Context
 
-**Target:** Casio BE-300 (NEC VR4131 MIPS little-endian) emulator in Unicorn.
+**Target:** Casio BE-300 (NEC VR4131 MIPS little-endian) emulator using GXemul 0.7.0 MIPS CPU core.
+
+**CPU Engine:** GXemul 0.7.0 (copied into gxemul/ subdirectory, MIPS-only build). Provides native CP0, TLB, exception handling, dyntrans JIT, and kseg0/kseg1 address translation. Replaces Unicorn (removed).
 
 **Kernels**
 - All kernels have been booted to userspace on real hardware
@@ -81,6 +80,7 @@ Push with: `git push -u origin <current branch>`
   - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
 - `kernels/vmlinux-pgui-demo`  - ELF32 MIPS LE, Linux version 2.4.18-mips known good kernel and ramdisk (booted to userspace on real hardware)
   - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
+  - ramdisk: `kernels/ramdisk-pgui-full.gz`
 - `kernels/vmlinux-pgui-test1` - ELF32 MIPS LE, Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
   - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
 
@@ -107,7 +107,7 @@ Push with: `git push -u origin <current branch>`
 
 ## Development Workflow & Tooling
 
-1. **Work in Docker (Linux toolchain + Unicorn build):**
+1. **Work in Docker (Linux toolchain + GXemul build):**
    ```bash
    # Build/update the container image
    docker compose build mips-dev
@@ -123,8 +123,8 @@ Push with: `git push -u origin <current branch>`
    timeout 180s ./be300 --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" --kernel ../kernels/vmlinux-pgui-demo \
      > docker_2.4_stdout.log 2> docker_2.4_stderr.log
    ```
-   The image installs clang/meson/ninja plus mipsel cross-compilers and
-   libunicorn-dev.
+   The image installs clang/meson/ninja plus mipsel cross-compilers.
+   No external emulation library required (GXemul source is included in gxemul/).
    Base packages now include `gdb`, `gdb-multiarch`, `strace`, and `ltrace` for
    cross-debugging.
 
@@ -204,10 +204,11 @@ grep -E "mtc0|mfc0" spl_disasm.txt
 
 ### Key Files for WinCE Boot
 - `src/main.c` — `--nand` CLI flag
-- `src/machine.h` — `nand_path`, `nand_data`, `nand_size` fields in config/state
-- `src/machine.c` — WinCE boot path in `machine_create()`, null-call recovery gated on `!nand_path`
+- `src/be300.h` — `nand_path`, `nand_data`, `nand_size` fields in config/state
+- `src/machine_be300.c` — WinCE boot path in `be300_create()`, NAND flash init
 - `src/loader.c` — `loader_load_nand()` B000FF parser
-- `src/bus.c` — VRC4173 UART stubs (IER, IIR, LCR, MCR, MSR, SCR), companion chip stubs
+- `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU, timer, GPIO (GXemul native)
+- `gxemul/src/devices/dev_ns16550.c` — VRC4173 SIU UART (GXemul native at 0x0A008680)
 - `src/hw/rtc.c` — Auto-advance etime on read (fixes SPL polling loops)
 - `src/hw/bcu.c` — Silenced unhandled register reads (SPL probes many)
 
@@ -215,4 +216,5 @@ grep -E "mtc0|mfc0" spl_disasm.txt
 - SPL calls address 0 via null function pointer (JALR with t9=0) — needs investigation
 - SPL runs in kseg1 (uncached, 0xA0F0xxxx) — memory must be accessible at PA 0x00F00000
 - SPL does not install exception vectors — BEV=1 vectors at 0xBFC00000+ contain zeros
-- RTC auto-advance-on-read is a crude approximation; may cause timing issues for Linux kernels
+- Our hw/*.c peripheral state structs (bcu, cmu, pmu, icu, rtc, gpio, nand) are initialized but not yet wired as GXemul DEVICE_ACCESS callbacks — needed for WinCE NAND boot
+- MACC instruction support removed (was in old macc.c) — needs re-adding as GXemul SPECIAL2 patch
