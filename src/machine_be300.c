@@ -80,7 +80,9 @@ machine_t *be300_create(const machine_config_t *cfg)
     gxm->machine_subtype = MACHINE_HPCMIPS_CASIO_BE300;
     gxm->cpu_name = strdup("VR4131");
     gxm->physical_ram_in_mb = cfg->sdram_size / (1024 * 1024);
-    gxm->prom_emulation = 1;
+    /* Enable prom emulation for Linux (sets up hpc_bootinfo, argc/argv),
+     * but disable for NAND boot (SPL doesn't use NetBSD boot convention) */
+    gxm->prom_emulation = cfg->nand_path ? 0 : 1;
     gxm->boot_kernel_filename = cfg->kernel_path ? strdup(cfg->kernel_path) : strdup("");
     gxm->boot_string_argument = cfg->cmdline ? strdup(cfg->cmdline) : strdup("");
 
