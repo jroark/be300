@@ -77,7 +77,7 @@ MACHINE_SETUP(hpcmips)
 		hpc_fb_ysize = 320;
 		hpc_fb_xsize_mem = 256;
 		hpc_fb_ysize_mem = 320;
-		hpc_fb_bits = 15;
+		hpc_fb_bits = 16;
 		hpc_fb_encoding = BIFB_D16_0000;
 
 		dev_vr41xx_init(machine, machine->memory, 4131);

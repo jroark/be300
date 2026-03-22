@@ -88,10 +88,8 @@ int ui_init(machine_t *m)
     }
     m->sdl_renderer = ren;
 
-    /* Texture format depends on pixel mode */
-    Uint32 fmt = m->cfg.sfb_5bit_green
-        ? SDL_PIXELFORMAT_RGB565
-        : SDL_PIXELFORMAT_ARGB1555;
+    /* BE-300 hardware uses RGB565 (R=15:11, G=10:5, B=4:0) */
+    Uint32 fmt = SDL_PIXELFORMAT_RGB565;
 
     SDL_Texture *tex = SDL_CreateTexture(ren, fmt,
         SDL_TEXTUREACCESS_STREAMING,
@@ -122,9 +120,8 @@ int ui_init(machine_t *m)
         return 0;
     }
 
-    fprintf(stderr, "[UI] SDL2 display: %ux%u @ 2x scale (%s)\n",
-            m->fb_width, m->fb_height,
-            m->cfg.sfb_5bit_green ? "RGB565" : "ARGB1555");
+    fprintf(stderr, "[UI] SDL2 display: %ux%u @ 2x scale (RGB565)\n",
+            m->fb_width, m->fb_height);
     return 0;
 }
 
@@ -180,29 +177,11 @@ void ui_update(machine_t *m)
 
     const uint16_t *src = (const uint16_t *)m->fb_data;
 
-    /* Copy visible rectangle from stride-256 buffer */
-    if (m->cfg.sfb_5bit_green) {
-        /* Convert XRGB1555 → RGB565: expand 5-bit green to 6-bit */
-        for (uint32_t y = 0; y < m->fb_height; y++) {
-            const uint16_t *row = src + y * m->fb_stride;
-            uint16_t *dst = staging_buf + y * m->fb_width;
-            for (uint32_t x = 0; x < m->fb_width; x++) {
-                uint16_t px = row[x];
-                /* XRGB1555: x rrrrr ggggg bbbbb */
-                uint16_t r = (px >> 10) & 0x1F;
-                uint16_t g = (px >>  5) & 0x1F;
-                uint16_t b =  px        & 0x1F;
-                /* RGB565: rrrrr gggggg bbbbb */
-                dst[x] = (r << 11) | (g << 6) | b;
-            }
-        }
-    } else {
-        /* ARGB1555 — copy row by row (skip stride padding) */
-        for (uint32_t y = 0; y < m->fb_height; y++) {
-            memcpy(staging_buf + y * m->fb_width,
-                   src + y * m->fb_stride,
-                   m->fb_width * sizeof(uint16_t));
-        }
+    /* Copy visible rectangle from stride-256 buffer (RGB565, no conversion) */
+    for (uint32_t y = 0; y < m->fb_height; y++) {
+        memcpy(staging_buf + y * m->fb_width,
+               src + y * m->fb_stride,
+               m->fb_width * sizeof(uint16_t));
     }
 
     /* Upload to texture and render */
@@ -233,10 +212,8 @@ void ui_save_screenshot(machine_t *m)
         return;
     }
 
-    /* Create surface from staging buffer */
-    Uint32 fmt = m->cfg.sfb_5bit_green
-        ? SDL_PIXELFORMAT_RGB565
-        : SDL_PIXELFORMAT_ARGB1555;
+    /* Create surface from staging buffer (RGB565) */
+    Uint32 fmt = SDL_PIXELFORMAT_RGB565;
 
     SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormatFrom(
         staging_buf,
