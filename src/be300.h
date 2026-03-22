@@ -1,0 +1,107 @@
+/*
+ *  machine.h — BE-300 machine definitions for GXemul integration.
+ *
+ *  This replaces the old Unicorn-based machine.h. The GXemul CPU engine
+ *  handles CP0, TLB, exceptions, and address translation natively.
+ */
+#pragma once
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Hardware peripheral state */
+#include "hw/bcu.h"
+#include "hw/cmu.h"
+#include "hw/pmu.h"
+#include "hw/icu.h"
+#include "hw/siu.h"
+#include "hw/rtc.h"
+#include "hw/gpio.h"
+#include "hw/nand.h"
+
+/* Forward declarations for GXemul types */
+struct cpu;
+struct machine;
+struct memory;
+struct emul;
+
+/* Physical address map (VR4131 hardware manual §3.1) */
+#define PA_SDRAM_BASE    UINT32_C(0x00000000)
+#define PA_SDRAM_SIZE    (64u * 1024u * 1024u)
+#define PA_IO_BASE       UINT32_C(0x0F000000)
+#define PA_IO_SIZE       UINT32_C(0x00001000)
+#define PA_ROM_BASE      UINT32_C(0x1E000000)
+#define PA_ROM_SIZE      (32u * 1024u * 1024u)
+#define PA_RESET_VECTOR  UINT32_C(0x1FC00000)
+
+/* VRC4173 companion chip physical addresses */
+#define PA_VRC4173_BASE  UINT32_C(0x0A000000)
+#define PA_VRC4173_SIU   UINT32_C(0x0A008680)
+#define PA_VRC4173_FB    UINT32_C(0x0A200000)
+
+/* MIPS virtual addresses */
+#define VA_RESET_VECTOR  UINT32_C(0xBFC00000)
+
+/* VR4131 CP0 PRId */
+#define VR4131_PRID      UINT32_C(0x00000C80)
+
+/*
+ * CLI configuration — parsed from command line, passed to machine setup.
+ */
+typedef struct {
+    bool        trace;
+    bool        log_mmio;
+    bool        sfb_5bit_green;
+    bool        log_nand_legacy;
+    bool        log_wince_stall;
+
+    const char *rom_path;
+    const char *kernel_path;
+    const char *cmdline;
+    const char *ram_path;
+    const char *nand_path;
+    uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
+} machine_config_t;
+
+/*
+ * BE-300 machine state.
+ */
+typedef struct be300_state {
+    /* GXemul framework objects */
+    struct emul    *emul;
+    struct machine *gxe_machine;
+    struct cpu     *cpu;
+
+    /* CLI configuration */
+    machine_config_t cfg;
+
+    /* Peripheral state (VR4131 internal I/O) */
+    bcu_state_t  bcu;
+    cmu_state_t  cmu;
+    pmu_state_t  pmu;
+    icu_state_t  icu;
+    siu_state_t  siu;
+    rtc_state_t  rtc;
+    gpio_state_t gpio;
+
+    /* NAND flash controller (VRC4173) */
+    nand_state_t nand;
+
+    /* NAND image data (loaded from file) */
+    uint8_t     *nand_data;
+    size_t       nand_size;
+
+    /* Framebuffer host pointer (from GXemul dev_fb) */
+    void        *fb_data;
+} be300_state_t;
+
+typedef be300_state_t machine_t;
+
+/*
+ * Main API — called from main.c
+ */
+machine_t *be300_create(const machine_config_t *cfg);
+void       be300_run(machine_t *m);
+void       be300_destroy(machine_t *m);

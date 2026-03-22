@@ -1,6 +1,6 @@
 #pragma once
 
-#include "machine.h"
+#include "be300.h"
 
 typedef void (*ui_frame_callback_t)(const uint16_t *pixels,
                                     uint32_t width,
