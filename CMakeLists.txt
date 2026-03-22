@@ -89,6 +89,7 @@ set(GXEMUL_SOURCES
 # ============================================================
 set(BE300_SOURCES
     src/machine_be300.c
+    src/be300_devices.c
     src/loader.c
     src/ui.c
     src/hw/bcu.c

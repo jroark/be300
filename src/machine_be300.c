@@ -171,6 +171,10 @@ machine_t *be300_create(const machine_config_t *cfg)
             nand_init(&m->nand, m->nand_data, m->nand_size);
         }
 
+        /* Register NAND flash as a GXemul device */
+        extern void be300_register_nand(struct machine *, nand_state_t *, bool);
+        be300_register_nand(gxm, &m->nand, cfg->log_mmio);
+
     } else if (cfg->rom_path) {
         if (loader_load_rom(m, cfg->rom_path) != 0) {
             fprintf(stderr, "[BE300] Failed to load ROM image\n");
