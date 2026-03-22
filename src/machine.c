@@ -3824,8 +3824,9 @@ skip_entrylo_fixup:
      * Outside that context, Unicorn's QEMU executes the real MTC0 EPC
      * instruction, keeping the CPU's internal CP0_EPC register consistent.
      */
-    if ((insn & 0xFFE0FFFFu) == 0x40807000u && m->pending_excode == 0) {
-        /* Diagnostic: MTC0 CP0_EPC with pending_excode==0 */
+    if ((insn & 0xFFE0FFFFu) == 0x40807000u &&
+        m->pending_excode == 0 && m->pending_epc == 0) {
+        /* Diagnostic: MTC0 CP0_EPC with no pending exception context */
         uint32_t rt_diag = (insn >> 16) & 0x1F;
         uint64_t val_diag = 0;
         uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt_diag, &val_diag);
@@ -3845,7 +3846,16 @@ skip_entrylo_fixup:
         }
         /* Don't intercept — let native MTC0 execute */
     }
-    if ((insn & 0xFFE0FFFFu) == 0x40807000u && m->pending_excode != 0) {
+    /*
+     * Intercept MTC0 EPC when we have a pending exception context.
+     * This includes: SYSCALL (excode=8), TLBL (excode=2), TLBS (excode=3),
+     * and hardware interrupts (excode=0 with pending_epc != 0).
+     * For IRQ returns, pending_excode=0 but pending_epc holds the
+     * interrupted PC.  Without interception, the native ERET reads stale
+     * CP0_EPC (which we can't write).
+     */
+    if ((insn & 0xFFE0FFFFu) == 0x40807000u &&
+        (m->pending_excode != 0 || m->pending_epc != 0)) {
         uint32_t rt = (insn >> 16) & 0x1F;
         uint64_t val = 0;
         uc_reg_read(uc, UC_MIPS_REG_0 + (int)rt, &val);
@@ -4571,14 +4581,57 @@ static void route_user_exception_to_kernel(machine_t *m, uc_engine *uc,
                                            uint32_t intno,
                                            uint64_t user_pc, uint64_t status)
 {
+    /* Map Unicorn intno to MIPS ExcCode and exception vector. */
+    uint32_t exccode;
+    uint64_t exc_vec;
+    bool was_exl = (status & 0x2u) != 0;
+
+    switch (intno) {
+    case 26u:  /* TLBL */
+        exccode = MIPS_EXCCODE_TLBL;
+        /* TLB refill vector (0x80000000) if EXL was 0; else general (0x80000180) */
+        exc_vec = mips_sext(was_exl ? 0x80000180u : 0x80000000u);
+        /* Set up shadow CP0 for TLB handler */
+        {
+            uint32_t upc = (uint32_t)user_pc;
+            uint32_t asid = (uint32_t)(m->shadow_cp0_entryhi_live_valid
+                             ? m->shadow_cp0_entryhi_live
+                             : m->shadow_cp0_entryhi) & 0xFFu;
+            uint32_t ctx_base = (uint32_t)m->shadow_cp0_context & 0xFF800000u;
+            uint32_t ctx_badvpn2 = ((upc >> 9) & 0x007FFFF0u);
+            m->shadow_cp0_badvaddr = (uint64_t)upc;
+            m->shadow_cp0_entryhi = (uint64_t)((upc & 0xFFFFE000u) | asid);
+            m->shadow_cp0_context = (uint64_t)(ctx_base | ctx_badvpn2);
+        }
+        break;
+    case 27u:  /* TLBS */
+        exccode = MIPS_EXCCODE_TLBS;
+        exc_vec = mips_sext(was_exl ? 0x80000180u : 0x80000000u);
+        {
+            uint32_t upc = (uint32_t)user_pc;
+            uint32_t asid = (uint32_t)(m->shadow_cp0_entryhi_live_valid
+                             ? m->shadow_cp0_entryhi_live
+                             : m->shadow_cp0_entryhi) & 0xFFu;
+            uint32_t ctx_base = (uint32_t)m->shadow_cp0_context & 0xFF800000u;
+            uint32_t ctx_badvpn2 = ((upc >> 9) & 0x007FFFF0u);
+            m->shadow_cp0_badvaddr = (uint64_t)upc;
+            m->shadow_cp0_entryhi = (uint64_t)((upc & 0xFFFFE000u) | asid);
+            m->shadow_cp0_context = (uint64_t)(ctx_base | ctx_badvpn2);
+        }
+        break;
+    default:   /* intno=12: RI or CpU */
+        exccode = 10u;  /* RI (Reserved Instruction) */
+        exc_vec = mips_sext(0x80000180u);
+        break;
+    }
+
     uint64_t exc_status = status | 0x2u;  /* set EXL */
     uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &exc_status);
-    uint64_t exc_vec = mips_sext(0x80000180u);
     uc_reg_write(uc, UC_MIPS_REG_PC, &exc_vec);
 
     m->pending_epc = user_pc;
-    m->pending_excode = 10u;  /* RI (Reserved Instruction) — approximate */
-    m->pending_cause = (uint32_t)(10u << 2);
+    m->pending_excode = exccode;
+    m->pending_cause = (uint32_t)(exccode << 2);
     m->epc_was_written = false;
     m->pending_cause_served = false;
     m->pending_epc_served = false;
@@ -4586,9 +4639,10 @@ static void route_user_exception_to_kernel(machine_t *m, uc_engine *uc,
     static uint32_t user_exc_log = 0;
     if (user_exc_log < 64) {
         fprintf(stderr,
-                "[USER_EXCEPTION] intno=%u pc=0x%08" PRIX64
-                " -> exception vector 0x80000180\n",
-                intno, (uint64_t)(uint32_t)user_pc);
+                "[USER_EXCEPTION] intno=%u exccode=%u pc=0x%08" PRIX64
+                " -> vec=0x%08" PRIX64 "\n",
+                intno, exccode, (uint64_t)(uint32_t)user_pc,
+                (uint64_t)(uint32_t)exc_vec);
         user_exc_log++;
     }
 }
@@ -4963,10 +5017,13 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
 
     /*
      * User-space exception at a kuseg PC: route to kernel exception handler.
-     * intno=12 can be RI (Reserved Instruction) or CpU (Coprocessor Unusable).
+     * intno=12: RI (Reserved Instruction) or CpU (Coprocessor Unusable).
+     * intno=26: TLBL (TLB load miss) — user data load from unmapped page.
+     * intno=27: TLBS (TLB store miss) — user data store to unmapped page.
      * Set EPC = current PC, EXL = 1, redirect to general exception vector.
      */
-    if ((uint32_t)pc < 0x80000000u && intno == 12u) {
+    if ((uint32_t)pc < 0x80000000u &&
+        (intno == 12u || intno == 26u || intno == 27u)) {
         route_user_exception_to_kernel(m, uc, intno, pc, status);
         return;
     }
