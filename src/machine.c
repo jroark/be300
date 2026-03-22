@@ -4493,6 +4493,40 @@ skip_entrylo_fixup:
             }
 
             /*
+             * Catch-all for injected TLB exceptions (TLBL/TLBS):
+             * If no specific handler matched and we have a pending injected
+             * exception with pending_epc set, skip the ERET and redirect
+             * to pending_epc.  This prevents native ERET from reading
+             * stale CP0_EPC (which we can't write).
+             */
+            if ((m->pending_excode == MIPS_EXCCODE_TLBL ||
+                 m->pending_excode == MIPS_EXCCODE_TLBS) &&
+                m->pending_epc != 0) {
+                uint64_t fault_pc_sext = mips_sext((uint32_t)m->pending_epc);
+                uint64_t clr_status = status_snapshot & ~(uint64_t)0x2u;
+                uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &clr_status);
+                uc_reg_write(uc, UC_MIPS_REG_PC, &fault_pc_sext);
+                static uint32_t eret_tlb_catchall_log = 0;
+                if (eret_tlb_catchall_log < 128) {
+                    fprintf(stderr,
+                            "[ERET_TLB_CATCHALL] excode=%u fault_pc=0x%08X"
+                            " PC=0x%08" PRIX64 " (PC-skip)\n",
+                            m->pending_excode,
+                            (uint32_t)m->pending_epc,
+                            (uint64_t)(uint32_t)address);
+                    eret_tlb_catchall_log++;
+                }
+                m->pending_epc          = 0;
+                m->pending_excode       = 0;
+                m->pending_cause        = 0;
+                m->epc_was_written      = false;
+                m->pending_cause_served = false;
+                m->pending_epc_served   = false;
+                restore_pending_exception(m);
+                return;
+            }
+
+            /*
              * If no explicit MTC0 EPC was observed, let Unicorn execute the
              * native ERET.
              *
@@ -4910,6 +4944,32 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             uc_emu_stop(uc);
         }
         return;
+    }
+
+    /*
+     * User-mode exception at a kernel-mode PC (UM=1, PC >= 0x80000000).
+     * This is an impossible state on real MIPS — user mode can't access
+     * kseg0/kseg1.  It occurs when a native ERET reads stale CP0_EPC
+     * (which we can't write) and jumps to a kernel address while in user
+     * mode.  Redirect PC back to the last known user instruction.
+     */
+    if ((uint32_t)pc >= 0x80000000u && (status & 0x10u) && !(status & 0x2u)) {
+        /* UM=1, EXL=0, PC in kseg — user-at-kernel address error */
+        uint32_t last_user = (uint32_t)m->last_exec_pc;
+        if (last_user < 0x80000000u && last_user != 0u) {
+            /* Redirect to the last user PC as a TLBL so the kernel
+             * re-executes the faulting instruction correctly. */
+            route_user_exception_to_kernel(m, uc, 26u, (uint64_t)last_user, status);
+            static uint32_t user_at_kernel_log = 0;
+            if (user_at_kernel_log < 64) {
+                fprintf(stderr,
+                        "[USER_AT_KERNEL_PC] intno=%u pc=0x%08X status=0x%08"
+                        PRIX64 " -> redirect to last_user=0x%08X\n",
+                        intno, (uint32_t)pc, status, last_user);
+                user_at_kernel_log++;
+            }
+            return;
+        }
     }
 
     /*
