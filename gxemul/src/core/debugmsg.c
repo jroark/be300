@@ -108,10 +108,10 @@ static void va_debug(va_list argp, const char *fmt)
 	while (*s) {
 		if (debug_old_currently_at_start_of_line) {
 			for (size_t i = 0; i < debug_indent * DEBUG_INDENTATION; i++)
-				printf(" ");
+				fprintf(stderr, " ");
 		}
 
-		printf("%c", *s);
+		fprintf(stderr, "%c", *s);
 
 		debug_old_currently_at_start_of_line = false;
 		if (*s == '\n' || *s == '\r')
@@ -149,10 +149,10 @@ static void debugmsg_va(struct cpu* cpu, int subsystem,
 		if (debug_currently_at_start_of_line) {
 			if (show_decorations) {
 				color_normal();
-				printf("[ ");
+				fprintf(stderr, "[ ");
 			} else {
 				for (size_t i = 0; i < debug_indent * DEBUG_INDENTATION; ++i)
-					printf(" ");
+					fprintf(stderr, " ");
 			}
 
 			bool print_subsystem_name =
@@ -161,21 +161,15 @@ static void debugmsg_va(struct cpu* cpu, int subsystem,
 			bool print_colon = false;
 
 			if (cpu != NULL) {
-				// With multiple machines being emulated in the
-				// same emulation instance, print both the machine
-				// name and cpu id. If it is just one machine,
-				// only print the cpu id if there are multiple
-				// CPUs in order to not clutter the output
-				// needlessly.
 				struct emul* emul = cpu->machine->emul;
 				if (emul->n_machines > 1) {
-					printf("machine \"%s\" cpu%i: ",
+					fprintf(stderr, "machine \"%s\" cpu%i: ",
 					    cpu->machine->name ? cpu->machine->name : "(no name)",
 					    cpu->cpu_id);
 					if (subsystem == SUBSYS_CPU)
 						print_subsystem_name = false;
 				} else if (cpu->machine->ncpus > 1) {
-					printf("cpu%i: ", cpu->cpu_id);
+					fprintf(stderr, "cpu%i: ", cpu->cpu_id);
 					if (subsystem == SUBSYS_CPU)
 						print_subsystem_name = false;
 				}
@@ -187,28 +181,28 @@ static void debugmsg_va(struct cpu* cpu, int subsystem,
 				color_debugmsg_subsystem();
 
 			if (print_subsystem_name) {
-				printf("%s", debugmsg_subsystem_name[subsystem]);
+				fprintf(stderr, "%s", debugmsg_subsystem_name[subsystem]);
 				print_colon = true;
 			}
 
 			if (name != NULL && name[0] != '\0') {
 				if (print_subsystem_name)
-					printf(" ");
+					fprintf(stderr, " ");
 
 				if (verbosity != VERBOSITY_ERROR)
 					color_debugmsg_name();
 
-				printf("%s", name);
+				fprintf(stderr, "%s", name);
 
 				print_colon = true;
 			}
 
 			if (print_colon)
-				printf(": ");
+				fprintf(stderr, ": ");
 
 			if (show_decorations) {
 				for (size_t i = 0; i < debug_indent * DEBUG_INDENTATION; ++i)
-					printf(" ");
+					fprintf(stderr, " ");
 			}
 
 			if (verbosity == VERBOSITY_ERROR)
@@ -226,15 +220,15 @@ static void debugmsg_va(struct cpu* cpu, int subsystem,
 		case '\n':
 			color_normal();
 			if (show_decorations) {
-				printf(" ]");
+				fprintf(stderr, " ]");
 			}
 
 			debug_currently_at_start_of_line = true;
-			printf("\n");
+			fprintf(stderr, "\n");
 			break;
 
 		default:
-			printf("%c", *s);
+			fprintf(stderr, "%c", *s);
 		}
 
 		s++;
@@ -243,10 +237,10 @@ static void debugmsg_va(struct cpu* cpu, int subsystem,
 	color_normal();
 
 	if (show_decorations)
-		printf(" ]");
+		fprintf(stderr, " ]");
 
 	if (!debug_currently_at_start_of_line)
-		printf("\n");
+		fprintf(stderr, "\n");
 }
 
 
@@ -440,7 +434,7 @@ void debugmsg_change_settings(char *subsystem_name, char *n)
 	}
 
 	if (ns == 0)
-		printf("Unknown debugmsg subsystem name '%s'\n", subsystem_name);
+		fprintf(stderr, "Unknown debugmsg subsystem name '%s'\n", subsystem_name);
 	else
 		debugmsg_print_settings(subsystem_name);
 }
@@ -486,15 +480,15 @@ void debugmsg_print_settings(const char *subsystem_name)
 		}
 
 		if (n == 0)
-			printf("Subsystem:          Level:\n");
+			fprintf(stderr, "Subsystem:          Level:\n");
 
-		printf("%17s   %s\n", name, buf);
+		fprintf(stderr, "%17s   %s\n", name, buf);
 
 		++n;
 	}
 
 	if (n == 0)
-		printf("Unknown debugmsg subsystem name '%s'\n", subsystem_name);
+		fprintf(stderr, "Unknown debugmsg subsystem name '%s'\n", subsystem_name);
 }
 
 
