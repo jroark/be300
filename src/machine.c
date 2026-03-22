@@ -2982,6 +2982,8 @@ static void prid_hook(uc_engine *uc, uint64_t address,
                 m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
                 m->execve_user_handoff_active = false;
                 m->execve_user_handoff_done_keep_count = 0;
+                /* Disable quarantine — user execution is established */
+                m->execve_user_handoff_pc = 0;
             }
         }
     }
@@ -4725,6 +4727,32 @@ static void intr_hook(uc_engine *uc, uint32_t intno, void *user_data)
             m->execve_user_handoff_state = EXECVE_HANDOFF_STATE_DONE;
             m->execve_user_handoff_active = false;
             m->execve_user_handoff_done_keep_count = 0;
+
+            /*
+             * Disable the handoff quarantine: clear handoff_pc so
+             * handoff_irq_quarantine_active() returns false.
+             *
+             * The quarantine was needed during the initial kernel→user
+             * transition to catch stale intno=26 at the kernel return PC.
+             * Now that user code is executing (USER_FETCH_SEEN), further
+             * TLB misses during user execution must go through the normal
+             * kernel exception handler (0x80000000/0x80000180) so the
+             * kernel can demand-page new code/data pages from the ramdisk.
+             *
+             * Without this, the quarantine in DONE state intercepts ALL
+             * intno=26 events (via the loop_sig check in
+             * handoff_irq_quarantine_active) and handles them via load
+             * emulation instead of the kernel's TLB handler — preventing
+             * new pages from being allocated.
+             */
+            m->execve_user_handoff_pc = 0;
+            static uint32_t handoff_done_log = 0;
+            if (handoff_done_log < 4) {
+                fprintf(stderr,
+                        "[EXECVE_HANDOFF_DONE] user fetches established,"
+                        " quarantine disabled\n");
+                handoff_done_log++;
+            }
         } else if (handoff_state == EXECVE_HANDOFF_STATE_DONE) {
             m->execve_user_handoff_done_keep_count++;
             bool entry_probe_valid = trace_user_handoff_entry_probe(
