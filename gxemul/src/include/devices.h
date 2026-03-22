@@ -55,10 +55,6 @@ struct memory;
 struct pci_data;
 struct timer;
 
-/* #ifdef WITH_X11
-#include <X11/Xlib.h>
-#endif */
-
 /*  dev_8259.c:  */
 struct pic8259_data {
 	struct interrupt irq;
@@ -216,7 +212,6 @@ struct vfb_data {
 	int		visible_ysize;
 
 	size_t		framebuffer_size;
-	int		x11_xsize, x11_ysize;
 
 	int		update_x1, update_y1, update_x2, update_y2;
 
@@ -226,11 +221,7 @@ struct vfb_data {
 	char		*name;
 	char		title[100];
 
-	void (*redraw_func)(struct vfb_data *, int, int);
-
-	/*  These should always be in sync:  */
 	unsigned char	*framebuffer;
-	struct fb_window *fb_window;
 };
 #define	VFB_MFB_BT455			0x100000
 #define	VFB_MFB_BT431			0x180000

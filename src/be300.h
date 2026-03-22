@@ -95,6 +95,16 @@ typedef struct be300_state {
 
     /* Framebuffer host pointer (from GXemul dev_fb) */
     void        *fb_data;
+
+    /* Framebuffer geometry (fixed BE-300 hardware) */
+    uint32_t     fb_width;       /* 240 visible pixels */
+    uint32_t     fb_height;      /* 320 visible pixels */
+    uint32_t     fb_stride;      /* 256 pixels (allocation width for alignment) */
+
+    /* SDL handles (opaque, cast inside ui.c) */
+    void        *sdl_window;
+    void        *sdl_renderer;
+    void        *sdl_texture;
 } be300_state_t;
 
 typedef be300_state_t machine_t;

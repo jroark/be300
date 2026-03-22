@@ -853,41 +853,16 @@ static void console_sigterm(int sig)
 
 void console_init_main(struct emul *emul)
 {
-	int i, tra;
+	(void)emul;
 
 	if (console_initialized)
 		return;
 
 	/*
-	 *  Only manipulate the terminal if stdin is actually a tty.
-	 *  When running under shell redirection or pipes, skip raw mode
-	 *  to avoid corrupting the caller's terminal state.
+	 *  Skip raw terminal mode — we don't need single-char input and
+	 *  disabling ECHO/ICANON corrupts the caller's terminal.
+	 *  No SIGTERM handler needed since we don't modify terminal state.
 	 */
-	if (isatty(STDIN_FILENO)) {
-		tcgetattr(STDIN_FILENO, &console_oldtermios);
-		memcpy(&console_curtermios, &console_oldtermios,
-		    sizeof (struct termios));
-
-		console_curtermios.c_lflag &= ~ICANON;
-		console_curtermios.c_cc[VTIME] = 0;
-		console_curtermios.c_cc[VMIN] = 1;
-
-		console_curtermios.c_lflag &= ~ECHO;
-
-		tra = 0;
-		for (i=0; i<emul->n_machines; i++)
-			if (emul->machines[i]->show_trace_tree ||
-			    emul->machines[i]->instruction_trace ||
-			    emul->machines[i]->register_dump)
-				tra = 1;
-		if (!tra)
-			console_curtermios.c_iflag &= ~ICRNL;
-
-		tcsetattr(STDIN_FILENO, TCSANOW, &console_curtermios);
-
-		/*  Restore terminal on SIGTERM (timeout) and normal exit  */
-		signal(SIGTERM, console_sigterm);
-	}
 
 	console_stdout_pending = 1;
 	console_handles[MAIN_CONSOLE].fifo_head = 0;

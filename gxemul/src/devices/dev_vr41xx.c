@@ -404,8 +404,7 @@ DEVICE_TICK(vr41xx)
 	if (d->pending_timer_interrupts > 0)
 		INTERRUPT_ASSERT(d->timer_irq);
 
-	if (cpu->machine->x11_md.in_use)
-		vr41xx_keytick(cpu, d);
+	/*  KIU keyboard tick — disabled (no X11 keyboard input)  */
 }
 
 
@@ -722,9 +721,6 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 	/*  TODO: VRC4173 has the KIU at offset 0x100?  */
 	d->kiu_offset = 0x180;
 	d->kiu_console_handle = -1;
-	if (machine->x11_md.in_use)
-		d->kiu_console_handle = console_start_slave_inputonly(
-		    machine, "kiu", 1);
 
 	/*  Connect to the KIU and GIU interrupts:  */
 	snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i",
@@ -732,10 +728,7 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 	INTERRUPT_CONNECT(tmps, d->giu_irq);
 	snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i",
 	    machine->path, machine->bootstrap_cpu, VRIP_INTR_KIU);
-	INTERRUPT_CONNECT(tmps, d->kiu_irq);
-
-	if (machine->x11_md.in_use)
-		machine->main_console_handle = d->kiu_console_handle;  
+	INTERRUPT_CONNECT(tmps, d->kiu_irq);  
 
 	switch (cpumodel) {
 	case 4101:

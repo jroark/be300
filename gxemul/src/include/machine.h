@@ -36,7 +36,6 @@
 struct cpu_family;
 struct diskimage;
 struct emul;
-struct fb_window;
 struct machine_arcbios;
 struct machine_pmax;
 struct memory;
@@ -77,20 +76,6 @@ struct tick_functions {
 	void	(**f)(struct cpu *, void *);
 	void	**extra;
 };
-
-struct x11_md {
-	/*  X11/framebuffer stuff:  */
-	int	in_use;
-	int	scaledown;
-	int	scaleup;
-	int	n_display_names;
-	char	**display_names;
-	int	current_display_name_nr;	/*  updated by x11.c  */
-
-	int	n_fb_windows;
-	struct fb_window **fb_windows;
-};
-
 
 /*
  *  The machine struct:
@@ -171,8 +156,8 @@ struct machine {
 	/*  Instruction statistics:  */
 	struct statistics statistics;
 
-	/*  X11/framebuffer stuff (per machine):  */
-	struct x11_md x11_md;
+	/*  Framebuffer backing buffer (from dev_fb_init)  */
+	struct vfb_data *fb;
 
 	/*  Machine-dependent: (PROM stuff, etc.)  */
 	union {

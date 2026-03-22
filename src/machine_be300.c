@@ -13,6 +13,7 @@
 
 #include "be300.h"
 #include "loader.h"
+#include "ui.h"
 
 /* GXemul headers */
 #include "cpu.h"
@@ -209,6 +210,8 @@ void be300_run(machine_t *m)
     timer_start();
     console_init_main(emul);
 
+    ui_init(m);
+
     emul_executing = true;
     emul_shutdown = false;
 
@@ -225,6 +228,10 @@ void be300_run(machine_t *m)
             break;
 
         console_flush();
+        ui_update(m);
+
+        if (ui_should_quit(m))
+            break;
 
         /* Periodic progress report to stderr */
         if (m->cpu->ninstrs - last_report >= 50000000LL) {
@@ -233,6 +240,8 @@ void be300_run(machine_t *m)
             last_report = m->cpu->ninstrs;
         }
     }
+
+    ui_destroy(m);
 
     emul_executing = false;
     cpu_run_deinit(gxm);
@@ -244,6 +253,7 @@ void be300_run(machine_t *m)
 
 void be300_destroy(machine_t *m)
 {
+    console_deinit();
     if (!m) return;
 
     if (m->nand_data) {
