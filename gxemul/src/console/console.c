@@ -838,6 +838,19 @@ int console_change_inputability(int handle, int inputability)
  *
  *  Puts the host's console into single-character (non-canonical) mode.
  */
+/*
+ *  console_sigterm():
+ *
+ *  Restore terminal settings on SIGTERM (e.g. from timeout(1)).
+ */
+static void console_sigterm(int sig)
+{
+	(void)sig;
+	console_deinit_main();
+	_exit(124);
+}
+
+
 void console_init_main(struct emul *emul)
 {
 	int i, tra;
@@ -845,33 +858,36 @@ void console_init_main(struct emul *emul)
 	if (console_initialized)
 		return;
 
-	tcgetattr(STDIN_FILENO, &console_oldtermios);
-	memcpy(&console_curtermios, &console_oldtermios,
-	    sizeof (struct termios));
-
-	console_curtermios.c_lflag &= ~ICANON;
-	console_curtermios.c_cc[VTIME] = 0;
-	console_curtermios.c_cc[VMIN] = 1;
-
-	console_curtermios.c_lflag &= ~ECHO;
-
 	/*
-	 *  Most guest OSes seem to work ok without ~ICRNL, but Linux on
-	 *  DECstation requires it to be usable.  Unfortunately, clearing
-	 *  out ICRNL makes tracing with '-t ... |more' akward, as you
-	 *  might need to use CTRL-J instead of the enter key.  Hence,
-	 *  this bit is only cleared if we're not tracing:
+	 *  Only manipulate the terminal if stdin is actually a tty.
+	 *  When running under shell redirection or pipes, skip raw mode
+	 *  to avoid corrupting the caller's terminal state.
 	 */
-	tra = 0;
-	for (i=0; i<emul->n_machines; i++)
-		if (emul->machines[i]->show_trace_tree ||
-		    emul->machines[i]->instruction_trace ||
-		    emul->machines[i]->register_dump)
-			tra = 1;
-	if (!tra)
-		console_curtermios.c_iflag &= ~ICRNL;
+	if (isatty(STDIN_FILENO)) {
+		tcgetattr(STDIN_FILENO, &console_oldtermios);
+		memcpy(&console_curtermios, &console_oldtermios,
+		    sizeof (struct termios));
 
-	tcsetattr(STDIN_FILENO, TCSANOW, &console_curtermios);
+		console_curtermios.c_lflag &= ~ICANON;
+		console_curtermios.c_cc[VTIME] = 0;
+		console_curtermios.c_cc[VMIN] = 1;
+
+		console_curtermios.c_lflag &= ~ECHO;
+
+		tra = 0;
+		for (i=0; i<emul->n_machines; i++)
+			if (emul->machines[i]->show_trace_tree ||
+			    emul->machines[i]->instruction_trace ||
+			    emul->machines[i]->register_dump)
+				tra = 1;
+		if (!tra)
+			console_curtermios.c_iflag &= ~ICRNL;
+
+		tcsetattr(STDIN_FILENO, TCSANOW, &console_curtermios);
+
+		/*  Restore terminal on SIGTERM (timeout) and normal exit  */
+		signal(SIGTERM, console_sigterm);
+	}
 
 	console_stdout_pending = 1;
 	console_handles[MAIN_CONSOLE].fifo_head = 0;
