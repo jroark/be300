@@ -208,12 +208,20 @@ void be300_run(machine_t *m)
      * Main emulation loop: machine_run() (GXemul) runs one batch
      * of ~8K instructions, then processes hardware tick functions.
      */
+    int64_t last_report = 0;
     while (!emul_shutdown) {
         bool still_running = machine_run(gxm);
         if (!still_running)
             break;
 
         console_flush();
+
+        /* Periodic progress report to stderr */
+        if (m->cpu->ninstrs - last_report >= 50000000LL) {
+            fprintf(stderr, "[BE300] Progress: %" PRIi64 "M instrs, PC=0x%08" PRIx64 "\n",
+                    m->cpu->ninstrs / 1000000LL, m->cpu->pc);
+            last_report = m->cpu->ninstrs;
+        }
     }
 
     emul_executing = false;
