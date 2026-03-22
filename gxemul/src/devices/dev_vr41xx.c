@@ -412,6 +412,18 @@ DEVICE_TICK(vr41xx)
 	/*  Advance VR4131 RTC elapsed-time counter each tick:  */
 	rtc_tick(&d->rtc, 1);
 
+	/*
+	 *  ETIME/ECMP compare interrupt — used by Linux 2.6 VR41xx timer.
+	 *  The 2.6 kernel programs ECMP and expects an interrupt when
+	 *  ETIME reaches ECMP.  Only use this path when the RTCL1 timer
+	 *  is not active (d->timer == NULL); the 2.4 kernel creates the
+	 *  RTCL1 timer via offset 0xd0 and the initial etime >> ecmp
+	 *  would cause a spurious interrupt storm.
+	 */
+	if (d->timer == NULL &&
+	    (d->rtc.rtcint & RTCINT_ELAPSEDTIME_INT))
+		INTERRUPT_ASSERT(d->timer_irq);
+
 	/*  KIU keyboard tick — disabled (no X11 keyboard input)  */
 }
 
@@ -558,8 +570,15 @@ DEVICE_ACCESS(vr41xx)
 	case 0x8c:
 		if (writeflag == MEM_READ)
 			odata = d->msysint1;
-		else
-			d->msysint1 = idata;
+		else {
+			/*
+			 *  Keep ETIMER (bit 3) always unmasked so the
+			 *  ETIME/ECMP compare interrupt can reach the CPU.
+			 *  Linux 2.4 only enables GIU/SIU bits here; without
+			 *  this, the 2.6 ETIME timer never fires.
+			 */
+			d->msysint1 = idata | (1 << VRIP_INTR_ETIMER);
+		}
 		break;
 	case 0x94:
 		if (writeflag == MEM_READ)
