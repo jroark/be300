@@ -302,6 +302,13 @@ MACHINE_SETUP(hpcmips)
 		    address 0x8.......:  */
 		dev_ram_init(machine, 0x80000000, 0x20000000,
 		    DEV_RAM_MIRROR | DEV_RAM_MIGHT_POINT_TO_DEVICES, 0x0, NULL);
+
+		/*  Linux sfb.c uses kseg1 VA (0xAA200000) as smem_start.
+		    When fbmem.c passes this to remap_page_range/mk_pte_phys,
+		    bit 29 leaks into the physical address (PA 0x2A200000).
+		    Real VR4131 bus masks PA to 29 bits; add a mirror:  */
+		dev_ram_init(machine, 0x20000000, 0x20000000,
+		    DEV_RAM_MIRROR | DEV_RAM_MIGHT_POINT_TO_DEVICES, 0x0, NULL);
 	}
 
 	if (!machine->prom_emulation)
