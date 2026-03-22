@@ -1,7 +1,7 @@
 /*
  *  stubs.c — Stub functions for GXemul subsystems not used by be300.
  *
- *  Provides minimal implementations for: debugger, x11, diskimage,
+ *  Provides minimal implementations for: debugger, diskimage,
  *  PROM emulation, bootblock, file loader, and other unused subsystems.
  */
 
@@ -48,22 +48,6 @@ void debugger_reset(void) { }
 void debugger_init(struct emul *e) { (void)e; }
 void debugger_activate(int sig) { (void)sig; }
 void debugger_execute_cmd(const char *cmd, int len) { (void)cmd; (void)len; }
-
-/*  x11 stubs  */
-void x11_init(struct machine *m) { (void)m; }
-void x11_check_event(struct emul *e) { (void)e; }
-struct fb_window *x11_fb_init(int xsize, int ysize, const char *name,
-    int scaledown, struct machine *m) {
-	(void)xsize; (void)ysize; (void)name; (void)scaledown; (void)m;
-	return NULL;
-}
-void x11_fb_resize(struct fb_window *w, int xsize, int ysize) {
-	(void)w; (void)xsize; (void)ysize;
-}
-void x11_set_standard_properties(struct fb_window *w) { (void)w; }
-void x11_redraw_cursor(struct machine *m, int fb_number) {
-	(void)m; (void)fb_number;
-}
 
 /*  diskimage stubs  */
 void diskimage_dump_info(struct machine *m) { (void)m; }

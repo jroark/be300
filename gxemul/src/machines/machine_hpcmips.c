@@ -87,7 +87,7 @@ MACHINE_SETUP(hpcmips)
 		    ".vrip.%i addr=0x0a008680 addr_mult=4 in_use=%i"
 		    " name2=vrc4173siu",
 		    machine->path, machine->bootstrap_cpu,
-		    VRIP_INTR_SIU, !machine->x11_md.in_use);
+		    VRIP_INTR_SIU, 1 /* always active (serial console) */);
 		machine->main_console_handle = (size_t)
 		    device_add(machine, tmpstr);
 
@@ -239,8 +239,7 @@ MACHINE_SETUP(hpcmips)
 			    "ns16550 irq=%i addr=0x0c000010", 8+VRIP_INTR_SIU);
 			x = (size_t)device_add(machine, tmpstr);
 
-			if (!machine->x11_md.in_use)
-				machine->main_console_handle = x;
+			machine->main_console_handle = x;
 		}
 
 		hpc_platid_cpu_arch = 1;	/*  MIPS  */
@@ -293,7 +292,8 @@ MACHINE_SETUP(hpcmips)
 	    + (hpc_platid_model <<  8) + hpc_platid_submodel);
 
 	if (hpc_fb_addr != 0) {
-		dev_fb_init(machine, machine->memory, hpc_fb_addr, VFB_HPC,
+		machine->fb = dev_fb_init(machine, machine->memory,
+		    hpc_fb_addr, VFB_HPC,
 		    hpc_fb_xsize, hpc_fb_ysize,
 		    hpc_fb_xsize_mem, hpc_fb_ysize_mem,
 		    hpc_fb_bits, machine->machine_name);
@@ -342,9 +342,8 @@ MACHINE_SETUP(hpcmips)
 		    "res:240,bpp:4,gray,hpck:3084,inv ether=0,0x03fe0300,eth0");
 		tmp[tmplen-1] = '\0';
 
-		if (!machine->x11_md.in_use)
-			snprintf(tmp+strlen(tmp), tmplen-strlen(tmp),
-			    " console=ttyS0,115200");
+		snprintf(tmp+strlen(tmp), tmplen-strlen(tmp),
+		    " console=ttyS0,115200");
 		tmp[tmplen-1] = '\0';
 
 		if (machine->boot_string_argument[0])
@@ -386,7 +385,7 @@ MACHINE_SETUP(hpcmips)
 	store_16bit_word_in_host(cpu, (unsigned char *)&hpc_bootinfo.fb_type,
 	    hpc_fb_encoding);
 	store_16bit_word_in_host(cpu, (unsigned char *)&hpc_bootinfo.bi_cnuse,
-	    machine->x11_md.in_use? BI_CNUSE_BUILTIN : BI_CNUSE_SERIAL);
+	    BI_CNUSE_SERIAL);
 
 	/*  printf("hpc_bootinfo.platid_cpu     = 0x%08x\n",
 	    hpc_bootinfo.platid_cpu);
