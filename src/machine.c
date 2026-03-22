@@ -3659,7 +3659,22 @@ skip_entrylo_fixup:
         (m->pending_excode == MIPS_EXCCODE_TLBL ||
          m->pending_excode == MIPS_EXCCODE_TLBS)) {
         uint32_t rt = (insn >> 16) & 0x1Fu;
-        uint64_t ctx = (uint64_t)(uint32_t)m->shadow_cp0_context;
+        uint32_t ctx32 = (uint32_t)m->shadow_cp0_context;
+        /*
+         * Force Context address into kseg0 if PTEBase points to kuseg.
+         *
+         * The kernel may set PTEBase=0 (via mtc0 zero, $4), making
+         * Context produce kuseg addresses (e.g. 0x00155540).  On real
+         * MIPS, the TLB refill handler reads PTEs from this address,
+         * which goes through the TLB (wired entries cover the page table).
+         * In Unicorn, kuseg is a flat PA region — separate from kseg0.
+         * The kernel writes PTEs to kseg0 (0x80155540), so the PA copy
+         * at 0x00155540 becomes stale.  Forcing Context into kseg0
+         * makes the refill handler read from the coherent kseg0 region.
+         */
+        if (ctx32 < 0x80000000u && ctx32 < (uint32_t)m->cfg.sdram_size)
+            ctx32 |= 0x80000000u;
+        uint64_t ctx = (uint64_t)ctx32;
         uc_reg_write(uc, UC_MIPS_REG_0 + (int)rt, &ctx);
         static uint32_t context_inject_log = 0;
         if (context_inject_log < 128) {
