@@ -2710,6 +2710,29 @@ static void prid_hook(uc_engine *uc, uint64_t address,
     if (!read_insn_best_effort(uc, address, &insn))
         return;
 
+    /* Deferred TLB refill handler patch: check on first entry to refill
+     * vector (0x80000000).  This fires AFTER trap_init has installed the
+     * handler, unlike the kernel_vm_ready check which may fire too early. */
+    if ((uint32_t)address == 0x80000000u && !m->tlb_refill_patched &&
+        !is_wince_boot_machine(m)) {
+        m->tlb_refill_patched = true;
+        uint32_t srl_insn = 0;
+        uc_mem_read(uc, 0x80000020u, &srl_insn, 4);
+        if (srl_insn == 0x001AD0C2u) {  /* srl k0, k0, 3 (R4000 8-byte PTE) */
+            uint32_t patched = 0x001AD042u;  /* srl k0, k0, 1 (VR41xx 4-byte PTE) */
+            uc_mem_write(uc, 0x80000020u, &patched, 4);
+            uc_ctl_flush_tb(uc);
+            fprintf(stderr,
+                    "[TLB_REFILL_PATCH] patched srl shift at 0x80000020:"
+                    " 0x%08X -> 0x%08X (4-byte PTE fix)\n",
+                    srl_insn, patched);
+        } else {
+            fprintf(stderr,
+                    "[TLB_REFILL_CHECK] insn@0x80000020=0x%08X (no patch needed)\n",
+                    srl_insn);
+        }
+    }
+
     if (is_wince_boot_machine(m))
         m->wince_code_hook_seq++;
 
@@ -3470,6 +3493,35 @@ skip_entrylo_fixup:
                         "[KERNEL_VM_READY] armed at PC=0x%08X (first TLBW%c)\n",
                         (uint32_t)address,
                         (insn == 0x42000002u) ? 'I' : 'R');
+
+                /*
+                 * Patch the TLB refill handler at 0x80000000 if the kernel
+                 * installed except_vec0_r4000 (8-byte PTE shift) instead of
+                 * except_vec0_nevada (4-byte PTE shift).
+                 *
+                 * The kernel's traps.c installs except_vec0_nevada only for
+                 * CPU_NEVADA, but the VR4131 is identified as CPU_VR41XX.
+                 * The R4000 handler uses "srl k0, k0, 3" (0x001AD0C2) for
+                 * the Context→PTE offset, which assumes 8-byte PTEs.  The
+                 * VR41xx family uses 4-byte PTEs and needs "srl k0, k0, 1"
+                 * (0x001AD042).  With the wrong shift, every TLB refill
+                 * reads from offset+8 in the PTE table (wrong entry).
+                 */
+                uint32_t refill_srl = 0;
+                uc_mem_read(uc, 0x80000020u, &refill_srl, 4);
+                fprintf(stderr,
+                        "[TLB_REFILL_CHECK] insn@0x80000020=0x%08X"
+                        " (need 0x001AD0C2 for R4000 handler)\n",
+                        refill_srl);
+                if (refill_srl == 0x001AD0C2u) {
+                    uint32_t patched = 0x001AD042u;  /* srl k0, k0, 1 */
+                    uc_mem_write(uc, 0x80000020u, &patched, 4);
+                    uc_ctl_flush_tb(uc);
+                    fprintf(stderr,
+                            "[TLB_REFILL_PATCH] patched srl shift at 0x80000020:"
+                            " 0x%08X -> 0x%08X (4-byte PTE fix)\n",
+                            refill_srl, patched);
+                }
             }
 
             uint32_t badvaddr = (uint32_t)m->shadow_cp0_badvaddr;
@@ -4071,6 +4123,48 @@ skip_entrylo_fixup:
                                 (uint64_t)(uint32_t)status,
                                 m->has_saved_exception ? 1u : 0u);
                         eret_ktlb_ok_log++;
+                    }
+                    /* Diagnostic: dump pgd→pte chain for the code page 0x2AAA8000
+                     * to understand why the PTE gets zeroed. */
+                    if ((fault_va & 0xFFFFF000u) == 0x2AAA8000u) {
+                        static uint32_t pte_diag_log = 0;
+                        if (pte_diag_log < 32) {
+                            uint32_t pgd_ptr = 0;
+                            uc_mem_read(uc, 0x80260CD8u, &pgd_ptr, 4);
+                            uint32_t pgd_idx = (0x2AAA8000u >> 22);
+                            uint32_t pte_page = 0;
+                            uc_mem_read(uc, (uint64_t)pgd_ptr + pgd_idx * 4, &pte_page, 4);
+                            /* PTE offset from Context: (Context >> 1) & 0xFF8
+                             * Context for VA 0x2AAA8000: BadVPN2 = 0x15554
+                             * Context[22:4] = 0x15554, Context = 0x155540
+                             * (Context >> 1) & 0xFF8 = (0x0AAAA0) & 0xFF8 = 0xAA0 */
+                            uint32_t pte_off = 0xAA0u;
+                            uint32_t pte0 = 0, pte1 = 0;
+                            uc_mem_read(uc, (uint64_t)pte_page + pte_off, &pte0, 4);
+                            uc_mem_read(uc, (uint64_t)pte_page + pte_off + 4, &pte1, 4);
+                            /* Also read from PA alias for comparison */
+                            uint32_t pte_page_pa = pte_page & 0x1FFFFFFFu;
+                            uint32_t pte0_pa = 0, pte1_pa = 0;
+                            uc_mem_read(uc, (uint64_t)pte_page_pa + pte_off, &pte0_pa, 4);
+                            uc_mem_read(uc, (uint64_t)pte_page_pa + pte_off + 4, &pte1_pa, 4);
+                            fprintf(stderr,
+                                    "[PTE_DIAG] pgd_ptr=0x%08X pgd[%u]=0x%08X"
+                                    " pte@kseg0[0x%08X+0x%X]=0x%08X/0x%08X"
+                                    " pte@pa[0x%08X+0x%X]=0x%08X/0x%08X\n",
+                                    pgd_ptr, pgd_idx, pte_page,
+                                    pte_page, pte_off, pte0, pte1,
+                                    pte_page_pa, pte_off, pte0_pa, pte1_pa);
+                            /* Dump the TLB refill handler at 0x80000000 */
+                            if (pte_diag_log == 0) {
+                                uint32_t hdl[24] = {0};
+                                uc_mem_read(uc, 0x80000000u, hdl, sizeof(hdl));
+                                fprintf(stderr, "[REFILL_HANDLER_DUMP]");
+                                for (int i = 0; i < 24; i++)
+                                    fprintf(stderr, " %08X", hdl[i]);
+                                fprintf(stderr, "\n");
+                            }
+                            pte_diag_log++;
+                        }
                     }
 
                     m->pending_epc          = 0;
