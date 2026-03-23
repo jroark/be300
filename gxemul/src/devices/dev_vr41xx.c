@@ -715,6 +715,26 @@ DEVICE_ACCESS(vr41xx)
 			    "0x%" PRIx64" ]\n", (uint64_t) relative_addr);
 	}
 
+	/*
+	 *  Log all VR4131 register accesses during emulation so we can
+	 *  trace WinCE's timer/interrupt setup.
+	 */
+	{
+		static int vr41xx_log_count = 0;
+		/* Only log NK.exe accesses (skip SPL at 0x80F0xxxx) */
+		uint32_t norm_pc = (uint32_t)cpu->pc & 0x1FFFFFFFu;
+		if (vr41xx_log_count < 10000 &&
+		    norm_pc < 0x00F00000u) {
+			fprintf(stderr, "[VR41XX] %s off=0x%03x val=0x%04x"
+			    " PC=0x%08" PRIx64 "\n",
+			    writeflag == MEM_WRITE ? "W" : "R",
+			    (unsigned)relative_addr,
+			    (unsigned)(writeflag == MEM_WRITE ? idata : odata),
+			    (uint64_t)cpu->pc);
+			vr41xx_log_count++;
+		}
+	}
+
 ret:
 	/*
 	 *  Recalculate interrupt assertions:
