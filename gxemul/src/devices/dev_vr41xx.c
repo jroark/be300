@@ -704,6 +704,49 @@ DEVICE_ACCESS(vr41xx)
 			    (uint32_t)idata);
 		break;
 
+	/*
+	 *  VR4131 GIU (GPIO) registers at 0x140-0x15C.
+	 *  GIUPIODL (0x144) returns pin input state — WinCE checks this
+	 *  to determine hardware/power status during OAL init.
+	 */
+	case 0x140:	/*  GIUIOSELL - I/O direction select low  */
+	case 0x142:	/*  GIUIOSELH - I/O direction select high  */
+	case 0x146:	/*  GIUPIODH - Pin I/O data high  */
+	case 0x148:	/*  GIUINTSTATL  */
+	case 0x14a:	/*  GIUINTSTATH  */
+	case 0x14c:	/*  GIUINTENL  */
+	case 0x14e:	/*  GIUINTENH  */
+	case 0x150:	/*  GIUINTTYPL  */
+	case 0x152:	/*  GIUINTTYPH  */
+	case 0x154:	/*  GIUINTALSELL  */
+	case 0x156:	/*  GIUINTALSELH  */
+	case 0x158:	/*  GIUINTHTSELL  */
+	case 0x15a:	/*  GIUINTHTSELH  */
+		/*  Simple latch for most GIU registers  */
+		{
+			int idx = ((int)relative_addr - 0x140) / 2;
+			if (idx >= 0 && idx < 16) {
+				static uint16_t giu_regs[16];
+				if (writeflag == MEM_WRITE)
+					giu_regs[idx] = (uint16_t)idata;
+				else
+					odata = giu_regs[idx];
+			}
+		}
+		break;
+	case 0x144:	/*  GIUPIODL - Pin I/O data low  */
+		if (writeflag == MEM_WRITE) {
+			/*  Just latch output bits  */
+		} else {
+			/*
+			 *  Return GPIO pin state for BE-300.
+			 *  Bit 1 (GIU1): high = power button not pressed
+			 *  Other bits: reflect warm-state hardware survey
+			 */
+			odata = 0x0490;
+		}
+		break;
+
 	default:
 	unhandled:
 		if (writeflag == MEM_WRITE)
