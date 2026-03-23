@@ -183,6 +183,50 @@ machine_t *be300_create(const machine_config_t *cfg)
             nand_init(&m->nand, m->nand_data, m->nand_size);
         }
 
+        /*
+         * Map RAM at PA 0x1FC00000 for BEV=1 exception vectors.
+         *
+         * With prom_emulation=0 (NAND boot), CP0 Status has BEV=1.
+         * The SPL doesn't clear BEV, so NK.exe starts with BEV=1.
+         * Exception vectors (TLB refill, general, interrupt) go to
+         * PA 0x1FC00000 + offset.  Real BE-300 hardware has 16K ROM
+         * there (per docs/hardware.txt).  Without this RAM, exception
+         * handlers can't be installed and WinCE can't set up virtual
+         * memory or run the scheduler.
+         */
+        dev_ram_init(gxm, 0x1FC00000, 0x4000, DEV_RAM_RAM, 0, NULL);
+
+        /*
+         * Pre-fill BEV exception vectors with ERET (0x42000018) so
+         * early exceptions during NK.exe init return cleanly instead
+         * of executing NOPs into unmapped memory.
+         *
+         * BEV=1 vectors (R4000):
+         *   0x000: TLB Refill (kseg0/1)
+         *   0x100: Cache Error
+         *   0x180: General Exception
+         *   0x200: TLB Refill (64-bit, also used on 32-bit VR4131)
+         *   0x280: XTLB Refill
+         *   0x300: Cache Error (secondary)
+         *   0x380: General Exception (alternate)
+         */
+        {
+            /* ERET = 0x42000018 (COP0 | CO | func=ERET) */
+            uint32_t eret = 0x42000018u;
+            static const uint32_t vec_offsets[] = {
+                0x000, 0x080, 0x100, 0x180,
+                0x200, 0x280, 0x300, 0x380
+            };
+            for (unsigned i = 0; i < sizeof(vec_offsets)/sizeof(vec_offsets[0]); i++) {
+                /* Use kseg0 VA (0x80000000 | PA) to bypass TLB */
+                uint64_t va = 0xffffffff80000000ULL |
+                              (0x1FC00000ULL + vec_offsets[i]);
+                store_32bit_word(m->cpu, va, eret);
+            }
+        }
+
+        fprintf(stderr, "[BE300] Mapped 16K RAM at PA 0x1FC00000 with ERET stubs for BEV vectors\n");
+
         /* Register VRC4173 latch (catch-all) BEFORE NAND so NAND takes priority */
         extern void be300_register_vrc4173_latch(struct machine *, bool);
         be300_register_vrc4173_latch(gxm, cfg->log_mmio);
