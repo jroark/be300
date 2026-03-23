@@ -333,7 +333,7 @@ void be300_run(machine_t *m)
                 uint32_t norm = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
                 if (norm >= 0x00060000u && norm < 0x00100000u) {
                     uint64_t old_pc = m->cpu->pc;
-                    m->cpu->pc += 0x8C;  /* skip to JAL cold_boot_init */
+                    m->cpu->pc += 0x9C;  /* skip to warm init (JAL 0x80078BC0) at 0xA0079634 */
                     m->cpu->is_halted = false;
                     cold_boot_count++;
                     fprintf(stderr,
@@ -341,20 +341,49 @@ void be300_run(machine_t *m)
                         " PC 0x%08" PRIx64 " → 0x%08" PRIx64 "\n",
                         old_pc, m->cpu->pc);
 
+                    /* Dump cold boot init function on first redirect */
+                    if (cold_boot_count == 1) {
+                        fprintf(stderr, "[COLD_INIT] Dumping 0x80079DF8:\n");
+                        for (int i = 0; i < 128; i++) {
+                            unsigned char buf[4];
+                            uint64_t addr = 0xffffffff80079DF8ULL + i * 4;
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    addr, buf, 4, MEM_READ, CACHE_DATA)) {
+                                uint32_t w = buf[0] | (buf[1]<<8) |
+                                             (buf[2]<<16) | (buf[3]<<24);
+                                fprintf(stderr, "[COLD_INIT] 0x%08" PRIx64
+                                    ": %08X\n", addr, w);
+                            }
+                        }
+                    }
+
                     /*
-                     * Invalidate the resume save area at PA 0x00002200
-                     * so the warm-boot check at 0x80079AC4 returns 0
-                     * (cold boot).  On real hardware this area contains
-                     * the last saved CP0/context state; when empty
-                     * (zeros), some WinCE OALs misdetect warm boot.
-                     * Fill with 0xBD (uninitialized marker) to force
-                     * cold boot path.
+                     * Seed the CP0 save area at PA 0x00002280 with
+                     * values from a real BE-300 (BEDiag hwseed dump).
+                     * The warm resume code at 0x80079668 loads CP0
+                     * registers from this area after the init functions
+                     * have run.  Key: Status at offset 0xB0 must have
+                     * BEV=0 and IE bits set for proper operation.
+                     *
+                     * From BEDiag resume_ctx at PA 0x00002200+0x80:
                      */
                     {
-                        uint64_t save_va = 0xffffffff80002200ULL;
-                        for (int si = 0; si < 0x100; si += 4)
-                            store_32bit_word(m->cpu, save_va + si,
-                                0xBDBDBDBDu);
+                        static const uint32_t cp0_seed[] = {
+                            /* off 0x80: Index, Random, EntryLo0, EntryLo1 */
+                            0x00000000, 0x00000007, 0x00000000, 0x00000000,
+                            /* off 0x90: Context, PageMask, Wired, reserved */
+                            0x00000000, 0x00001800, 0x00000000, 0x00000000,
+                            /* off 0xA0: BadVAddr, Count, EntryHi, Compare */
+                            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+                            /* off 0xB0: Status, Cause, EPC, PRId */
+                            0x1000FF01, 0x00000000, 0x00000000, 0x00000C80,
+                            /* off 0xC0: Config, LLAddr, reserved, reserved */
+                            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+                        };
+                        uint64_t base = 0xffffffff80002280ULL;
+                        for (unsigned si = 0; si < sizeof(cp0_seed)/4; si++)
+                            store_32bit_word(m->cpu, base + si * 4,
+                                cp0_seed[si]);
                     }
 
                     /* Dump exception vectors and crash area */
