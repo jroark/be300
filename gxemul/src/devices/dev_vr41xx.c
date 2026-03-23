@@ -58,7 +58,7 @@
 
 #define	DEV_VR41XX_TICKSHIFT		14
 
-#define	DEV_VR41XX_LENGTH		0x800	/*  TODO?  */
+#define	DEV_VR41XX_LENGTH		0x800	/*  up to (not including) SIU at 0x800  */
 struct vr41xx_data {
 	struct interrupt cpu_irq;		/*  Connected to MIPS irq 2  */
 	int		cpumodel;		/*  Model nr, e.g. 4121  */
@@ -413,7 +413,8 @@ DEVICE_TICK(vr41xx)
 	rtc_tick(&d->rtc, 1);
 
 	/*
-	 *  ETIME/ECMP compare interrupt — used by Linux 2.6 VR41xx timer.
+	 *  ETIME/ECMP compare interrupt — used by Linux 2.6 VR41xx timer
+	 *  and WinCE elapsed time timer.
 	 *  The 2.6 kernel programs ECMP and expects an interrupt when
 	 *  ETIME reaches ECMP.  Only use this path when the RTCL1 timer
 	 *  is not active (d->timer == NULL); the 2.4 kernel creates the
@@ -423,6 +424,8 @@ DEVICE_TICK(vr41xx)
 	if (d->timer == NULL &&
 	    (d->rtc.rtcint & RTCINT_ELAPSEDTIME_INT))
 		INTERRUPT_ASSERT(d->timer_irq);
+
+	/* No wake signal for hibernate — see idle handler */
 
 	/*  KIU keyboard tick — disabled (no X11 keyboard input)  */
 }

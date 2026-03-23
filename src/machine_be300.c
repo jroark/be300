@@ -29,32 +29,41 @@
 #include "settings.h"
 
 /* GXemul externs */
-extern bool emul_shutdown;
-extern bool emul_executing;
+extern volatile bool emul_shutdown;
+extern volatile bool emul_executing;
 
 
 machine_t *be300_create(const machine_config_t *cfg)
 {
+    static bool subsystems_initialized = false;
     machine_t *m = calloc(1, sizeof(machine_t));
     if (!m) return NULL;
     m->cfg = *cfg;
 
     /*
-     * Initialize GXemul subsystems.
+     * Initialize GXemul subsystems once per process.
      */
-    debugmsg_init();
+    if (!subsystems_initialized) {
+        debugmsg_init();
 
-    /* Initialize global settings before console_init needs them */
-    extern void be300_init_global_settings(void);
-    be300_init_global_settings();
+        /* Initialize global settings before console_init needs them */
+        extern void be300_init_global_settings(void);
+        be300_init_global_settings();
 
-    cpu_init();
-    device_init();
-    timer_init();
-    console_init();
+        cpu_init();
+        device_init();
+        timer_init();
+        console_init();
 
-    /* Initialize machine type registry (registers hpcmips) */
-    machine_init();
+        /* Initialize machine type registry (registers hpcmips) */
+        machine_init();
+        
+        subsystems_initialized = true;
+    }
+
+    /* Reset global execution flags for a new run */
+    emul_executing = false;
+    emul_shutdown = false;
 
     /*
      * Create the GXemul emul and machine objects.
@@ -213,7 +222,6 @@ void be300_run(machine_t *m)
     ui_init(m);
 
     emul_executing = true;
-    emul_shutdown = false;
 
     signal(SIGINT, SIG_DFL);
 
@@ -222,16 +230,35 @@ void be300_run(machine_t *m)
      * of ~8K instructions, then processes hardware tick functions.
      */
     int64_t last_report = 0;
-    while (!emul_shutdown) {
-        bool still_running = machine_run(gxm);
-        if (!still_running)
+    int loop_count = 0;
+    while (1) {
+        __sync_synchronize();
+        if (emul_shutdown) {
+            fprintf(stderr, "[BE300] Loop exit: emul_shutdown is true\n");
             break;
+        }
+
+        if (loop_count % 1000 == 0) {
+            fprintf(stderr, "[BE300] Loop batch %d, PC=0x%08" PRIx64 "\n", loop_count, m->cpu->pc);
+        }
+
+        bool still_running = machine_run(gxm);
+        if (!still_running) {
+            fprintf(stderr, "[BE300] Loop exit: machine no longer running\n");
+            break;
+        }
+
+        if (loop_count % 1000 == 0) {
+            fprintf(stderr, "[BE300] Loop batch %d done\n", loop_count);
+        }
 
         console_flush();
         ui_update(m);
 
-        if (ui_should_quit(m))
+        if (ui_should_quit(m)) {
+            fprintf(stderr, "[BE300] Loop exit: ui_should_quit is true\n");
             break;
+        }
 
         /* Periodic progress report to stderr */
         if (m->cpu->ninstrs - last_report >= 50000000LL) {
@@ -239,7 +266,14 @@ void be300_run(machine_t *m)
                     m->cpu->ninstrs / 1000000LL, m->cpu->pc);
             last_report = m->cpu->ninstrs;
         }
+
+        if (++loop_count % 100 == 0) {
+            // Optional: add extremely verbose logging here if needed
+        }
     }
+
+    /* Save framebuffer screenshot on exit */
+    ui_save_screenshot(m);
 
     ui_destroy(m);
 
@@ -253,7 +287,6 @@ void be300_run(machine_t *m)
 
 void be300_destroy(machine_t *m)
 {
-    console_deinit();
     if (!m) return;
 
     if (m->nand_data) {
