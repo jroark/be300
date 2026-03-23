@@ -328,18 +328,58 @@ void be300_run(machine_t *m)
          * bytes forward to the cold boot init path.
          */
         if (m->cpu->is_halted) {
-            static bool cold_boot_done = false;
-            if (!cold_boot_done) {
+            static int cold_boot_count = 0;
+            if (cold_boot_count < 5) {
                 uint32_t norm = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
                 if (norm >= 0x00060000u && norm < 0x00100000u) {
                     uint64_t old_pc = m->cpu->pc;
-                    m->cpu->pc += 0x40;
+                    m->cpu->pc += 0x8C;  /* skip to JAL cold_boot_init */
                     m->cpu->is_halted = false;
-                    cold_boot_done = true;
+                    cold_boot_count++;
                     fprintf(stderr,
                         "[BE300] Cold boot: skip hibernate+resume,"
                         " PC 0x%08" PRIx64 " → 0x%08" PRIx64 "\n",
                         old_pc, m->cpu->pc);
+
+                    /*
+                     * Invalidate the resume save area at PA 0x00002200
+                     * so the warm-boot check at 0x80079AC4 returns 0
+                     * (cold boot).  On real hardware this area contains
+                     * the last saved CP0/context state; when empty
+                     * (zeros), some WinCE OALs misdetect warm boot.
+                     * Fill with 0xBD (uninitialized marker) to force
+                     * cold boot path.
+                     */
+                    {
+                        uint64_t save_va = 0xffffffff80002200ULL;
+                        for (int si = 0; si < 0x100; si += 4)
+                            store_32bit_word(m->cpu, save_va + si,
+                                0xBDBDBDBDu);
+                    }
+
+                    /* Dump exception vectors and crash area */
+                    fprintf(stderr, "[EXC_DUMP] Exception vectors:\n");
+                    static const uint64_t addrs[] = {
+                        0xffffffff80000000ULL, /* TLB refill */
+                        0xffffffff80000180ULL, /* General exception */
+                        0xffffffff80000200ULL, /* TLB refill (alt) */
+                        0xffffffff80000380ULL, /* General (alt) */
+                        0xffffffff80002400ULL, /* crash address */
+                    };
+                    for (int a = 0; a < 5; a++) {
+                        for (int i = 0; i < 8; i++) {
+                            unsigned char buf[4];
+                            uint64_t addr = addrs[a] + i * 4;
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    addr, buf, 4, MEM_READ, CACHE_DATA)) {
+                                uint32_t w = buf[0] | (buf[1]<<8) |
+                                             (buf[2]<<16) | (buf[3]<<24);
+                                fprintf(stderr, "[EXC_DUMP] 0x%08" PRIx64
+                                    ": %08X\n", addr, w);
+                            }
+                        }
+                        fprintf(stderr, "[EXC_DUMP] ---\n");
+                    }
                 }
             }
         }
