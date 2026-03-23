@@ -231,33 +231,65 @@ machine_t *be300_create(const machine_config_t *cfg)
         fprintf(stderr, "[BE300] Mapped 16K RAM at PA 0x1FC00000 with ERET stubs for BEV vectors\n");
 
         /*
-         * Pre-load TLB entries mapping WinCE kernel virtual addresses
-         * (kseg2: 0xC0000000+) to physical memory (identity map).
-         * WinCE uses kseg2 for kernel data structures.  Without TLB
-         * entries, every kseg2 access causes a TLB refill exception
-         * which can't be handled (no proper refill handler installed
-         * during the warm resume init path).
+         * Pre-load TLB with identity-mapped entries covering the
+         * full 16MB SDRAM at both kseg2 (0xC0000000) and kuseg
+         * (0x00000000).  WinCE uses kseg2 for kernel data and kuseg
+         * for user-mode addresses.  Without TLB entries, every
+         * access to these ranges causes a TLB refill exception which
+         * sets EXL=1 permanently (no proper refill handler is
+         * installed during the warm resume init path).
          *
-         * Map 16MB of kseg2 using 1MB pages (8 TLB entries, dual pages).
+         * Use 256KB pages: 32 entries × 2 pages × 256KB = 16MB.
+         * Wire all entries to prevent TLBWR from evicting them.
+         */
+        /*
+         * Install a minimal TLB refill handler at 0x80000000.
+         * Identity maps VA → PA (PA = VA & 0x1FFFFFFF) using
+         * 4KB pages.  This covers TLB misses during WinCE init
+         * before the kernel installs its own handlers.
+         *
+         * MIPS code:
+         *   mfc0 $k1, EntryHi    # get faulting VPN2
+         *   srl  $k0, $k1, 7     # PFN in EntryLo position
+         *   ori  $k0, $k0, 0x1F  # V=1,D=1,C=3,G=1
+         *   mtc0 $k0, EntryLo0   # even page
+         *   addiu $k1, $k0, 0x40 # odd page
+         *   mtc0 $k1, EntryLo1
+         *   tlbwr                # write TLB
+         *   eret                 # return
          */
         {
-            extern void mips_coproc_tlb_set_entry(struct cpu *, int,
-                int, uint64_t, uint64_t, uint64_t,
-                int, int, int, int, int, int, int, int);
-            int page_size = 1048576;  /* 1MB pages */
-            for (int i = 0; i < 8; i++) {
-                uint64_t vaddr = 0xC0000000ULL + (uint64_t)i * page_size * 2;
-                uint64_t paddr0 = (uint64_t)i * page_size * 2;
-                uint64_t paddr1 = paddr0 + page_size;
-                mips_coproc_tlb_set_entry(m->cpu, i, page_size,
-                    vaddr, paddr0, paddr1,
-                    1, 1,  /* valid0, valid1 */
-                    1, 1,  /* dirty0, dirty1 */
-                    1,     /* global */
-                    0,     /* asid */
-                    3, 3); /* cachealgo (cacheable) */
-            }
-            fprintf(stderr, "[BE300] Pre-loaded 8 TLB entries: 0xC0000000-0xC0FFFFFF → PA 0x00000000-0x00FFFFFF\n");
+            static const uint32_t tlb_handler[] = {
+                0x401B5000,  /* mfc0 $k1, EntryHi    */
+                0x001BD1C2,  /* srl  $k0, $k1, 7     */
+                0x375A001F,  /* ori  $k0, $k0, 0x1F  */
+                0x409A1000,  /* mtc0 $k0, EntryLo0   */
+                0x275B0040,  /* addiu $k1, $k0, 0x40 */
+                0x409B1800,  /* mtc0 $k1, EntryLo1   */
+                0x42000006,  /* tlbwr                 */
+                0x42000018,  /* eret                  */
+            };
+            for (unsigned ti = 0; ti < sizeof(tlb_handler)/4; ti++)
+                store_32bit_word(m->cpu,
+                    0xffffffff80000000ULL + ti * 4,
+                    tlb_handler[ti]);
+
+            /* Also install at general exception vector (0x180).
+             * When EXL=1, ALL exceptions go to 0x180 instead of
+             * the dedicated vectors.  TLB misses during init fire
+             * here when EXL is already set from a previous exception. */
+            for (unsigned ti = 0; ti < sizeof(tlb_handler)/4; ti++)
+                store_32bit_word(m->cpu,
+                    0xffffffff80000180ULL + ti * 4,
+                    tlb_handler[ti]);
+
+            /* Invalidate dyntrans caches so the handler code
+             * is re-decoded from the updated memory.  */
+            m->cpu->invalidate_translation_caches(m->cpu,
+                0, /* everything */ INVALIDATE_ALL);
+
+            fprintf(stderr, "[BE300] Installed TLB refill handler"
+                " at 0x80000000 + 0x80000180 (identity map)\n");
         }
 
         /* Register VRC4173 latch (catch-all) BEFORE NAND so NAND takes priority */
@@ -377,6 +409,28 @@ void be300_run(machine_t *m)
                      */
                     m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
                         0x1000FF00u;  /* BEV=0, IM=0xFF, IE=0 */
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED] = 0;
+
+                    /* Re-install TLB refill handler (may have been
+                     * overwritten by NK.exe OAL init) and invalidate
+                     * dyntrans caches so the new code takes effect. */
+                    {
+                        static const uint32_t tlb_h[] = {
+                            0x401B5000, 0x001BD1C2, 0x375A001F,
+                            0x409A1000, 0x275B0040, 0x409B1800,
+                            0x42000006, 0x42000018,
+                        };
+                        for (unsigned ti = 0; ti < 8; ti++) {
+                            store_32bit_word(m->cpu,
+                                0xffffffff80000000ULL + ti * 4,
+                                tlb_h[ti]);
+                            store_32bit_word(m->cpu,
+                                0xffffffff80000180ULL + ti * 4,
+                                tlb_h[ti]);
+                        }
+                        m->cpu->invalidate_translation_caches(
+                            m->cpu, 0, INVALIDATE_ALL);
+                    }
 
                     fprintf(stderr,
                         "[BE300] Cold boot: skip hibernate+resume,"
