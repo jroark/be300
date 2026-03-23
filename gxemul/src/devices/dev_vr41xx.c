@@ -630,7 +630,8 @@ DEVICE_ACCESS(vr41xx)
 		}
 		break;
 
-	case 0xd0:	/*  RTCL1_L_REG_W  */
+	case 0xd0:	/*  RTCL1_L_REG_W (older VR41xx)  */
+	case 0x110:	/*  RTCL1_L_REG_W (VR4131 relocated)  */
 		if (writeflag == MEM_WRITE && idata != 0) {
 			int hz = RTCL1_L_HZ / idata;
 			debug("[ vr41xx: rtc interrupts at %i Hz ]\n", hz);
@@ -640,7 +641,8 @@ DEVICE_ACCESS(vr41xx)
 				timer_update_frequency(d->timer, hz);
 		}
 		break;
-	case 0xd2:	/*  RTCL1_H_REG_W  */
+	case 0xd2:	/*  RTCL1_H_REG_W (older VR41xx)  */
+	case 0x112:	/*  RTCL1_H_REG_W (VR4131 relocated)  */
 		break;
 
 	/*
