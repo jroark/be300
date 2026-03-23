@@ -52,6 +52,7 @@
 #include "thirdparty/vr_rtcreg.h"
 
 #include "hw/rtc.h"
+#include "cop0.h"
 
 
 /*  #define debug fatal  */
@@ -406,8 +407,27 @@ DEVICE_TICK(vr41xx)
 {
 	struct vr41xx_data *d = (struct vr41xx_data *) extra;
 
-	if (d->pending_timer_interrupts > 0)
+	if (d->pending_timer_interrupts > 0) {
 		INTERRUPT_ASSERT(d->timer_irq);
+		{
+			static int timer_fire_diag = 0;
+			if (timer_fire_diag < 3) {
+				uint32_t st = cpu->cd.mips.coproc[0]->
+				    reg[COP0_STATUS];
+				uint32_t ca = cpu->cd.mips.coproc[0]->
+				    reg[COP0_CAUSE];
+				fprintf(stderr,
+				    "[VR41XX_TICK] timer fire! pending=%d"
+				    " sysint1=0x%04x msysint1=0x%04x"
+				    " Status=0x%08x Cause=0x%08x"
+				    " PC=0x%08" PRIx64 "\n",
+				    d->pending_timer_interrupts,
+				    d->sysint1, d->msysint1,
+				    st, ca, (uint64_t)cpu->pc);
+				timer_fire_diag++;
+			}
+		}
+	}
 
 	/*  Advance VR4131 RTC elapsed-time counter each tick:  */
 	rtc_tick(&d->rtc, 1);
@@ -634,7 +654,10 @@ DEVICE_ACCESS(vr41xx)
 	case 0x110:	/*  RTCL1_L_REG_W (VR4131 relocated)  */
 		if (writeflag == MEM_WRITE && idata != 0) {
 			int hz = RTCL1_L_HZ / idata;
-			debug("[ vr41xx: rtc interrupts at %i Hz ]\n", hz);
+			fprintf(stderr, "[VR41XX_TIMER] RTCL1 off=0x%03x"
+			    " val=0x%04x → %d Hz timer=%p\n",
+			    (int)relative_addr, (int)idata,
+			    hz, (void*)d->timer);
 			if (d->timer == NULL)
 				d->timer = timer_add(hz, timer_tick, d);
 			else

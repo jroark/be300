@@ -18,6 +18,7 @@
 /* GXemul headers */
 #include "cpu.h"
 #include "cpu_mips.h"
+#include "cop0.h"
 #include "emul.h"
 #include "device.h"
 #include "devices.h"
@@ -218,14 +219,46 @@ machine_t *be300_create(const machine_config_t *cfg)
                 0x200, 0x280, 0x300, 0x380
             };
             for (unsigned i = 0; i < sizeof(vec_offsets)/sizeof(vec_offsets[0]); i++) {
-                /* Use kseg0 VA (0x80000000 | PA) to bypass TLB */
+                /* BEV=1 vectors at 0xBFC00000 only */
                 uint64_t va = 0xffffffff80000000ULL |
                               (0x1FC00000ULL + vec_offsets[i]);
                 store_32bit_word(m->cpu, va, eret);
+                /* Normal vectors at 0x80000000 left as zeros —
+                   init functions will install proper handlers */
             }
         }
 
         fprintf(stderr, "[BE300] Mapped 16K RAM at PA 0x1FC00000 with ERET stubs for BEV vectors\n");
+
+        /*
+         * Pre-load TLB entries mapping WinCE kernel virtual addresses
+         * (kseg2: 0xC0000000+) to physical memory (identity map).
+         * WinCE uses kseg2 for kernel data structures.  Without TLB
+         * entries, every kseg2 access causes a TLB refill exception
+         * which can't be handled (no proper refill handler installed
+         * during the warm resume init path).
+         *
+         * Map 16MB of kseg2 using 1MB pages (8 TLB entries, dual pages).
+         */
+        {
+            extern void mips_coproc_tlb_set_entry(struct cpu *, int,
+                int, uint64_t, uint64_t, uint64_t,
+                int, int, int, int, int, int, int, int);
+            int page_size = 1048576;  /* 1MB pages */
+            for (int i = 0; i < 8; i++) {
+                uint64_t vaddr = 0xC0000000ULL + (uint64_t)i * page_size * 2;
+                uint64_t paddr0 = (uint64_t)i * page_size * 2;
+                uint64_t paddr1 = paddr0 + page_size;
+                mips_coproc_tlb_set_entry(m->cpu, i, page_size,
+                    vaddr, paddr0, paddr1,
+                    1, 1,  /* valid0, valid1 */
+                    1, 1,  /* dirty0, dirty1 */
+                    1,     /* global */
+                    0,     /* asid */
+                    3, 3); /* cachealgo (cacheable) */
+            }
+            fprintf(stderr, "[BE300] Pre-loaded 8 TLB entries: 0xC0000000-0xC0FFFFFF → PA 0x00000000-0x00FFFFFF\n");
+        }
 
         /* Register VRC4173 latch (catch-all) BEFORE NAND so NAND takes priority */
         extern void be300_register_vrc4173_latch(struct machine *, bool);
@@ -336,10 +369,21 @@ void be300_run(machine_t *m)
                     m->cpu->pc += 0x9C;  /* skip to warm init (JAL 0x80078BC0) at 0xA0079634 */
                     m->cpu->is_halted = false;
                     cold_boot_count++;
+                    /*
+                     * Set CP0 Status directly before cold boot init.
+                     * Status needs: BEV=0, IE=0, EXL=0, IM=all enabled.
+                     * IE stays 0 so interrupts don't fire until WinCE
+                     * installs proper exception handlers and enables IE.
+                     */
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
+                        0x1000FF00u;  /* BEV=0, IM=0xFF, IE=0 */
+
                     fprintf(stderr,
                         "[BE300] Cold boot: skip hibernate+resume,"
-                        " PC 0x%08" PRIx64 " → 0x%08" PRIx64 "\n",
-                        old_pc, m->cpu->pc);
+                        " PC 0x%08" PRIx64 " → 0x%08" PRIx64
+                        " Status=0x%08X\n",
+                        old_pc, m->cpu->pc,
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
 
                     /* Dump cold boot init function on first redirect */
                     if (cold_boot_count == 1) {
@@ -375,8 +419,13 @@ void be300_run(machine_t *m)
                             0x00000000, 0x00001800, 0x00000000, 0x00000000,
                             /* off 0xA0: BadVAddr, Count, EntryHi, Compare */
                             0x00000000, 0x00000000, 0x00000000, 0x00000000,
-                            /* off 0xB0: Status, Cause, EPC, PRId */
-                            0x1000FF01, 0x00000000, 0x00000000, 0x00000C80,
+                            /* off 0xB0: Status, Cause, EPC, PRId
+                             * Status: BEV=0, IE=0 (interrupts off until
+                             * WinCE installs proper exception handlers
+                             * and explicitly enables interrupts).
+                             * IM=0xFF (all masks ready for when IE is set).
+                             */
+                            0x1000FF00, 0x00000000, 0x00000000, 0x00000C80,
                             /* off 0xC0: Config, LLAddr, reserved, reserved */
                             0x00000000, 0x00000000, 0x00000000, 0x00000000,
                         };
@@ -412,6 +461,13 @@ void be300_run(machine_t *m)
                 }
             }
         }
+
+        /*
+         * Fix stuck EXL: after WinCE kernel init installs exception
+         * handlers and enters the scheduler, clear EXL and enable IE
+         * so timer interrupts can fire and drive the scheduler.
+         */
+        /* EXL/IE management removed — rely on WinCE to set Status */
 
         if (++loop_count % 100 == 0) {
             // Optional: add extremely verbose logging here if needed
