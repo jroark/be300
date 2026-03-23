@@ -311,6 +311,31 @@ void be300_run(machine_t *m)
             last_report = m->cpu->ninstrs;
         }
 
+        /* Dump NK.exe entry code after SPL finishes loading */
+        {
+            static bool dumped = false;
+            uint32_t pc32 = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
+            if (!dumped && pc32 >= 0x00060000u && pc32 < 0x00100000u) {
+                dumped = true;
+                fprintf(stderr, "[NK_DUMP] PC=0x%08" PRIx64
+                    " instrs=%" PRIi64 "\n",
+                    m->cpu->pc, m->cpu->ninstrs);
+                /* Dump code before AND after the current PC */
+                uint64_t dump_va = (m->cpu->pc & ~3ULL) - 256;
+                for (int i = 0; i < 192; i++) {
+                    unsigned char buf[4];
+                    uint64_t addr = dump_va + i * 4;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            addr, buf, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        fprintf(stderr, "[NK_DUMP] 0x%08" PRIx64
+                            ": %08X\n", addr, w);
+                    }
+                }
+            }
+        }
+
         if (++loop_count % 100 == 0) {
             // Optional: add extremely verbose logging here if needed
         }
