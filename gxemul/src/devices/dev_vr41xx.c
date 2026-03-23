@@ -416,14 +416,17 @@ DEVICE_TICK(vr41xx)
 				    reg[COP0_STATUS];
 				uint32_t ca = cpu->cd.mips.coproc[0]->
 				    reg[COP0_CAUSE];
+				uint32_t bva = cpu->cd.mips.coproc[0]->
+				    reg[COP0_BADVADDR];
 				fprintf(stderr,
 				    "[VR41XX_TICK] timer fire! pending=%d"
 				    " sysint1=0x%04x msysint1=0x%04x"
 				    " Status=0x%08x Cause=0x%08x"
+				    " BadVA=0x%08x"
 				    " PC=0x%08" PRIx64 "\n",
 				    d->pending_timer_interrupts,
 				    d->sysint1, d->msysint1,
-				    st, ca, (uint64_t)cpu->pc);
+				    st, ca, bva, (uint64_t)cpu->pc);
 				timer_fire_diag++;
 			}
 		}
