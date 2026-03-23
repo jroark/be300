@@ -4229,8 +4229,22 @@ X(to_be_translated)
 				}
 				break;
 			case COP0_HIBERNATE:
-				/*  TODO  */
-				goto bad;
+				/*  VR41xx hibernate: deepest idle state,
+				    wakes on interrupt. Treat as wait.  */
+				ic->f = instr(wait);
+				if (cpu->cd.mips.cpu_type.rev != MIPS_R4100) {
+					static int warned = 0;
+					ic->f = instr(reserved);
+					if (!warned &&
+					    !cpu->translation_readahead) {
+						fatal("{ WARNING: Attempt to "
+						    "execute a R41xx instruct"
+					            "ion, but the emulated CPU "
+						    "doesn't support it! }\n");
+						warned = 1;
+					}
+				}
+				break;
 			case COP0_SUSPEND:
 				/*  Used by NetBSD on HPCmips (VR41xx) to
 				    halt the machine.  */
