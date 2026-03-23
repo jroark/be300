@@ -311,27 +311,35 @@ void be300_run(machine_t *m)
             last_report = m->cpu->ninstrs;
         }
 
-        /* Dump NK.exe entry code after SPL finishes loading */
-        {
-            static bool dumped = false;
-            uint32_t pc32 = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
-            if (!dumped && pc32 >= 0x00060000u && pc32 < 0x00100000u) {
-                dumped = true;
-                fprintf(stderr, "[NK_DUMP] PC=0x%08" PRIx64
-                    " instrs=%" PRIi64 "\n",
-                    m->cpu->pc, m->cpu->ninstrs);
-                /* Dump code before AND after the current PC */
-                uint64_t dump_va = (m->cpu->pc & ~3ULL) - 256;
-                for (int i = 0; i < 192; i++) {
-                    unsigned char buf[4];
-                    uint64_t addr = dump_va + i * 4;
-                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                            addr, buf, 4, MEM_READ, CACHE_DATA)) {
-                        uint32_t w = buf[0] | (buf[1]<<8) |
-                                     (buf[2]<<16) | (buf[3]<<24);
-                        fprintf(stderr, "[NK_DUMP] 0x%08" PRIx64
-                            ": %08X\n", addr, w);
-                    }
+        /*
+         * WinCE cold-boot hibernate redirect.
+         *
+         * The OAL power-down code ends with a hibernate instruction.
+         * After hibernate, the OAL has:
+         *   +0x00-0x18: NOPs
+         *   +0x1C-0x3C: resume path (loads saved CP0, JR to kernel)
+         *   +0x40:      COLD BOOT init (JAL calls to full kernel init)
+         *
+         * On real hardware, the cold boot cycle is:
+         *   ROM → SPL → NK.exe → OAL init → hibernate →
+         *   RTC alarm wakes CPU → ROM → resume → kernel
+         *
+         * We shortcut: when the CPU halts at hibernate, skip 0x40
+         * bytes forward to the cold boot init path.
+         */
+        if (m->cpu->is_halted) {
+            static bool cold_boot_done = false;
+            if (!cold_boot_done) {
+                uint32_t norm = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
+                if (norm >= 0x00060000u && norm < 0x00100000u) {
+                    uint64_t old_pc = m->cpu->pc;
+                    m->cpu->pc += 0x40;
+                    m->cpu->is_halted = false;
+                    cold_boot_done = true;
+                    fprintf(stderr,
+                        "[BE300] Cold boot: skip hibernate+resume,"
+                        " PC 0x%08" PRIx64 " → 0x%08" PRIx64 "\n",
+                        old_pc, m->cpu->pc);
                 }
             }
         }
