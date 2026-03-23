@@ -4229,8 +4229,11 @@ X(to_be_translated)
 				}
 				break;
 			case COP0_HIBERNATE:
-				/*  VR41xx hibernate: deepest idle state,
-				    wakes on interrupt. Treat as wait.  */
+				/*  VR41xx hibernate: deepest sleep, wakes
+				    only on cold reset.  Treat as wait so
+				    execution halts until an interrupt
+				    arrives or a machine-level hook
+				    redirects PC.  */
 				ic->f = instr(wait);
 				if (cpu->cd.mips.cpu_type.rev != MIPS_R4100) {
 					static int warned = 0;
