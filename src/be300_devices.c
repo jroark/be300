@@ -229,17 +229,21 @@ DEVICE_ACCESS(be300_touch)
 
     if (m->touch_down) {
         /* Linear ADC mapping from calibration data:
-         *   y+ : screen_y 0→319 maps to 0x81E1→0x8E30
-         *   y- : inverse
-         *   x- : screen_x 0→239 maps to 0x8300→0x8D1B
-         *   x+ : inverse                                        */
+         *   y+ : ADC range 0x81E1→0x8E30 covers the FULL touch panel
+         *        (display 320px + virtual button strip below).
+         *        TOUCH_PANEL_H = display height + button strip height.
+         *        Adjust TOUCH_PANEL_H if y-axis calibration is off.
+         *   x- : ADC range 0x8300→0x8D1B, x-axis is physically inverted
+         *        relative to screen coordinates.                         */
+#define TOUCH_PANEL_H  (319u + 40u)   /* 320 display + ~40px button strip */
         uint16_t yp = (uint16_t)(0x81E1u +
-            ((uint32_t)m->touch_y * (0x8E30u - 0x81E1u)) / 319u);
+            ((uint32_t)m->touch_y * (0x8E30u - 0x81E1u)) / TOUCH_PANEL_H);
         uint16_t ym = (uint16_t)(0x8E30u -
-            ((uint32_t)m->touch_y * (0x8E30u - 0x81E1u)) / 319u);
-        uint16_t xm = (uint16_t)(0x8300u +
+            ((uint32_t)m->touch_y * (0x8E30u - 0x81E1u)) / TOUCH_PANEL_H);
+        /* x is inverted: screen left (x=0) → high ADC, right (x=239) → low ADC */
+        uint16_t xm = (uint16_t)(0x8D1Bu -
             ((uint32_t)m->touch_x * (0x8D1Bu - 0x8300u)) / 239u);
-        uint16_t xp = (uint16_t)(0x8D1Bu -
+        uint16_t xp = (uint16_t)(0x8300u +
             ((uint32_t)m->touch_x * (0x8D1Bu - 0x8300u)) / 239u);
 
         switch (off) {
