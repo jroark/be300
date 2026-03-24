@@ -10,6 +10,7 @@
 #include <string.h>
 #include <signal.h>
 #include <inttypes.h>
+#include <time.h>
 
 #include "be300.h"
 #include "loader.h"
@@ -323,6 +324,13 @@ machine_t *be300_create(const machine_config_t *cfg)
 }
 
 
+static uint64_t monotonic_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
 void be300_run(machine_t *m)
 {
     struct machine *gxm = m->gxe_machine;
@@ -339,9 +347,19 @@ void be300_run(machine_t *m)
 
     ui_init(m);
 
+    if (m->cfg.target_mhz > 0)
+        fprintf(stderr, "[BE300] Throttle: targeting %u MHz\n", m->cfg.target_mhz);
+    else
+        fprintf(stderr, "[BE300] Throttle: disabled (unthrottled)\n");
+
     emul_executing = true;
 
     signal(SIGINT, SIG_DFL);
+
+    /* Throttle state: track wall-clock origin and instruction origin for pacing */
+    uint64_t throttle_target_ips  = (uint64_t)m->cfg.target_mhz * 1000000ULL;
+    uint64_t throttle_wall_origin = 0;
+    uint64_t throttle_instr_origin = 0;
 
     /*
      * Main emulation loop: machine_run() (GXemul) runs one batch
@@ -368,6 +386,41 @@ void be300_run(machine_t *m)
 
         if (loop_count % 1000 == 0) {
             fprintf(stderr, "[BE300] Loop batch %d done\n", loop_count);
+        }
+
+        /* Throttle: sleep until wall time matches target CPU speed */
+        if (throttle_target_ips > 0) {
+            uint64_t now_ns = monotonic_ns();
+            uint64_t instrs  = (uint64_t)m->cpu->ninstrs;
+
+            if (throttle_wall_origin == 0) {
+                /* First iteration: set reference point */
+                throttle_wall_origin   = now_ns;
+                throttle_instr_origin  = instrs;
+            } else {
+                uint64_t elapsed_instrs = instrs - throttle_instr_origin;
+                uint64_t target_ns = (elapsed_instrs * 1000000000ULL)
+                                     / throttle_target_ips;
+                uint64_t actual_ns = now_ns - throttle_wall_origin;
+
+                if (target_ns > actual_ns) {
+                    uint64_t sleep_ns = target_ns - actual_ns;
+                    /* Cap at 50ms to stay responsive to SDL events */
+                    if (sleep_ns > 50000000ULL)
+                        sleep_ns = 50000000ULL;
+                    struct timespec ts = {
+                        (time_t)(sleep_ns / 1000000000ULL),
+                        (long)(sleep_ns % 1000000000ULL)
+                    };
+                    nanosleep(&ts, NULL);
+                }
+
+                /* Re-sync every ~1M instructions to prevent drift accumulation */
+                if (elapsed_instrs >= 1000000ULL) {
+                    throttle_wall_origin  = monotonic_ns();
+                    throttle_instr_origin = instrs;
+                }
+            }
         }
 
         console_flush();
