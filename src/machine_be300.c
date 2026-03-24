@@ -167,6 +167,11 @@ machine_t *be300_create(const machine_config_t *cfg)
         if (cfg->ram_path)
             loader_load_ram(m, cfg->ram_path);
 
+        /* Register input devices (touch + buttons) for Linux kernel boot.
+         * These addresses are unclaimed for Linux boots. */
+        extern void be300_register_input(struct machine *, machine_t *, bool);
+        be300_register_input(gxm, m, cfg->log_mmio);
+
     } else if (cfg->nand_path) {
         uint32_t entry_va = 0;
 
@@ -292,13 +297,17 @@ machine_t *be300_create(const machine_config_t *cfg)
                 " at 0x80000000 + 0x80000180 (identity map)\n");
         }
 
-        /* Register VRC4173 latch (catch-all) BEFORE NAND so NAND takes priority */
+        /* Register VRC4173 latch (catch-all); pre-split to leave gaps for input device */
         extern void be300_register_vrc4173_latch(struct machine *, bool);
         be300_register_vrc4173_latch(gxm, cfg->log_mmio);
 
-        /* Register NAND flash as a GXemul device (overlays latch) */
+        /* Register NAND flash; pre-split to leave gap at 0x0A00A040 for input device */
         extern void be300_register_nand(struct machine *, nand_state_t *, bool);
         be300_register_nand(gxm, &m->nand, cfg->log_mmio);
+
+        /* Register input devices AFTER latch/NAND (fills pre-carved gaps) */
+        extern void be300_register_input(struct machine *, machine_t *, bool);
+        be300_register_input(gxm, m, cfg->log_mmio);
 
     } else if (cfg->rom_path) {
         if (loader_load_rom(m, cfg->rom_path) != 0) {

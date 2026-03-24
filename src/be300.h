@@ -101,6 +101,13 @@ typedef struct be300_state {
     uint32_t     fb_height;      /* 320 visible pixels */
     uint32_t     fb_stride;      /* 256 pixels (allocation width for alignment) */
 
+    /* Input state (written by SDL event loop, read by be300_input MMIO device) */
+    uint8_t      btn_set1;       /* PA 0x0A00A042: bits 0x04=ok 0x08=esc 0x10=up 0x20=down 0x40=right 0x80=left */
+    uint8_t      btn_set2;       /* PA 0x0A00A043: bit 0x10=rocket/modifier  0x80=power */
+    bool         touch_down;     /* pen-down state */
+    uint16_t     touch_x;        /* screen pixel 0..239 */
+    uint16_t     touch_y;        /* screen pixel 0..319 */
+
     /* SDL handles (opaque, cast inside ui.c) */
     void        *sdl_window;
     void        *sdl_renderer;
