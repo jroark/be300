@@ -31,12 +31,13 @@
 struct be300_nand_device {
     nand_state_t *nand;
     bool          log_mmio;
+    uint32_t      reg_offset;   /* byte offset of this segment from 0x0A00A000 */
 };
 
 DEVICE_ACCESS(be300_nand)
 {
     struct be300_nand_device *d = (struct be300_nand_device *)extra;
-    uint32_t offset = (uint32_t)relative_addr + 0xA000;  /* add base offset */
+    uint32_t offset = (uint32_t)relative_addr + 0xA000 + d->reg_offset;
     uint32_t pc = (uint32_t)cpu->pc;
 
     if (writeflag == MEM_WRITE) {
@@ -112,21 +113,29 @@ DEVICE_ACCESS(be300_vrc4173)
  */
 void be300_register_nand(struct machine *gxm, nand_state_t *nand, bool log_mmio)
 {
-    struct be300_nand_device *d;
-    CHECK_ALLOCATION(d = malloc(sizeof(struct be300_nand_device)));
-    d->nand = nand;
-    d->log_mmio = log_mmio;
-
     /*
-     * NAND registers span offsets 0xA000-0xD800 from VRC4173 base.
-     * VRC4173 base = PA 0x0A000000.
-     * So NAND is at PA 0x0A00A000, length 0x3800 bytes.
+     * NAND registers span PA 0x0A00A000-0x0A00D800.
+     * PA 0x0A00A040-0x0A00A050 is reserved for the input (button) device,
+     * so we register NAND as two non-overlapping segments around that gap.
+     *
+     * nand_lo: 0x0A00A000, size 0x40  (offsets 0xA000..0xA03F)
+     * nand_hi: 0x0A00A050, size 0x37B0 (offsets 0xA050..0xD800)
      */
-    memory_device_register(gxm->memory, "be300_nand",
-        0x0A00A000ULL, 0x3800,
-        dev_be300_nand_access, (void *)d, DM_DEFAULT, NULL);
+    struct be300_nand_device *lo, *hi;
+    CHECK_ALLOCATION(lo = malloc(sizeof(struct be300_nand_device)));
+    lo->nand = nand;  lo->log_mmio = log_mmio;  lo->reg_offset = 0x0000;
+    memory_device_register(gxm->memory, "be300_nand_lo",
+        0x0A00A000ULL, 0x40,
+        dev_be300_nand_access, (void *)lo, DM_DEFAULT, NULL);
 
-    fprintf(stderr, "[BE300] Registered NAND controller at PA 0x0A00A000-0x0A00D800\n");
+    CHECK_ALLOCATION(hi = malloc(sizeof(struct be300_nand_device)));
+    hi->nand = nand;  hi->log_mmio = log_mmio;  hi->reg_offset = 0x0050;
+    memory_device_register(gxm->memory, "be300_nand_hi",
+        0x0A00A050ULL, 0x37B0,
+        dev_be300_nand_access, (void *)hi, DM_DEFAULT, NULL);
+
+    fprintf(stderr, "[BE300] Registered NAND controller"
+            " (lo: 0x0A00A000+0x40, hi: 0x0A00A050+0x37B0)\n");
 }
 
 
@@ -152,8 +161,15 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
 
     /*
      * Register latch segments that don't overlap with:
-     *   ns16550 SIU at 0x0A008680 (32 bytes, addr_mult=4)
-     *   NAND device at 0x0A00A000-0x0A00D800
+     *   touch input device  at 0x0A000300-0x0A000360 (carved from vrc4173_0)
+     *   ns16550 SIU         at 0x0A008680 (32 bytes, addr_mult=4)
+     *   NAND device         at 0x0A00A000-0x0A00D800
+     *   button input device at 0x0A00A040-0x0A00A050 (carved from NAND gap)
+     *
+     * vrc4173_0 is split into two segments around the touch device range:
+     *   vrc4173_0a: 0x0A000000..0x0A000300  (size 0x0300)
+     *   vrc4173_0b: 0x0A000360..0x0A008680  (size 0x8320)
+     *   Verify: 0x0A000360 + 0x8320 = 0x0A008680 = SIU base. No collision.
      */
     struct {
         const char *name;
@@ -161,12 +177,13 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
         uint64_t    size;
         uint32_t    offset;
     } segs[] = {
-        { "vrc4173_0", 0x0A000000ULL, 0x8680,  0x0000 },  /* below SIU */
-        { "vrc4173_1", 0x0A0086C0ULL, 0x1940,  0x86C0 },  /* SIU..NAND gap */
-        { "vrc4173_2", 0x0A00E000ULL, 0x12000, 0xE000 },  /* above NAND */
+        { "vrc4173_0a", 0x0A000000ULL, 0x0300,  0x0000 },  /* below touch regs */
+        { "vrc4173_0b", 0x0A000360ULL, 0x8320,  0x0360 },  /* above touch regs, below SIU */
+        { "vrc4173_1",  0x0A0086C0ULL, 0x1940,  0x86C0 },  /* SIU..NAND gap */
+        { "vrc4173_2",  0x0A00E000ULL, 0x12000, 0xE000 },  /* above NAND */
     };
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         struct be300_vrc4173_segment *seg;
         CHECK_ALLOCATION(seg = malloc(sizeof(struct be300_vrc4173_segment)));
         seg->latch = latch;
@@ -176,5 +193,124 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
             dev_be300_vrc4173_access, (void *)seg, DM_DEFAULT, NULL);
     }
 
-    fprintf(stderr, "[BE300] Registered VRC4173 latch (3 segments, avoiding SIU/NAND)\n");
+    fprintf(stderr, "[BE300] Registered VRC4173 latch (4 segments, avoiding SIU/NAND/input)\n");
+}
+
+
+/*
+ *  Input devices: touchpanel and buttons.
+ *
+ *  The BE-300 touchpanel sits at VRC4173 PA 0x0A000300 (size 0x60).
+ *  The button registers sit at VRC4173 PA 0x0A00A040 (size 0x10).
+ *
+ *  Both are registered for all boot modes (Linux ELF and NAND).
+ *  For NAND boots the latch and NAND device have been pre-split to leave
+ *  these address ranges free; for Linux boots they were unclaimed.
+ *
+ *  Reads return live input state from machine_t.  Writes are ignored.
+ */
+
+struct be300_input_device {
+    machine_t *m;
+    bool       log_mmio;
+};
+
+/* Touchpanel device — PA 0x0A000300, size 0x60 */
+DEVICE_ACCESS(be300_touch)
+{
+    struct be300_input_device *d = (struct be300_input_device *)extra;
+    machine_t *m = d->m;
+
+    if (writeflag == MEM_WRITE)
+        return 1;   /* touch panel registers are read-only from guest */
+
+    uint64_t val = 0;
+    uint32_t off = (uint32_t)relative_addr;
+
+    if (m->touch_down) {
+        /* Linear ADC mapping from calibration data:
+         *   y+ : screen_y 0→319 maps to 0x81E1→0x8E30
+         *   y- : inverse
+         *   x- : screen_x 0→239 maps to 0x8300→0x8D1B
+         *   x+ : inverse                                        */
+        uint16_t yp = (uint16_t)(0x81E1u +
+            ((uint32_t)m->touch_y * (0x8E30u - 0x81E1u)) / 319u);
+        uint16_t ym = (uint16_t)(0x8E30u -
+            ((uint32_t)m->touch_y * (0x8E30u - 0x81E1u)) / 319u);
+        uint16_t xm = (uint16_t)(0x8300u +
+            ((uint32_t)m->touch_x * (0x8D1Bu - 0x8300u)) / 239u);
+        uint16_t xp = (uint16_t)(0x8D1Bu -
+            ((uint32_t)m->touch_x * (0x8D1Bu - 0x8300u)) / 239u);
+
+        switch (off) {
+        case 0x00: val = 0x2000u; break;   /* pendown flag */
+        case 0x04: val = 0;       break;   /* interrupt bits */
+        case 0x20: case 0x50: val = yp; break;
+        case 0x24: case 0x54: val = ym; break;
+        case 0x28: case 0x58: val = xm; break;
+        case 0x2C: case 0x5C: val = xp; break;
+        default:   val = 0; break;
+        }
+    } else {
+        /* Pen up: return idle ADC values */
+        switch (off) {
+        case 0x00: val = 0;       break;
+        case 0x20: case 0x50: val = 0x81E1u; break;
+        case 0x24: case 0x54: val = 0x8E30u; break;
+        case 0x28: case 0x58: val = 0x8300u; break;
+        case 0x2C: case 0x5C: val = 0x8D1Bu; break;
+        default:   val = 0; break;
+        }
+    }
+
+    memory_writemax64(cpu, data, len, val);
+    return 1;
+}
+
+/* Button register device — PA 0x0A00A040, size 0x10 */
+DEVICE_ACCESS(be300_buttons)
+{
+    struct be300_input_device *d = (struct be300_input_device *)extra;
+    machine_t *m = d->m;
+
+    if (writeflag == MEM_WRITE)
+        return 1;
+
+    uint64_t val = 0;
+    switch ((uint32_t)relative_addr) {
+    case 0x02: val = m->btn_set1; break;   /* 0x0A00A042 */
+    case 0x03: val = m->btn_set2; break;   /* 0x0A00A043 */
+    default:   val = 0;           break;
+    }
+
+    memory_writemax64(cpu, data, len, val);
+    return 1;
+}
+
+/*
+ *  be300_register_input():
+ *
+ *  Register touch and button input devices.  Called for all boot modes
+ *  after any latch/NAND device registration (address ranges are pre-carved).
+ */
+void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
+{
+    struct be300_input_device *touch_d, *btn_d;
+
+    CHECK_ALLOCATION(touch_d = malloc(sizeof(struct be300_input_device)));
+    touch_d->m = m;
+    touch_d->log_mmio = log_mmio;
+    memory_device_register(gxm->memory, "be300_touch",
+        0x0A000300ULL, 0x60,
+        dev_be300_touch_access, (void *)touch_d, DM_DEFAULT, NULL);
+
+    CHECK_ALLOCATION(btn_d = malloc(sizeof(struct be300_input_device)));
+    btn_d->m = m;
+    btn_d->log_mmio = log_mmio;
+    memory_device_register(gxm->memory, "be300_buttons",
+        0x0A00A040ULL, 0x10,
+        dev_be300_buttons_access, (void *)btn_d, DM_DEFAULT, NULL);
+
+    fprintf(stderr, "[BE300] Registered input devices:"
+            " touch@0x0A000300 buttons@0x0A00A040\n");
 }

@@ -27,6 +27,9 @@ static void *frame_cb_data = NULL;
 /* Quit flag */
 static bool quit_requested = false;
 
+/* Mouse button held state for touch drag tracking */
+static bool mouse_button_held = false;
+
 /* Frame rate limiting */
 static uint32_t last_frame_tick = 0;
 #define FRAME_INTERVAL_MS 33  /* ~30 fps */
@@ -41,6 +44,7 @@ int ui_init(machine_t *m)
     m->fb_stride = 256;
 
     quit_requested = false;
+    mouse_button_held = false;
     last_frame_tick = 0;
 
     /* Skip SDL when no display server is available (headless / Docker) */
@@ -143,6 +147,7 @@ void ui_update(machine_t *m)
         case SDL_QUIT:
             quit_requested = true;
             return;
+
         case SDL_KEYDOWN:
             switch (ev.key.keysym.sym) {
             case SDLK_q:
@@ -153,12 +158,79 @@ void ui_update(machine_t *m)
                 break;
             case SDLK_m:
                 fprintf(stderr,
-                    "[UI] Keys: Q=quit  S=screenshot  M=this help\n");
+                    "[UI] Keys: Q=quit  S=screenshot  M=this help\n"
+                    "[UI]       Arrows=d-pad  Enter=ok(Enter)  Tab=esc(Tab)\n"
+                    "[UI]       LShift/RShift=rocket modifier\n"
+                    "[UI]       Mouse click/drag=touchpanel\n");
                 break;
+            /* D-pad */
+            case SDLK_UP:     m->btn_set1 |= 0x10u; break;
+            case SDLK_DOWN:   m->btn_set1 |= 0x20u; break;
+            case SDLK_RIGHT:  m->btn_set1 |= 0x40u; break;
+            case SDLK_LEFT:   m->btn_set1 |= 0x80u; break;
+            /* Function buttons */
+            case SDLK_RETURN: m->btn_set1 |= 0x04u; break;  /* ok/enter */
+            case SDLK_TAB:    m->btn_set1 |= 0x08u; break;  /* esc/tab */
+            /* Rocket modifier (either shift key) */
+            case SDLK_LSHIFT:
+            case SDLK_RSHIFT: m->btn_set2 |= 0x10u; break;
+            /* Power/reboot (btn_set2 0x80) intentionally not mapped */
             default:
                 break;
             }
             break;
+
+        case SDL_KEYUP:
+            switch (ev.key.keysym.sym) {
+            case SDLK_UP:     m->btn_set1 &= ~0x10u; break;
+            case SDLK_DOWN:   m->btn_set1 &= ~0x20u; break;
+            case SDLK_RIGHT:  m->btn_set1 &= ~0x40u; break;
+            case SDLK_LEFT:   m->btn_set1 &= ~0x80u; break;
+            case SDLK_RETURN: m->btn_set1 &= ~0x04u; break;
+            case SDLK_TAB:    m->btn_set1 &= ~0x08u; break;
+            case SDLK_LSHIFT:
+            case SDLK_RSHIFT: m->btn_set2 &= ~0x10u; break;
+            default:
+                break;
+            }
+            break;
+
+        case SDL_MOUSEBUTTONDOWN:
+            if (ev.button.button == SDL_BUTTON_LEFT) {
+                mouse_button_held = true;
+                m->touch_down = true;
+                /* SDL window is 2× scaled; divide to get screen pixel coords */
+                int tx = ev.button.x / 2;
+                int ty = ev.button.y / 2;
+                if (tx < 0) tx = 0;
+                if (ty < 0) ty = 0;
+                if ((uint32_t)tx >= m->fb_width)  tx = (int)m->fb_width  - 1;
+                if ((uint32_t)ty >= m->fb_height) ty = (int)m->fb_height - 1;
+                m->touch_x = (uint16_t)tx;
+                m->touch_y = (uint16_t)ty;
+            }
+            break;
+
+        case SDL_MOUSEBUTTONUP:
+            if (ev.button.button == SDL_BUTTON_LEFT) {
+                mouse_button_held = false;
+                m->touch_down = false;
+            }
+            break;
+
+        case SDL_MOUSEMOTION:
+            if (mouse_button_held) {
+                int tx = ev.motion.x / 2;
+                int ty = ev.motion.y / 2;
+                if (tx < 0) tx = 0;
+                if (ty < 0) ty = 0;
+                if ((uint32_t)tx >= m->fb_width)  tx = (int)m->fb_width  - 1;
+                if ((uint32_t)ty >= m->fb_height) ty = (int)m->fb_height - 1;
+                m->touch_x = (uint16_t)tx;
+                m->touch_y = (uint16_t)ty;
+            }
+            break;
+
         default:
             break;
         }
