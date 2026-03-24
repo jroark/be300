@@ -154,8 +154,23 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        // Bezel area (outside framebufferView): double-tap only
         frameContainer.setOnTouchListener { _, event ->
             doubleTapDetector.onTouchEvent(event)
+        }
+
+        // Screen area: forward touch coords to emulator + double-tap
+        framebufferView.setOnTouchListener { v, event ->
+            doubleTapDetector.onTouchEvent(event)
+
+            if (emulatorHandle != 0L) {
+                val be300X = ((event.x / v.width) * 239f).toInt().coerceIn(0, 239)
+                val be300Y = ((event.y / v.height) * 319f).toInt().coerceIn(0, 319)
+                val down = event.action == MotionEvent.ACTION_DOWN ||
+                           event.action == MotionEvent.ACTION_MOVE
+                native.nativeSendTouch(emulatorHandle, down, be300X, be300Y)
+            }
+            true
         }
     }
 
