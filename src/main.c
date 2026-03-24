@@ -17,6 +17,7 @@ static void usage(const char *prog)
         "  --ram <file>          Preload a raw RAM image at PA 0x00000000\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
+        "  --speed <mhz>         Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
         "  -h, --help            Show this help\n"
         "\n"
         "ROM image (positional arg) is loaded at PA 0x1FC00000 (MIPS reset vector).\n"
@@ -41,6 +42,7 @@ int main(int argc, char *argv[])
         .ram_path       = NULL,
         .nand_path      = NULL,
         .sdram_size     = 16u * 1024u * 1024u,
+        .target_mhz     = 166u,
     };
 
     for (int i = 1; i < argc; i++) {
@@ -58,6 +60,8 @@ int main(int argc, char *argv[])
             cfg.nand_path = argv[++i];
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
             cfg.ram_path = argv[++i];
+        } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
+            cfg.target_mhz = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--sdram") == 0 && i + 1 < argc) {
             unsigned mb = (unsigned)atoi(argv[++i]);
             if (mb == 0 || mb > 64) {

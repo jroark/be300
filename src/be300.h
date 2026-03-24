@@ -63,6 +63,7 @@ typedef struct {
     const char *ram_path;
     const char *nand_path;
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
+    uint32_t    target_mhz;      /* target CPU speed in MHz; 0 = unthrottled (default: 166) */
 } machine_config_t;
 
 /*
