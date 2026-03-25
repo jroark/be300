@@ -340,6 +340,10 @@ class MainActivity : AppCompatActivity() {
                 cmdline = "",
                 sfb5bitGreen = true
             )
+            "vmlinux-mw" -> KernelBootOptions(
+                cmdline = "console=tty0 root=/dev/ram init=/linuxrc",
+                sfb5bitGreen = false
+            )
             else -> KernelBootOptions(
                 cmdline = DEFAULT_CMDLINE,
                 sfb5bitGreen = false
@@ -714,7 +718,7 @@ class MainActivity : AppCompatActivity() {
         private val BUNDLED_KERNELS = listOf(
             KernelBundle(
                 id = "linux4be20040908-vmlinux",
-                label = "linux4be20040908/vmlinux (2.6.8.1)",
+                label = "kernels/vmlinux-2.6",
                 assetPath = "kernels/linux4be20040908-vmlinux",
                 outputName = "linux4be20040908-vmlinux"
             ),
