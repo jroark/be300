@@ -155,6 +155,7 @@ def select_pa_seed_regions(extracted):
         page = by_name.get("ctx_high_page")
     if page is not None:
         selected.append(slice_region(page, "low_sdram_1880", 0x0880, 0x0080))
+        selected.append(slice_region(page, "low_sdram_1ac0", 0x0AC0, 0x0100))
 
     return selected
 

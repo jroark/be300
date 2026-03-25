@@ -19,6 +19,7 @@ static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
 enum {
     WINCE_FAULT_SITE_PTE_WALK = UINT32_C(1) << 0,
     WINCE_FAULT_SITE_NULL_D0  = UINT32_C(1) << 1,
+    WINCE_FAULT_SITE_NULL_PC  = UINT32_C(1) << 2,
 };
 
 typedef struct wince_fault_site_desc wince_fault_site_desc_t;
@@ -45,6 +46,12 @@ struct wince_fault_site_desc {
 static void log_fault_site_pte_walk(machine_t *m,
     const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
     uint32_t exccode);
+static void log_fault_site_null_d0(machine_t *m,
+    const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
+    uint32_t exccode);
+static void log_fault_site_null_pc(machine_t *m,
+    const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
+    uint32_t exccode);
 
 static const wince_fault_site_desc_t wince_fault_sites[] = {
     {
@@ -59,7 +66,14 @@ static const wince_fault_site_desc_t wince_fault_sites[] = {
         UINT32_C(0x8008B28C),
         WINCE_EXCCODE_BIT(EXCEPTION_TLBL) | WINCE_EXCCODE_BIT(EXCEPTION_TLBS),
         "null-d0",
-        NULL,
+        log_fault_site_null_d0,
+    },
+    {
+        WINCE_FAULT_SITE_NULL_PC,
+        UINT32_C(0x00000000),
+        WINCE_EXCCODE_BIT(EXCEPTION_TLBL) | WINCE_EXCCODE_BIT(EXCEPTION_TLBS),
+        "null-pc",
+        log_fault_site_null_pc,
     },
 };
 
@@ -144,6 +158,24 @@ static void dump_ctx_window(machine_t *m, uint32_t pa, uint32_t size)
         fprintf(stderr,
             "[WINCE_CKPT] ctx+0x%03X: %08X %08X %08X %08X\n",
             off,
+            load_pa_word(m, pa + off + 0u),
+            load_pa_word(m, pa + off + 4u),
+            load_pa_word(m, pa + off + 8u),
+            load_pa_word(m, pa + off + 12u));
+    }
+}
+
+static void dump_pa_window(machine_t *m, const char *label, uint32_t pa,
+    uint32_t size)
+{
+    uint32_t off;
+
+    for (off = 0; off < size; off += 16u) {
+        fprintf(stderr,
+            "[WINCE_HANDLER] %s+0x%03X PA=0x%08X: %08X %08X %08X %08X\n",
+            label,
+            off,
+            pa + off,
             load_pa_word(m, pa + off + 0u),
             load_pa_word(m, pa + off + 4u),
             load_pa_word(m, pa + off + 8u),
@@ -390,6 +422,8 @@ static bool allow_pa_seed_region(const char *name, bool resume_only)
     if (strcmp(name, "low_sdram_0000") == 0)
         return true;
     if (strcmp(name, "low_sdram_1880") == 0)
+        return true;
+    if (strcmp(name, "low_sdram_1ac0") == 0)
         return true;
     if (strcmp(name, "resume_ctx") == 0)
         return true;
@@ -689,6 +723,73 @@ static void log_fault_site_pte_walk(machine_t *m,
     log_va_probe(m, "va_d8c0", 0xFFFFD8C0u);
     dump_va_window(m, "va_d880", 0xFFFFD880u, 0x30u);
     dump_va_window(m, "va_d8c0", 0xFFFFD8C0u, 0x40u);
+}
+
+static void log_fault_site_null_d0(machine_t *m,
+    const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
+    uint32_t exccode)
+{
+    const uint32_t slot_va = UINT32_C(0xFFFFDAC0);
+    uint32_t slot_value = 0;
+    uint64_t slot_pa = 0;
+    bool slot_mapped = translate_va(m, slot_va, &slot_pa);
+    bool slot_ok = load_va_word(m, slot_va, &slot_value);
+
+    fprintf(stderr,
+        "[WINCE_HANDLER] site=%s PC=0x%08X exccode=%u BadVA=0x%08X"
+        " producer_va=0x%08X mapped=%d",
+        site->label,
+        fault_pc,
+        exccode,
+        fault_va,
+        slot_va,
+        slot_mapped ? 1 : 0);
+    if (slot_mapped)
+        fprintf(stderr, " producer_pa=0x%08" PRIx64, slot_pa);
+    if (slot_ok)
+        fprintf(stderr, " slot_value=0x%08X", slot_value);
+    else
+        fprintf(stderr, " slot_value=????????");
+    fprintf(stderr, "\n");
+
+    log_va_probe(m, "va_daa0", 0xFFFFDAA0u);
+    log_va_probe(m, "va_dac0", slot_va);
+    log_va_probe(m, "va_dae0", 0xFFFFDAE0u);
+    log_va_probe(m, "va_db00", 0xFFFFDB00u);
+    dump_va_window(m, "va_da80", 0xFFFFDA80u, 0xC0u);
+
+    if (slot_mapped && slot_pa <= UINT32_MAX)
+        dump_pa_window(m, "pa_1a80", ((uint32_t)slot_pa) & ~UINT32_C(0x3F),
+            0x100u);
+
+    if (slot_ok && slot_value != 0) {
+        log_va_probe(m, "slot_target", slot_value);
+        dump_va_window(m, "slot_target", slot_value & ~UINT32_C(0x0F),
+            0x40u);
+    }
+}
+
+static void log_fault_site_null_pc(machine_t *m,
+    const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
+    uint32_t exccode)
+{
+    uint32_t epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    uint32_t ra = (uint32_t)m->cpu->cd.mips.gpr[31];
+    uint32_t t9 = (uint32_t)m->cpu->cd.mips.gpr[25];
+
+    fprintf(stderr,
+        "[WINCE_HANDLER] site=%s PC=0x%08X exccode=%u BadVA=0x%08X"
+        " EPC=0x%08X RA=0x%08X T9=0x%08X\n",
+        site->label,
+        fault_pc,
+        exccode,
+        fault_va,
+        epc,
+        ra,
+        t9);
+    dump_code_window(m, epc, 6u, 4u);
+    if (ra != 0)
+        dump_code_window(m, ra - UINT32_C(8), 0u, 4u);
 }
 
 static void maybe_log_fault_site(machine_t *m)
