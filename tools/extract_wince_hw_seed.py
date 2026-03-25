@@ -40,7 +40,7 @@ LEGACY_WORD_RE = re.compile(
     r'^0x(?P<off>[0-9A-Fa-f]+):\s+(?P<words>[0-9A-Fa-f ]+)$'
 )
 
-LEGACY_OVERRIDE_NAMES = ("ctx_tlb", "resume_ctx")
+LEGACY_OVERRIDE_NAMES = ("ctx_tlb",)
 
 
 def sanitize(name: str) -> str:
