@@ -15,6 +15,7 @@
 #include "be300.h"
 #include "loader.h"
 #include "ui.h"
+#include "wince_boot.h"
 
 /* GXemul headers */
 #include "interrupt.h"
@@ -42,6 +43,7 @@ machine_t *be300_create(const machine_config_t *cfg)
     machine_t *m = calloc(1, sizeof(machine_t));
     if (!m) return NULL;
     m->cfg = *cfg;
+    wince_boot_init(m);
 
     /*
      * Initialize GXemul subsystems once per process.
@@ -276,28 +278,14 @@ machine_t *be300_create(const machine_config_t *cfg)
                 0x42000006,  /* tlbwr                 */
                 0x42000018,  /* eret                  */
             };
-            for (unsigned ti = 0; ti < sizeof(tlb_handler)/4; ti++)
-                store_32bit_word(m->cpu,
-                    0xffffffff80000000ULL + ti * 4,
-                    tlb_handler[ti]);
-
-            /* Also install at general exception vector (0x180).
-             * When EXL=1, ALL exceptions go to 0x180 instead of
-             * the dedicated vectors.  TLB misses during init fire
-             * here when EXL is already set from a previous exception. */
-            for (unsigned ti = 0; ti < sizeof(tlb_handler)/4; ti++)
-                store_32bit_word(m->cpu,
-                    0xffffffff80000180ULL + ti * 4,
-                    tlb_handler[ti]);
-
-            /* Invalidate dyntrans caches so the handler code
-             * is re-decoded from the updated memory.  */
-            m->cpu->invalidate_translation_caches(m->cpu,
-                0, /* everything */ INVALIDATE_ALL);
-
+            wince_boot_install_synthetic_low_vectors(m, tlb_handler,
+                sizeof(tlb_handler) / sizeof(tlb_handler[0]),
+                "nand-setup");
             fprintf(stderr, "[BE300] Installed TLB refill handler"
                 " at 0x80000000 + 0x80000180 (identity map)\n");
         }
+
+        wince_boot_apply_initial_seed(m);
 
         /* Register VRC4173 latch (catch-all); pre-split to leave gaps for input device */
         extern void be300_register_vrc4173_latch(struct machine *, bool);
@@ -310,6 +298,7 @@ machine_t *be300_create(const machine_config_t *cfg)
         /* Register input devices AFTER latch/NAND (fills pre-carved gaps) */
         extern void be300_register_input(struct machine *, machine_t *, bool);
         be300_register_input(gxm, m, cfg->log_mmio);
+        wince_boot_note_spl_handoff(m);
 
     } else if (cfg->rom_path) {
         if (loader_load_rom(m, cfg->rom_path) != 0) {
@@ -318,6 +307,8 @@ machine_t *be300_create(const machine_config_t *cfg)
             return NULL;
         }
     }
+
+    wince_boot_attach_machine(m);
 
     fprintf(stderr, "[BE300] Machine created: %u MB SDRAM, VR4131 CPU\n",
             cfg->sdram_size / (1024 * 1024));
@@ -381,6 +372,7 @@ void be300_run(machine_t *m)
 
         bool still_running = machine_run(gxm);
         if (!still_running) {
+            wince_boot_note_fatal_stop(m, "machine-no-longer-running");
             fprintf(stderr, "[BE300] Loop exit: machine no longer running\n");
             break;
         }
@@ -483,16 +475,9 @@ void be300_run(machine_t *m)
                             0x409A1000, 0x275B0040, 0x409B1800,
                             0x42000006, 0x42000018,
                         };
-                        for (unsigned ti = 0; ti < 8; ti++) {
-                            store_32bit_word(m->cpu,
-                                0xffffffff80000000ULL + ti * 4,
-                                tlb_h[ti]);
-                            store_32bit_word(m->cpu,
-                                0xffffffff80000180ULL + ti * 4,
-                                tlb_h[ti]);
-                        }
-                        m->cpu->invalidate_translation_caches(
-                            m->cpu, 0, INVALIDATE_ALL);
+                        wince_boot_install_synthetic_low_vectors(m, tlb_h,
+                            sizeof(tlb_h) / sizeof(tlb_h[0]),
+                            "cold-boot-redirect");
                     }
 
                     fprintf(stderr,
@@ -502,8 +487,9 @@ void be300_run(machine_t *m)
                         old_pc, m->cpu->pc,
                         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
 
-                    /* Dump cold boot init function on first redirect */
-                    if (cold_boot_count == 1) {
+                    /* Keep the large cold-init dump behind the explicit
+                     * WinCE diagnostics flag. */
+                    if (m->cfg.log_wince_stall && cold_boot_count == 1) {
                         fprintf(stderr, "[COLD_INIT] Dumping 0x80079DF8:\n");
                         for (int i = 0; i < 128; i++) {
                             unsigned char buf[4];
@@ -551,30 +537,9 @@ void be300_run(machine_t *m)
                             store_32bit_word(m->cpu, base + si * 4,
                                 cp0_seed[si]);
                     }
-
-                    /* Dump exception vectors and crash area */
-                    fprintf(stderr, "[EXC_DUMP] Exception vectors:\n");
-                    static const uint64_t addrs[] = {
-                        0xffffffff80000000ULL, /* TLB refill */
-                        0xffffffff80000180ULL, /* General exception */
-                        0xffffffff80000200ULL, /* TLB refill (alt) */
-                        0xffffffff80000380ULL, /* General (alt) */
-                        0xffffffff80002400ULL, /* crash address */
-                    };
-                    for (int a = 0; a < 5; a++) {
-                        for (int i = 0; i < 8; i++) {
-                            unsigned char buf[4];
-                            uint64_t addr = addrs[a] + i * 4;
-                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                                    addr, buf, 4, MEM_READ, CACHE_DATA)) {
-                                uint32_t w = buf[0] | (buf[1]<<8) |
-                                             (buf[2]<<16) | (buf[3]<<24);
-                                fprintf(stderr, "[EXC_DUMP] 0x%08" PRIx64
-                                    ": %08X\n", addr, w);
-                            }
-                        }
-                        fprintf(stderr, "[EXC_DUMP] ---\n");
-                    }
+                    wince_boot_apply_resume_seed(m);
+                    wince_boot_note_cold_boot_redirect(
+                        m, "hibernate-to-cold-boot");
                 }
             }
         }
@@ -609,6 +574,8 @@ void be300_run(machine_t *m)
 void be300_destroy(machine_t *m)
 {
     if (!m) return;
+
+    wince_boot_detach_machine(m);
 
     if (m->nand_data) {
         free(m->nand_data);
