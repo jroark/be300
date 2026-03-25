@@ -42,12 +42,12 @@ typedef struct {
     bool timer_release_logged;
     bool low_vector_guest_write_logged;
     bool first_fb_oob_logged;
-    bool handler_fault_logged;
     bool initial_seed_applied;
     bool resume_seed_applied;
     bool vectors_ready;
     bool suppress_vector_write_observer;
 
+    uint32_t fault_site_logged_mask;
     wince_vector_owner_t vector_owner;
     uint32_t synthetic_low_tlb[WINCE_VECTOR_WORDS];
     uint32_t synthetic_low_general[WINCE_VECTOR_WORDS];

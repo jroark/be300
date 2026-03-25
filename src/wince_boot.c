@@ -12,6 +12,56 @@
 #include "wince_hw_seed_data.h"
 
 static machine_t *g_active_wince_machine = NULL;
+static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
+
+#define WINCE_EXCCODE_BIT(code) (UINT32_C(1) << (code))
+
+enum {
+    WINCE_FAULT_SITE_PTE_WALK = UINT32_C(1) << 0,
+    WINCE_FAULT_SITE_NULL_D0  = UINT32_C(1) << 1,
+};
+
+typedef struct wince_fault_site_desc wince_fault_site_desc_t;
+typedef void (*wince_fault_site_dump_fn)(machine_t *m,
+    const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
+    uint32_t exccode);
+
+typedef struct {
+    const char *mnemonic;
+    uint32_t rs;
+    uint32_t rt;
+    int32_t offset;
+    bool store;
+} wince_memop_info_t;
+
+struct wince_fault_site_desc {
+    uint32_t log_bit;
+    uint32_t pc;
+    uint32_t exccode_mask;
+    const char *label;
+    wince_fault_site_dump_fn dump;
+};
+
+static void log_fault_site_pte_walk(machine_t *m,
+    const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
+    uint32_t exccode);
+
+static const wince_fault_site_desc_t wince_fault_sites[] = {
+    {
+        WINCE_FAULT_SITE_PTE_WALK,
+        UINT32_C(0x8008B6FC),
+        WINCE_EXCCODE_BIT(EXCEPTION_TLBL) | WINCE_EXCCODE_BIT(EXCEPTION_TLBS),
+        "pte-walk",
+        log_fault_site_pte_walk,
+    },
+    {
+        WINCE_FAULT_SITE_NULL_D0,
+        UINT32_C(0x8008B28C),
+        WINCE_EXCCODE_BIT(EXCEPTION_TLBL) | WINCE_EXCCODE_BIT(EXCEPTION_TLBS),
+        "null-d0",
+        NULL,
+    },
+};
 
 static machine_t *wince_boot_from_gx(struct machine *gxm)
 {
@@ -138,6 +188,137 @@ static void dump_va_window(machine_t *m, const char *label, uint32_t va,
             format_word_or_unknown(b1, sizeof(b1), ok1, w1),
             format_word_or_unknown(b2, sizeof(b2), ok2, w2),
             format_word_or_unknown(b3, sizeof(b3), ok3, w3));
+    }
+}
+
+static void dump_code_window(machine_t *m, uint32_t pc, size_t before_words,
+    size_t after_words)
+{
+    int rel;
+    int start = -(int)before_words;
+    int stop = (int)after_words;
+
+    for (rel = start; rel <= stop; rel++) {
+        uint32_t va = pc + (uint32_t)(rel * 4);
+        uint32_t word = 0;
+        bool ok = load_va_word(m, va, &word);
+        char buf[9];
+
+        fprintf(stderr,
+            "[WINCE_CODE] %c rel=%+03d VA=0x%08X word=%s\n",
+            rel == 0 ? '*' : ' ',
+            rel * 4,
+            va,
+            format_word_or_unknown(buf, sizeof(buf), ok, word));
+    }
+}
+
+static void dump_gpr_window(machine_t *m)
+{
+    size_t i;
+
+    for (i = 0; i < 32; i += 4u) {
+        fprintf(stderr,
+            "[WINCE_REGS] %-3s=0x%08X %-3s=0x%08X %-3s=0x%08X %-3s=0x%08X\n",
+            wince_gpr_names[i + 0u], (uint32_t)m->cpu->cd.mips.gpr[i + 0u],
+            wince_gpr_names[i + 1u], (uint32_t)m->cpu->cd.mips.gpr[i + 1u],
+            wince_gpr_names[i + 2u], (uint32_t)m->cpu->cd.mips.gpr[i + 2u],
+            wince_gpr_names[i + 3u], (uint32_t)m->cpu->cd.mips.gpr[i + 3u]);
+    }
+}
+
+static bool decode_memop(uint32_t insn, wince_memop_info_t *out)
+{
+    uint32_t opcode = (insn >> 26) & 0x3Fu;
+    const char *mnemonic = NULL;
+    bool store = false;
+
+    switch (opcode) {
+    case 0x20: mnemonic = "lb"; break;
+    case 0x21: mnemonic = "lh"; break;
+    case 0x22: mnemonic = "lwl"; break;
+    case 0x23: mnemonic = "lw"; break;
+    case 0x24: mnemonic = "lbu"; break;
+    case 0x25: mnemonic = "lhu"; break;
+    case 0x26: mnemonic = "lwr"; break;
+    case 0x28: mnemonic = "sb"; store = true; break;
+    case 0x29: mnemonic = "sh"; store = true; break;
+    case 0x2A: mnemonic = "swl"; store = true; break;
+    case 0x2B: mnemonic = "sw"; store = true; break;
+    case 0x30: mnemonic = "ll"; break;
+    case 0x31: mnemonic = "lwc1"; break;
+    case 0x35: mnemonic = "ldc1"; break;
+    case 0x38: mnemonic = "sc"; store = true; break;
+    case 0x39: mnemonic = "swc1"; store = true; break;
+    case 0x3D: mnemonic = "sdc1"; store = true; break;
+    default:
+        return false;
+    }
+
+    if (!out)
+        return true;
+
+    out->mnemonic = mnemonic;
+    out->rs = (insn >> 21) & 0x1Fu;
+    out->rt = (insn >> 16) & 0x1Fu;
+    out->offset = (int32_t)(int16_t)(insn & 0xFFFFu);
+    out->store = store;
+    return true;
+}
+
+static void log_memop_probe(machine_t *m, uint32_t fault_pc, uint32_t fault_va)
+{
+    uint32_t insn = 0;
+    wince_memop_info_t memop;
+
+    if (!load_va_word(m, fault_pc, &insn)) {
+        fprintf(stderr,
+            "[WINCE_FAULT] decode site=0x%08X instruction=unreadable\n",
+            fault_pc);
+        return;
+    }
+
+    if (!decode_memop(insn, &memop)) {
+        fprintf(stderr,
+            "[WINCE_FAULT] decode site=0x%08X instruction=0x%08X"
+            " opcode=0x%02X unhandled\n",
+            fault_pc,
+            insn,
+            (insn >> 26) & 0x3Fu);
+        return;
+    }
+
+    {
+        uint32_t base_value = (uint32_t)m->cpu->cd.mips.gpr[memop.rs];
+        uint32_t rt_value = (uint32_t)m->cpu->cd.mips.gpr[memop.rt];
+        uint32_t eff_addr =
+            (uint32_t)((int32_t)base_value + (int32_t)memop.offset);
+
+        fprintf(stderr,
+            "[WINCE_FAULT] decode site=0x%08X insn=0x%08X %s"
+            " base=%s(0x%08X) rt=%s(0x%08X) off=%d eff=0x%08X"
+            " badva_match=%d store=%d\n",
+            fault_pc,
+            insn,
+            memop.mnemonic,
+            wince_gpr_names[memop.rs],
+            base_value,
+            wince_gpr_names[memop.rt],
+            rt_value,
+            memop.offset,
+            eff_addr,
+            eff_addr == fault_va ? 1 : 0,
+            memop.store ? 1 : 0);
+
+        if (base_value != 0) {
+            dump_va_window(m, "base_ptr", base_value & ~UINT32_C(0x0F),
+                0x40u);
+            if ((eff_addr & ~UINT32_C(0x0F))
+                != (base_value & ~UINT32_C(0x0F))) {
+                dump_va_window(m, "target_va", eff_addr & ~UINT32_C(0x0F),
+                    0x20u);
+            }
+        }
     }
 }
 
@@ -371,21 +552,82 @@ static void log_va_probe(machine_t *m, const char *label, uint32_t va)
     fprintf(stderr, "\n");
 }
 
-static void log_handler_fault(machine_t *m, uint32_t pc_norm,
-    uint32_t fault_va, uint32_t exccode, const char *detail)
+static bool fault_site_is_logged(machine_t *m,
+    const wince_fault_site_desc_t *site)
+{
+    return (m->wince.fault_site_logged_mask & site->log_bit) != 0;
+}
+
+static void mark_fault_site_logged(machine_t *m,
+    const wince_fault_site_desc_t *site)
+{
+    m->wince.fault_site_logged_mask |= site->log_bit;
+}
+
+static const wince_fault_site_desc_t *find_fault_site(uint32_t pc_norm,
+    uint32_t exccode)
+{
+    size_t i;
+
+    for (i = 0; i < sizeof(wince_fault_sites) / sizeof(wince_fault_sites[0]);
+        i++) {
+        const wince_fault_site_desc_t *site = &wince_fault_sites[i];
+
+        if (site->pc != pc_norm)
+            continue;
+        if ((site->exccode_mask & WINCE_EXCCODE_BIT(exccode)) == 0)
+            continue;
+        return site;
+    }
+
+    return NULL;
+}
+
+static void log_fault_site(machine_t *m, const wince_fault_site_desc_t *site,
+    uint32_t fault_pc, uint32_t fault_va, uint32_t exccode,
+    const char *source)
 {
     uint32_t cause;
     uint32_t epc;
+    char detail[64];
+
+    if (!m->wince.active || !m->wince.log_stall
+        || !m->wince.cold_boot_redirected || !site
+        || fault_site_is_logged(m, site))
+        return;
+
+    mark_fault_site_logged(m, site);
+    cause = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE];
+    epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    snprintf(detail, sizeof(detail), "%s-%08x",
+        source ? source : "fault",
+        site->pc);
+
+    (void)log_checkpoint_header(m, "fault_site", detail);
+    fprintf(stderr,
+        "[WINCE_FAULT] site=%s pc=0x%08X epc=0x%08X cause=0x%08X"
+        " exccode=%u badva=0x%08X source=%s\n",
+        site->label,
+        fault_pc,
+        epc,
+        cause,
+        exccode,
+        fault_va,
+        source ? source : "-");
+    dump_code_window(m, fault_pc, 4u, 4u);
+    dump_gpr_window(m);
+    log_memop_probe(m, fault_pc, fault_va);
+    if (site->dump)
+        site->dump(m, site, fault_pc, fault_va, exccode);
+}
+
+static void log_fault_site_pte_walk(machine_t *m,
+    const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
+    uint32_t exccode)
+{
     uint32_t index;
     uint32_t random;
     uint32_t entryhi;
-    uint32_t t0;
-    uint32_t t1;
-    uint32_t k0;
-    uint32_t k1;
-    uint32_t s0;
-    uint32_t sp;
-    uint32_t ra;
     uint32_t dir_off;
     uint32_t pte_off;
     uint32_t leaf_off;
@@ -396,26 +638,9 @@ static void log_handler_fault(machine_t *m, uint32_t pc_norm,
     bool root_ok;
     bool second_ok = false;
 
-    if (!m->wince.active || !m->wince.log_stall
-        || !m->wince.cold_boot_redirected
-        || m->wince.handler_fault_logged)
-        return;
-    if (pc_norm != 0x8008B6FCu)
-        return;
-
-    m->wince.handler_fault_logged = true;
-    cause = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE];
-    epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
     index = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_INDEX];
     random = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_RANDOM];
     entryhi = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI];
-    t0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_T0];
-    t1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_T1];
-    k0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_K0];
-    k1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_K1];
-    s0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S0];
-    sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
-    ra = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA];
 
     dir_off = (fault_va >> 23) & 0xFCu;
     pte_off = (fault_va >> 14) & 0x7FCu;
@@ -427,14 +652,12 @@ static void log_handler_fault(machine_t *m, uint32_t pc_norm,
         second_ok = load_va_word(m, second_va, &second_entry);
     }
 
-    (void)log_checkpoint_header(m, "handler_fault", detail);
     fprintf(stderr,
-        "[WINCE_HANDLER] fault_site PC=0x%08X EPC=0x%08X Cause=0x%08X"
-        " exccode=%u BadVA=0x%08X Index=0x%08X Random=0x%08X"
-        " EntryHi=0x%08X owner=%d ready=%d\n",
-        pc_norm,
-        epc,
-        cause,
+        "[WINCE_HANDLER] site=%s PC=0x%08X exccode=%u BadVA=0x%08X"
+        " Index=0x%08X Random=0x%08X EntryHi=0x%08X"
+        " owner=%d ready=%d\n",
+        site->label,
+        fault_pc,
         exccode,
         fault_va,
         index,
@@ -442,10 +665,6 @@ static void log_handler_fault(machine_t *m, uint32_t pc_norm,
         entryhi,
         (int)m->wince.vector_owner,
         m->wince.vectors_ready ? 1 : 0);
-    fprintf(stderr,
-        "[WINCE_HANDLER] regs t0=0x%08X t1=0x%08X k0=0x%08X k1=0x%08X"
-        " s0=0x%08X sp=0x%08X ra=0x%08X\n",
-        t0, t1, k0, k1, s0, sp, ra);
     fprintf(stderr,
         "[WINCE_HANDLER] walk dir_off=0x%02X pte_off=0x%03X"
         " leaf_off=0x%02X root_va=0x%08X root=%s second_va=0x%08X"
@@ -472,29 +691,38 @@ static void log_handler_fault(machine_t *m, uint32_t pc_norm,
     dump_va_window(m, "va_d8c0", 0xFFFFD8C0u, 0x40u);
 }
 
-static void maybe_log_handler_fault(machine_t *m)
+static void maybe_log_fault_site(machine_t *m)
 {
-    uint32_t cause;
     uint32_t epc;
     uint32_t badvaddr;
     uint32_t exccode;
     uint32_t pc_norm;
+    const wince_fault_site_desc_t *site = NULL;
+    const char *source = NULL;
 
     if (!m->wince.active || !m->wince.log_stall
-        || !m->wince.cold_boot_redirected || m->wince.handler_fault_logged)
+        || !m->wince.cold_boot_redirected)
         return;
 
-    cause = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE];
     epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
     badvaddr = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR];
     pc_norm = (uint32_t)m->cpu->pc;
-    exccode = (cause & CAUSE_EXCCODE_MASK) >> CAUSE_EXCCODE_SHIFT;
+    exccode = (((uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE])
+        & CAUSE_EXCCODE_MASK) >> CAUSE_EXCCODE_SHIFT;
 
-    if (pc_norm != 0x8008B6FCu && epc != 0x8008B6FCu)
+    site = find_fault_site(pc_norm, exccode);
+    if (site) {
+        source = "pc";
+        log_fault_site(m, site, pc_norm, badvaddr, exccode, source);
+        return;
+    }
+
+    site = find_fault_site(epc, exccode);
+    if (!site)
         return;
 
-    log_handler_fault(m, epc == 0x8008B6FCu ? epc : pc_norm, badvaddr,
-        exccode, "epc-8008b6fc");
+    source = "epc";
+    log_fault_site(m, site, epc, badvaddr, exccode, source);
 }
 
 static bool apply_pa_seed_regions(machine_t *m, bool resume_only)
@@ -659,7 +887,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
 
     scan_low_vectors(m);
     maybe_note_first_exception(m);
-    maybe_log_handler_fault(m);
+    maybe_log_fault_site(m);
 }
 
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
@@ -710,6 +938,8 @@ bool wince_boot_note_low_reference_fault(struct cpu *cpu, uint64_t vaddr,
     int exccode)
 {
     machine_t *m;
+    uint32_t pc_norm;
+    const wince_fault_site_desc_t *site;
 
     if (!cpu || !cpu->machine)
         return false;
@@ -717,13 +947,13 @@ bool wince_boot_note_low_reference_fault(struct cpu *cpu, uint64_t vaddr,
     m = wince_boot_from_gx(cpu->machine);
     if (!m)
         return false;
-    if ((uint32_t)cpu->pc != 0x8008B6FCu)
+    pc_norm = (uint32_t)cpu->pc;
+    site = find_fault_site(pc_norm, (uint32_t)exccode);
+    if (!site)
         return false;
-    if (m->wince.handler_fault_logged)
-        return true;
 
-    log_handler_fault(m, (uint32_t)cpu->pc, (uint32_t)vaddr,
-        (uint32_t)exccode, "low-ref-8008b6fc");
+    log_fault_site(m, site, pc_norm, (uint32_t)vaddr,
+        (uint32_t)exccode, "low-ref");
     return true;
 }
 
