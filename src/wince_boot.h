@@ -23,6 +23,8 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu);
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
     uint64_t relative_addr, uint64_t value);
 bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu);
+bool wince_boot_note_low_reference_fault(struct cpu *cpu, uint64_t vaddr,
+    int exccode);
 void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
     size_t len);
 void wince_boot_note_fb_oob(struct cpu *cpu, uint64_t paddr, size_t len);
