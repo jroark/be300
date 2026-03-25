@@ -110,6 +110,24 @@ void interrupt_handler_register(struct interrupt *templ)
 
 
 /*
+ *  interrupt_handler_clear_all():
+ *
+ *  Remove all registered interrupt handlers. Used before re-initializing
+ *  the machine (e.g. kernel switch in an embedding application) so that
+ *  interrupt_handler_register() does not abort on duplicate names.
+ */
+void interrupt_handler_clear_all(void)
+{
+	int i;
+	for (i = 0; i < nr_of_interrupt_handlers; i++)
+		free((void *)interrupt_handlers[i].templ.name);
+	free(interrupt_handlers);
+	interrupt_handlers = NULL;
+	nr_of_interrupt_handlers = 0;
+}
+
+
+/*
  *  interrupt_handler_remove():
  *
  *  Remove an interrupt handler from the interrupt subsystem. If there are
