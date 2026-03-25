@@ -53,6 +53,7 @@
 
 #include "hw/rtc.h"
 #include "cop0.h"
+#include "wince_boot.h"
 
 
 /*  #define debug fatal  */
@@ -406,8 +407,12 @@ static void timer_tick(struct timer *timer, void *extra)
 DEVICE_TICK(vr41xx)
 {
 	struct vr41xx_data *d = (struct vr41xx_data *) extra;
+	int timer_allowed;
 
-	if (d->pending_timer_interrupts > 0) {
+	wince_boot_on_vr41xx_tick(cpu->machine, cpu);
+	timer_allowed = wince_boot_timer_irq_allowed(cpu->machine, cpu) ? 1 : 0;
+
+	if (d->pending_timer_interrupts > 0 && timer_allowed) {
 		INTERRUPT_ASSERT(d->timer_irq);
 		{
 			static int timer_fire_diag = 0;
@@ -445,7 +450,8 @@ DEVICE_TICK(vr41xx)
 	 *  would cause a spurious interrupt storm.
 	 */
 	if (d->timer == NULL &&
-	    (d->rtc.rtcint & RTCINT_ELAPSEDTIME_INT))
+	    (d->rtc.rtcint & RTCINT_ELAPSEDTIME_INT) &&
+	    timer_allowed)
 		INTERRUPT_ASSERT(d->timer_irq);
 
 	/* No wake signal for hibernate — see idle handler */
@@ -665,6 +671,8 @@ DEVICE_ACCESS(vr41xx)
 				d->timer = timer_add(hz, timer_tick, d);
 			else
 				timer_update_frequency(d->timer, hz);
+			wince_boot_note_timer_config(cpu->machine, cpu,
+			    relative_addr, idata);
 		}
 		break;
 	case 0xd2:	/*  RTCL1_H_REG_W (older VR41xx)  */
@@ -962,4 +970,3 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 
 	return d;
 }
-

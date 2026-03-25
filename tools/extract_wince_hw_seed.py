@@ -31,6 +31,15 @@ VRAW_RE = re.compile(
     r'size=0x(?P<size>[0-9A-Fa-f]+) data=(?P<data>[0-9A-Fa-f]+)'
 )
 
+LEGACY_SECTION_RE = re.compile(
+    r'^--- (?P<title>.+?) \(PA: 0x(?P<pa>[0-9A-Fa-f]+)'
+    r'(?:, Size: 0x(?P<size>[0-9A-Fa-f]+))?\) ---$'
+)
+
+LEGACY_WORD_RE = re.compile(
+    r'^0x(?P<off>[0-9A-Fa-f]+):\s+(?P<words>[0-9A-Fa-f ]+)$'
+)
+
 
 def sanitize(name: str) -> str:
     out = []
@@ -43,12 +52,26 @@ def sanitize(name: str) -> str:
 
 
 def parse_boot_log(path: Path):
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    regions, vregions = parse_structured_boot_log(lines)
+
+    if regions or vregions:
+        return regions, vregions
+
+    legacy_regions, legacy_vregions = parse_legacy_dump(lines)
+    if legacy_regions or legacy_vregions:
+        return legacy_regions, legacy_vregions
+
+    return regions, vregions
+
+
+def parse_structured_boot_log(lines):
     regions = {}
     raw_chunks = {}
     vregions = {}
     vraw_chunks = {}
 
-    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for raw_line in lines:
         line = raw_line.strip()
         m = REGION_RE.match(line)
         if m and m.group("phase") == "init" and m.group("status") == "OK":
@@ -113,6 +136,114 @@ def parse_boot_log(path: Path):
     v_extracted = extract_regions(vregions, vraw_chunks, "va", "VREGION_RAW")
 
     return extracted, v_extracted
+
+
+def parse_legacy_dump(lines):
+    sections = []
+    current = None
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        m = LEGACY_SECTION_RE.match(line)
+        if m:
+            if current is not None:
+                sections.append(finalize_legacy_section(current))
+            current = {
+                "title": m.group("title"),
+                "pa": int(m.group("pa"), 16),
+                "size": int(m.group("size") or "0", 16),
+                "chunks": [],
+            }
+            continue
+
+        if current is None:
+            continue
+
+        m = LEGACY_WORD_RE.match(line)
+        if not m:
+            continue
+
+        words = bytes()
+        for word in m.group("words").split():
+            words += int(word, 16).to_bytes(4, byteorder="little")
+
+        current["chunks"].append(
+            {
+                "off": int(m.group("off"), 16),
+                "data": words,
+            }
+        )
+
+    if current is not None:
+        sections.append(finalize_legacy_section(current))
+
+    vectors = next(
+        (
+            section for section in sections
+            if section["pa"] == 0x00000000
+            and "Exception Vectors" in section["title"]
+        ),
+        None,
+    )
+    kdata = next(
+        (
+            section for section in sections
+            if section["pa"] == 0x00002000
+            and "Context/KData" in section["title"]
+        ),
+        None,
+    )
+
+    regions = []
+    if vectors and len(vectors["data"]) >= 0x400:
+        regions.append(
+            make_region("low_sdram_0000", 0x00000000, vectors["data"][:0x400])
+        )
+
+    if kdata and len(kdata["data"]) >= 0x300:
+        regions.append(
+            make_region("ctx_tlb", 0x00002000, kdata["data"][:0x200])
+        )
+        regions.append(
+            make_region("resume_ctx", 0x00002200, kdata["data"][0x200:0x300])
+        )
+
+    return regions, []
+
+
+def finalize_legacy_section(section):
+    size = section["size"]
+    if size == 0:
+        size = max(
+            (chunk["off"] + len(chunk["data"]) for chunk in section["chunks"]),
+            default=0,
+        )
+
+    buf = bytearray(size)
+    for chunk in section["chunks"]:
+        end = chunk["off"] + len(chunk["data"])
+        if end > size:
+            raise SystemExit(
+                f"{section['title']}: legacy chunk overruns declared size"
+            )
+        buf[chunk["off"]:end] = chunk["data"]
+
+    return {
+        "title": section["title"],
+        "pa": section["pa"],
+        "data": bytes(buf),
+    }
+
+
+def make_region(name: str, pa: int, data: bytes):
+    return {
+        "name": name,
+        "ident": sanitize(name),
+        "pa": pa,
+        "size": len(data),
+        "crc32": zlib.crc32(data) & 0xFFFFFFFF,
+        "data": data,
+    }
 
 
 def extract_regions(regions, raw_chunks, addr_key: str, label: str):

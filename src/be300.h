@@ -20,6 +20,7 @@
 #include "hw/rtc.h"
 #include "hw/gpio.h"
 #include "hw/nand.h"
+#include "wince_boot_types.h"
 
 /* Forward declarations for GXemul types */
 struct cpu;
@@ -56,6 +57,7 @@ typedef struct {
     bool        sfb_5bit_green;
     bool        log_nand_legacy;
     bool        log_wince_stall;
+    bool        wince_hw_seed;
 
     const char *rom_path;
     const char *kernel_path;
@@ -93,6 +95,9 @@ typedef struct be300_state {
     /* NAND image data (loaded from file) */
     uint8_t     *nand_data;
     size_t       nand_size;
+
+    /* WinCE NAND boot instrumentation/state */
+    wince_boot_state_t wince;
 
     /* Framebuffer host pointer (from GXemul dev_fb) */
     void        *fb_data;
