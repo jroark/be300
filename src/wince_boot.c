@@ -6,6 +6,7 @@
 
 #include "cop0.h"
 #include "cpu.h"
+#include "cpu_mips.h"
 #include "machine.h"
 #include "memory.h"
 #include "wince_hw_seed_data.h"
@@ -26,6 +27,11 @@ static uint64_t pa_to_kseg0(uint32_t pa)
     return 0xffffffff80000000ULL | (uint64_t)pa;
 }
 
+static uint64_t va32_to_mips64(uint32_t va)
+{
+    return (uint64_t)(int64_t)(int32_t)va;
+}
+
 static uint32_t load_pa_word(machine_t *m, uint32_t pa)
 {
     unsigned char *host = memory_paddr_to_hostaddr(m->cpu->mem, pa, MEM_READ);
@@ -35,6 +41,38 @@ static uint32_t load_pa_word(machine_t *m, uint32_t pa)
          | ((uint32_t)host[1] << 8)
          | ((uint32_t)host[2] << 16)
          | ((uint32_t)host[3] << 24);
+}
+
+static bool load_va_word(machine_t *m, uint32_t va, uint32_t *out)
+{
+    unsigned char buf[4];
+
+    if (!m || !m->cpu || !out)
+        return false;
+    if (!m->cpu->memory_rw(m->cpu, m->cpu->mem, va32_to_mips64(va), buf, 4,
+        MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+        return false;
+
+    *out = (uint32_t)buf[0]
+         | ((uint32_t)buf[1] << 8)
+         | ((uint32_t)buf[2] << 16)
+         | ((uint32_t)buf[3] << 24);
+    return true;
+}
+
+static bool translate_va(machine_t *m, uint32_t va, uint64_t *paddr_out)
+{
+    uint64_t paddr;
+
+    if (!m || !m->cpu || !m->cpu->translate_v2p)
+        return false;
+    if (!m->cpu->translate_v2p(m->cpu, va32_to_mips64(va), &paddr,
+        FLAG_NOEXCEPTIONS))
+        return false;
+
+    if (paddr_out)
+        *paddr_out = paddr;
+    return true;
 }
 
 static void dump_pa_words(machine_t *m, const char *label, uint32_t pa,
@@ -60,6 +98,46 @@ static void dump_ctx_window(machine_t *m, uint32_t pa, uint32_t size)
             load_pa_word(m, pa + off + 4u),
             load_pa_word(m, pa + off + 8u),
             load_pa_word(m, pa + off + 12u));
+    }
+}
+
+static const char *format_word_or_unknown(char *buf, size_t buf_size, bool ok,
+    uint32_t value)
+{
+    if (!ok)
+        return "????????";
+
+    snprintf(buf, buf_size, "%08X", value);
+    return buf;
+}
+
+static void dump_va_window(machine_t *m, const char *label, uint32_t va,
+    uint32_t size)
+{
+    uint32_t off;
+
+    for (off = 0; off < size; off += 16u) {
+        uint32_t w0 = 0;
+        uint32_t w1 = 0;
+        uint32_t w2 = 0;
+        uint32_t w3 = 0;
+        bool ok0 = load_va_word(m, va + off + 0u, &w0);
+        bool ok1 = load_va_word(m, va + off + 4u, &w1);
+        bool ok2 = load_va_word(m, va + off + 8u, &w2);
+        bool ok3 = load_va_word(m, va + off + 12u, &w3);
+        char b0[9];
+        char b1[9];
+        char b2[9];
+        char b3[9];
+
+        fprintf(stderr,
+            "[WINCE_HANDLER] %s+0x%03X: %s %s %s %s\n",
+            label,
+            off,
+            format_word_or_unknown(b0, sizeof(b0), ok0, w0),
+            format_word_or_unknown(b1, sizeof(b1), ok1, w1),
+            format_word_or_unknown(b2, sizeof(b2), ok2, w2),
+            format_word_or_unknown(b3, sizeof(b3), ok3, w3));
     }
 }
 
@@ -139,7 +217,7 @@ static bool allow_pa_seed_region(const char *name, bool resume_only)
     return false;
 }
 
-static void maybe_log_checkpoint(machine_t *m, const char *tag,
+static bool log_checkpoint_header(machine_t *m, const char *tag,
     const char *detail)
 {
     uint32_t status;
@@ -151,7 +229,7 @@ static void maybe_log_checkpoint(machine_t *m, const char *tag,
     uint32_t pagemask;
 
     if (!m->wince.active || !m->wince.log_stall)
-        return;
+        return false;
 
     status = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
     cause = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE];
@@ -178,6 +256,15 @@ static void maybe_log_checkpoint(machine_t *m, const char *tag,
         pagemask,
         (int)m->wince.vector_owner,
         m->wince.vectors_ready ? 1 : 0);
+
+    return true;
+}
+
+static void maybe_log_checkpoint(machine_t *m, const char *tag,
+    const char *detail)
+{
+    if (!log_checkpoint_header(m, tag, detail))
+        return;
 
     dump_pa_words(m, "vec_low_0000", 0x00000000u, WINCE_VECTOR_WORDS);
     dump_pa_words(m, "vec_low_0080", 0x00000080u, WINCE_VECTOR_WORDS);
@@ -262,6 +349,150 @@ static void maybe_note_first_exception(machine_t *m)
     m->wince.first_exception_logged = true;
     maybe_log_checkpoint(m, "first_exception", "post-redirect");
     (void)cause;
+}
+
+static void log_va_probe(machine_t *m, const char *label, uint32_t va)
+{
+    uint32_t value = 0;
+    uint64_t paddr = 0;
+    bool mapped = translate_va(m, va, &paddr);
+    bool readable = load_va_word(m, va, &value);
+
+    fprintf(stderr, "[WINCE_HANDLER] %-12s VA=0x%08X mapped=%d",
+        label, va, mapped ? 1 : 0);
+    if (mapped)
+        fprintf(stderr, " PA=0x%08" PRIx64, paddr);
+    if (readable)
+        fprintf(stderr, " value=%08X", value);
+    else
+        fprintf(stderr, " value=????????");
+    fprintf(stderr, "\n");
+}
+
+static void log_handler_fault(machine_t *m, uint32_t pc_norm,
+    uint32_t fault_va, uint32_t exccode, const char *detail)
+{
+    uint32_t cause;
+    uint32_t epc;
+    uint32_t index;
+    uint32_t random;
+    uint32_t entryhi;
+    uint32_t t0;
+    uint32_t t1;
+    uint32_t k0;
+    uint32_t k1;
+    uint32_t s0;
+    uint32_t sp;
+    uint32_t ra;
+    uint32_t dir_off;
+    uint32_t pte_off;
+    uint32_t leaf_off;
+    uint32_t root_va;
+    uint32_t root_entry = 0;
+    uint32_t second_va = 0;
+    uint32_t second_entry = 0;
+    bool root_ok;
+    bool second_ok = false;
+
+    if (!m->wince.active || !m->wince.log_stall
+        || !m->wince.cold_boot_redirected
+        || m->wince.handler_fault_logged)
+        return;
+    if (pc_norm != 0x8008B6FCu)
+        return;
+
+    m->wince.handler_fault_logged = true;
+    cause = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE];
+    epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    index = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_INDEX];
+    random = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_RANDOM];
+    entryhi = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI];
+    t0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_T0];
+    t1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_T1];
+    k0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_K0];
+    k1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_K1];
+    s0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S0];
+    sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+    ra = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA];
+
+    dir_off = (fault_va >> 23) & 0xFCu;
+    pte_off = (fault_va >> 14) & 0x7FCu;
+    leaf_off = (fault_va >> 10) & 0x3Cu;
+    root_va = 0xFFFFD8C0u + dir_off;
+    root_ok = load_va_word(m, root_va, &root_entry);
+    if (root_ok) {
+        second_va = root_entry + pte_off;
+        second_ok = load_va_word(m, second_va, &second_entry);
+    }
+
+    (void)log_checkpoint_header(m, "handler_fault", detail);
+    fprintf(stderr,
+        "[WINCE_HANDLER] fault_site PC=0x%08X EPC=0x%08X Cause=0x%08X"
+        " exccode=%u BadVA=0x%08X Index=0x%08X Random=0x%08X"
+        " EntryHi=0x%08X owner=%d ready=%d\n",
+        pc_norm,
+        epc,
+        cause,
+        exccode,
+        fault_va,
+        index,
+        random,
+        entryhi,
+        (int)m->wince.vector_owner,
+        m->wince.vectors_ready ? 1 : 0);
+    fprintf(stderr,
+        "[WINCE_HANDLER] regs t0=0x%08X t1=0x%08X k0=0x%08X k1=0x%08X"
+        " s0=0x%08X sp=0x%08X ra=0x%08X\n",
+        t0, t1, k0, k1, s0, sp, ra);
+    fprintf(stderr,
+        "[WINCE_HANDLER] walk dir_off=0x%02X pte_off=0x%03X"
+        " leaf_off=0x%02X root_va=0x%08X root=%s second_va=0x%08X"
+        " second=%s\n",
+        dir_off,
+        pte_off,
+        leaf_off,
+        root_va,
+        root_ok ? "ok" : "unreadable",
+        second_va,
+        second_ok ? "ok" : "unreadable");
+    if (root_ok)
+        fprintf(stderr, "[WINCE_HANDLER] root_entry=0x%08X\n", root_entry);
+    if (second_ok)
+        fprintf(stderr, "[WINCE_HANDLER] second_entry=0x%08X\n",
+            second_entry);
+
+    log_va_probe(m, "va_d888", 0xFFFFD888u);
+    log_va_probe(m, "va_d890", 0xFFFFD890u);
+    log_va_probe(m, "va_d89c", 0xFFFFD89Cu);
+    log_va_probe(m, "va_d8a8", 0xFFFFD8A8u);
+    log_va_probe(m, "va_d8c0", 0xFFFFD8C0u);
+    dump_va_window(m, "va_d880", 0xFFFFD880u, 0x30u);
+    dump_va_window(m, "va_d8c0", 0xFFFFD8C0u, 0x40u);
+}
+
+static void maybe_log_handler_fault(machine_t *m)
+{
+    uint32_t cause;
+    uint32_t epc;
+    uint32_t badvaddr;
+    uint32_t exccode;
+    uint32_t pc_norm;
+
+    if (!m->wince.active || !m->wince.log_stall
+        || !m->wince.cold_boot_redirected || m->wince.handler_fault_logged)
+        return;
+
+    cause = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE];
+    epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    badvaddr = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR];
+    pc_norm = (uint32_t)m->cpu->pc;
+    exccode = (cause & CAUSE_EXCCODE_MASK) >> CAUSE_EXCCODE_SHIFT;
+
+    if (pc_norm != 0x8008B6FCu && epc != 0x8008B6FCu)
+        return;
+
+    log_handler_fault(m, epc == 0x8008B6FCu ? epc : pc_norm, badvaddr,
+        exccode, "epc-8008b6fc");
 }
 
 static bool apply_pa_seed_regions(machine_t *m, bool resume_only)
@@ -426,6 +657,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
 
     scan_low_vectors(m);
     maybe_note_first_exception(m);
+    maybe_log_handler_fault(m);
 }
 
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
@@ -470,6 +702,27 @@ bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
         m->wince.timer_gate_logged = true;
     }
     return false;
+}
+
+bool wince_boot_note_low_reference_fault(struct cpu *cpu, uint64_t vaddr,
+    int exccode)
+{
+    machine_t *m;
+
+    if (!cpu || !cpu->machine)
+        return false;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m)
+        return false;
+    if ((uint32_t)cpu->pc != 0x8008B6FCu)
+        return false;
+    if (m->wince.handler_fault_logged)
+        return true;
+
+    log_handler_fault(m, (uint32_t)cpu->pc, (uint32_t)vaddr,
+        (uint32_t)exccode, "low-ref-8008b6fc");
+    return true;
 }
 
 void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
