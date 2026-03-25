@@ -37,7 +37,6 @@ class MainActivity : AppCompatActivity() {
     private var kernelChoices: List<KernelChoice> = emptyList()
     private var selectedKernelId: String? = null
     private var currentKernelLabel: String = ""
-    private var ignoreKernelSelectionEvents = false
     private var isFullscreenFramebuffer = false
     private var screenMask: ScreenMask? = null
     private var frameAspectRatio: String = FRAME_ASPECT_RATIO_FALLBACK
@@ -154,8 +153,23 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        // Bezel area (outside framebufferView): double-tap only
         frameContainer.setOnTouchListener { _, event ->
             doubleTapDetector.onTouchEvent(event)
+        }
+
+        // Screen area: forward touch coords to emulator + double-tap
+        framebufferView.setOnTouchListener { v, event ->
+            doubleTapDetector.onTouchEvent(event)
+
+            if (emulatorHandle != 0L) {
+                val be300X = ((event.x / v.width) * 239f).toInt().coerceIn(0, 239)
+                val be300Y = ((event.y / v.height) * 319f).toInt().coerceIn(0, 319)
+                val down = event.action == MotionEvent.ACTION_DOWN ||
+                           event.action == MotionEvent.ACTION_MOVE
+                native.nativeSendTouch(emulatorHandle, down, be300X, be300Y)
+            }
+            true
         }
     }
 
@@ -253,13 +267,17 @@ class MainActivity : AppCompatActivity() {
             ?: kernelChoices.indexOfFirst { it.id == DEFAULT_KERNEL_ID }.takeIf { it >= 0 }
             ?: 0
 
-        ignoreKernelSelectionEvents = true
         kernelSpinner.setSelection(initialIndex, false)
-        ignoreKernelSelectionEvents = false
+
+        // Android Spinner fires onItemSelected spuriously when the adapter is
+        // set and when setSelection is called (both queued asynchronously).
+        // Use a local flag, cleared only after the message queue drains via
+        // post{}, to absorb all of those before trusting user selections.
+        var spinnerReady = false
 
         kernelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
-                if (ignoreKernelSelectionEvents) return
+                if (!spinnerReady) return
                 startKernel(position, fromUserSelection = true)
             }
 
@@ -269,14 +287,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         startKernel(initialIndex, fromUserSelection = false)
+
+        // After all pending messages drain, trust onItemSelected callbacks.
+        kernelSpinner.post { spinnerReady = true }
     }
 
     private fun startKernel(index: Int, fromUserSelection: Boolean) {
         if (index !in kernelChoices.indices) return
         val choice = kernelChoices[index]
-        if (!fromUserSelection && emulatorHandle != 0L && selectedKernelId == choice.id) {
-            return
-        }
+        // Don't restart if this kernel is already running.
+        // Handles the Spinner's spurious onItemSelected callback on first
+        // adapter attachment, which would otherwise kill the just-started emulator.
+        if (emulatorHandle != 0L && selectedKernelId == choice.id) return
 
         stopEmulator()
 
@@ -317,6 +339,10 @@ class MainActivity : AppCompatActivity() {
             "linux4be20040908-vmlinux" -> KernelBootOptions(
                 cmdline = "",
                 sfb5bitGreen = true
+            )
+            "vmlinux-mw" -> KernelBootOptions(
+                cmdline = "console=tty0 root=/dev/ram init=/linuxrc",
+                sfb5bitGreen = false
             )
             else -> KernelBootOptions(
                 cmdline = DEFAULT_CMDLINE,
@@ -692,7 +718,7 @@ class MainActivity : AppCompatActivity() {
         private val BUNDLED_KERNELS = listOf(
             KernelBundle(
                 id = "linux4be20040908-vmlinux",
-                label = "linux4be20040908/vmlinux (2.6.8.1)",
+                label = "kernels/vmlinux-2.6",
                 assetPath = "kernels/linux4be20040908-vmlinux",
                 outputName = "linux4be20040908-vmlinux"
             ),

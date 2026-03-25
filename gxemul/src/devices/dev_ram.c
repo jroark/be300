@@ -212,7 +212,6 @@ void dev_ram_init(struct machine *machine, uint64_t baseaddr, uint64_t length,
 			CHECK_ALLOCATION(d->data = (unsigned char *) malloc(length));
 			memset(d->data, 0, length);
 		}
-
 		/*  Aligned memory? Then it works with dyntrans.  */
 		if ((baseaddr & (machine->arch_pagesize - 1)) == 0 &&
 		    (length & (machine->arch_pagesize - 1)) == 0 &&
