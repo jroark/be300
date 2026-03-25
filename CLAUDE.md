@@ -49,12 +49,12 @@ Stay on the current branch, don't create PRs.
 
 Push with: `git push -u origin <current branch>`
 
-## Execution Environment Policy
+## Debugging & Reverse Engineering Environment Policy
 
-- Build and test in the Docker container (`mips-dev`) only.
+- mipsel debugging and cross tooling is in the Docker container (`mips-dev`) only.
 - Commit and push from the host environment only (not from inside Docker).
 - Typical split:
-  - Container: `cmake`, `make`, emulator/test runs, log generation (The /tmp dir doesn't persist between container invocations.).
+  - Container: `mipsel-linux-gnu-readelf`, `mipsel-pe-nm`, kernel symbol dumping, wince symbol dumping, offset finding (The /tmp dir doesn't persist between container invocations.).
     - The local dir is mounted as /work in the container
     - The container has a mips cross developement toolchain for analyzing the kernels and other mips binaries
   - Host: `git add`, `git commit`, `git push`. (host does not have mipsel cross development)
@@ -100,45 +100,49 @@ Push with: `git push -u origin <current branch>`
 - originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
 - None of the test kernels had full hw support
 
-**References**
-- GXemul - git@github.com:bitedits/gxe.git - implements various NEC vr41xx CPUs
-
 ---
 
 ## Development Workflow & Tooling
 
-1. **Work in Docker (Linux toolchain + GXemul build):**
+1. **Build and test from the host:**
    ```bash
+   # Inside the container
+   # rebuild and test a 2.4 kernel
+   mkdir -p build-host && cd build-host
+   cmake ..
+   make -j$(nproc)
+   gtimeout 20s ./be300 --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" --kernel ../kernels/vmlinux-pgui-demo \
+     > 2.4_stdout.log 2> 2.4_stderr.log
+   ```
+
+2. **MIPS Linux ELF Toolchain (in Docker):**
    # Build/update the container image
    docker compose build mips-dev
 
    # Drop into the dev shell
    docker compose run --rm mips-dev /bin/bash
 
-   # Inside the container
-   # rebuild and test a 2.4 kernel
-   mkdir -p build-docker && cd build-docker
-   cmake ..
-   make -j$(nproc)
-   timeout 180s ./be300 --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" --kernel ../kernels/vmlinux-pgui-demo \
-     > docker_2.4_stdout.log 2> docker_2.4_stderr.log
-   ```
-   The image installs clang/meson/ninja plus mipsel cross-compilers.
-   No external emulation library required (GXemul source is included in gxemul/).
-   Base packages now include `gdb`, `gdb-multiarch`, `strace`, and `ltrace` for
-   cross-debugging.
+   The Docker container includes a specialized `mipsel-linux-gnu` toolchain for analyzing mipsel linux elf Executable files.
+   - **Tools:** `mipsel-linux-gnu-objdump`, `mipsel-linux-gnu-nm`, `mipsel-linux-gnu-objcopy`, `mipsel-linux-gnu-ar`, etc.
+   - **Target Names:** Supports `linux-elf-mips` and `elf-mips`.
 
-2. **MIPS PE (Windows CE) Toolchain:**
+3. **MIPS PE (Windows CE) Toolchain (in Docker):**
+   # Build/update the container image
+   docker compose build mips-dev
+
+   # Drop into the dev shell
+   docker compose run --rm mips-dev /bin/bash
+
    The Docker container includes a specialized `mipsel-pe` toolchain (Binutils 2.21.1 patched via 7shi/1374792) for analyzing Windows CE Portable Executable (PE) files.
    - **Tools:** `mipsel-pe-objdump`, `mipsel-pe-nm`, `mipsel-pe-objcopy`, `mipsel-pe-ar`, etc.
    - **Usage Example (Disassemble WinCE loader):**
      ```bash
-     mipsel-pe-objdump -d linux4be20040908/loader.exe | head -n 50
+     mipsel-pe-objdump -d ce/loader.exe | head -n 50
      ```
    - **Target Names:** Supports `pe-mips` and `pei-mips`.
 
-3. **Logs & artifacts:**
-   - Always capture both stdout and stderr from emulator runs (`docker_*.log`).
+4. **Logs & artifacts:**
+   - Always capture both stdout and stderr from emulator runs (`*.log`) and screenshot.
    - For live console debugging, use a PTY-backed / interactive terminal run. Non-PTY capture can miss incremental GXemul serial output even when the guest is printing normally.
    - If automation output disagrees with a direct terminal run, trust the PTY-backed run for live console behavior and use redirected stdout/stderr logs for post-run analysis.
 
@@ -162,10 +166,10 @@ Push with: `git push -u origin <current branch>`
 - **CP0 writes**: Only Config ($16) and TagLo ($28) — does NOT set Status, relies on boot-time value
 - **No exception vectors**: SPL does not set BEV=0 or install its own exception handlers
 
-### Build & Test Commands (in Docker)
+### Build & Test Commands (on Host)
 ```bash
 # Build
-cd /work && mkdir -p build-docker && cd build-docker
+cd /work && mkdir -p build-host && cd build-host
 cmake .. && make -j$(nproc)
 
 # WinCE NAND boot test (60s timeout)
@@ -182,15 +186,13 @@ timeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin --log-mmio \
 timeout 10s ./be300 --nand ../ce/restore_images/All_nand_300.bin --trace \
   > wince_trace_stdout.log 2> wince_trace_stderr.log
 
-# Linux kernel regression tests
+# Linux kernel regression tests (They all boot to userspace)
 # NOTE: These kernels never terminate on their own — they run until timeout
-# kills them (exit code 124). This is expected, NOT a failure. To check for
-# regressions, inspect stdout for successful boot markers like
-# "Freeing unused kernel memory" or similar userspace-entry messages.
-timeout 180s ./be300 --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" \
+# kills them (exit code 124). This is expected, NOT a failure.
+# Check the screenshot after exit for userspace pico gui running
+gtimeout 20s ./be300 --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" \
   --kernel ../kernels/vmlinux-pgui-demo \
-  > docker_2.4_stdout.log 2> docker_2.4_stderr.log; \
-  grep -q "Freeing unused kernel memory" docker_2.4_stdout.log && echo "2.4 OK" || echo "2.4 FAIL"
+  > 2.4_stdout.log 2> 2.4_stderr.log
 ```
 
 ### SPL Disassembly (in Docker, cross-tools available)
@@ -213,10 +215,3 @@ grep -E "mtc0|mfc0" spl_disasm.txt
 - `gxemul/src/devices/dev_ns16550.c` — VRC4173 SIU UART (GXemul native at 0x0A008680)
 - `src/hw/rtc.c` — Auto-advance etime on read (fixes SPL polling loops)
 - `src/hw/bcu.c` — Silenced unhandled register reads (SPL probes many)
-
-### Known Issues / Blockers
-- SPL calls address 0 via null function pointer (JALR with t9=0) — needs investigation
-- SPL runs in kseg1 (uncached, 0xA0F0xxxx) — memory must be accessible at PA 0x00F00000
-- SPL does not install exception vectors — BEV=1 vectors at 0xBFC00000+ contain zeros
-- Our hw/*.c peripheral state structs (bcu, cmu, pmu, icu, rtc, gpio, nand) are initialized but not yet wired as GXemul DEVICE_ACCESS callbacks — needed for WinCE NAND boot
-- MACC instruction support removed (was in old macc.c) — needs re-adding as GXemul SPECIAL2 patch
