@@ -40,6 +40,8 @@ LEGACY_WORD_RE = re.compile(
     r'^0x(?P<off>[0-9A-Fa-f]+):\s+(?P<words>[0-9A-Fa-f ]+)$'
 )
 
+LEGACY_OVERRIDE_NAMES = ("ctx_tlb", "resume_ctx")
+
 
 def sanitize(name: str) -> str:
     out = []
@@ -56,6 +58,7 @@ def parse_boot_log(path: Path):
     regions, vregions = parse_structured_boot_log(lines)
 
     if regions or vregions:
+        regions = apply_legacy_region_overrides(regions)
         return regions, vregions
 
     legacy_regions, legacy_vregions = parse_legacy_dump(lines)
@@ -135,7 +138,58 @@ def parse_structured_boot_log(lines):
     extracted = extract_regions(regions, raw_chunks, "pa", "REGION_RAW")
     v_extracted = extract_regions(vregions, vraw_chunks, "va", "VREGION_RAW")
 
-    return extracted, v_extracted
+    return select_pa_seed_regions(extracted), v_extracted
+
+
+def select_pa_seed_regions(extracted):
+    by_name = {region["name"]: region for region in extracted}
+    selected = []
+
+    for name in ("low_sdram_0000", "ctx_tlb", "resume_ctx"):
+        region = by_name.get(name)
+        if region is not None:
+            selected.append(region)
+
+    page = by_name.get("low_sdram_1000")
+    if page is None:
+        page = by_name.get("ctx_high_page")
+    if page is not None:
+        selected.append(slice_region(page, "low_sdram_1880", 0x0880, 0x0080))
+
+    return selected
+
+
+def apply_legacy_region_overrides(regions):
+    legacy_path = Path(__file__).resolve().parents[1] / "docs" / "introspection.txt"
+    if not legacy_path.exists():
+        return regions
+
+    legacy_lines = legacy_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    legacy_regions, _ = parse_legacy_dump(legacy_lines)
+    if not legacy_regions:
+        return regions
+
+    legacy_by_name = {region["name"]: region for region in legacy_regions}
+    merged = []
+    seen = set()
+
+    for region in regions:
+        name = region["name"]
+        override = legacy_by_name.get(name)
+        if name in LEGACY_OVERRIDE_NAMES and override is not None:
+            merged.append(override)
+        else:
+            merged.append(region)
+        seen.add(name)
+
+    for name in LEGACY_OVERRIDE_NAMES:
+        if name in seen:
+            continue
+        override = legacy_by_name.get(name)
+        if override is not None:
+            merged.append(override)
+
+    return merged
 
 
 def parse_legacy_dump(lines):
@@ -244,6 +298,17 @@ def make_region(name: str, pa: int, data: bytes):
         "crc32": zlib.crc32(data) & 0xFFFFFFFF,
         "data": data,
     }
+
+
+def slice_region(region, name: str, off: int, size: int):
+    end = off + size
+    if end > len(region["data"]):
+        raise SystemExit(
+            f"{region['name']}: slice {name} overruns source region "
+            f"(off=0x{off:X} size=0x{size:X})"
+        )
+
+    return make_region(name, region["pa"] + off, region["data"][off:end])
 
 
 def extract_regions(regions, raw_chunks, addr_key: str, label: str):
