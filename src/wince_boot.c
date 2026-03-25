@@ -776,6 +776,13 @@ static void log_fault_site_null_pc(machine_t *m,
     uint32_t epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
     uint32_t ra = (uint32_t)m->cpu->cd.mips.gpr[31];
     uint32_t t9 = (uint32_t)m->cpu->cd.mips.gpr[25];
+    const uint32_t callback_slot_va = UINT32_C(0x000170E4);
+    uint32_t callback_slot_value = 0;
+    uint64_t callback_slot_pa = 0;
+    bool callback_slot_mapped = translate_va(m, callback_slot_va,
+        &callback_slot_pa);
+    bool callback_slot_ok = load_va_word(m, callback_slot_va,
+        &callback_slot_value);
 
     fprintf(stderr,
         "[WINCE_HANDLER] site=%s PC=0x%08X exccode=%u BadVA=0x%08X"
@@ -787,9 +794,26 @@ static void log_fault_site_null_pc(machine_t *m,
         epc,
         ra,
         t9);
+    fprintf(stderr,
+        "[WINCE_HANDLER] site=%s callback_slot_va=0x%08X mapped=%d",
+        site->label,
+        callback_slot_va,
+        callback_slot_mapped ? 1 : 0);
+    if (callback_slot_mapped)
+        fprintf(stderr, " callback_slot_pa=0x%08" PRIx64, callback_slot_pa);
+    if (callback_slot_ok)
+        fprintf(stderr, " callback_slot_value=0x%08X", callback_slot_value);
+    else
+        fprintf(stderr, " callback_slot_value=????????");
+    fprintf(stderr, "\n");
     dump_code_window(m, epc, 6u, 4u);
     if (ra != 0)
         dump_code_window(m, ra - UINT32_C(8), 0u, 4u);
+    dump_va_window(m, "va_170c0", 0x000170C0u, 0x40u);
+    if (callback_slot_mapped && callback_slot_pa <= UINT32_MAX) {
+        dump_pa_window(m, "pa_170c0",
+            ((uint32_t)callback_slot_pa) & ~UINT32_C(0x1F), 0x60u);
+    }
 }
 
 static void maybe_log_fault_site(machine_t *m)
