@@ -125,6 +125,24 @@ void timer_remove(struct timer *t)
 
 
 /*
+ *  timer_remove_all():
+ *
+ *  Remove and free all timers. Used before re-initializing the machine so
+ *  that stale timer callbacks from the previous run do not fire.
+ */
+void timer_remove_all(void)
+{
+	struct timer *t = first_timer;
+	while (t != NULL) {
+		struct timer *next = t->next;
+		free(t);
+		t = next;
+	}
+	first_timer = NULL;
+}
+
+
+/*
  *  timer_update_frequency():
  *
  *  Changes the frequency of an existing timer.

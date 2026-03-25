@@ -37,7 +37,6 @@ class MainActivity : AppCompatActivity() {
     private var kernelChoices: List<KernelChoice> = emptyList()
     private var selectedKernelId: String? = null
     private var currentKernelLabel: String = ""
-    private var ignoreKernelSelectionEvents = false
     private var isFullscreenFramebuffer = false
     private var screenMask: ScreenMask? = null
     private var frameAspectRatio: String = FRAME_ASPECT_RATIO_FALLBACK
@@ -268,13 +267,17 @@ class MainActivity : AppCompatActivity() {
             ?: kernelChoices.indexOfFirst { it.id == DEFAULT_KERNEL_ID }.takeIf { it >= 0 }
             ?: 0
 
-        ignoreKernelSelectionEvents = true
         kernelSpinner.setSelection(initialIndex, false)
-        ignoreKernelSelectionEvents = false
+
+        // Android Spinner fires onItemSelected spuriously when the adapter is
+        // set and when setSelection is called (both queued asynchronously).
+        // Use a local flag, cleared only after the message queue drains via
+        // post{}, to absorb all of those before trusting user selections.
+        var spinnerReady = false
 
         kernelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
-                if (ignoreKernelSelectionEvents) return
+                if (!spinnerReady) return
                 startKernel(position, fromUserSelection = true)
             }
 
@@ -284,14 +287,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         startKernel(initialIndex, fromUserSelection = false)
+
+        // After all pending messages drain, trust onItemSelected callbacks.
+        kernelSpinner.post { spinnerReady = true }
     }
 
     private fun startKernel(index: Int, fromUserSelection: Boolean) {
         if (index !in kernelChoices.indices) return
         val choice = kernelChoices[index]
-        if (!fromUserSelection && emulatorHandle != 0L && selectedKernelId == choice.id) {
-            return
-        }
+        // Don't restart if this kernel is already running.
+        // Handles the Spinner's spurious onItemSelected callback on first
+        // adapter attachment, which would otherwise kill the just-started emulator.
+        if (emulatorHandle != 0L && selectedKernelId == choice.id) return
 
         stopEmulator()
 
