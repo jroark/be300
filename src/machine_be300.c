@@ -17,6 +17,7 @@
 #include "ui.h"
 
 /* GXemul headers */
+#include "interrupt.h"
 #include "cpu.h"
 #include "cpu_mips.h"
 #include "cop0.h"
@@ -595,6 +596,8 @@ void be300_run(machine_t *m)
 
     ui_destroy(m);
 
+    timer_stop();
+
     emul_executing = false;
     cpu_run_deinit(gxm);
 
@@ -613,4 +616,13 @@ void be300_destroy(machine_t *m)
     }
 
     free(m);
+
+    /*
+     * Clear GXemul global state so that be300_create() can be called again.
+     * interrupt_handler_register() aborts with exit(1) on duplicate names,
+     * and timer_add() appends to a global list — both must be reset between
+     * machine instantiations (e.g. kernel switch from the Android UI).
+     */
+    interrupt_handler_clear_all();
+    timer_remove_all();
 }

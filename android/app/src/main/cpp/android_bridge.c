@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include "be300.h"
 
@@ -15,6 +17,41 @@
 #define LOG_TAG "Be300Native"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+/*
+ * GXemul's console_charavail() spins forever if stdin is /dev/null:
+ *   select() always returns "readable" on /dev/null, but read() returns 0
+ *   (EOF), so the FIFO never fills and the break condition never triggers.
+ *
+ * Fix: replace stdin with the read end of a pipe whose write end is kept
+ * open (but never written to). select() then returns 0 (not readable) on
+ * an empty pipe, so console_stdin_avail() returns 0 and the loop exits.
+ */
+static int stdin_pipe_write_end = -1;
+
+static void android_fix_stdin(void)
+{
+    if (stdin_pipe_write_end >= 0)
+        return; // Already done
+
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) {
+        LOGE("android_fix_stdin: pipe() failed");
+        return;
+    }
+
+    if (dup2(pipe_fds[0], STDIN_FILENO) < 0) {
+        LOGE("android_fix_stdin: dup2() failed");
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return;
+    }
+
+    close(pipe_fds[0]);
+    stdin_pipe_write_end = pipe_fds[1]; // Keep write end open forever
+    LOGI("android_fix_stdin: stdin replaced with blocking pipe (write_end=%d)",
+         stdin_pipe_write_end);
+}
 
 typedef struct {
     machine_t *m;
@@ -27,6 +64,8 @@ Java_com_jroark_be300android_Be300Native_nativeCreate(
     JNIEnv *env, jobject thiz,
     jstring kernelPath, jstring cmdline, jboolean sfb5bitGreen, jint sdramMb)
 {
+    android_fix_stdin();
+
     const char *c_kernelPath = (*env)->GetStringUTFChars(env, kernelPath, NULL);
     const char *c_cmdline = (*env)->GetStringUTFChars(env, cmdline, NULL);
     LOGI("nativeCreate: kernel=%s, cmdline=%s", c_kernelPath, c_cmdline);
@@ -40,6 +79,7 @@ Java_com_jroark_be300android_Be300Native_nativeCreate(
     state->cfg.sdram_size = (uint32_t)sdramMb * 1024u * 1024u;
     state->cfg.trace = false;
     state->cfg.log_mmio = false;
+    state->cfg.target_mhz = 10u;
 
     (*env)->ReleaseStringUTFChars(env, kernelPath, c_kernelPath);
     (*env)->ReleaseStringUTFChars(env, cmdline, c_cmdline);
@@ -53,7 +93,8 @@ Java_com_jroark_be300android_Be300Native_nativeCreate(
         free(state);
         return 0;
     }
-    LOGI("be300_create succeeded: %p", state->m);
+    LOGI("be300_create succeeded: m=%p gxe_machine=%p",
+         state->m, state->m ? state->m->gxe_machine : NULL);
 
     return (jlong)(uintptr_t)state;
 }
@@ -94,7 +135,7 @@ Java_com_jroark_be300android_Be300Native_nativeCopyFrameToBitmap(JNIEnv *env, jo
             return JNI_FALSE; // Not initialized yet
         }
         m->fb_data = m->gxe_machine->fb->framebuffer;
-        LOGI("Framebuffer resolved (%dx%d)", m->fb_width, m->fb_height);
+        LOGI("Framebuffer resolved (%dx%d) fb_data=%p", m->fb_width, m->fb_height, m->fb_data);
     }
 
     AndroidBitmapInfo info;
