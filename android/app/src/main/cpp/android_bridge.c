@@ -160,21 +160,29 @@ Java_com_jroark_be300android_Be300Native_nativeCopyFrameToBitmap(JNIEnv *env, jo
     uint32_t fb_stride = 256;
     uint32_t dst_stride = info.stride / sizeof(uint32_t);
 
+    bool sfb_5bit = state->cfg.sfb_5bit_green;
+
     for (uint32_t y = 0; y < fb_height; y++) {
         for (uint32_t x = 0; x < fb_width; x++) {
             uint16_t pixel = src[y * fb_stride + x];
 
-            // RGB565 -> ARGB8888
             uint32_t r = (pixel >> 11) & 0x1F;
-            uint32_t g = (pixel >> 5) & 0x3F;
-            uint32_t b = pixel & 0x1F;
+            uint32_t b =  pixel        & 0x1F;
+            uint32_t g;
 
-            // Scale up to 8-bit
+            if (sfb_5bit) {
+                g = (pixel >> 5) & 0x1F;
+                g = (g << 3) | (g >> 2);  /* 5-bit green -> 8-bit */
+            } else {
+                g = (pixel >> 5) & 0x3F;
+                g = (g << 2) | (g >> 4);  /* 6-bit green -> 8-bit */
+            }
+
             r = (r << 3) | (r >> 2);
-            g = (g << 2) | (g >> 4);
             b = (b << 3) | (b >> 2);
 
-            dst[y * dst_stride + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            /* RGBA_8888: R at byte 0 (low addr) -> uint32_t = (A<<24)|(B<<16)|(G<<8)|R */
+            dst[y * dst_stride + x] = 0xFF000000 | (b << 16) | (g << 8) | r;
         }
     }
 
