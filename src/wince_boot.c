@@ -85,7 +85,12 @@ static const wince_replay_pc_probe_desc_t wince_replay_pc_probes[] = {
     { UINT32_C(0x8008B3F0), "loop_8008b3f0", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x8008B42C), "loop_8008b42c", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x8008B6D8), "loop_8008b6d8", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8008B8EC), "loop_8008b8ec", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8008B994), "loop_8008b994", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x80094F24), "loop_80094f24", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x80095004), "loop_80095004", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8009511C), "loop_8009511c", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x800953D4), "loop_800953d4", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x80096C40), "loop_80096c40", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x800A7B3C), "resume_poll_7b3c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800A7B64), "resume_poll_7b64", -0x20, 0x80u, 0x60u },
@@ -842,6 +847,8 @@ static void log_replay_pc_state(machine_t *m, const char *label, uint32_t pc)
 static void dump_replay_pc_probe(machine_t *m,
     const wince_replay_pc_probe_desc_t *probe, uint32_t pc)
 {
+    uint32_t s0 = (uint32_t)m->cpu->cd.mips.gpr[16];
+
     if (probe->code_size != 0) {
         uint32_t base = pc + (uint32_t)probe->code_start_rel;
 
@@ -859,6 +866,30 @@ static void dump_replay_pc_probe(machine_t *m,
                 probe->label);
             dump_va_window(m, stack_label, stack_base, probe->stack_size);
         }
+    }
+
+    if (pc == UINT32_C(0x800A7B68)
+        || pc == UINT32_C(0x80094F24)
+        || pc == UINT32_C(0x80095004)
+        || pc == UINT32_C(0x8009511C)
+        || pc == UINT32_C(0x800953D4)
+        || pc == UINT32_C(0x8008B8EC)
+        || pc == UINT32_C(0x8008B994)) {
+        dump_va_window(m, "resume_poll_dispatch", UINT32_C(0xA0051000),
+            0x40u);
+    }
+
+    if ((pc == UINT32_C(0x80094F24)
+        || pc == UINT32_C(0x80095004)
+        || pc == UINT32_C(0x8009511C)
+        || pc == UINT32_C(0x800953D4)
+        || pc == UINT32_C(0x8008B8EC)
+        || pc == UINT32_C(0x8008B994))
+        && s0 != 0) {
+        char s0_label[64];
+
+        snprintf(s0_label, sizeof(s0_label), "%s_s0_f0", probe->label);
+        dump_va_window(m, s0_label, s0 + UINT32_C(0xF0), 0x60u);
     }
 }
 
