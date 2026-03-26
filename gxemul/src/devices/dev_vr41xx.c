@@ -94,6 +94,78 @@ struct vr41xx_data {
 	rtc_state_t	rtc;
 };
 
+static void maybe_log_resume_mmio_probe(struct cpu *cpu,
+	uint64_t relative_addr, int writeflag, uint64_t value)
+{
+	static const struct {
+		uint32_t pc;
+		const char *label;
+	} probes[] = {
+		{ 0x8007826c, "resume_mmio_7826c" },
+		{ 0x8007a114, "resume_mmio_7a114" },
+		{ 0x800a5e94, "resume_mmio_a5e94" },
+		{ 0x80079724, "resume_mmio_79724" },
+	};
+	static uint32_t logged_mask = 0;
+	uint32_t pc = (uint32_t)cpu->pc;
+	size_t i;
+
+	for (i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+		unsigned char buf[4];
+		uint32_t bit = 1u << i;
+		int rel;
+
+		if (probes[i].pc != pc)
+			continue;
+		if (logged_mask & bit)
+			return;
+		logged_mask |= bit;
+
+		fprintf(stderr,
+		    "[WINCE_MMIO_PC] label=%s pc=0x%08x off=0x%03" PRIx64
+		    " op=%c value=0x%04" PRIx64
+		    " ra=0x%08x sp=0x%08x s0=0x%08x s1=0x%08x s2=0x%08x\n",
+		    probes[i].label,
+		    pc,
+		    relative_addr,
+		    writeflag == MEM_WRITE ? 'W' : 'R',
+		    value,
+		    (uint32_t)cpu->cd.mips.gpr[31],
+		    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+		    (uint32_t)cpu->cd.mips.gpr[16],
+		    (uint32_t)cpu->cd.mips.gpr[17],
+		    (uint32_t)cpu->cd.mips.gpr[18]);
+
+		for (rel = -16; rel <= 32; rel += 4) {
+			uint32_t va32 = pc + (uint32_t)rel;
+			uint64_t va = (uint64_t)(int64_t)(int32_t)va32;
+
+			if (cpu->memory_rw(cpu, cpu->mem, va, buf, sizeof(buf),
+			    MEM_READ, CACHE_DATA)) {
+				uint32_t w = (uint32_t)buf[0]
+				    | ((uint32_t)buf[1] << 8)
+				    | ((uint32_t)buf[2] << 16)
+				    | ((uint32_t)buf[3] << 24);
+				fprintf(stderr,
+				    "[WINCE_MMIO_PC] %s rel=%+03d va=0x%08x"
+				    " word=%08x\n",
+				    probes[i].label,
+				    rel,
+				    va32,
+				    w);
+			} else {
+				fprintf(stderr,
+				    "[WINCE_MMIO_PC] %s rel=%+03d va=0x%08x"
+				    " word=????????\n",
+				    probes[i].label,
+				    rel,
+				    va32);
+			}
+		}
+		return;
+	}
+}
+
 
 /*
  *  vr41xx_vrip_interrupt_assert():
@@ -536,6 +608,9 @@ DEVICE_ACCESS(vr41xx)
 
 	if (writeflag == MEM_WRITE)
 		idata = memory_readmax64(cpu, data, len);
+
+	maybe_log_resume_mmio_probe(cpu, relative_addr, writeflag,
+	    writeflag == MEM_WRITE ? idata : 0);
 
 	// int regnr = relative_addr / sizeof(uint64_t);
 
