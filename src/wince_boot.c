@@ -1010,6 +1010,58 @@ static void restore_replay_cp0_fields(machine_t *m)
     }
 }
 
+static void install_replay_helper_tlb(machine_t *m)
+{
+    struct mips_coproc *cp0;
+    int entry_index;
+
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+        return;
+    if (!replay_mode_enabled(m) || !m->cfg.wince_resume_replay_full)
+        return;
+    if (m->wince.replay_helper_tlb_installed)
+        return;
+
+    cp0 = m->cpu->cd.mips.coproc[0];
+    entry_index = cp0->nr_of_tlbs - 1;
+    if (entry_index < 0)
+        return;
+
+    /*
+     * Full replay now reaches the real low-vector save path again. The
+     * handler state it touches lives in the low SDRAM windows already seeded
+     * at PA 0x00001000..0x00002FFF, but replay was still missing the live
+     * kseg2 alias used by the handler at 0xFFFFD888/0xFFFFD8C0.
+     *
+     * Install a narrow helper pair for that alias only:
+     *   0xFFFFD800 -> 0x00001000
+     *   paired odd leaf -> 0x00002000
+     *
+     * Keep this replay-only and explicit so the next run shows whether the
+     * remaining blocker is missing live MMU state or something later.
+     */
+    mips_coproc_tlb_set_entry(m->cpu, entry_index, 4096,
+        UINT32_C(0xFFFFD800), UINT32_C(0x00001000), UINT32_C(0x00002000),
+        1, 1, 1, 1, 1, 0, 3, 3);
+    cp0->tlbs[entry_index].hi = UINT32_C(0xFFFFD800);
+    cp0->tlbs[entry_index].lo0 = UINT32_C(0x0000019F);
+    cp0->tlbs[entry_index].lo1 = UINT32_C(0x000001DF);
+    m->wince.replay_helper_tlb_installed = true;
+    invalidate_all(m);
+
+    if (m->wince.log_stall) {
+        fprintf(stderr,
+            "[WINCE_REPLAY] helper_tlb idx=%d va=0x%08X"
+            " pa0=0x%08X pa1=0x%08X\n",
+            entry_index,
+            UINT32_C(0xFFFFD800),
+            UINT32_C(0x00001000),
+            UINT32_C(0x00002000));
+        dump_tlb_matches(m, "helper_d888", UINT32_C(0xFFFFD888));
+        dump_tlb_matches(m, "helper_d8c0", UINT32_C(0xFFFFD8C0));
+    }
+}
+
 static void log_replay_snapshot(machine_t *m, const char *label)
 {
     uint32_t i;
@@ -1060,6 +1112,8 @@ static void log_replay_pc_state(machine_t *m, const char *label, uint32_t pc)
 static void dump_replay_pc_probe(machine_t *m,
     const wince_replay_pc_probe_desc_t *probe, uint32_t pc)
 {
+    uint32_t epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    uint32_t badva = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR];
     uint32_t s0 = (uint32_t)m->cpu->cd.mips.gpr[16];
 
     if (probe->code_size != 0) {
@@ -1079,6 +1133,15 @@ static void dump_replay_pc_probe(machine_t *m,
                 probe->label);
             dump_va_window(m, stack_label, stack_base, probe->stack_size);
         }
+    }
+
+    if ((pc == UINT32_C(0x8008B254) || pc == UINT32_C(0x8008B3F0))
+        && badva != 0) {
+        dump_tlb_matches(m, probe->label, badva);
+        dump_tlb_matches(m, "helper_d888", UINT32_C(0xFFFFD888));
+        dump_tlb_matches(m, "helper_d8c0", UINT32_C(0xFFFFD8C0));
+        if (epc != 0)
+            dump_va_window(m, "replay_epc", epc & ~UINT32_C(0x1F), 0x40u);
     }
 
     if (pc == UINT32_C(0x800A7B68)
@@ -2125,6 +2188,7 @@ bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t halt_pc,
     m->wince.replay_resume_exit_logged = false;
 
     restore_replay_cp0_fields(m);
+    install_replay_helper_tlb(m);
 
     if (!m->wince.replay_snapshot_logged) {
         log_replay_snapshot(m, "redirect");
