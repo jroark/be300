@@ -65,6 +65,7 @@ static void log_fault_site_replay_stub_miss(machine_t *m,
 static void invalidate_all(machine_t *m);
 
 static const wince_replay_pc_probe_desc_t wince_replay_pc_probes[] = {
+    { UINT32_C(0xA00795B4), "resume_oal_entry" },
     { UINT32_C(0x00011790), "resume_stub_entry" },
     { UINT32_C(0x000117A8), "resume_stub_return" },
     { UINT32_C(0x8008B478), "corridor_8008b478" },
@@ -566,50 +567,6 @@ static void dump_tlb_matches(machine_t *m, const char *label, uint32_t va)
     }
 }
 
-static bool restore_replay_ctx_tlb(machine_t *m)
-{
-    struct mips_coproc *cp0;
-    int entry_count;
-    int i;
-    bool applied = false;
-
-    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
-        return false;
-
-    cp0 = m->cpu->cd.mips.coproc[0];
-    entry_count = cp0->nr_of_tlbs;
-    if (entry_count > 0x200 / 16)
-        entry_count = 0x200 / 16;
-
-    for (i = 0; i < entry_count; i++) {
-        uint32_t pa = UINT32_C(0x00002000) + (uint32_t)i * 16u;
-        uint32_t lo0 = load_pa_word(m, pa + 0u);
-        uint32_t lo1 = load_pa_word(m, pa + 4u);
-        uint32_t hi = load_pa_word(m, pa + 8u);
-        uint32_t mask = load_pa_word(m, pa + 12u);
-
-        cp0->tlbs[i].lo0 = lo0;
-        cp0->tlbs[i].lo1 = lo1;
-        cp0->tlbs[i].hi = hi;
-        cp0->tlbs[i].mask = mask;
-        if (lo0 != 0 || lo1 != 0 || hi != 0 || mask != 0)
-            applied = true;
-    }
-
-    if (!applied)
-        return false;
-
-    invalidate_all(m);
-    if (m->wince.log_stall) {
-        fprintf(stderr,
-            "[WINCE_REPLAY_TLB] restored_from_ctx_tlb entries=%d"
-            " pa=0x00002000\n",
-            entry_count);
-        dump_tlb_matches(m, "ctx_tlb_d888", 0xFFFFD888u);
-    }
-    return true;
-}
-
 static bool replay_mode_enabled(machine_t *m)
 {
     return m && m->wince.active && m->wince.use_resume_replay
@@ -750,6 +707,13 @@ static uint32_t decode_replay_resume_target(machine_t *m)
     return 0;
 }
 
+static uint32_t decode_replay_resume_entry(uint32_t halt_pc)
+{
+    if (halt_pc == 0)
+        return 0;
+    return halt_pc + UINT32_C(0x1C);
+}
+
 static uint32_t decode_replay_resume_sp(machine_t *m)
 {
     uint32_t from_snapshot = wince_resume_replay_snapshot.resume_stack_pointer;
@@ -824,6 +788,60 @@ static void log_replay_snapshot(machine_t *m, const char *label)
             label);
 }
 
+static void log_replay_pc_state(machine_t *m, const char *label, uint32_t pc)
+{
+    fprintf(stderr,
+        "[WINCE_REPLAY_PC] label=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " s0=0x%08X s1=0x%08X s2=0x%08X"
+        " status=0x%08X cause=0x%08X epc=0x%08X badva=0x%08X"
+        " wired=0x%08X entryhi=0x%08X pagemask=0x%08X\n",
+        label ? label : "-",
+        pc,
+        (uint32_t)m->cpu->cd.mips.gpr[31],
+        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+        (uint32_t)m->cpu->cd.mips.gpr[16],
+        (uint32_t)m->cpu->cd.mips.gpr[17],
+        (uint32_t)m->cpu->cd.mips.gpr[18],
+        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
+        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
+        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR],
+        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED],
+        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI],
+        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_PAGEMASK]);
+}
+
+static void maybe_log_replay_resume_entry_probe(machine_t *m)
+{
+    uint32_t pc;
+    uint32_t entry_pc;
+
+    if (!replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->wince.log_stall)
+        return;
+
+    pc = (uint32_t)m->cpu->pc;
+    entry_pc = m->wince.replay_resume_entry_pc;
+    if (entry_pc == 0)
+        return;
+
+    if (!m->wince.replay_resume_entry_logged && pc == entry_pc) {
+        m->wince.replay_resume_entry_logged = true;
+        log_replay_pc_state(m, "resume_oal_entry_live", pc);
+        dump_va_window(m, "resume_oal_entry_code", entry_pc, 0x40u);
+        dump_pa_window(m, "resume_ctx_cp0", 0x00002280u, 0x50u);
+        return;
+    }
+
+    if (!m->wince.replay_resume_entry_logged || m->wince.replay_resume_exit_logged)
+        return;
+
+    if (pc < entry_pc || pc >= entry_pc + UINT32_C(0x24)) {
+        m->wince.replay_resume_exit_logged = true;
+        log_replay_pc_state(m, "resume_oal_exit", pc);
+    }
+}
+
 static void maybe_log_replay_pc_probe(machine_t *m)
 {
     size_t i;
@@ -844,25 +862,7 @@ static void maybe_log_replay_pc_probe(machine_t *m)
             continue;
 
         m->wince.replay_pc_probe_logged_mask |= bit;
-        fprintf(stderr,
-            "[WINCE_REPLAY_PC] label=%s pc=0x%08X ra=0x%08X sp=0x%08X"
-            " s0=0x%08X s1=0x%08X s2=0x%08X"
-            " status=0x%08X cause=0x%08X epc=0x%08X badva=0x%08X"
-            " wired=0x%08X entryhi=0x%08X pagemask=0x%08X\n",
-            probe->label,
-            pc,
-            (uint32_t)m->cpu->cd.mips.gpr[31],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
-            (uint32_t)m->cpu->cd.mips.gpr[16],
-            (uint32_t)m->cpu->cd.mips.gpr[17],
-            (uint32_t)m->cpu->cd.mips.gpr[18],
-            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
-            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
-            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
-            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR],
-            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED],
-            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI],
-            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_PAGEMASK]);
+        log_replay_pc_state(m, probe->label, pc);
         log_replay_snapshot(m, probe->label);
     }
 }
@@ -1767,23 +1767,26 @@ void wince_boot_apply_resume_seed(machine_t *m)
     }
 }
 
-bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t *target_pc,
-    uint32_t *target_sp)
+bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t halt_pc,
+    uint32_t *target_pc, uint32_t *target_sp)
 {
     bool applied_snapshot;
-    bool applied_ctx_tlb;
+    uint32_t entry_pc;
 
     if (!replay_mode_enabled(m))
         return false;
 
     wince_boot_apply_resume_seed(m);
     applied_snapshot = apply_replay_snapshot(m);
-    applied_ctx_tlb = restore_replay_ctx_tlb(m);
     m->wince.replay_snapshot_applied = applied_snapshot
         || m->wince.replay_snapshot_applied;
+    m->wince.replay_resume_halt_pc = halt_pc;
+    m->wince.replay_resume_entry_pc = decode_replay_resume_entry(halt_pc);
     m->wince.replay_resume_target_pc = decode_replay_resume_target(m);
     m->wince.replay_resume_stack_pointer = decode_replay_resume_sp(m);
     m->wince.replay_synthetic_ra = wince_resume_replay_snapshot.synthetic_ra;
+    m->wince.replay_resume_entry_logged = false;
+    m->wince.replay_resume_exit_logged = false;
 
     restore_replay_cp0_fields(m);
 
@@ -1792,24 +1795,29 @@ bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t *target_pc,
         m->wince.replay_snapshot_logged = true;
     }
 
+    entry_pc = m->wince.replay_resume_entry_pc;
     if (target_pc)
-        *target_pc = m->wince.replay_resume_target_pc;
+        *target_pc = entry_pc;
     if (target_sp)
-        *target_sp = m->wince.replay_resume_stack_pointer;
+        *target_sp = 0;
 
     if (m->wince.log_stall) {
         fprintf(stderr,
             "[WINCE_REPLAY] prepared applied_snapshot=%d"
-            " applied_ctx_tlb=%d target_pc=0x%08X target_sp=0x%08X"
-            " synthetic_ra=0x%08X\n",
+            " halt_pc=0x%08X entry_pc=0x%08X low_target=0x%08X"
+            " replay_sp=0x%08X synthetic_ra=0x%08X\n",
             applied_snapshot ? 1 : 0,
-            applied_ctx_tlb ? 1 : 0,
+            halt_pc,
+            entry_pc,
             m->wince.replay_resume_target_pc,
             m->wince.replay_resume_stack_pointer,
             m->wince.replay_synthetic_ra);
+        dump_va_window(m, "resume_halt_code", halt_pc, 0x60u);
+        dump_va_window(m, "resume_entry_code", entry_pc, 0x40u);
+        dump_pa_window(m, "resume_ctx_cp0", 0x00002280u, 0x50u);
     }
 
-    return m->wince.replay_resume_target_pc != 0;
+    return entry_pc != 0 && m->wince.replay_resume_target_pc != 0;
 }
 
 void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
@@ -1824,6 +1832,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     maybe_note_first_exception(m);
     maybe_log_fault_site(m);
     maybe_log_replay_pc_probe(m);
+    maybe_log_replay_resume_entry_probe(m);
 }
 
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,

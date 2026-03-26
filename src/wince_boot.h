@@ -19,8 +19,8 @@ void wince_boot_install_synthetic_low_vectors(machine_t *m,
     const uint32_t *handler, size_t word_count, const char *reason);
 void wince_boot_apply_initial_seed(machine_t *m);
 void wince_boot_apply_resume_seed(machine_t *m);
-bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t *target_pc,
-    uint32_t *target_sp);
+bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t halt_pc,
+    uint32_t *target_pc, uint32_t *target_sp);
 void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu);
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
     uint64_t relative_addr, uint64_t value);
