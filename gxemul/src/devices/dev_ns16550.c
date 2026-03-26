@@ -56,6 +56,8 @@ struct ns_data {
 	const char	*name;
 	int		console_handle;
 	int		enable_fifo;
+	size_t		window_length;
+	int		shadow_log_count;
 
 	struct interrupt irq;
 
@@ -108,6 +110,7 @@ DEVICE_TICK(ns16550)
 DEVICE_ACCESS(ns16550)
 {
 	uint64_t idata = 0, odata=0;
+	uint64_t raw_relative_addr = relative_addr;
 	size_t i;
 	struct ns_data *d = (struct ns_data *) extra;
 
@@ -137,11 +140,37 @@ DEVICE_ACCESS(ns16550)
 
 	relative_addr /= d->addrmult;
 
-	if (relative_addr >= DEV_NS16550_LENGTH) {
+	if (raw_relative_addr >= d->window_length) {
 		fatal("[ ns16550 (%s): outside register space? relative_addr="
-		    "0x%llx. bad addrmult? bad device length? ]\n", d->name,
-		    (long long)relative_addr);
+		    "0x%llx raw=0x%llx. bad addrmult? bad device length? ]\n",
+		    d->name, (long long)relative_addr,
+		    (long long)raw_relative_addr);
 		return 0;
+	}
+
+	if (relative_addr >= DEV_NS16550_LENGTH) {
+		/*
+		 *  VR4131 SIU probing on the BE-300 touches a wider zeroed
+		 *  window than the core 16550 register bank. Real hardware
+		 *  surveys show 0x0F000800..0x0F0008FF reading back as zero.
+		 *  Keep the UART itself at 8 registers, but let the extra
+		 *  shadow window absorb reads/writes instead of falling off
+		 *  the bus during WinCE resume.
+		 */
+		if (d->shadow_log_count < 4) {
+			fprintf(stderr,
+			    "[NS16550] shadow %s name=%s off=0x%llx len=%zu"
+			    " pc=0x%08" PRIx64 "\n",
+			    writeflag == MEM_WRITE ? "write" : "read",
+			    d->name,
+			    (long long)raw_relative_addr,
+			    len,
+			    (uint64_t)cpu->pc);
+			d->shadow_log_count++;
+		}
+		if (writeflag == MEM_READ)
+			memory_writemax64(cpu, data, len, 0);
+		return 1;
 	}
 
 	switch (relative_addr) {
@@ -335,9 +364,14 @@ DEVINIT(ns16550)
 	d->parity	= 'N';
 	d->stopbits	= "1";
 	d->name		= devinit->name2 != NULL? devinit->name2 : "";
+	d->window_length = DEV_NS16550_LENGTH * d->addrmult;
 	d->console_handle =
 	    console_start_slave(devinit->machine, devinit->name2 != NULL?
 	    devinit->name2 : devinit->name, d->in_use);
+
+	if (devinit->name2 != NULL && strcmp(devinit->name2, "siu") == 0
+	    && devinit->addr == 0x0f000800)
+		d->window_length = 0x100;
 
 	INTERRUPT_CONNECT(devinit->interrupt_path, d->irq);
 
@@ -351,7 +385,7 @@ DEVINIT(ns16550)
 		snprintf(name, nlen, "%s", devinit->name);
 
 	memory_device_register(devinit->machine->memory, name, devinit->addr,
-	    DEV_NS16550_LENGTH * d->addrmult, dev_ns16550_access, d,
+	    d->window_length, dev_ns16550_access, d,
 	    DM_DEFAULT, NULL);
 	machine_add_tickfunction(devinit->machine,
 	    dev_ns16550_tick, d, TICK_SHIFT);
@@ -364,4 +398,3 @@ DEVINIT(ns16550)
 
 	return 1;
 }
-
