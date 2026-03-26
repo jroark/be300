@@ -19,6 +19,8 @@ static void usage(const char *prog)
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
         "  --wince-hw-seed       Apply embedded WinCE init-phase hardware seed data\n"
         "  --wince-resume-replay Replay WinCE warm-resume context after hibernate\n"
+        "  --wince-resume-replay-full\n"
+        "                        Replay WinCE warm-resume context using full captured windows\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --speed <mhz>         Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
         "  -h, --help            Show this help\n"
@@ -41,6 +43,7 @@ int main(int argc, char *argv[])
         .log_wince_stall = false,
         .wince_hw_seed  = false,
         .wince_resume_replay = false,
+        .wince_resume_replay_full = false,
         .rom_path       = NULL,
         .kernel_path    = NULL,
         .cmdline        = NULL,
@@ -69,6 +72,9 @@ int main(int argc, char *argv[])
             cfg.wince_hw_seed = true;
         } else if (strcmp(argv[i], "--wince-resume-replay") == 0) {
             cfg.wince_resume_replay = true;
+        } else if (strcmp(argv[i], "--wince-resume-replay-full") == 0) {
+            cfg.wince_resume_replay = true;
+            cfg.wince_resume_replay_full = true;
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
             cfg.ram_path = argv[++i];
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
@@ -119,6 +125,11 @@ int main(int argc, char *argv[])
     if (cfg.wince_resume_replay && !cfg.wince_hw_seed) {
         fprintf(stderr,
             "Error: --wince-resume-replay requires --wince-hw-seed\n");
+        return 1;
+    }
+    if (cfg.wince_resume_replay_full && !cfg.wince_resume_replay) {
+        fprintf(stderr,
+            "Error: --wince-resume-replay-full requires --wince-resume-replay\n");
         return 1;
     }
 

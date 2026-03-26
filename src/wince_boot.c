@@ -667,6 +667,7 @@ static void log_replay_region_compare(machine_t *m,
 static bool apply_replay_snapshot(machine_t *m)
 {
     bool applied = false;
+    bool apply_all_words = m->cfg.wince_resume_replay_full;
     uint32_t i;
 
     for (i = 0; i < wince_resume_replay_snapshot.region_count; i++) {
@@ -679,7 +680,7 @@ static bool apply_replay_snapshot(machine_t *m)
         for (word_index = 0; word_index < region->word_count; word_index++) {
             uint32_t pa;
 
-            if (region->valid_words[word_index] == 0)
+            if (!apply_all_words && region->valid_words[word_index] == 0)
                 continue;
 
             pa = region->pa + word_index * 4u;
@@ -690,6 +691,12 @@ static bool apply_replay_snapshot(machine_t *m)
 
     if (applied)
         invalidate_all(m);
+
+    if (applied && m->wince.log_stall) {
+        fprintf(stderr,
+            "[WINCE_REPLAY] apply_snapshot mode=%s\n",
+            apply_all_words ? "full" : "stable");
+    }
     return applied;
 }
 
