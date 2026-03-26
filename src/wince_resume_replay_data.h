@@ -33,8 +33,11 @@ static const uint8_t wince_resume_stack_frame_1770_valid[] = {
 static const uint32_t wince_resume_bootctx_stub_63d0_words[] = {
     UINT32_C(0x00000000), UINT32_C(0x3C04AA00), UINT32_C(0x24060007), UINT32_C(0xAC861B54),
     UINT32_C(0x24060008), UINT32_C(0xAC861B58), UINT32_C(0x24050030), UINT32_C(0xAC850028),
+    UINT32_C(0x2405000C), UINT32_C(0xAC850028), UINT32_C(0x3C04AA01), UINT32_C(0x2484A000),
+    UINT32_C(0x2405000F), UINT32_C(0xAC8500E4), UINT32_C(0x03E00008), UINT32_C(0x00000000),
 };
 static const uint8_t wince_resume_bootctx_stub_63d0_valid[] = {
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
     0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
 };
 static const uint32_t wince_resume_dispatch_ptr_table_660170_words[] = {
@@ -101,7 +104,7 @@ static const uint8_t wince_resume_callback_table_a0051680_valid[] = {
 static const wince_resume_region_t wince_resume_replay_regions[] = {
     { "resume_context_22a0", UINT32_C(0x000022A0), UINT32_C(0x0020), UINT32_C(8), wince_resume_resume_context_22a0_words, wince_resume_resume_context_22a0_valid },
     { "stack_frame_1770", UINT32_C(0x00001770), UINT32_C(0x0090), UINT32_C(36), wince_resume_stack_frame_1770_words, wince_resume_stack_frame_1770_valid },
-    { "bootctx_stub_63d0", UINT32_C(0x000063D0), UINT32_C(0x0020), UINT32_C(8), wince_resume_bootctx_stub_63d0_words, wince_resume_bootctx_stub_63d0_valid },
+    { "bootctx_stub_63d0", UINT32_C(0x000063D0), UINT32_C(0x0040), UINT32_C(16), wince_resume_bootctx_stub_63d0_words, wince_resume_bootctx_stub_63d0_valid },
     { "dispatch_ptr_table_660170", UINT32_C(0x00660170), UINT32_C(0x0030), UINT32_C(12), wince_resume_dispatch_ptr_table_660170_words, wince_resume_dispatch_ptr_table_660170_valid },
     { "callback_table_a0051680", UINT32_C(0x00051680), UINT32_C(0x0200), UINT32_C(128), wince_resume_callback_table_a0051680_words, wince_resume_callback_table_a0051680_valid },
 };

@@ -76,6 +76,11 @@ static void log_fault_site_null_pc(machine_t *m,
 static void log_fault_site_replay_stub_miss(machine_t *m,
     const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
     uint32_t exccode);
+static const wince_resume_region_t *find_replay_region_by_name(
+    const wince_resume_snapshot_t *snapshot, const char *name);
+static void log_replay_region_compare(machine_t *m,
+    const wince_resume_region_t *region, const char *label);
+static void log_replay_pc_state(machine_t *m, const char *label, uint32_t pc);
 static void invalidate_all(machine_t *m);
 static bool probable_low_va_target(uint32_t value);
 static bool range_overlaps(uint64_t base_a, uint64_t size_a, uint64_t base_b,
@@ -153,7 +158,7 @@ static const wince_fault_site_desc_t wince_fault_sites[] = {
 static const wince_replay_write_watch_desc_t wince_replay_write_watches[] = {
     { "dispatch_page_5100", UINT32_C(0x00051000), UINT32_C(0x0800) },
     { "dispatch_ptr_660160", UINT32_C(0x00660160), UINT32_C(0x00A0) },
-    { "bootctx_stub_63d0", UINT32_C(0x000063D0), UINT32_C(0x0020) },
+    { "bootctx_stub_63d0", UINT32_C(0x000063D0), UINT32_C(0x0040) },
     { "obj_table_66bfc0", UINT32_C(0x0066BFC0), UINT32_C(0x0040) },
     { "callback_table_1740", UINT32_C(0x00051740), UINT32_C(0x0040) },
 };
@@ -163,6 +168,10 @@ static const wince_mmio_watch_desc_t wince_mmio_watches[] = {
     { "ack_112c", UINT32_C(0x0A00112C) },
     { "ack_1b20", UINT32_C(0x0A001B20) },
     { "ack_1b2c", UINT32_C(0x0A001B2C) },
+    { "bootctx_aa001b54", UINT32_C(0x0A001B54) },
+    { "bootctx_aa001b58", UINT32_C(0x0A001B58) },
+    { "bootctx_aa000028", UINT32_C(0x0A000028) },
+    { "bootctx_aa01a0e4", UINT32_C(0x0A01A0E4) },
 };
 
 static machine_t *wince_boot_from_gx(struct machine *gxm)
@@ -915,6 +924,60 @@ static bool plausible_callback_target(uint32_t va)
         && (in_kseg0_or_kseg1(va) || probable_low_va_target(va));
 }
 
+static bool replay_pc_in_bootctx_loop_corridor(uint32_t pc)
+{
+    return pc == UINT32_C(0x8008B240)
+        || pc == UINT32_C(0x8008B254)
+        || pc == UINT32_C(0x8008B264)
+        || pc == UINT32_C(0x8008B274)
+        || pc == UINT32_C(0x8008B278)
+        || pc == UINT32_C(0x8008B3F0);
+}
+
+static void log_bootctx_stub_poststate(machine_t *m, const char *label)
+{
+    const wince_resume_region_t *bootctx_region;
+    uint32_t pc;
+
+    if (!m || !m->wince.log_stall)
+        return;
+
+    pc = (uint32_t)m->cpu->pc;
+    log_replay_pc_state(m, label ? label : "bootctx_poststate", pc);
+    dump_va_window(m, "bootctx_stub_code", UINT32_C(0xA00063D0), 0x40u);
+    dump_pa_window(m, "bootctx_stub_pa", UINT32_C(0x000063D0), 0x40u);
+    dump_va_window(m, "bootctx_aa000020", UINT32_C(0xAA000020), 0x20u);
+    dump_va_window(m, "bootctx_aa001b40", UINT32_C(0xAA001B40), 0x30u);
+    dump_va_window(m, "bootctx_aa01a0e0", UINT32_C(0xAA01A0E0), 0x20u);
+    bootctx_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
+        "bootctx_stub_63d0");
+    if (bootctx_region)
+        log_replay_region_compare(m, bootctx_region, label);
+}
+
+static void maybe_log_replay_bootctx_stub_poststate(machine_t *m)
+{
+    uint32_t pc;
+    uint32_t epc;
+
+    if (!m || !replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->wince.log_stall || m->wince.replay_bootctx_stub_poststate_logged
+        || !m->wince.replay_callback_redirect_attempted) {
+        return;
+    }
+
+    pc = (uint32_t)m->cpu->pc;
+    if (!replay_pc_in_bootctx_loop_corridor(pc))
+        return;
+
+    epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    if (epc < UINT32_C(0xA00063D0) || epc >= UINT32_C(0xA0006410))
+        return;
+
+    m->wince.replay_bootctx_stub_poststate_logged = true;
+    log_bootctx_stub_poststate(m, "bootctx_poststate");
+}
+
 static void maybe_probe_replay_callback_redirect(machine_t *m)
 {
     uint32_t pc;
@@ -931,6 +994,7 @@ static void maybe_probe_replay_callback_redirect(machine_t *m)
     uint32_t redirect_target = 0;
     const wince_resume_region_t *dispatch_ptr_region;
     const wince_resume_region_t *callback_region;
+    const wince_resume_region_t *bootctx_region;
 
     if (!replay_mode_enabled(m) || !m->wince.cold_boot_redirected
         || !m->wince.log_stall || m->wince.replay_callback_redirect_attempted) {
@@ -959,6 +1023,8 @@ static void maybe_probe_replay_callback_redirect(machine_t *m)
         "dispatch_ptr_table_660170");
     callback_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
         "callback_table_a0051680");
+    bootctx_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
+        "bootctx_stub_63d0");
 
     fprintf(stderr,
         "[WINCE_REPLAY_CALLBACK] pc=0x%08X epc=0x%08X sp=0x%08X"
@@ -990,6 +1056,8 @@ static void maybe_probe_replay_callback_redirect(machine_t *m)
         log_replay_region_compare(m, dispatch_ptr_region, "callback-dispatch-ptr");
     if (callback_region)
         log_replay_region_compare(m, callback_region, "callback-table");
+    if (bootctx_region)
+        log_replay_region_compare(m, bootctx_region, "callback-bootctx-stub");
 
     if (slot_value_ok && plausible_callback_target(slot_value))
         redirect_target = slot_value;
@@ -2349,6 +2417,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     maybe_log_replay_pc_probe(m);
     maybe_log_replay_resume_entry_probe(m);
     maybe_probe_replay_callback_redirect(m);
+    maybe_log_replay_bootctx_stub_poststate(m);
 }
 
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
@@ -2504,13 +2573,19 @@ void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
 
         m->wince.replay_mmio_watch_logged_mask |= bit;
         fprintf(stderr,
-            "[WINCE_MMIO_ACK] label=%s paddr=0x%08" PRIx64
+            "[WINCE_MMIO] label=%s paddr=0x%08" PRIx64
             " value=0x%08" PRIx64 " len=%zu pc=0x%08" PRIx64 "\n",
             watch->label,
             paddr,
             value,
             len,
             (uint64_t)cpu->pc);
+        if (strcmp(watch->label, "bootctx_aa001b54") == 0
+            || strcmp(watch->label, "bootctx_aa001b58") == 0
+            || strcmp(watch->label, "bootctx_aa000028") == 0
+            || strcmp(watch->label, "bootctx_aa01a0e4") == 0) {
+            log_bootctx_stub_poststate(m, watch->label);
+        }
     }
 }
 

@@ -82,6 +82,7 @@ typedef struct {
     bool replay_synthetic_ra_attempted;
     bool replay_callback_redirect_attempted;
     bool replay_helper_tlb_installed;
+    bool replay_bootctx_stub_poststate_logged;
     bool replay_resume_entry_logged;
     bool replay_resume_exit_logged;
 
