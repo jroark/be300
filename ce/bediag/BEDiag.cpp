@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed11"
+#define BEDIAG_BUILD_TAG         "hwseed12"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -254,6 +254,8 @@ static BOOL g_serial_retry_done = FALSE;
 static BOOL g_serial_failure_reported = FALSE;
 static BOOL g_had_error = FALSE;
 static BOOL g_backlog_overflow = FALSE;
+static LONG g_driver_active = 0;
+static LONG g_driver_refcount = 0;
 static char g_backlog[BEDIAG_BACKLOG_SIZE];
 static DWORD g_backlog_used = 0;
 static WCHAR g_file_path[BEDIAG_MAX_PATH_LEN];
@@ -1349,6 +1351,37 @@ static void CopyContextPath(DWORD dwContext, WCHAR *dst, DWORD dst_cch)
     }
 }
 
+static void UpdateDriverContext(bediag_driver_t *driver, DWORD dwContext)
+{
+    if (!driver || dwContext == 0)
+        return;
+
+    driver->init_context = dwContext;
+    CopyContextPath(dwContext, driver->active_key,
+                    sizeof(driver->active_key) / sizeof(driver->active_key[0]));
+}
+
+static void LogDuplicateInit(DWORD dwContext)
+{
+    WCHAR incoming_key[256];
+    char incoming_key_a[256];
+    char active_key_a[256];
+
+    CopyContextPath(dwContext, incoming_key,
+                    sizeof(incoming_key) / sizeof(incoming_key[0]));
+    WideToAnsi(incoming_key, incoming_key_a, sizeof(incoming_key_a));
+    WideToAnsi(g_driver.active_key, active_key_a, sizeof(active_key_a));
+
+    Logf("[BEDIAG_DUPINIT] tick_ms=%lu new_context=0x%08lX refs=%ld worker_started=%u incoming_key=\"%s\" active_key=\"%s\"\r\n",
+         GetTickCount(),
+         dwContext,
+         g_driver_refcount,
+         g_driver.worker_started ? 1u : 0u,
+         incoming_key_a[0] ? incoming_key_a : "<unavailable>",
+         active_key_a[0] ? active_key_a : "<unavailable>");
+    FlushSinks();
+}
+
 static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 {
     bediag_driver_t *driver;
@@ -1456,6 +1489,16 @@ extern "C" BOOL WINAPI DllMain(HANDLE hInst, DWORD reason, LPVOID reserved)
 
 extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
 {
+    if (InterlockedCompareExchange(&g_driver_active, 1, 0) != 0) {
+        InterlockedIncrement(&g_driver_refcount);
+        UpdateDriverContext(&g_driver, dwContext);
+        OpenPrimaryFileLog();
+        TryOpenSecondaryFile();
+        MaybeReportSerialFailure();
+        LogDuplicateInit(dwContext);
+        return (DWORD)&g_driver;
+    }
+
     memset(&g_driver, 0, sizeof(g_driver));
     memset(g_file_path, 0, sizeof(g_file_path));
     memset(g_backlog, 0, sizeof(g_backlog));
@@ -1466,8 +1509,8 @@ extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
     g_serial_retry_done = FALSE;
     g_serial_failure_reported = FALSE;
     g_driver.init_tick = GetTickCount();
-    g_driver.init_context = dwContext;
-    CopyContextPath(dwContext, g_driver.active_key, sizeof(g_driver.active_key) / sizeof(g_driver.active_key[0]));
+    UpdateDriverContext(&g_driver, dwContext);
+    InterlockedExchange(&g_driver_refcount, 1);
 
     OpenPrimaryFileLog();
     SetBreadcrumbDWORD(L"BEDiagLoaded", 1);
@@ -1488,6 +1531,8 @@ extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
         LogStage("done", "FAILED");
         FlushSinks();
         g_had_error = TRUE;
+        InterlockedExchange(&g_driver_refcount, 0);
+        InterlockedExchange(&g_driver_active, 0);
         return 0;
     }
 
@@ -1498,10 +1543,24 @@ extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
 extern "C" BOOL WINAPI BDG_Deinit(DWORD hDeviceContext)
 {
     bediag_driver_t *driver;
+    LONG refs_left;
 
     driver = (bediag_driver_t *)hDeviceContext;
     if (driver != &g_driver)
         return FALSE;
+
+    refs_left = InterlockedDecrement(&g_driver_refcount);
+    if (refs_left > 0) {
+        Logf("[BEDIAG_DEINIT] tick_ms=%lu refs_left=%ld status=DEFERRED\r\n",
+             GetTickCount(),
+             refs_left);
+        FlushSinks();
+        return TRUE;
+    }
+    if (refs_left < 0) {
+        InterlockedExchange(&g_driver_refcount, 0);
+        refs_left = 0;
+    }
 
     InterlockedExchange(&driver->stop_requested, 1);
     if (driver->worker_thread) {
@@ -1511,6 +1570,7 @@ extern "C" BOOL WINAPI BDG_Deinit(DWORD hDeviceContext)
     }
 
     CloseLogs();
+    InterlockedExchange(&g_driver_active, 0);
     return TRUE;
 }
 
