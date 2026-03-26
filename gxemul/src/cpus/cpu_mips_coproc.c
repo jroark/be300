@@ -48,6 +48,33 @@
 
 static const char *cop0_names[] = COP0_NAMES;
 static const char *regnames[] = MIPS_REGISTER_NAMES;
+static int g_warned_dyntrans_1kb_pages = 0;
+
+static void warn_dyntrans_1kb_page(struct cpu *cpu, const char *phase,
+	int index, uint64_t pagemask, uint64_t entryhi, uint64_t entrylo0,
+	uint64_t entrylo1)
+{
+	if (g_warned_dyntrans_1kb_pages >= 4)
+		return;
+
+	fatal("[ dyntrans-1kb-tlb phase=%s cpu=%i pc=0x%016llx index=0x%02x"
+	    " pagemask=0x%08llx entryhi=0x%08llx entrylo0=0x%08llx"
+	    " entrylo1=0x%08llx epc=0x%08llx status=0x%08llx"
+	    " cause=0x%08llx badva=0x%08llx ]\n",
+	    phase ? phase : "-",
+	    cpu ? cpu->cpu_id : -1,
+	    (long long)(cpu ? cpu->pc : 0ULL),
+	    index,
+	    (long long)pagemask,
+	    (long long)entryhi,
+	    (long long)entrylo0,
+	    (long long)entrylo1,
+	    (long long)(cpu ? cpu->cd.mips.coproc[0]->reg[COP0_EPC] : 0ULL),
+	    (long long)(cpu ? cpu->cd.mips.coproc[0]->reg[COP0_STATUS] : 0ULL),
+	    (long long)(cpu ? cpu->cd.mips.coproc[0]->reg[COP0_CAUSE] : 0ULL),
+	    (long long)(cpu ? cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR] : 0ULL));
+	g_warned_dyntrans_1kb_pages ++;
+}
 
 
 /*
@@ -1767,8 +1794,12 @@ void coproc_tlbwri(struct cpu *cpu, int randomflag)
 			if (dpmask == 0x7ff) {
 				if (cp->tlbs[index].lo0 & ENTRYLO_V ||
 				    cp->tlbs[index].lo1 & ENTRYLO_V) {
-					fatal("1KB pages don't work with dyntrans.\n");
-					exit(1);
+					warn_dyntrans_1kb_page(cpu, "invalidate-old",
+					    index, cp->tlbs[index].mask,
+					    cp->tlbs[index].hi, cp->tlbs[index].lo0,
+					    cp->tlbs[index].lo1);
+					cpu->invalidate_translation_caches(cpu, 0,
+					    INVALIDATE_ALL);
 				}
 			}
 
@@ -1894,8 +1925,11 @@ void coproc_tlbwri(struct cpu *cpu, int randomflag)
 		if (dpmask == 0x7ff) {
 			if (cp->tlbs[index].lo0 & ENTRYLO_V ||
 			    cp->tlbs[index].lo1 & ENTRYLO_V) {
-				fatal("1KB pages don't work with dyntrans.\n");
-				exit(1);
+				warn_dyntrans_1kb_page(cpu, "write-new", index,
+				    cp->reg[COP0_PAGEMASK], cp->reg[COP0_ENTRYHI],
+				    cp->reg[COP0_ENTRYLO0], cp->reg[COP0_ENTRYLO1]);
+				cpu->invalidate_translation_caches(cpu, 0,
+				    INVALIDATE_ALL);
 			}
 		}
 
@@ -2317,4 +2351,3 @@ void coproc_function(struct cpu *cpu, struct mips_coproc *cp, int cpnr,
 
 	mips_cpu_exception(cpu, EXCEPTION_CPU, 0, 0, cp->coproc_nr, 0, 0, 0);
 }
-
