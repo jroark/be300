@@ -136,11 +136,16 @@ static void maybe_log_resume_mmio_probe(struct cpu *cpu,
 	static const struct {
 		uint32_t pc;
 		const char *label;
+		int code_start_rel;
+		int code_stop_rel;
 	} probes[] = {
-		{ 0x8007826c, "resume_mmio_7826c" },
-		{ 0x8007a114, "resume_mmio_7a114" },
-		{ 0x800a5e94, "resume_mmio_a5e94" },
-		{ 0x80079724, "resume_mmio_79724" },
+		{ 0x8007826c, "resume_mmio_7826c", -16, 32 },
+		{ 0x8007a114, "resume_mmio_7a114", -16, 32 },
+		{ 0x800a5e94, "resume_mmio_a5e94", -16, 32 },
+		{ 0x80079724, "resume_mmio_79724", -16, 32 },
+		{ 0x800a7b3c, "resume_poll_7b3c", -32, 64 },
+		{ 0x800a7b64, "resume_poll_7b64", -32, 64 },
+		{ 0x800a7bc4, "resume_poll_7bc4", -32, 64 },
 	};
 	static uint32_t logged_mask = 0;
 	uint32_t pc = (uint32_t)cpu->pc;
@@ -173,7 +178,8 @@ static void maybe_log_resume_mmio_probe(struct cpu *cpu,
 		    (uint32_t)cpu->cd.mips.gpr[17],
 		    (uint32_t)cpu->cd.mips.gpr[18]);
 
-		log_resume_probe_window(cpu, probes[i].label, "code", pc, -16, 32);
+		log_resume_probe_window(cpu, probes[i].label, "code", pc,
+		    probes[i].code_start_rel, probes[i].code_stop_rel);
 		if (ra != 0) {
 			uint32_t caller = ra - 8u;
 
