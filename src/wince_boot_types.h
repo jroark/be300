@@ -85,6 +85,7 @@ typedef struct {
     bool replay_bootctx_stub_poststate_logged;
     bool replay_resume_entry_logged;
     bool replay_resume_exit_logged;
+    bool replay_vrc4173_1b50_synth_logged;
 
     uint32_t fault_site_logged_mask;
     uint32_t replay_region_write_logged_mask;
