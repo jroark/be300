@@ -470,6 +470,17 @@ static bool store_va_region(machine_t *m, uint32_t va, const uint8_t *data,
     return true;
 }
 
+static bool fallback_pa_for_va_seed(const char *name, uint32_t *pa_out)
+{
+    if (!name || !pa_out)
+        return false;
+    if (strcmp(name, "callback_slot_70e0") == 0) {
+        *pa_out = UINT32_C(0x00FD40E0);
+        return true;
+    }
+    return false;
+}
+
 static bool log_checkpoint_header(machine_t *m, const char *tag,
     const char *detail)
 {
@@ -931,8 +942,23 @@ static bool apply_va_seed_regions(machine_t *m, bool resume_only)
 
         if (!allow_va_seed_region(region->name, resume_only))
             continue;
-        if (!store_va_region(m, region->va, region->data, region->size))
-            continue;
+        if (!store_va_region(m, region->va, region->data, region->size)) {
+            uint32_t fallback_pa = 0;
+
+            if (!fallback_pa_for_va_seed(region->name, &fallback_pa))
+                continue;
+            store_buf(m->cpu, pa_to_kseg0(fallback_pa),
+                (const char *)region->data, region->size);
+            if (m->wince.log_stall) {
+                fprintf(stderr,
+                    "[WINCE_SEED] va-fallback name=%s va=0x%08X pa=0x%08X"
+                    " size=0x%04X\n",
+                    region->name,
+                    region->va,
+                    fallback_pa,
+                    region->size);
+            }
+        }
         applied = true;
     }
 
