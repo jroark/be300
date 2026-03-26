@@ -12,6 +12,11 @@ typedef enum {
     WINCE_VECTOR_GUEST = 3,
 } wince_vector_owner_t;
 
+typedef enum {
+    WINCE_RESUME_MODE_INIT_SEED = 0,
+    WINCE_RESUME_MODE_REPLAY = 1,
+} wince_resume_mode_t;
+
 typedef struct {
     const char *name;
     uint32_t    pa;
@@ -29,9 +34,35 @@ typedef struct {
 } wince_va_seed_region_t;
 
 typedef struct {
+    const char *name;
+    uint32_t    pa;
+    uint32_t    size;
+    uint32_t    word_count;
+    const uint32_t *words;
+    const uint8_t *valid_words;
+} wince_resume_region_t;
+
+typedef struct {
+    const char *name;
+    uint32_t    reg;
+    uint32_t    value;
+} wince_resume_cp0_field_t;
+
+typedef struct {
+    uint32_t    resume_target_pc;
+    uint32_t    resume_stack_pointer;
+    uint32_t    synthetic_ra;
+    const wince_resume_region_t *regions;
+    uint32_t    region_count;
+    const wince_resume_cp0_field_t *cp0_fields;
+    uint32_t    cp0_field_count;
+} wince_resume_snapshot_t;
+
+typedef struct {
     bool active;
     bool log_stall;
     bool use_hw_seed;
+    bool use_resume_replay;
 
     bool spl_handoff_logged;
     bool cold_boot_redirected;
@@ -46,9 +77,20 @@ typedef struct {
     bool resume_seed_applied;
     bool vectors_ready;
     bool suppress_vector_write_observer;
+    bool replay_snapshot_applied;
+    bool replay_snapshot_logged;
+    bool replay_synthetic_ra_attempted;
 
     uint32_t fault_site_logged_mask;
+    uint32_t replay_region_write_logged_mask;
+    uint32_t replay_region_mismatch_logged_mask;
+    uint32_t replay_pc_probe_logged_mask;
+    uint32_t replay_resume_target_pc;
+    uint32_t replay_resume_stack_pointer;
+    uint32_t replay_synthetic_ra;
+    uint32_t hibernate_redirect_count;
     wince_vector_owner_t vector_owner;
+    wince_resume_mode_t resume_mode;
     uint32_t synthetic_low_tlb[WINCE_VECTOR_WORDS];
     uint32_t synthetic_low_general[WINCE_VECTOR_WORDS];
 } wince_boot_state_t;

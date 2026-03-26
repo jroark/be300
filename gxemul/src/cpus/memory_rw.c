@@ -522,6 +522,7 @@ not just the device in question.
 
 	/*  And finally, read or write the data:  */
 	if (writeflag == MEM_WRITE) {
+		wince_boot_note_ram_write(cpu, paddr, memblock + offset, data, len);
 		memcpy(memblock + offset, data, len);
 		wince_boot_note_low_vector_write(cpu, paddr, len);
 	} else

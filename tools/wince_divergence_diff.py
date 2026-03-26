@@ -23,6 +23,32 @@ def extract_key_fields(lines: List[str]) -> Dict[str, str]:
             out["first_null_call"] = line
         elif line.startswith("first_null_bailout:"):
             out["first_null_bailout"] = line
+        elif line.startswith("resume_replay_redirect:"):
+            out["resume_replay_redirect"] = line
+        elif line.startswith("resume_replay_prepared:"):
+            out["resume_replay_prepared"] = line
+        elif line.startswith("first_replay_pc:"):
+            out["first_replay_pc"] = line
+        elif line.startswith("first_replay_bev:"):
+            out["first_replay_bev"] = line
+        elif line.startswith("resume_stub_return:"):
+            out["resume_stub_return"] = line
+        elif line.startswith("resume_stub_return_nonzero_ra:"):
+            out["resume_stub_return_nonzero_ra"] = line
+        elif line.startswith("first_replay_corridor:"):
+            out["first_replay_corridor"] = line
+        elif line.startswith("moved_past_117a8:"):
+            out["moved_past_117a8"] = line
+        elif line.startswith("first_replay_mismatch:"):
+            out["first_replay_mismatch"] = line
+        elif line.startswith("latest_replay_cmp_resume_context_22a0:"):
+            out["latest_replay_cmp_resume_context_22a0"] = line
+        elif line.startswith("latest_replay_cmp_stack_frame_1770:"):
+            out["latest_replay_cmp_stack_frame_1770"] = line
+        elif line.startswith("latest_replay_ra:"):
+            out["latest_replay_ra"] = line
+        elif line.startswith("last_loop_pc:"):
+            out["last_loop_pc"] = line
         elif line.startswith("first_div_events:"):
             out["first_div_events"] = line
         elif line.startswith("latest_div_summary:"):
