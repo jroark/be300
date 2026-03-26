@@ -66,6 +66,10 @@ static void invalidate_all(machine_t *m);
 
 static const wince_replay_pc_probe_desc_t wince_replay_pc_probes[] = {
     { UINT32_C(0xA00795B4), "resume_oal_entry" },
+    { UINT32_C(0x800895D8), "resume_kernel_895d8" },
+    { UINT32_C(0x8007A114), "resume_kernel_7a114" },
+    { UINT32_C(0x800A5E94), "resume_kernel_a5e94" },
+    { UINT32_C(0x80079724), "resume_kernel_79724" },
     { UINT32_C(0x00011790), "resume_stub_entry" },
     { UINT32_C(0x000117A8), "resume_stub_return" },
     { UINT32_C(0x8008B478), "corridor_8008b478" },
@@ -863,6 +867,12 @@ static void maybe_log_replay_pc_probe(machine_t *m)
 
         m->wince.replay_pc_probe_logged_mask |= bit;
         log_replay_pc_state(m, probe->label, pc);
+        if (pc == UINT32_C(0x800895D8)
+            || pc == UINT32_C(0x8007A114)
+            || pc == UINT32_C(0x800A5E94)
+            || pc == UINT32_C(0x80079724)) {
+            dump_va_window(m, probe->label, pc - UINT32_C(0x10), 0x40u);
+        }
         log_replay_snapshot(m, probe->label);
     }
 }
