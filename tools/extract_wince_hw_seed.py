@@ -68,7 +68,20 @@ def parse_boot_log(path: Path):
     return regions, vregions
 
 
+def latest_snapshot_lines(lines):
+    snapshot_start = None
+
+    for idx, raw_line in enumerate(lines):
+        if raw_line.strip() == "--- SNAPSHOT INIT ---":
+            snapshot_start = idx + 1
+
+    if snapshot_start is None:
+        return lines
+    return lines[snapshot_start:]
+
+
 def parse_structured_boot_log(lines):
+    lines = latest_snapshot_lines(lines)
     regions = {}
     raw_chunks = {}
     vregions = {}

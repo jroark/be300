@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed15"
+#define BEDIAG_BUILD_TAG         "hwseed16"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -79,7 +79,6 @@ static bediag_region_t g_regions[] = {
     { "low_sdram_0000", 0x00000000u, 0x0400u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "low_sdram_1880", 0x00001880u, 0x0080u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "low_sdram_1ac0", 0x00001AC0u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "high_sdram_fd40e0", 0x00FD40E0u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "ctx_tlb",       0x00002000u, 0x0200u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "resume_ctx",    0x00002200u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "low_sdram_1000", 0x00001000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
@@ -114,9 +113,7 @@ static bediag_region_t g_regions[] = {
 };
 
 static bediag_vregion_t g_vregions[] = {
-    { "callback_target_page", 0x00016000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "callback_slot_page", 0x00017000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "user_obj_page", 0x0818F000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
+    { "callback_slot_70e0", 0x000170E0u, 0x0100u, TRUE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
 };
 
 static const focus_word_t g_focus_words[] = {
@@ -1453,8 +1450,8 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 
     BeginSection("SNAPSHOT INIT");
     Logf("tick_ms=%lu phase=%s\r\n", GetTickCount(), g_phase_names[PHASE_INIT]);
-    CapturePhase(PHASE_INIT);
     CaptureVirtualPhase(PHASE_INIT);
+    CapturePhase(PHASE_INIT);
     DumpTlbPhase(PHASE_INIT);
     EmitFocusWords(PHASE_INIT);
     EmitVirtualFocusWords(PHASE_INIT);

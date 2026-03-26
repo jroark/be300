@@ -436,6 +436,40 @@ static bool allow_pa_seed_region(const char *name, bool resume_only)
     return false;
 }
 
+static bool allow_va_seed_region(const char *name, bool resume_only)
+{
+    if (!name)
+        return false;
+    if (!resume_only)
+        return false;
+    if (strcmp(name, "callback_slot_70e0") == 0)
+        return true;
+    return false;
+}
+
+static bool store_va_region(machine_t *m, uint32_t va, const uint8_t *data,
+    uint32_t size)
+{
+    uint32_t off = 0;
+
+    if (!m || !m->cpu || !data)
+        return false;
+
+    while (off < size) {
+        uint32_t chunk = size - off;
+        if (chunk > 256u)
+            chunk = 256u;
+        if (!m->cpu->memory_rw(m->cpu, m->cpu->mem,
+            va32_to_mips64(va + off), (unsigned char *)(data + off), chunk,
+            MEM_WRITE, CACHE_DATA | NO_EXCEPTIONS)) {
+            return false;
+        }
+        off += chunk;
+    }
+
+    return true;
+}
+
 static bool log_checkpoint_header(machine_t *m, const char *tag,
     const char *detail)
 {
@@ -887,6 +921,26 @@ static bool apply_pa_seed_regions(machine_t *m, bool resume_only)
     return true;
 }
 
+static bool apply_va_seed_regions(machine_t *m, bool resume_only)
+{
+    bool applied = false;
+    uint32_t i;
+
+    for (i = 0; i < wince_hw_vseed_region_count; i++) {
+        const wince_va_seed_region_t *region = &wince_hw_vseed_regions[i];
+
+        if (!allow_va_seed_region(region->name, resume_only))
+            continue;
+        if (!store_va_region(m, region->va, region->data, region->size))
+            continue;
+        applied = true;
+    }
+
+    if (applied)
+        invalidate_all(m);
+    return applied;
+}
+
 void wince_boot_attach_machine(machine_t *m)
 {
     g_active_wince_machine = m;
@@ -971,18 +1025,22 @@ void wince_boot_install_synthetic_low_vectors(machine_t *m,
 
 void wince_boot_apply_initial_seed(machine_t *m)
 {
-    bool applied;
+    bool applied_pa;
+    bool applied_va;
 
     if (!m->wince.active || !m->wince.use_hw_seed || m->wince.initial_seed_applied)
         return;
 
-    applied = apply_pa_seed_regions(m, false);
+    applied_pa = apply_pa_seed_regions(m, false);
+    applied_va = apply_va_seed_regions(m, false);
     m->wince.initial_seed_applied = true;
 
     if (m->wince.log_stall) {
         fprintf(stderr,
-            "[WINCE_SEED] initial applied=%d pa_regions=%u va_regions=%u\n",
-            applied ? 1 : 0,
+            "[WINCE_SEED] initial applied_pa=%d applied_va=%d"
+            " pa_regions=%u va_regions=%u\n",
+            applied_pa ? 1 : 0,
+            applied_va ? 1 : 0,
             wince_hw_seed_region_count,
             wince_hw_vseed_region_count);
     }
@@ -990,17 +1048,20 @@ void wince_boot_apply_initial_seed(machine_t *m)
 
 void wince_boot_apply_resume_seed(machine_t *m)
 {
-    bool applied;
+    bool applied_pa;
+    bool applied_va;
 
     if (!m->wince.active || !m->wince.use_hw_seed || m->wince.resume_seed_applied)
         return;
 
-    applied = apply_pa_seed_regions(m, true);
+    applied_pa = apply_pa_seed_regions(m, true);
+    applied_va = apply_va_seed_regions(m, true);
     m->wince.resume_seed_applied = true;
 
     if (m->wince.log_stall) {
-        fprintf(stderr, "[WINCE_SEED] resume applied=%d\n",
-            applied ? 1 : 0);
+        fprintf(stderr, "[WINCE_SEED] resume applied_pa=%d applied_va=%d\n",
+            applied_pa ? 1 : 0,
+            applied_va ? 1 : 0);
     }
 }
 
