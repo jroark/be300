@@ -117,6 +117,12 @@ def main() -> int:
     div_stack_phase_summary = collect_lines(err_lines, "[WINCE_DIV_STACK_PHASE_SUMMARY]")
     mmio_lines = collect_lines(err_lines, "[WINCE_STALL_MMIO]")
     null_mmio_lines = collect_lines(err_lines, "[WINCE_NULL_MMIO]")
+    replay_redirect_hit = first_contains(err_lines, "[BE300] Resume replay:")
+    replay_prepared_hits = collect_lines(err_lines, "[WINCE_REPLAY] prepared")
+    replay_pc_hits = collect_lines(err_lines, "[WINCE_REPLAY_PC]")
+    replay_write_hits = collect_lines(err_lines, "[WINCE_REPLAY_WRITE]")
+    replay_ra_hits = collect_lines(err_lines, "[WINCE_REPLAY_RA]")
+    replay_cmp_hits = collect_lines(err_lines, "[WINCE_REPLAY_CMP]")
 
     key_tokens = [
         "ctx_table_0xA0051680",
@@ -137,6 +143,43 @@ def main() -> int:
         region_nz2z_summary,
         re.compile(r"reason=(?P<reason>[^ ]+) region=(?P<region>[^ ]+)"),
     )
+
+    replay_cmp_last: Dict[str, LineHit] = {}
+    for lineno, line in replay_cmp_hits:
+        m = re.search(r"region=([^ ]+)", line)
+        if not m:
+            continue
+        replay_cmp_last[m.group(1)] = (lineno, line)
+
+    replay_first_mismatch: Optional[LineHit] = None
+    for hit in replay_write_hits:
+        if "kind=first-mismatch" in hit[1]:
+            replay_first_mismatch = hit
+            break
+
+    replay_first_pc = replay_pc_hits[0] if replay_pc_hits else None
+    replay_first_bev: Optional[LineHit] = None
+    replay_stub_return: Optional[LineHit] = None
+    replay_first_corridor: Optional[LineHit] = None
+    moved_past_stub = False
+    stub_return_ra_nonzero: Optional[bool] = None
+    for lineno, line in replay_pc_hits:
+        if "label=resume_stub_return" in line and replay_stub_return is None:
+            replay_stub_return = (lineno, line)
+            ra_match = re.search(r" ra=0x([0-9A-Fa-f]+)", line)
+            if ra_match:
+                stub_return_ra_nonzero = int(ra_match.group(1), 16) != 0
+        if "label=bev_" in line and replay_first_bev is None:
+            replay_first_bev = (lineno, line)
+        if "label=corridor_" in line and replay_first_corridor is None:
+            replay_first_corridor = (lineno, line)
+            moved_past_stub = True
+
+    last_loop_hit: Optional[LineHit] = None
+    loop_pc_re = re.compile(r"^\[BE300\] Loop batch \d+, PC=(0x[0-9A-Fa-f]+)")
+    for lineno, line in enumerate(err_lines, start=1):
+        if loop_pc_re.search(line):
+            last_loop_hit = (lineno, line)
 
     print("--- RUN ---")
     print(f"stdout: {args.stdout}")
@@ -177,6 +220,73 @@ def main() -> int:
         print(f"first_null_bailout: stderr:{bailout_hit[0]} {bailout_hit[1]}")
     else:
         print("first_null_bailout: not found")
+
+    print("--- REPLAY ---")
+    if replay_redirect_hit:
+        print(f"resume_replay_redirect: stderr:{replay_redirect_hit[0]} {replay_redirect_hit[1]}")
+    else:
+        print("resume_replay_redirect: not found")
+
+    if replay_prepared_hits:
+        lineno, line = replay_prepared_hits[-1]
+        print(f"resume_replay_prepared: stderr:{lineno} {line}")
+    else:
+        print("resume_replay_prepared: not found")
+
+    if replay_first_pc:
+        print(f"first_replay_pc: stderr:{replay_first_pc[0]} {replay_first_pc[1]}")
+    else:
+        print("first_replay_pc: not found")
+
+    if replay_first_bev:
+        print(f"first_replay_bev: stderr:{replay_first_bev[0]} {replay_first_bev[1]}")
+    else:
+        print("first_replay_bev: not found")
+
+    if replay_stub_return:
+        print(f"resume_stub_return: stderr:{replay_stub_return[0]} {replay_stub_return[1]}")
+    else:
+        print("resume_stub_return: not reached")
+
+    if stub_return_ra_nonzero is None:
+        print("resume_stub_return_nonzero_ra: unknown")
+    else:
+        print(f"resume_stub_return_nonzero_ra: {'yes' if stub_return_ra_nonzero else 'no'}")
+
+    if replay_first_corridor:
+        print(f"first_replay_corridor: stderr:{replay_first_corridor[0]} {replay_first_corridor[1]}")
+    else:
+        print("first_replay_corridor: not found")
+
+    print(f"moved_past_117a8: {'yes' if moved_past_stub else 'no'}")
+
+    if replay_first_mismatch:
+        print(f"first_replay_mismatch: stderr:{replay_first_mismatch[0]} {replay_first_mismatch[1]}")
+    else:
+        print("first_replay_mismatch: none")
+
+    if "resume_context_22a0" in replay_cmp_last:
+        lineno, line = replay_cmp_last["resume_context_22a0"]
+        print(f"latest_replay_cmp_resume_context_22a0: stderr:{lineno} {line}")
+    else:
+        print("latest_replay_cmp_resume_context_22a0: none")
+
+    if "stack_frame_1770" in replay_cmp_last:
+        lineno, line = replay_cmp_last["stack_frame_1770"]
+        print(f"latest_replay_cmp_stack_frame_1770: stderr:{lineno} {line}")
+    else:
+        print("latest_replay_cmp_stack_frame_1770: none")
+
+    if replay_ra_hits:
+        lineno, line = replay_ra_hits[-1]
+        print(f"latest_replay_ra: stderr:{lineno} {line}")
+    else:
+        print("latest_replay_ra: none")
+
+    if last_loop_hit:
+        print(f"last_loop_pc: stderr:{last_loop_hit[0]} {last_loop_hit[1]}")
+    else:
+        print("last_loop_pc: none")
 
     print("--- DIVERGENCE CORRIDOR ---")
     if div_events:

@@ -448,14 +448,61 @@ void be300_run(machine_t *m)
          * bytes forward to the cold boot init path.
          */
         if (m->cpu->is_halted) {
-            static int cold_boot_count = 0;
-            if (cold_boot_count < 5) {
+            if (m->wince.hibernate_redirect_count < 5) {
                 uint32_t norm = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
                 if (norm >= 0x00060000u && norm < 0x00100000u) {
                     uint64_t old_pc = m->cpu->pc;
+                    static const uint32_t tlb_h[] = {
+                        0x401B5000, 0x001BD1C2, 0x375A001F,
+                        0x409A1000, 0x275B0040, 0x409B1800,
+                        0x42000006, 0x42000018,
+                    };
+
+                    /* Re-install TLB refill handler (may have been
+                     * overwritten by NK.exe OAL init) and invalidate
+                     * dyntrans caches so the new code takes effect. */
+                    wince_boot_install_synthetic_low_vectors(m, tlb_h,
+                        sizeof(tlb_h) / sizeof(tlb_h[0]),
+                        m->cfg.wince_resume_replay
+                            ? "resume-replay"
+                            : "cold-boot-redirect");
+
+                    if (m->cfg.wince_resume_replay) {
+                        uint32_t target_pc = 0;
+                        uint32_t target_sp = 0;
+
+                        if (!wince_boot_prepare_resume_replay(m, &target_pc,
+                            &target_sp)) {
+                            wince_boot_note_fatal_stop(m,
+                                "resume-replay-prepare-failed");
+                            fprintf(stderr,
+                                "[BE300] Resume replay prepare failed"
+                                " at halt PC=0x%08" PRIx64 "\n",
+                                old_pc);
+                            break;
+                        }
+
+                        m->cpu->pc = (uint64_t)(int32_t)target_pc;
+                        if (target_sp != 0)
+                            m->cpu->cd.mips.gpr[MIPS_GPR_SP] = target_sp;
+                        m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] = target_pc;
+                        m->cpu->is_halted = false;
+                        m->wince.hibernate_redirect_count++;
+
+                        fprintf(stderr,
+                            "[BE300] Resume replay: PC 0x%08" PRIx64
+                            " -> 0x%08X SP=0x%08X\n",
+                            old_pc,
+                            target_pc,
+                            target_sp);
+                        wince_boot_note_cold_boot_redirect(
+                            m, "hibernate-to-resume-replay");
+                        continue;
+                    }
+
                     m->cpu->pc += 0x9C;  /* skip to warm init (JAL 0x80078BC0) at 0xA0079634 */
                     m->cpu->is_halted = false;
-                    cold_boot_count++;
+                    m->wince.hibernate_redirect_count++;
                     /*
                      * Set CP0 Status directly before cold boot init.
                      * Status needs: BEV=0, IE=0, EXL=0, IM=all enabled.
@@ -466,20 +513,6 @@ void be300_run(machine_t *m)
                         0x1000FF00u;  /* BEV=0, IM=0xFF, IE=0 */
                     m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED] = 0;
 
-                    /* Re-install TLB refill handler (may have been
-                     * overwritten by NK.exe OAL init) and invalidate
-                     * dyntrans caches so the new code takes effect. */
-                    {
-                        static const uint32_t tlb_h[] = {
-                            0x401B5000, 0x001BD1C2, 0x375A001F,
-                            0x409A1000, 0x275B0040, 0x409B1800,
-                            0x42000006, 0x42000018,
-                        };
-                        wince_boot_install_synthetic_low_vectors(m, tlb_h,
-                            sizeof(tlb_h) / sizeof(tlb_h[0]),
-                            "cold-boot-redirect");
-                    }
-
                     fprintf(stderr,
                         "[BE300] Cold boot: skip hibernate+resume,"
                         " PC 0x%08" PRIx64 " → 0x%08" PRIx64
@@ -489,7 +522,8 @@ void be300_run(machine_t *m)
 
                     /* Keep the large cold-init dump behind the explicit
                      * WinCE diagnostics flag. */
-                    if (m->cfg.log_wince_stall && cold_boot_count == 1) {
+                    if (m->cfg.log_wince_stall
+                        && m->wince.hibernate_redirect_count == 1) {
                         fprintf(stderr, "[COLD_INIT] Dumping 0x80079DF8:\n");
                         for (int i = 0; i < 128; i++) {
                             unsigned char buf[4];

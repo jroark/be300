@@ -10,6 +10,7 @@
 #include "machine.h"
 #include "memory.h"
 #include "wince_hw_seed_data.h"
+#include "wince_resume_replay_data.h"
 
 static machine_t *g_active_wince_machine = NULL;
 static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
@@ -21,6 +22,11 @@ enum {
     WINCE_FAULT_SITE_NULL_D0  = UINT32_C(1) << 1,
     WINCE_FAULT_SITE_NULL_PC  = UINT32_C(1) << 2,
 };
+
+typedef struct {
+    uint32_t pc;
+    const char *label;
+} wince_replay_pc_probe_desc_t;
 
 typedef struct wince_fault_site_desc wince_fault_site_desc_t;
 typedef void (*wince_fault_site_dump_fn)(machine_t *m,
@@ -52,6 +58,18 @@ static void log_fault_site_null_d0(machine_t *m,
 static void log_fault_site_null_pc(machine_t *m,
     const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
     uint32_t exccode);
+static void invalidate_all(machine_t *m);
+
+static const wince_replay_pc_probe_desc_t wince_replay_pc_probes[] = {
+    { UINT32_C(0x00011790), "resume_stub_entry" },
+    { UINT32_C(0x000117A8), "resume_stub_return" },
+    { UINT32_C(0x8008B478), "corridor_8008b478" },
+    { UINT32_C(0x8008B52C), "corridor_8008b52c" },
+    { UINT32_C(0x80094E8C), "corridor_80094e8c" },
+    { UINT32_C(0xBFC00000), "bev_refill_000" },
+    { UINT32_C(0xBFC00200), "bev_general_200" },
+    { UINT32_C(0xBFC00380), "bev_interrupt_380" },
+};
 
 static const wince_fault_site_desc_t wince_fault_sites[] = {
     {
@@ -352,6 +370,282 @@ static void log_memop_probe(machine_t *m, uint32_t fault_pc, uint32_t fault_va)
             }
         }
     }
+}
+
+static bool replay_mode_enabled(machine_t *m)
+{
+    return m && m->wince.active && m->wince.use_resume_replay
+        && m->wince.resume_mode == WINCE_RESUME_MODE_REPLAY;
+}
+
+static bool replay_region_word(machine_t *m, const wince_resume_region_t *region,
+    uint32_t pa, uint32_t *value_out, bool *valid_out)
+{
+    uint32_t word_index;
+
+    (void)m;
+    if (!region || pa < region->pa || pa >= region->pa + region->size)
+        return false;
+    if (((pa - region->pa) & UINT32_C(0x3)) != 0)
+        return false;
+
+    word_index = (pa - region->pa) / 4u;
+    if (word_index >= region->word_count)
+        return false;
+
+    if (value_out)
+        *value_out = region->words[word_index];
+    if (valid_out)
+        *valid_out = region->valid_words[word_index] != 0;
+    return true;
+}
+
+static const wince_resume_region_t *find_replay_region_by_pa(
+    const wince_resume_snapshot_t *snapshot, uint32_t pa)
+{
+    uint32_t i;
+
+    if (!snapshot)
+        return NULL;
+
+    for (i = 0; i < snapshot->region_count; i++) {
+        const wince_resume_region_t *region = &snapshot->regions[i];
+
+        if (pa >= region->pa && pa < region->pa + region->size)
+            return region;
+    }
+
+    return NULL;
+}
+
+static uint32_t replay_region_index(const wince_resume_snapshot_t *snapshot,
+    const wince_resume_region_t *region)
+{
+    return (uint32_t)(region - snapshot->regions);
+}
+
+static void log_replay_region_compare(machine_t *m,
+    const wince_resume_region_t *region, const char *label)
+{
+    uint32_t off;
+
+    if (!m->wince.log_stall || !region)
+        return;
+
+    for (off = 0; off < region->size; off += 16u) {
+        char e0[9];
+        char e1[9];
+        char e2[9];
+        char e3[9];
+        uint32_t exp0 = 0, exp1 = 0, exp2 = 0, exp3 = 0;
+        uint32_t live0 = load_pa_word(m, region->pa + off + 0u);
+        uint32_t live1 = load_pa_word(m, region->pa + off + 4u);
+        uint32_t live2 = load_pa_word(m, region->pa + off + 8u);
+        uint32_t live3 = load_pa_word(m, region->pa + off + 12u);
+        bool v0 = false, v1 = false, v2 = false, v3 = false;
+
+        (void)replay_region_word(m, region, region->pa + off + 0u, &exp0, &v0);
+        (void)replay_region_word(m, region, region->pa + off + 4u, &exp1, &v1);
+        (void)replay_region_word(m, region, region->pa + off + 8u, &exp2, &v2);
+        (void)replay_region_word(m, region, region->pa + off + 12u, &exp3, &v3);
+
+        fprintf(stderr,
+            "[WINCE_REPLAY_CMP] region=%s label=%s off=0x%03X"
+            " expected=%s/%s/%s/%s live=%08X/%08X/%08X/%08X"
+            " mask=%d%d%d%d\n",
+            region->name,
+            label ? label : "-",
+            off,
+            format_word_or_unknown(e0, sizeof(e0), v0, exp0),
+            format_word_or_unknown(e1, sizeof(e1), v1, exp1),
+            format_word_or_unknown(e2, sizeof(e2), v2, exp2),
+            format_word_or_unknown(e3, sizeof(e3), v3, exp3),
+            live0, live1, live2, live3,
+            v0 ? 1 : 0, v1 ? 1 : 0, v2 ? 1 : 0, v3 ? 1 : 0);
+    }
+}
+
+static bool apply_replay_snapshot(machine_t *m)
+{
+    bool applied = false;
+    uint32_t i;
+
+    for (i = 0; i < wince_resume_replay_snapshot.region_count; i++) {
+        const wince_resume_region_t *region = &wince_resume_replay_snapshot.regions[i];
+        uint32_t word_index;
+
+        if (region->pa + region->size > m->cfg.sdram_size)
+            continue;
+
+        for (word_index = 0; word_index < region->word_count; word_index++) {
+            uint32_t pa;
+
+            if (region->valid_words[word_index] == 0)
+                continue;
+
+            pa = region->pa + word_index * 4u;
+            store_32bit_word(m->cpu, pa_to_kseg0(pa), region->words[word_index]);
+            applied = true;
+        }
+    }
+
+    if (applied)
+        invalidate_all(m);
+    return applied;
+}
+
+static bool probable_low_va_target(uint32_t value)
+{
+    return value != 0 && (value & UINT32_C(0x3)) == 0
+        && value < UINT32_C(0x00200000);
+}
+
+static uint32_t decode_replay_resume_target(machine_t *m)
+{
+    uint32_t from_snapshot = wince_resume_replay_snapshot.resume_target_pc;
+    uint32_t from_ctx = load_pa_word(m, 0x000022B0u);
+
+    if (probable_low_va_target(from_snapshot))
+        return from_snapshot;
+    if (probable_low_va_target(from_ctx))
+        return from_ctx;
+    return 0;
+}
+
+static uint32_t decode_replay_resume_sp(machine_t *m)
+{
+    uint32_t from_snapshot = wince_resume_replay_snapshot.resume_stack_pointer;
+
+    (void)m;
+    if (from_snapshot != 0)
+        return from_snapshot;
+    return UINT32_C(0xFFFFD7E0);
+}
+
+static void restore_replay_cp0_fields(machine_t *m)
+{
+    uint32_t i;
+
+    for (i = 0; i < wince_resume_replay_snapshot.cp0_field_count; i++) {
+        const wince_resume_cp0_field_t *field =
+            &wince_resume_replay_snapshot.cp0_fields[i];
+
+        m->cpu->cd.mips.coproc[0]->reg[field->reg] = field->value;
+        if (m->wince.log_stall) {
+            fprintf(stderr,
+                "[WINCE_REPLAY] cp0_restore name=%s reg=%u value=0x%08X\n",
+                field->name ? field->name : "-",
+                field->reg,
+                field->value);
+        }
+    }
+}
+
+static void log_replay_snapshot(machine_t *m, const char *label)
+{
+    uint32_t i;
+
+    if (!m->wince.log_stall)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_REPLAY] label=%s samples=%u required_support=%u"
+        " target_pc=0x%08X target_sp=0x%08X synthetic_ra=0x%08X"
+        " regions=%u\n",
+        label ? label : "-",
+        wince_resume_replay_sample_count,
+        wince_resume_replay_required_support,
+        m->wince.replay_resume_target_pc,
+        m->wince.replay_resume_stack_pointer,
+        m->wince.replay_synthetic_ra,
+        wince_resume_replay_snapshot.region_count);
+
+    for (i = 0; i < wince_resume_replay_snapshot.region_count; i++)
+        log_replay_region_compare(m, &wince_resume_replay_snapshot.regions[i],
+            label);
+}
+
+static void maybe_log_replay_pc_probe(machine_t *m)
+{
+    size_t i;
+    uint32_t pc = (uint32_t)m->cpu->pc;
+
+    if (!replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->wince.log_stall)
+        return;
+
+    for (i = 0; i < sizeof(wince_replay_pc_probes) / sizeof(wince_replay_pc_probes[0]);
+        i++) {
+        const wince_replay_pc_probe_desc_t *probe = &wince_replay_pc_probes[i];
+        uint32_t bit = UINT32_C(1) << i;
+
+        if (probe->pc != pc)
+            continue;
+        if ((m->wince.replay_pc_probe_logged_mask & bit) != 0)
+            continue;
+
+        m->wince.replay_pc_probe_logged_mask |= bit;
+        fprintf(stderr,
+            "[WINCE_REPLAY_PC] label=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+            " s0=0x%08X s1=0x%08X s2=0x%08X\n",
+            probe->label,
+            pc,
+            (uint32_t)m->cpu->cd.mips.gpr[31],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)m->cpu->cd.mips.gpr[16],
+            (uint32_t)m->cpu->cd.mips.gpr[17],
+            (uint32_t)m->cpu->cd.mips.gpr[18]);
+        log_replay_snapshot(m, probe->label);
+    }
+}
+
+static void synthesize_word_after_write(machine_t *m, uint32_t word_pa,
+    uint64_t write_pa, const unsigned char *new_data, size_t len,
+    uint32_t *before_out, uint32_t *after_out)
+{
+    unsigned char bytes[4];
+    uint32_t before;
+    size_t i;
+
+    before = load_pa_word(m, word_pa);
+    bytes[0] = (unsigned char)(before & 0xFFu);
+    bytes[1] = (unsigned char)((before >> 8) & 0xFFu);
+    bytes[2] = (unsigned char)((before >> 16) & 0xFFu);
+    bytes[3] = (unsigned char)((before >> 24) & 0xFFu);
+
+    for (i = 0; i < len; i++) {
+        uint64_t cur_pa = write_pa + i;
+
+        if (cur_pa < word_pa || cur_pa >= (uint64_t)word_pa + 4u)
+            continue;
+        bytes[cur_pa - word_pa] = new_data[i];
+    }
+
+    if (before_out)
+        *before_out = before;
+    if (after_out) {
+        *after_out = (uint32_t)bytes[0]
+            | ((uint32_t)bytes[1] << 8)
+            | ((uint32_t)bytes[2] << 16)
+            | ((uint32_t)bytes[3] << 24);
+    }
+}
+
+static void log_replay_write(machine_t *m, const wince_resume_region_t *region,
+    uint32_t word_pa, uint32_t before, uint32_t after, bool valid_expected,
+    uint32_t expected, const char *kind)
+{
+    fprintf(stderr,
+        "[WINCE_REPLAY_WRITE] region=%s kind=%s paddr=0x%08X"
+        " before=0x%08X after=0x%08X",
+        region->name,
+        kind,
+        word_pa,
+        before,
+        after);
+    if (valid_expected)
+        fprintf(stderr, " expected=0x%08X", expected);
+    fprintf(stderr, " pc=0x%08" PRIx64 "\n", (uint64_t)m->cpu->pc);
 }
 
 static void invalidate_all(machine_t *m)
@@ -861,6 +1155,66 @@ static void log_fault_site_null_pc(machine_t *m,
         dump_pa_window(m, "pa_170c0",
             ((uint32_t)callback_slot_pa) & ~UINT32_C(0x1F), 0x60u);
     }
+    if (replay_mode_enabled(m)) {
+        fprintf(stderr,
+            "[WINCE_REPLAY] null_pc target_pc=0x%08X target_sp=0x%08X"
+            " synthetic_ra=0x%08X\n",
+            m->wince.replay_resume_target_pc,
+            m->wince.replay_resume_stack_pointer,
+            m->wince.replay_synthetic_ra);
+        log_replay_snapshot(m, "null-pc");
+    }
+}
+
+static void maybe_apply_synthetic_ra_replay(machine_t *m, struct cpu *cpu,
+    uint32_t epc)
+{
+    uint32_t sp;
+    uint32_t slot_va;
+    uint32_t slot_pa = UINT32_C(0x00001804);
+    unsigned char bytes[4];
+    int wrote = 0;
+
+    if (!replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || m->wince.replay_synthetic_ra_attempted)
+        return;
+    if (epc != m->wince.replay_resume_target_pc)
+        return;
+    if (m->wince.replay_synthetic_ra == 0)
+        return;
+
+    sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+    if (sp == 0) {
+        sp = m->wince.replay_resume_stack_pointer;
+        cpu->cd.mips.gpr[MIPS_GPR_SP] = sp;
+    }
+
+    slot_va = sp + UINT32_C(0x24);
+    bytes[0] = (unsigned char)(m->wince.replay_synthetic_ra & 0xFFu);
+    bytes[1] = (unsigned char)((m->wince.replay_synthetic_ra >> 8) & 0xFFu);
+    bytes[2] = (unsigned char)((m->wince.replay_synthetic_ra >> 16) & 0xFFu);
+    bytes[3] = (unsigned char)((m->wince.replay_synthetic_ra >> 24) & 0xFFu);
+
+    wrote = cpu->memory_rw(cpu, cpu->mem, va32_to_mips64(slot_va), bytes, 4,
+        MEM_WRITE, CACHE_DATA | NO_EXCEPTIONS);
+    if (!wrote) {
+        store_32bit_word(cpu, pa_to_kseg0(slot_pa), m->wince.replay_synthetic_ra);
+        wrote = 1;
+    }
+
+    cpu->cd.mips.gpr[31] = m->wince.replay_synthetic_ra;
+    m->wince.replay_synthetic_ra_attempted = true;
+
+    if (m->wince.log_stall) {
+        fprintf(stderr,
+            "[WINCE_REPLAY_RA] applied=%d epc=0x%08X slot_va=0x%08X"
+            " fallback_pa=0x%08X synthetic_ra=0x%08X\n",
+            wrote ? 1 : 0,
+            epc,
+            slot_va,
+            slot_pa,
+            m->wince.replay_synthetic_ra);
+    }
 }
 
 static void maybe_log_fault_site(machine_t *m)
@@ -984,6 +1338,10 @@ void wince_boot_init(machine_t *m)
     m->wince.active = (m->cfg.nand_path != NULL);
     m->wince.log_stall = m->cfg.log_wince_stall;
     m->wince.use_hw_seed = m->cfg.wince_hw_seed;
+    m->wince.use_resume_replay = m->cfg.wince_resume_replay;
+    m->wince.resume_mode = m->cfg.wince_resume_replay
+        ? WINCE_RESUME_MODE_REPLAY
+        : WINCE_RESUME_MODE_INIT_SEED;
     m->wince.vector_owner = WINCE_VECTOR_NONE;
 }
 
@@ -1091,6 +1449,47 @@ void wince_boot_apply_resume_seed(machine_t *m)
     }
 }
 
+bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t *target_pc,
+    uint32_t *target_sp)
+{
+    bool applied_snapshot;
+
+    if (!replay_mode_enabled(m))
+        return false;
+
+    wince_boot_apply_resume_seed(m);
+    applied_snapshot = apply_replay_snapshot(m);
+    m->wince.replay_snapshot_applied = applied_snapshot
+        || m->wince.replay_snapshot_applied;
+    m->wince.replay_resume_target_pc = decode_replay_resume_target(m);
+    m->wince.replay_resume_stack_pointer = decode_replay_resume_sp(m);
+    m->wince.replay_synthetic_ra = wince_resume_replay_snapshot.synthetic_ra;
+
+    restore_replay_cp0_fields(m);
+
+    if (!m->wince.replay_snapshot_logged) {
+        log_replay_snapshot(m, "redirect");
+        m->wince.replay_snapshot_logged = true;
+    }
+
+    if (target_pc)
+        *target_pc = m->wince.replay_resume_target_pc;
+    if (target_sp)
+        *target_sp = m->wince.replay_resume_stack_pointer;
+
+    if (m->wince.log_stall) {
+        fprintf(stderr,
+            "[WINCE_REPLAY] prepared applied_snapshot=%d"
+            " target_pc=0x%08X target_sp=0x%08X synthetic_ra=0x%08X\n",
+            applied_snapshot ? 1 : 0,
+            m->wince.replay_resume_target_pc,
+            m->wince.replay_resume_stack_pointer,
+            m->wince.replay_synthetic_ra);
+    }
+
+    return m->wince.replay_resume_target_pc != 0;
+}
+
 void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
 {
     machine_t *m = wince_boot_from_gx(gxm);
@@ -1102,6 +1501,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     scan_low_vectors(m);
     maybe_note_first_exception(m);
     maybe_log_fault_site(m);
+    maybe_log_replay_pc_probe(m);
 }
 
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
@@ -1153,6 +1553,7 @@ bool wince_boot_note_low_reference_fault(struct cpu *cpu, uint64_t vaddr,
 {
     machine_t *m;
     uint32_t pc_norm;
+    uint32_t epc;
     const wince_fault_site_desc_t *site;
 
     if (!cpu || !cpu->machine)
@@ -1162,13 +1563,70 @@ bool wince_boot_note_low_reference_fault(struct cpu *cpu, uint64_t vaddr,
     if (!m)
         return false;
     pc_norm = (uint32_t)cpu->pc;
+    epc = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_EPC];
     site = find_fault_site(pc_norm, (uint32_t)exccode);
     if (!site)
         return false;
 
     log_fault_site(m, site, pc_norm, (uint32_t)vaddr,
         (uint32_t)exccode, "low-ref");
+    if (site->pc == 0x00000000u)
+        maybe_apply_synthetic_ra_replay(m, cpu, epc);
     return true;
+}
+
+void wince_boot_note_ram_write(struct cpu *cpu, uint64_t paddr,
+    const unsigned char *old_data, const unsigned char *new_data, size_t len)
+{
+    machine_t *m;
+    const wince_resume_region_t *region;
+    uint32_t first_pa;
+    uint32_t last_pa;
+    uint32_t word_pa;
+
+    (void)old_data;
+
+    if (!cpu || !cpu->machine || !new_data || len == 0)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m || !replay_mode_enabled(m) || !m->wince.cold_boot_redirected)
+        return;
+
+    first_pa = (uint32_t)paddr & ~UINT32_C(0x3);
+    last_pa = (uint32_t)(paddr + len - 1u) & ~UINT32_C(0x3);
+
+    for (word_pa = first_pa; word_pa <= last_pa; word_pa += 4u) {
+        uint32_t before = 0;
+        uint32_t after = 0;
+        uint32_t expected = 0;
+        bool valid_expected = false;
+        uint32_t region_bit;
+        uint32_t region_index;
+
+        region = find_replay_region_by_pa(&wince_resume_replay_snapshot, word_pa);
+        if (!region)
+            continue;
+
+        region_index = replay_region_index(&wince_resume_replay_snapshot, region);
+        region_bit = UINT32_C(1) << region_index;
+        synthesize_word_after_write(m, word_pa, paddr, new_data, len, &before,
+            &after);
+        (void)replay_region_word(m, region, word_pa, &expected, &valid_expected);
+
+        if ((m->wince.replay_region_write_logged_mask & region_bit) == 0) {
+            m->wince.replay_region_write_logged_mask |= region_bit;
+            log_replay_write(m, region, word_pa, before, after, valid_expected,
+                expected, "first-write");
+        }
+
+        if (valid_expected && after != expected
+            && (m->wince.replay_region_mismatch_logged_mask & region_bit) == 0) {
+            m->wince.replay_region_mismatch_logged_mask |= region_bit;
+            log_replay_write(m, region, word_pa, before, after, true, expected,
+                "first-mismatch");
+        }
+    }
 }
 
 void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
