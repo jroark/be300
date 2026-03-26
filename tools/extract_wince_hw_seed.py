@@ -157,6 +157,11 @@ def select_pa_seed_regions(extracted):
         selected.append(slice_region(page, "low_sdram_1880", 0x0880, 0x0080))
         selected.append(slice_region(page, "low_sdram_1ac0", 0x0AC0, 0x0100))
 
+    page = by_name.get("high_sdram_fd4000")
+    if page is not None:
+        append_nonzero_slice(selected, page, "high_sdram_fd40e0",
+            0x00E0, 0x0100)
+
     return selected
 
 
@@ -310,6 +315,12 @@ def slice_region(region, name: str, off: int, size: int):
         )
 
     return make_region(name, region["pa"] + off, region["data"][off:end])
+
+
+def append_nonzero_slice(selected, region, name: str, off: int, size: int):
+    sliced = slice_region(region, name, off, size)
+    if any(byte != 0 for byte in sliced["data"]):
+        selected.append(sliced)
 
 
 def extract_regions(regions, raw_chunks, addr_key: str, label: str):
