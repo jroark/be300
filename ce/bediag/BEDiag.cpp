@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed12"
+#define BEDIAG_BUILD_TAG         "hwseed13"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -1382,6 +1382,47 @@ static void LogDuplicateInit(DWORD dwContext)
     FlushSinks();
 }
 
+static void LogDormantInit(DWORD dwContext)
+{
+    WCHAR incoming_key[256];
+    char incoming_key_a[256];
+
+    CopyContextPath(dwContext, incoming_key,
+                    sizeof(incoming_key) / sizeof(incoming_key[0]));
+    WideToAnsi(incoming_key, incoming_key_a, sizeof(incoming_key_a));
+
+    Logf("[BEDIAG_DORMANT_INIT] tick_ms=%lu context=0x%08lX incoming_key=\"%s\"\r\n",
+         GetTickCount(),
+         dwContext,
+         incoming_key_a[0] ? incoming_key_a : "<unavailable>");
+    FlushSinks();
+}
+
+static BOOL StartBEDiagWorker(void)
+{
+    g_driver.worker_thread = CreateThread(NULL, 0, BEDiagWorkerThread, &g_driver, 0,
+                                          &g_driver.worker_thread_id);
+    if (!g_driver.worker_thread) {
+        TryOpenSecondaryFile();
+        MaybeReportSerialFailure();
+        BeginSection("BEDIAG INIT");
+        Logf("tick_ms=%lu\r\n", GetTickCount());
+        Logf("worker_start_failed err=%lu\r\n", GetLastError());
+        BeginSection("BEDIAG DONE");
+        Logf("status=FAILED\r\n");
+        SetBreadcrumbString(L"BEDiagLastStatus", L"FAILED");
+        LogStage("done", "FAILED");
+        FlushSinks();
+        g_had_error = TRUE;
+        InterlockedExchange(&g_driver_refcount, 0);
+        InterlockedExchange(&g_driver_active, 0);
+        return FALSE;
+    }
+
+    LogStage("worker_created", NULL);
+    return TRUE;
+}
+
 static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 {
     bediag_driver_t *driver;
@@ -1495,6 +1536,14 @@ extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
         OpenPrimaryFileLog();
         TryOpenSecondaryFile();
         MaybeReportSerialFailure();
+        if (dwContext != 0 && !g_driver.worker_thread && !g_driver.worker_started) {
+            g_driver.init_tick = GetTickCount();
+            SetBreadcrumbDWORD(L"BEDiagInitTick", g_driver.init_tick);
+            LogStage("init_enter", "PROMOTED_FROM_STUB");
+            if (!StartBEDiagWorker())
+                return 0;
+            return (DWORD)&g_driver;
+        }
         LogDuplicateInit(dwContext);
         return (DWORD)&g_driver;
     }
@@ -1516,27 +1565,15 @@ extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
     SetBreadcrumbDWORD(L"BEDiagLoaded", 1);
     SetBreadcrumbDWORD(L"BEDiagInitTick", g_driver.init_tick);
     SetBreadcrumbDWORD(L"BEDiagWorkerStarted", 0);
+    if (dwContext == 0) {
+        LogStage("init_stub", "NULL_CONTEXT");
+        LogDormantInit(dwContext);
+        return (DWORD)&g_driver;
+    }
     LogStage("init_enter", NULL);
 
-    g_driver.worker_thread = CreateThread(NULL, 0, BEDiagWorkerThread, &g_driver, 0, &g_driver.worker_thread_id);
-    if (!g_driver.worker_thread) {
-        TryOpenSecondaryFile();
-        MaybeReportSerialFailure();
-        BeginSection("BEDIAG INIT");
-        Logf("tick_ms=%lu\r\n", GetTickCount());
-        Logf("worker_start_failed err=%lu\r\n", GetLastError());
-        BeginSection("BEDIAG DONE");
-        Logf("status=FAILED\r\n");
-        SetBreadcrumbString(L"BEDiagLastStatus", L"FAILED");
-        LogStage("done", "FAILED");
-        FlushSinks();
-        g_had_error = TRUE;
-        InterlockedExchange(&g_driver_refcount, 0);
-        InterlockedExchange(&g_driver_active, 0);
+    if (!StartBEDiagWorker())
         return 0;
-    }
-
-    LogStage("worker_created", NULL);
     return (DWORD)&g_driver;
 }
 
