@@ -77,6 +77,7 @@ static void log_fault_site_replay_stub_miss(machine_t *m,
     const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
     uint32_t exccode);
 static void invalidate_all(machine_t *m);
+static bool probable_low_va_target(uint32_t value);
 static bool range_overlaps(uint64_t base_a, uint64_t size_a, uint64_t base_b,
     uint64_t size_b);
 static void synthesize_word_after_write(machine_t *m, uint32_t word_pa,
@@ -152,6 +153,9 @@ static const wince_fault_site_desc_t wince_fault_sites[] = {
 static const wince_replay_write_watch_desc_t wince_replay_write_watches[] = {
     { "dispatch_page_5100", UINT32_C(0x00051000), UINT32_C(0x0800) },
     { "dispatch_ptr_660160", UINT32_C(0x00660160), UINT32_C(0x00A0) },
+    { "bootctx_stub_63d0", UINT32_C(0x000063D0), UINT32_C(0x0020) },
+    { "obj_table_66bfc0", UINT32_C(0x0066BFC0), UINT32_C(0x0040) },
+    { "callback_table_1740", UINT32_C(0x00051740), UINT32_C(0x0040) },
 };
 
 static const wince_mmio_watch_desc_t wince_mmio_watches[] = {
@@ -897,6 +901,117 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
         log_replay_region_compare(m, ptr_region, "dispatch-ptr");
     if (page_region)
         log_replay_region_compare(m, page_region, "dispatch-page");
+}
+
+static bool in_kseg0_or_kseg1(uint32_t va)
+{
+    return (va & UINT32_C(0xE0000000)) == UINT32_C(0x80000000)
+        || (va & UINT32_C(0xE0000000)) == UINT32_C(0xA0000000);
+}
+
+static bool plausible_callback_target(uint32_t va)
+{
+    return va != 0 && (va & UINT32_C(0x3)) == 0
+        && (in_kseg0_or_kseg1(va) || probable_low_va_target(va));
+}
+
+static void maybe_probe_replay_callback_redirect(machine_t *m)
+{
+    uint32_t pc;
+    uint32_t epc;
+    uint32_t sp;
+    uint32_t stack_target = 0;
+    uint32_t slot_addr = 0;
+    uint32_t slot_value = 0;
+    bool stack_target_ok;
+    bool slot_addr_ok;
+    bool slot_value_ok = false;
+    bool slot_addr_in_table = false;
+    uint32_t slot_index = UINT32_MAX;
+    uint32_t redirect_target = 0;
+    const wince_resume_region_t *dispatch_ptr_region;
+    const wince_resume_region_t *callback_region;
+
+    if (!replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->wince.log_stall || m->wince.replay_callback_redirect_attempted) {
+        return;
+    }
+
+    pc = (uint32_t)m->cpu->pc;
+    if (pc != UINT32_C(0x8008B254) && pc != UINT32_C(0x8008B3F0))
+        return;
+
+    epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    if (epc < UINT32_C(0xA0051680) || epc >= UINT32_C(0xA0051880))
+        return;
+
+    sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+    stack_target_ok = load_va_word(m, sp + UINT32_C(0x08), &stack_target);
+    slot_addr_ok = load_va_word(m, sp + UINT32_C(0x0C), &slot_addr);
+    if (slot_addr_ok && slot_addr >= UINT32_C(0xA0051680)
+        && slot_addr < UINT32_C(0xA0051880)) {
+        slot_addr_in_table = true;
+        slot_index = (slot_addr - UINT32_C(0xA0051680)) / 4u;
+        slot_value_ok = load_va_word(m, slot_addr, &slot_value);
+    }
+
+    dispatch_ptr_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
+        "dispatch_ptr_table_660170");
+    callback_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
+        "callback_table_a0051680");
+
+    fprintf(stderr,
+        "[WINCE_REPLAY_CALLBACK] pc=0x%08X epc=0x%08X sp=0x%08X"
+        " stack_target=%s slot_addr=%s",
+        pc,
+        epc,
+        sp,
+        stack_target_ok ? "ok" : "bad",
+        slot_addr_ok ? "ok" : "bad");
+    if (stack_target_ok)
+        fprintf(stderr, "(0x%08X)", stack_target);
+    if (slot_addr_ok)
+        fprintf(stderr, "(0x%08X)", slot_addr);
+    if (slot_addr_in_table)
+        fprintf(stderr, " slot_index=%u", slot_index);
+    if (slot_value_ok)
+        fprintf(stderr, " slot_value=0x%08X", slot_value);
+    else if (slot_addr_in_table)
+        fprintf(stderr, " slot_value=????????");
+    fprintf(stderr, "\n");
+
+    dump_pa_window(m, "callback_objptr_660000", UINT32_C(0x00660000), 0x60u);
+    dump_pa_window(m, "callback_dispatch_ptr_660160", UINT32_C(0x00660160), 0x40u);
+    dump_pa_window(m, "callback_obj_66bfc0", UINT32_C(0x0066BFC0), 0x40u);
+    dump_va_window(m, "callback_table_1740", UINT32_C(0xA0051740), 0x40u);
+    dump_va_window(m, "callback_target_63d0", UINT32_C(0xA00063D0), 0x40u);
+    dump_va_window(m, "callback_stack_window", sp, 0x20u);
+    if (dispatch_ptr_region)
+        log_replay_region_compare(m, dispatch_ptr_region, "callback-dispatch-ptr");
+    if (callback_region)
+        log_replay_region_compare(m, callback_region, "callback-table");
+
+    if (slot_value_ok && plausible_callback_target(slot_value))
+        redirect_target = slot_value;
+    else if (stack_target_ok && plausible_callback_target(stack_target))
+        redirect_target = stack_target;
+
+    m->wince.replay_callback_redirect_attempted = true;
+    if (redirect_target == 0) {
+        fprintf(stderr,
+            "[WINCE_REPLAY_CALLBACK] redirect_applied=0 reason=no-target\n");
+        return;
+    }
+
+    m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] = redirect_target;
+    fprintf(stderr,
+        "[WINCE_REPLAY_CALLBACK] redirect_applied=1 new_epc=0x%08X"
+        " source=%s\n",
+        redirect_target,
+        (slot_value_ok && plausible_callback_target(slot_value))
+            ? "slot_value"
+            : "stack_target");
+    dump_code_window(m, redirect_target, 4u, 4u);
 }
 
 static bool apply_replay_snapshot(machine_t *m)
@@ -2233,6 +2348,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     maybe_log_fault_site(m);
     maybe_log_replay_pc_probe(m);
     maybe_log_replay_resume_entry_probe(m);
+    maybe_probe_replay_callback_redirect(m);
 }
 
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
