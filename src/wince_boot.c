@@ -21,6 +21,7 @@ enum {
     WINCE_FAULT_SITE_PTE_WALK = UINT32_C(1) << 0,
     WINCE_FAULT_SITE_NULL_D0  = UINT32_C(1) << 1,
     WINCE_FAULT_SITE_NULL_PC  = UINT32_C(1) << 2,
+    WINCE_FAULT_SITE_REPLAY_STUB_MISS = UINT32_C(1) << 3,
 };
 
 typedef struct {
@@ -58,6 +59,9 @@ static void log_fault_site_null_d0(machine_t *m,
 static void log_fault_site_null_pc(machine_t *m,
     const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
     uint32_t exccode);
+static void log_fault_site_replay_stub_miss(machine_t *m,
+    const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
+    uint32_t exccode);
 static void invalidate_all(machine_t *m);
 
 static const wince_replay_pc_probe_desc_t wince_replay_pc_probes[] = {
@@ -92,6 +96,13 @@ static const wince_fault_site_desc_t wince_fault_sites[] = {
         WINCE_EXCCODE_BIT(EXCEPTION_TLBL) | WINCE_EXCCODE_BIT(EXCEPTION_TLBS),
         "null-pc",
         log_fault_site_null_pc,
+    },
+    {
+        WINCE_FAULT_SITE_REPLAY_STUB_MISS,
+        UINT32_C(0x000117A8),
+        WINCE_EXCCODE_BIT(EXCEPTION_TLBL) | WINCE_EXCCODE_BIT(EXCEPTION_TLBS),
+        "replay-stub-miss",
+        log_fault_site_replay_stub_miss,
     },
 };
 
@@ -370,6 +381,233 @@ static void log_memop_probe(machine_t *m, uint32_t fault_pc, uint32_t fault_va)
             }
         }
     }
+}
+
+static bool decode_tlb_match(machine_t *m, const struct mips_tlb *tlb,
+    uint32_t va, uint64_t *pa_out, bool *valid_out, bool *dirty_out,
+    bool *global_out, bool *odd_out, uint32_t *page_mask_out)
+{
+    /*
+     * BE-300 uses a VR4131 (R4100-style MMU4K). Mirror GXemul's live
+     * translation rules so the diagnostic matches the actual fault path.
+     */
+    const uint64_t vpn2_mask = ENTRYHI_R_MASK | ENTRYHI_VPN2_MASK
+        | UINT64_C(0x1800);
+    const uint32_t pagemask_mask = PAGEMASK_MASK_R4100;
+    const int pagemask_shift = PAGEMASK_SHIFT_R4100;
+    const int pfn_shift = 10;
+    uint32_t pmask;
+    uint64_t cached_hi;
+    uint64_t cached_lo0;
+    uint64_t cached_lo1;
+    uint64_t entry_vpn2;
+    uint64_t vaddr_vpn2;
+    uint64_t entry_asid;
+    uint64_t current_asid;
+    uint64_t lo;
+    uint64_t pfn;
+    uint64_t paddr;
+    uint32_t page_mask;
+    bool odd;
+    bool global;
+    bool valid;
+    bool dirty;
+
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0] || !tlb)
+        return false;
+
+    pmask = (uint32_t)tlb->mask & pagemask_mask;
+    cached_hi = tlb->hi;
+    cached_lo0 = tlb->lo0;
+    cached_lo1 = tlb->lo1;
+
+    if (pmask == 0) {
+        entry_vpn2 = (cached_hi & vpn2_mask) >> pagemask_shift;
+        vaddr_vpn2 = (((uint64_t)va) & vpn2_mask) >> pagemask_shift;
+        page_mask = (UINT32_C(1) << (pagemask_shift - 1)) - 1u;
+        odd = ((uint32_t)va >> (pagemask_shift - 1)) & 1u;
+    } else {
+        int pageshift;
+
+        switch (pmask | ((UINT32_C(1) << pagemask_shift) - 1u)) {
+        case 0x00007ff: pageshift = 10; break;
+        case 0x0001fff: pageshift = 12; break;
+        case 0x0007fff: pageshift = 14; break;
+        case 0x001ffff: pageshift = 16; break;
+        case 0x007ffff: pageshift = 18; break;
+        case 0x01fffff: pageshift = 20; break;
+        case 0x07fffff: pageshift = 22; break;
+        case 0x1ffffff: pageshift = 24; break;
+        case 0x7ffffff: pageshift = 26; break;
+        default:
+            return false;
+        }
+
+        entry_vpn2 = (cached_hi & vpn2_mask) >> (pageshift + 1);
+        vaddr_vpn2 = (((uint64_t)va) & vpn2_mask) >> (pageshift + 1);
+        page_mask = (UINT32_C(1) << pageshift) - 1u;
+        odd = ((uint32_t)va >> pageshift) & 1u;
+    }
+
+    entry_asid = cached_hi & ENTRYHI_ASID;
+    current_asid = m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI] & ENTRYHI_ASID;
+    global = (cached_lo0 & ENTRYLO_G) != 0 && (cached_lo1 & ENTRYLO_G) != 0;
+
+    if (entry_vpn2 != vaddr_vpn2)
+        return false;
+    if (entry_asid != current_asid && !global)
+        return false;
+
+    lo = odd ? cached_lo1 : cached_lo0;
+    valid = (lo & ENTRYLO_V) != 0;
+    dirty = (lo & ENTRYLO_D) != 0;
+    pfn = (lo & ENTRYLO_PFN_MASK) >> ENTRYLO_PFN_SHIFT;
+    paddr = ((pfn << pfn_shift) & ~((uint64_t)page_mask))
+        | (((uint64_t)va) & page_mask);
+
+    if (pa_out)
+        *pa_out = paddr;
+    if (valid_out)
+        *valid_out = valid;
+    if (dirty_out)
+        *dirty_out = dirty;
+    if (global_out)
+        *global_out = global;
+    if (odd_out)
+        *odd_out = odd;
+    if (page_mask_out)
+        *page_mask_out = page_mask;
+    return true;
+}
+
+static void dump_tlb_matches(machine_t *m, const char *label, uint32_t va)
+{
+    struct mips_coproc *cp0;
+    uint32_t asid;
+    int i;
+    int matches = 0;
+    int raw_dumped = 0;
+
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+        return;
+
+    cp0 = m->cpu->cd.mips.coproc[0];
+    asid = (uint32_t)cp0->reg[COP0_ENTRYHI] & ENTRYHI_ASID;
+
+    fprintf(stderr,
+        "[WINCE_TLB] label=%s va=0x%08X current_entryhi=0x%08X asid=0x%02X"
+        " tlbs=%d\n",
+        label ? label : "-",
+        va,
+        (uint32_t)cp0->reg[COP0_ENTRYHI],
+        asid,
+        cp0->nr_of_tlbs);
+
+    for (i = 0; i < cp0->nr_of_tlbs; i++) {
+        uint64_t pa = 0;
+        bool valid = false;
+        bool dirty = false;
+        bool global = false;
+        bool odd = false;
+        uint32_t page_mask = 0;
+
+        if (!decode_tlb_match(m, &cp0->tlbs[i], va, &pa, &valid, &dirty,
+            &global, &odd, &page_mask)) {
+            continue;
+        }
+
+        fprintf(stderr,
+            "[WINCE_TLB] label=%s match idx=%02d hi=0x%08X lo0=0x%08X"
+            " lo1=0x%08X mask=0x%08X odd=%d valid=%d dirty=%d global=%d"
+            " page_mask=0x%03X pa=0x%08" PRIx64 "\n",
+            label ? label : "-",
+            i,
+            (uint32_t)cp0->tlbs[i].hi,
+            (uint32_t)cp0->tlbs[i].lo0,
+            (uint32_t)cp0->tlbs[i].lo1,
+            (uint32_t)cp0->tlbs[i].mask,
+            odd ? 1 : 0,
+            valid ? 1 : 0,
+            dirty ? 1 : 0,
+            global ? 1 : 0,
+            page_mask,
+            pa);
+        matches++;
+    }
+
+    if (matches != 0)
+        return;
+
+    fprintf(stderr, "[WINCE_TLB] label=%s no-match\n", label ? label : "-");
+    for (i = 0; i < cp0->nr_of_tlbs; i++) {
+        uint32_t hi = (uint32_t)cp0->tlbs[i].hi;
+        uint32_t lo0 = (uint32_t)cp0->tlbs[i].lo0;
+        uint32_t lo1 = (uint32_t)cp0->tlbs[i].lo1;
+        uint32_t mask = (uint32_t)cp0->tlbs[i].mask;
+        bool interesting = hi != 0 || lo0 != 0 || lo1 != 0 || mask != 0;
+
+        if (!interesting)
+            continue;
+        if (raw_dumped >= 12)
+            break;
+        if (raw_dumped >= 8 && hi < UINT32_C(0xFFFF8000))
+            continue;
+
+        fprintf(stderr,
+            "[WINCE_TLB] label=%s raw idx=%02d hi=0x%08X lo0=0x%08X"
+            " lo1=0x%08X mask=0x%08X\n",
+            label ? label : "-",
+            i,
+            hi,
+            lo0,
+            lo1,
+            mask);
+        raw_dumped++;
+    }
+}
+
+static bool restore_replay_ctx_tlb(machine_t *m)
+{
+    struct mips_coproc *cp0;
+    int entry_count;
+    int i;
+    bool applied = false;
+
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+        return false;
+
+    cp0 = m->cpu->cd.mips.coproc[0];
+    entry_count = cp0->nr_of_tlbs;
+    if (entry_count > 0x200 / 16)
+        entry_count = 0x200 / 16;
+
+    for (i = 0; i < entry_count; i++) {
+        uint32_t pa = UINT32_C(0x00002000) + (uint32_t)i * 16u;
+        uint32_t lo0 = load_pa_word(m, pa + 0u);
+        uint32_t lo1 = load_pa_word(m, pa + 4u);
+        uint32_t hi = load_pa_word(m, pa + 8u);
+        uint32_t mask = load_pa_word(m, pa + 12u);
+
+        cp0->tlbs[i].lo0 = lo0;
+        cp0->tlbs[i].lo1 = lo1;
+        cp0->tlbs[i].hi = hi;
+        cp0->tlbs[i].mask = mask;
+        if (lo0 != 0 || lo1 != 0 || hi != 0 || mask != 0)
+            applied = true;
+    }
+
+    if (!applied)
+        return false;
+
+    invalidate_all(m);
+    if (m->wince.log_stall) {
+        fprintf(stderr,
+            "[WINCE_REPLAY_TLB] restored_from_ctx_tlb entries=%d"
+            " pa=0x00002000\n",
+            entry_count);
+        dump_tlb_matches(m, "ctx_tlb_d888", 0xFFFFD888u);
+    }
+    return true;
 }
 
 static bool replay_mode_enabled(machine_t *m)
@@ -1196,6 +1434,56 @@ static void log_fault_site_null_pc(machine_t *m,
     }
 }
 
+static void log_fault_site_replay_stub_miss(machine_t *m,
+    const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
+    uint32_t exccode)
+{
+    uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+    uint32_t ra = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA];
+    uint32_t s0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S0];
+    uint32_t s1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S1];
+    uint32_t s2 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S2];
+    uint32_t stack_base_pa = UINT32_C(0x00001000);
+    uint32_t stack_base_va = sp & ~UINT32_C(0x0FFF);
+
+    fprintf(stderr,
+        "[WINCE_HANDLER] site=%s PC=0x%08X exccode=%u BadVA=0x%08X"
+        " SP=0x%08X RA=0x%08X S0=0x%08X S1=0x%08X S2=0x%08X"
+        " replay_target=0x%08X synthetic_ra=0x%08X\n",
+        site->label,
+        fault_pc,
+        exccode,
+        fault_va,
+        sp,
+        ra,
+        s0,
+        s1,
+        s2,
+        m->wince.replay_resume_target_pc,
+        m->wince.replay_synthetic_ra);
+    fprintf(stderr,
+        "[WINCE_HANDLER] site=%s stack_alias va_base=0x%08X pa_base=0x%08X"
+        " badva_off=0x%03X sp_off=0x%03X\n",
+        site->label,
+        stack_base_va,
+        stack_base_pa,
+        fault_va - stack_base_va,
+        sp - stack_base_va);
+
+    dump_tlb_matches(m, "replay_stub_badva", fault_va);
+    dump_tlb_matches(m, "replay_stub_sp", sp);
+    dump_va_window(m, "stub_stack_va", stack_base_va + 0x780u, 0x120u);
+    dump_pa_window(m, "stub_stack_pa", stack_base_pa + 0x780u, 0x120u);
+    dump_pa_window(m, "ctx_tlb", 0x00002000u, 0x80u);
+    dump_pa_window(m, "resume_ctx", 0x000022A0u, 0x40u);
+    if (replay_mode_enabled(m)) {
+        log_replay_region_compare(m, &wince_resume_replay_snapshot.regions[0],
+            site->label);
+        log_replay_region_compare(m, &wince_resume_replay_snapshot.regions[1],
+            site->label);
+    }
+}
+
 static void maybe_apply_synthetic_ra_replay(machine_t *m, struct cpu *cpu,
     uint32_t epc)
 {
@@ -1483,12 +1771,14 @@ bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t *target_pc,
     uint32_t *target_sp)
 {
     bool applied_snapshot;
+    bool applied_ctx_tlb;
 
     if (!replay_mode_enabled(m))
         return false;
 
     wince_boot_apply_resume_seed(m);
     applied_snapshot = apply_replay_snapshot(m);
+    applied_ctx_tlb = restore_replay_ctx_tlb(m);
     m->wince.replay_snapshot_applied = applied_snapshot
         || m->wince.replay_snapshot_applied;
     m->wince.replay_resume_target_pc = decode_replay_resume_target(m);
@@ -1510,8 +1800,10 @@ bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t *target_pc,
     if (m->wince.log_stall) {
         fprintf(stderr,
             "[WINCE_REPLAY] prepared applied_snapshot=%d"
-            " target_pc=0x%08X target_sp=0x%08X synthetic_ra=0x%08X\n",
+            " applied_ctx_tlb=%d target_pc=0x%08X target_sp=0x%08X"
+            " synthetic_ra=0x%08X\n",
             applied_snapshot ? 1 : 0,
+            applied_ctx_tlb ? 1 : 0,
             m->wince.replay_resume_target_pc,
             m->wince.replay_resume_stack_pointer,
             m->wince.replay_synthetic_ra);
