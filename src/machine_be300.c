@@ -471,8 +471,8 @@ void be300_run(machine_t *m)
                         uint32_t target_pc = 0;
                         uint32_t target_sp = 0;
 
-                        if (!wince_boot_prepare_resume_replay(m, &target_pc,
-                            &target_sp)) {
+                        if (!wince_boot_prepare_resume_replay(m,
+                            (uint32_t)old_pc, &target_pc, &target_sp)) {
                             wince_boot_note_fatal_stop(m,
                                 "resume-replay-prepare-failed");
                             fprintf(stderr,
@@ -485,15 +485,22 @@ void be300_run(machine_t *m)
                         m->cpu->pc = (uint64_t)(int32_t)target_pc;
                         if (target_sp != 0)
                             m->cpu->cd.mips.gpr[MIPS_GPR_SP] = target_sp;
-                        m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] = target_pc;
+                        m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] =
+                            m->wince.replay_resume_target_pc != 0
+                                ? m->wince.replay_resume_target_pc
+                                : target_pc;
                         m->cpu->is_halted = false;
                         m->wince.hibernate_redirect_count++;
 
                         fprintf(stderr,
                             "[BE300] Resume replay: PC 0x%08" PRIx64
-                            " -> 0x%08X SP=0x%08X\n",
+                            " -> 0x%08X EPC=0x%08X SP=%s0x%08X\n",
                             old_pc,
                             target_pc,
+                            m->wince.replay_resume_target_pc != 0
+                                ? m->wince.replay_resume_target_pc
+                                : target_pc,
+                            target_sp != 0 ? "" : "(keep) ",
                             target_sp);
                         wince_boot_note_cold_boot_redirect(
                             m, "hibernate-to-resume-replay");

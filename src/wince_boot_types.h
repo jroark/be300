@@ -80,11 +80,15 @@ typedef struct {
     bool replay_snapshot_applied;
     bool replay_snapshot_logged;
     bool replay_synthetic_ra_attempted;
+    bool replay_resume_entry_logged;
+    bool replay_resume_exit_logged;
 
     uint32_t fault_site_logged_mask;
     uint32_t replay_region_write_logged_mask;
     uint32_t replay_region_mismatch_logged_mask;
     uint32_t replay_pc_probe_logged_mask;
+    uint32_t replay_resume_halt_pc;
+    uint32_t replay_resume_entry_pc;
     uint32_t replay_resume_target_pc;
     uint32_t replay_resume_stack_pointer;
     uint32_t replay_synthetic_ra;
