@@ -274,6 +274,7 @@ static const WCHAR *g_file_roots[] = {
 };
 
 static void Logf(const char *fmt, ...);
+static DWORD WINAPI BEDiagWorkerThread(LPVOID arg);
 
 static void ReadTlbEntryAsm(DWORD index, DWORD *out_words)
 {
