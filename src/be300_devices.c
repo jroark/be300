@@ -19,6 +19,7 @@
 
 #include "be300.h"
 #include "hw/nand.h"
+#include "wince_boot.h"
 
 /*
  *  VRC4173 NAND flash controller device.
@@ -88,12 +89,16 @@ DEVICE_ACCESS(be300_vrc4173)
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
         memcpy(&d->bytes[off], data, len);
+        wince_boot_note_mmio_access(cpu, VRC4173_LATCH_BASE + off,
+            writeflag, val, len);
         if (d->log_mmio)
             fprintf(stderr, "[VRC4173] W PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
                     (uint32_t)(VRC4173_LATCH_BASE + off), len,
                     (unsigned long long)val, (uint32_t)cpu->pc);
     } else {
         memcpy(data, &d->bytes[off], len);
+        wince_boot_note_mmio_access(cpu, VRC4173_LATCH_BASE + off,
+            writeflag, memory_readmax64(cpu, data, len), len);
         if (d->log_mmio)
             fprintf(stderr, "[VRC4173] R PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
                     (uint32_t)(VRC4173_LATCH_BASE + off), len,

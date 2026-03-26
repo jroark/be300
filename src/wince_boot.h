@@ -29,6 +29,8 @@ bool wince_boot_note_low_reference_fault(struct cpu *cpu, uint64_t vaddr,
     int exccode);
 void wince_boot_note_ram_write(struct cpu *cpu, uint64_t paddr,
     const unsigned char *old_data, const unsigned char *new_data, size_t len);
+void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
+    int writeflag, uint64_t value, size_t len);
 void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
     size_t len);
 void wince_boot_note_fb_oob(struct cpu *cpu, uint64_t paddr, size_t len);

@@ -45,6 +45,17 @@ typedef struct {
     bool store;
 } wince_memop_info_t;
 
+typedef struct {
+    const char *label;
+    uint32_t    pa;
+    uint32_t    size;
+} wince_replay_write_watch_desc_t;
+
+typedef struct {
+    const char *label;
+    uint32_t    pa;
+} wince_mmio_watch_desc_t;
+
 struct wince_fault_site_desc {
     uint32_t log_bit;
     uint32_t pc;
@@ -66,6 +77,11 @@ static void log_fault_site_replay_stub_miss(machine_t *m,
     const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
     uint32_t exccode);
 static void invalidate_all(machine_t *m);
+static bool range_overlaps(uint64_t base_a, uint64_t size_a, uint64_t base_b,
+    uint64_t size_b);
+static void synthesize_word_after_write(machine_t *m, uint32_t word_pa,
+    uint64_t write_pa, const unsigned char *new_data, size_t len,
+    uint32_t *before_out, uint32_t *after_out);
 
 static const wince_replay_pc_probe_desc_t wince_replay_pc_probes[] = {
     { UINT32_C(0xA00795B4), "resume_oal_entry", -0x10, 0x40u, 0x00u },
@@ -131,6 +147,18 @@ static const wince_fault_site_desc_t wince_fault_sites[] = {
         "replay-stub-miss",
         log_fault_site_replay_stub_miss,
     },
+};
+
+static const wince_replay_write_watch_desc_t wince_replay_write_watches[] = {
+    { "dispatch_page_5100", UINT32_C(0x00051000), UINT32_C(0x0800) },
+    { "dispatch_ptr_660160", UINT32_C(0x00660160), UINT32_C(0x00A0) },
+};
+
+static const wince_mmio_watch_desc_t wince_mmio_watches[] = {
+    { "ack_1120", UINT32_C(0x0A001120) },
+    { "ack_112c", UINT32_C(0x0A00112C) },
+    { "ack_1b20", UINT32_C(0x0A001B20) },
+    { "ack_1b2c", UINT32_C(0x0A001B2C) },
 };
 
 static machine_t *wince_boot_from_gx(struct machine *gxm)
@@ -639,6 +667,24 @@ static const wince_resume_region_t *find_replay_region_by_pa(
     return NULL;
 }
 
+static const wince_resume_region_t *find_replay_region_by_name(
+    const wince_resume_snapshot_t *snapshot, const char *name)
+{
+    uint32_t i;
+
+    if (!snapshot || !name)
+        return NULL;
+
+    for (i = 0; i < snapshot->region_count; i++) {
+        const wince_resume_region_t *region = &snapshot->regions[i];
+
+        if (region->name && strcmp(region->name, name) == 0)
+            return region;
+    }
+
+    return NULL;
+}
+
 static uint32_t replay_region_index(const wince_resume_snapshot_t *snapshot,
     const wince_resume_region_t *region)
 {
@@ -684,6 +730,173 @@ static void log_replay_region_compare(machine_t *m,
             live0, live1, live2, live3,
             v0 ? 1 : 0, v1 ? 1 : 0, v2 ? 1 : 0, v3 ? 1 : 0);
     }
+}
+
+static uint32_t ctz32_nonzero(uint32_t value)
+{
+#if defined(__clang__) || defined(__GNUC__)
+    return (uint32_t)__builtin_ctz(value);
+#else
+    uint32_t bit = 0;
+
+    while (((value >> bit) & 1u) == 0)
+        bit++;
+    return bit;
+#endif
+}
+
+static void log_replay_watch_write(machine_t *m, const char *label,
+    uint32_t word_pa, uint32_t before, uint32_t after)
+{
+    fprintf(stderr,
+        "[WINCE_REPLAY_WATCH] label=%s paddr=0x%08X before=0x%08X"
+        " after=0x%08X pc=0x%08" PRIx64 "\n",
+        label ? label : "-",
+        word_pa,
+        before,
+        after,
+        (uint64_t)m->cpu->pc);
+}
+
+static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
+{
+    const wince_resume_region_t *ptr_region;
+    const wince_resume_region_t *page_region;
+    uint32_t sysint1 = 0;
+    uint32_t sysint2 = 0;
+    uint32_t giuintl = 0;
+    bool sysint1_ok;
+    bool sysint2_ok;
+    bool giuintl_ok;
+    uint32_t dispatch_index = UINT32_MAX;
+    uint32_t dispatch_bit = UINT32_MAX;
+    uint32_t ptr_pa = 0;
+    uint32_t live_ptr = 0;
+    uint32_t replay_ptr = 0;
+    uint32_t slot_va = 0;
+    uint32_t live_slot = 0;
+    uint32_t replay_slot = 0;
+    bool replay_ptr_ok = false;
+    bool live_slot_ok = false;
+    bool replay_slot_ok = false;
+    const char *source = "none";
+
+    if (!m->wince.log_stall)
+        return;
+
+    sysint1_ok = load_va_word(m, UINT32_C(0xAF000080), &sysint1);
+    sysint2_ok = load_va_word(m, UINT32_C(0xAF0000A0), &sysint2);
+    giuintl_ok = load_va_word(m, UINT32_C(0xAF000088), &giuintl);
+    ptr_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
+        "dispatch_ptr_table_660170");
+    page_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
+        "callback_table_a0051680");
+
+    if (sysint1_ok && sysint1 != 0 && (sysint1 & (sysint1 - 1u)) == 0) {
+        dispatch_bit = ctz32_nonzero(sysint1);
+        source = "sysint1";
+        /*
+         * The active replay loop consistently arrives here with the ETIMER
+         * source mapped to the first dispatch page. Keep the decode narrow
+         * and log the raw bit alongside the derived slot.
+         */
+        if (sysint1 == UINT32_C(0x00000004) || sysint1 == UINT32_C(0x00000008))
+            dispatch_index = 0;
+        else if (dispatch_bit >= 2u)
+            dispatch_index = dispatch_bit - 2u;
+    } else if (sysint2_ok && sysint2 != 0 && (sysint2 & (sysint2 - 1u)) == 0) {
+        dispatch_bit = ctz32_nonzero(sysint2);
+        dispatch_index = dispatch_bit;
+        source = "sysint2";
+    } else if (giuintl_ok && giuintl != 0
+        && (giuintl & (giuintl - 1u)) == 0) {
+        dispatch_bit = ctz32_nonzero(giuintl);
+        dispatch_index = dispatch_bit;
+        source = "giu";
+    }
+
+    if (ptr_region && dispatch_index != UINT32_MAX
+        && dispatch_index < ptr_region->word_count) {
+        ptr_pa = ptr_region->pa + dispatch_index * 4u;
+        live_ptr = load_pa_word(m, ptr_pa);
+        (void)replay_region_word(m, ptr_region, ptr_pa, &replay_ptr,
+            &replay_ptr_ok);
+    }
+
+    if (live_ptr != 0)
+        slot_va = live_ptr;
+    else if (replay_ptr_ok)
+        slot_va = replay_ptr;
+
+    if (slot_va != 0)
+        live_slot_ok = load_va_word(m, slot_va, &live_slot);
+    if (page_region && slot_va != 0
+        && (slot_va & UINT32_C(0x1FFFFFFF)) >= page_region->pa
+        && (slot_va & UINT32_C(0x1FFFFFFF)) < page_region->pa + page_region->size) {
+        (void)replay_region_word(m, page_region,
+            slot_va & UINT32_C(0x1FFFFFFF), &replay_slot, &replay_slot_ok);
+    }
+
+    {
+        char ptr_buf[9];
+        char slot_buf[9];
+        char replay_slot_buf[9];
+
+        fprintf(stderr,
+            "[WINCE_REPLAY_DISPATCH] pc=0x%08X sysint1=%s(0x%08X)"
+            " sysint2=%s(0x%08X) giuintl=%s(0x%08X) source=%s",
+            pc,
+            sysint1_ok ? "ok" : "bad", sysint1,
+            sysint2_ok ? "ok" : "bad", sysint2,
+            giuintl_ok ? "ok" : "bad", giuintl,
+            source);
+        if (dispatch_bit != UINT32_MAX)
+            fprintf(stderr, " bit=%u", dispatch_bit);
+        if (dispatch_index != UINT32_MAX)
+            fprintf(stderr, " table_index=%u", dispatch_index);
+        if (ptr_pa != 0)
+            fprintf(stderr, " ptr_pa=0x%08X", ptr_pa);
+        fprintf(stderr, " live_ptr=0x%08X replay_ptr=%s",
+            live_ptr,
+            format_word_or_unknown(ptr_buf, sizeof(ptr_buf), replay_ptr_ok,
+                replay_ptr));
+        if (slot_va != 0)
+            fprintf(stderr, " slot_va=0x%08X", slot_va);
+        fprintf(stderr, " live_slot=%s replay_slot=%s\n",
+            format_word_or_unknown(slot_buf, sizeof(slot_buf), live_slot_ok,
+                live_slot),
+            format_word_or_unknown(replay_slot_buf, sizeof(replay_slot_buf),
+                replay_slot_ok,
+                replay_slot));
+    }
+    if (ptr_pa != 0) {
+        fprintf(stderr,
+            "[WINCE_REPLAY_DISPATCH] detail ptr_pa=0x%08X live_ptr=0x%08X",
+            ptr_pa, live_ptr);
+        if (replay_ptr_ok)
+            fprintf(stderr, " replay_ptr=0x%08X", replay_ptr);
+        else
+            fprintf(stderr, " replay_ptr=????????");
+        fprintf(stderr, "\n");
+    }
+    if (slot_va != 0) {
+        fprintf(stderr,
+            "[WINCE_REPLAY_DISPATCH] detail slot_va=0x%08X", slot_va);
+        if (live_slot_ok)
+            fprintf(stderr, " live_slot=0x%08X", live_slot);
+        else
+            fprintf(stderr, " live_slot=????????");
+        if (replay_slot_ok)
+            fprintf(stderr, " replay_slot=0x%08X", replay_slot);
+        else
+            fprintf(stderr, " replay_slot=????????");
+        fprintf(stderr, "\n");
+    }
+
+    if (ptr_region)
+        log_replay_region_compare(m, ptr_region, "dispatch-ptr");
+    if (page_region)
+        log_replay_region_compare(m, page_region, "dispatch-page");
 }
 
 static bool apply_replay_snapshot(machine_t *m)
@@ -875,6 +1088,7 @@ static void dump_replay_pc_probe(machine_t *m,
         || pc == UINT32_C(0x800953D4)
         || pc == UINT32_C(0x8008B8EC)
         || pc == UINT32_C(0x8008B994)) {
+        maybe_log_replay_dispatch_state(m, pc);
         dump_va_window(m, "resume_poll_dispatch", UINT32_C(0xA0051000),
             0x40u);
     }
@@ -997,6 +1211,45 @@ static void log_replay_write(machine_t *m, const wince_resume_region_t *region,
     if (valid_expected)
         fprintf(stderr, " expected=0x%08X", expected);
     fprintf(stderr, " pc=0x%08" PRIx64 "\n", (uint64_t)m->cpu->pc);
+}
+
+static void maybe_log_replay_write_watches(machine_t *m, uint64_t paddr,
+    const unsigned char *new_data, size_t len)
+{
+    size_t i;
+
+    if (!m || !new_data || len == 0)
+        return;
+
+    for (i = 0; i < sizeof(wince_replay_write_watches)
+        / sizeof(wince_replay_write_watches[0]); i++) {
+        const wince_replay_write_watch_desc_t *watch =
+            &wince_replay_write_watches[i];
+        uint32_t bit = UINT32_C(1) << i;
+        uint32_t first_pa;
+        uint32_t last_pa;
+        uint32_t word_pa;
+
+        if ((m->wince.replay_watch_write_logged_mask & bit) != 0)
+            continue;
+        if (!range_overlaps(paddr, (uint64_t)len, watch->pa, watch->size))
+            continue;
+
+        first_pa = (uint32_t)paddr & ~UINT32_C(0x3);
+        last_pa = (uint32_t)(paddr + len - 1u) & ~UINT32_C(0x3);
+        for (word_pa = first_pa; word_pa <= last_pa; word_pa += 4u) {
+            uint32_t before = 0;
+            uint32_t after = 0;
+
+            if (word_pa < watch->pa || word_pa >= watch->pa + watch->size)
+                continue;
+            synthesize_word_after_write(m, word_pa, paddr, new_data, len,
+                &before, &after);
+            m->wince.replay_watch_write_logged_mask |= bit;
+            log_replay_watch_write(m, watch->label, word_pa, before, after);
+            break;
+        }
+    }
 }
 
 static void invalidate_all(machine_t *m)
@@ -2009,6 +2262,7 @@ void wince_boot_note_ram_write(struct cpu *cpu, uint64_t paddr,
 
     first_pa = (uint32_t)paddr & ~UINT32_C(0x3);
     last_pa = (uint32_t)(paddr + len - 1u) & ~UINT32_C(0x3);
+    maybe_log_replay_write_watches(m, paddr, new_data, len);
 
     for (word_pa = first_pa; word_pa <= last_pa; word_pa += 4u) {
         uint32_t before = 0;
@@ -2040,6 +2294,43 @@ void wince_boot_note_ram_write(struct cpu *cpu, uint64_t paddr,
             log_replay_write(m, region, word_pa, before, after, true, expected,
                 "first-mismatch");
         }
+    }
+}
+
+void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
+    int writeflag, uint64_t value, size_t len)
+{
+    machine_t *m;
+    size_t i;
+
+    if (!cpu || !cpu->machine || writeflag != MEM_WRITE)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m || !replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->wince.log_stall) {
+        return;
+    }
+
+    for (i = 0; i < sizeof(wince_mmio_watches) / sizeof(wince_mmio_watches[0]);
+        i++) {
+        const wince_mmio_watch_desc_t *watch = &wince_mmio_watches[i];
+        uint32_t bit = UINT32_C(1) << i;
+
+        if ((m->wince.replay_mmio_watch_logged_mask & bit) != 0)
+            continue;
+        if (!range_overlaps(paddr, (uint64_t)len, watch->pa, 4u))
+            continue;
+
+        m->wince.replay_mmio_watch_logged_mask |= bit;
+        fprintf(stderr,
+            "[WINCE_MMIO_ACK] label=%s paddr=0x%08" PRIx64
+            " value=0x%08" PRIx64 " len=%zu pc=0x%08" PRIx64 "\n",
+            watch->label,
+            paddr,
+            value,
+            len,
+            (uint64_t)cpu->pc);
     }
 }
 
