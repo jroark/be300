@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed14"
+#define BEDIAG_BUILD_TAG         "hwseed15"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -75,10 +75,14 @@ static const char *g_phase_names[PHASE_COUNT] = {
 };
 
 static bediag_region_t g_regions[] = {
+    /* Keep seed-critical narrow captures first so partial logs remain usable. */
     { "low_sdram_0000", 0x00000000u, 0x0400u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "low_sdram_1000", 0x00001000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "low_sdram_1880", 0x00001880u, 0x0080u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "low_sdram_1ac0", 0x00001AC0u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "high_sdram_fd40e0", 0x00FD40E0u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "ctx_tlb",       0x00002000u, 0x0200u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "resume_ctx",    0x00002200u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_1000", 0x00001000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "low_sdram_2000", 0x00002000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "low_sdram_3000", 0x00003000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "low_sdram_4000", 0x00004000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
@@ -95,10 +99,6 @@ static bediag_region_t g_regions[] = {
     { "low_sdram_F000", 0x0000F000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "ctx_high_page", 0x00001000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "callback_page", 0x00011000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "high_sdram_fd4000", 0x00FD4000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "high_sdram_fd40e0", 0x00FD40E0u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "ctx_tlb",       0x00002000u, 0x0200u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "resume_ctx",    0x00002200u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "caller_frame",  0x00001700u, 0x00C0u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "ctx_stack",     0x00003780u, 0x00A0u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "bootctx",       0x00006000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
