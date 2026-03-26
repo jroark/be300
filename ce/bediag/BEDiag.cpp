@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed10"
+#define BEDIAG_BUILD_TAG         "hwseed11"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -257,14 +257,15 @@ static BOOL g_backlog_overflow = FALSE;
 static char g_backlog[BEDIAG_BACKLOG_SIZE];
 static DWORD g_backlog_used = 0;
 static WCHAR g_file_path[BEDIAG_MAX_PATH_LEN];
-static const WCHAR g_boot_file_path[] = L"\\Windows\\BEDiag_boot.txt";
 static const WCHAR g_breadcrumb_key[] = L"Drivers\\BuiltIn\\BEDiag";
+static const WCHAR *g_primary_file_paths[] = {
+    L"\\Nand Disk\\BEDiag_boot.txt",
+    L"\\Storage Card\\BEDiag_boot.txt"
+};
 
 static const WCHAR *g_file_roots[] = {
     L"\\Nand Disk",
-    L"\\Storage Card",
-    L"\\Temp",
-    L"\\"
+    L"\\Storage Card"
 };
 
 static void Logf(const char *fmt, ...);
@@ -577,6 +578,23 @@ static void EmitLog(const char *text)
     WriteToSink(g_file, text, len);
 }
 
+static void PrimeFileSink(void)
+{
+    DWORD written;
+
+    if (g_file == INVALID_HANDLE_VALUE)
+        return;
+
+    written = 0;
+    if (g_backlog_used != 0)
+        WriteFile(g_file, g_backlog, g_backlog_used, &written, NULL);
+    if (g_backlog_overflow) {
+        const char *overflow = "[BEDIAG] backlog_overflow=1\r\n";
+        WriteFile(g_file, overflow, (DWORD)strlen(overflow), &written, NULL);
+    }
+    FlushFileBuffers(g_file);
+}
+
 static void Logf(const char *fmt, ...)
 {
     char buffer[2048];
@@ -653,28 +671,24 @@ static void SetBreadcrumbString(const WCHAR *name, const WCHAR *value)
 
 static BOOL OpenPrimaryFileLog(void)
 {
-    DWORD written;
+    int i;
 
     if (g_file != INVALID_HANDLE_VALUE)
         return TRUE;
 
-    g_file = CreateFile(g_boot_file_path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (g_file == INVALID_HANDLE_VALUE)
-        return FALSE;
+    for (i = 0; i < (int)(sizeof(g_primary_file_paths) / sizeof(g_primary_file_paths[0])); i++) {
+        g_file = CreateFile(g_primary_file_paths[i], GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (g_file == INVALID_HANDLE_VALUE)
+            continue;
 
-    SetFilePointer(g_file, 0, NULL, FILE_END);
-    CopyWide(g_file_path, BEDIAG_MAX_PATH_LEN, g_boot_file_path);
-
-    written = 0;
-    if (g_backlog_used != 0)
-        WriteFile(g_file, g_backlog, g_backlog_used, &written, NULL);
-    if (g_backlog_overflow) {
-        const char *overflow = "[BEDIAG] backlog_overflow=1\r\n";
-        WriteFile(g_file, overflow, (DWORD)strlen(overflow), &written, NULL);
+        SetFilePointer(g_file, 0, NULL, FILE_END);
+        CopyWide(g_file_path, BEDIAG_MAX_PATH_LEN, g_primary_file_paths[i]);
+        PrimeFileSink();
+        return TRUE;
     }
-    FlushFileBuffers(g_file);
-    return TRUE;
+
+    return FALSE;
 }
 
 static void MaybeRetrySerial(void)
@@ -722,7 +736,6 @@ static void TryOpenSecondaryFile(void)
 
         for (suffix = 0; suffix < 16; suffix++) {
             WCHAR candidate[BEDIAG_MAX_PATH_LEN];
-            DWORD written;
 
             BuildFileCandidate(root, tick, suffix, candidate, BEDIAG_MAX_PATH_LEN);
             g_file = CreateFile(candidate, GENERIC_WRITE, FILE_SHARE_READ, NULL,
@@ -731,14 +744,7 @@ static void TryOpenSecondaryFile(void)
                 continue;
 
             CopyWide(g_file_path, BEDIAG_MAX_PATH_LEN, candidate);
-            written = 0;
-            if (g_backlog_used != 0)
-                WriteFile(g_file, g_backlog, g_backlog_used, &written, NULL);
-            if (g_backlog_overflow) {
-                const char *overflow = "[BEDIAG] backlog_overflow=1\r\n";
-                WriteFile(g_file, overflow, (DWORD)strlen(overflow), &written, NULL);
-            }
-            FlushFileBuffers(g_file);
+            PrimeFileSink();
             return;
         }
     }
@@ -940,6 +946,18 @@ static const char *ChangeLabel(snapshot_phase_t phase, BOOL cur_ok, BOOL prev_ok
     return "YES";
 }
 
+static void LogCaptureBegin(const char *kind, snapshot_phase_t phase,
+                            const char *name, DWORD base, DWORD size)
+{
+    Logf("[CAPTURE_BEGIN] phase=%s kind=%s name=%s addr=0x%08X size=0x%04X\r\n",
+         g_phase_names[phase],
+         kind,
+         name,
+         base,
+         size);
+    FlushSinks();
+}
+
 static void CapturePhase(snapshot_phase_t phase)
 {
     int i;
@@ -948,6 +966,7 @@ static void CapturePhase(snapshot_phase_t phase)
         const char *changed;
 
         region = &g_regions[i];
+        LogCaptureBegin("PA", phase, region->name, region->base, region->size);
         region->ok[phase] = SafeReadPhysicalBytes(region->base, region->data[phase], region->size);
         region->crc[phase] = Crc32(region->data[phase], region->size);
         changed = ChangeLabel(phase,
@@ -995,6 +1014,7 @@ static void CaptureVirtualPhase(snapshot_phase_t phase)
         const char *changed;
 
         region = &g_vregions[i];
+        LogCaptureBegin("VA", phase, region->name, region->base, region->size);
         region->ok[phase] = SafeReadVirtualBytes(region->base, region->data[phase], region->size,
                                                  &region->valid_prefix[phase]);
         region->crc[phase] = Crc32(region->data[phase], region->size);
