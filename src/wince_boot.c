@@ -525,18 +525,39 @@ static uint32_t decode_replay_resume_sp(machine_t *m)
 static void restore_replay_cp0_fields(machine_t *m)
 {
     uint32_t i;
+    bool applied_any = false;
 
     for (i = 0; i < wince_resume_replay_snapshot.cp0_field_count; i++) {
         const wince_resume_cp0_field_t *field =
             &wince_resume_replay_snapshot.cp0_fields[i];
 
         m->cpu->cd.mips.coproc[0]->reg[field->reg] = field->value;
+        applied_any = true;
         if (m->wince.log_stall) {
             fprintf(stderr,
                 "[WINCE_REPLAY] cp0_restore name=%s reg=%u value=0x%08X\n",
                 field->name ? field->name : "-",
                 field->reg,
                 field->value);
+        }
+    }
+
+    if (!applied_any) {
+        /*
+         * Minimal replay exception state: leave the direct survey-driven
+         * target/stack intact, but clear BEV and arm the mask bits so the
+         * first exception uses the low vectors instead of bouncing into ROM.
+         */
+        m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] = UINT32_C(0x1000FF00);
+        m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE] = 0;
+        m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED] = 0;
+        if (m->wince.log_stall) {
+            fprintf(stderr,
+                "[WINCE_REPLAY] cp0_restore_default"
+                " status=0x%08X cause=0x%08X wired=0x%08X\n",
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED]);
         }
     }
 }
@@ -587,14 +608,23 @@ static void maybe_log_replay_pc_probe(machine_t *m)
         m->wince.replay_pc_probe_logged_mask |= bit;
         fprintf(stderr,
             "[WINCE_REPLAY_PC] label=%s pc=0x%08X ra=0x%08X sp=0x%08X"
-            " s0=0x%08X s1=0x%08X s2=0x%08X\n",
+            " s0=0x%08X s1=0x%08X s2=0x%08X"
+            " status=0x%08X cause=0x%08X epc=0x%08X badva=0x%08X"
+            " wired=0x%08X entryhi=0x%08X pagemask=0x%08X\n",
             probe->label,
             pc,
             (uint32_t)m->cpu->cd.mips.gpr[31],
             (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
             (uint32_t)m->cpu->cd.mips.gpr[16],
             (uint32_t)m->cpu->cd.mips.gpr[17],
-            (uint32_t)m->cpu->cd.mips.gpr[18]);
+            (uint32_t)m->cpu->cd.mips.gpr[18],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_PAGEMASK]);
         log_replay_snapshot(m, probe->label);
     }
 }
