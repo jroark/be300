@@ -27,6 +27,9 @@ enum {
 typedef struct {
     uint32_t pc;
     const char *label;
+    int32_t code_start_rel;
+    uint32_t code_size;
+    uint32_t stack_size;
 } wince_replay_pc_probe_desc_t;
 
 typedef struct wince_fault_site_desc wince_fault_site_desc_t;
@@ -65,19 +68,33 @@ static void log_fault_site_replay_stub_miss(machine_t *m,
 static void invalidate_all(machine_t *m);
 
 static const wince_replay_pc_probe_desc_t wince_replay_pc_probes[] = {
-    { UINT32_C(0xA00795B4), "resume_oal_entry" },
-    { UINT32_C(0x800895D8), "resume_kernel_895d8" },
-    { UINT32_C(0x8007A114), "resume_kernel_7a114" },
-    { UINT32_C(0x800A5E94), "resume_kernel_a5e94" },
-    { UINT32_C(0x80079724), "resume_kernel_79724" },
-    { UINT32_C(0x00011790), "resume_stub_entry" },
-    { UINT32_C(0x000117A8), "resume_stub_return" },
-    { UINT32_C(0x8008B478), "corridor_8008b478" },
-    { UINT32_C(0x8008B52C), "corridor_8008b52c" },
-    { UINT32_C(0x80094E8C), "corridor_80094e8c" },
-    { UINT32_C(0xBFC00000), "bev_refill_000" },
-    { UINT32_C(0xBFC00200), "bev_general_200" },
-    { UINT32_C(0xBFC00380), "bev_interrupt_380" },
+    { UINT32_C(0xA00795B4), "resume_oal_entry", -0x10, 0x40u, 0x00u },
+    { UINT32_C(0x800895D8), "resume_kernel_895d8", -0x10, 0x40u, 0x00u },
+    { UINT32_C(0x8007A114), "resume_kernel_7a114", -0x10, 0x40u, 0x40u },
+    { UINT32_C(0x800A5E94), "resume_kernel_a5e94", -0x10, 0x40u, 0x40u },
+    { UINT32_C(0x80079724), "resume_kernel_79724", -0x10, 0x40u, 0x40u },
+    { UINT32_C(0x00011790), "resume_stub_entry", -0x10, 0x40u, 0x40u },
+    { UINT32_C(0x000117A8), "resume_stub_return", -0x10, 0x40u, 0x40u },
+    { UINT32_C(0x8008B478), "corridor_8008b478", -0x10, 0x40u, 0x40u },
+    { UINT32_C(0x8008B52C), "corridor_8008b52c", -0x10, 0x40u, 0x40u },
+    { UINT32_C(0x80094E8C), "corridor_80094e8c", -0x10, 0x40u, 0x40u },
+    { UINT32_C(0x8008B254), "loop_8008b254", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8008B264), "loop_8008b264", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8008B274), "loop_8008b274", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8008B278), "loop_8008b278", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8008B3F0), "loop_8008b3f0", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8008B42C), "loop_8008b42c", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8008B6D8), "loop_8008b6d8", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x80095004), "loop_80095004", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x80096C40), "loop_80096c40", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x800A7B3C), "resume_poll_7b3c", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x800A7B64), "resume_poll_7b64", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x800A7B68), "resume_poll_7b68", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x800A7BC4), "resume_poll_7bc4", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x800A7BC8), "resume_poll_7bc8", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0xBFC00000), "bev_refill_000", -0x10, 0x40u, 0x00u },
+    { UINT32_C(0xBFC00200), "bev_general_200", -0x10, 0x40u, 0x00u },
+    { UINT32_C(0xBFC00380), "bev_interrupt_380", -0x10, 0x40u, 0x00u },
 };
 
 static const wince_fault_site_desc_t wince_fault_sites[] = {
@@ -822,6 +839,29 @@ static void log_replay_pc_state(machine_t *m, const char *label, uint32_t pc)
         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_PAGEMASK]);
 }
 
+static void dump_replay_pc_probe(machine_t *m,
+    const wince_replay_pc_probe_desc_t *probe, uint32_t pc)
+{
+    if (probe->code_size != 0) {
+        uint32_t base = pc + (uint32_t)probe->code_start_rel;
+
+        dump_va_window(m, probe->label, base, probe->code_size);
+    }
+
+    if (probe->stack_size != 0) {
+        uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+
+        if (sp != 0) {
+            uint32_t stack_base = sp - (probe->stack_size / 2u);
+            char stack_label[64];
+
+            snprintf(stack_label, sizeof(stack_label), "%s_stack",
+                probe->label);
+            dump_va_window(m, stack_label, stack_base, probe->stack_size);
+        }
+    }
+}
+
 static void maybe_log_replay_resume_entry_probe(machine_t *m)
 {
     uint32_t pc;
@@ -874,12 +914,7 @@ static void maybe_log_replay_pc_probe(machine_t *m)
 
         m->wince.replay_pc_probe_logged_mask |= bit;
         log_replay_pc_state(m, probe->label, pc);
-        if (pc == UINT32_C(0x800895D8)
-            || pc == UINT32_C(0x8007A114)
-            || pc == UINT32_C(0x800A5E94)
-            || pc == UINT32_C(0x80079724)) {
-            dump_va_window(m, probe->label, pc - UINT32_C(0x10), 0x40u);
-        }
+        dump_replay_pc_probe(m, probe, pc);
         log_replay_snapshot(m, probe->label);
     }
 }
