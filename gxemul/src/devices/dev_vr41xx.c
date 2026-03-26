@@ -94,6 +94,42 @@ struct vr41xx_data {
 	rtc_state_t	rtc;
 };
 
+static void log_resume_probe_window(struct cpu *cpu, const char *label,
+	const char *kind, uint32_t center, int start_rel, int stop_rel)
+{
+	int rel;
+
+	for (rel = start_rel; rel <= stop_rel; rel += 4) {
+		unsigned char buf[4];
+		uint32_t va32 = center + (uint32_t) rel;
+		uint64_t va = (uint64_t)(int64_t)(int32_t)va32;
+
+		if (cpu->memory_rw(cpu, cpu->mem, va, buf, sizeof(buf), MEM_READ,
+		    CACHE_DATA | NO_EXCEPTIONS)) {
+			uint32_t w = (uint32_t)buf[0]
+			    | ((uint32_t)buf[1] << 8)
+			    | ((uint32_t)buf[2] << 16)
+			    | ((uint32_t)buf[3] << 24);
+			fprintf(stderr,
+			    "[WINCE_MMIO_PC] %s %s_rel=%+03d va=0x%08x"
+			    " word=%08x\n",
+			    label,
+			    kind,
+			    rel,
+			    va32,
+			    w);
+		} else {
+			fprintf(stderr,
+			    "[WINCE_MMIO_PC] %s %s_rel=%+03d va=0x%08x"
+			    " word=????????\n",
+			    label,
+			    kind,
+			    rel,
+			    va32);
+		}
+	}
+}
+
 static void maybe_log_resume_mmio_probe(struct cpu *cpu,
 	uint64_t relative_addr, int writeflag, uint64_t value)
 {
@@ -111,8 +147,9 @@ static void maybe_log_resume_mmio_probe(struct cpu *cpu,
 	size_t i;
 
 	for (i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
-		unsigned char buf[4];
 		uint32_t bit = 1u << i;
+		uint32_t ra = (uint32_t)cpu->cd.mips.gpr[31];
+		uint32_t sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
 		int rel;
 
 		if (probes[i].pc != pc)
@@ -130,37 +167,31 @@ static void maybe_log_resume_mmio_probe(struct cpu *cpu,
 		    relative_addr,
 		    writeflag == MEM_WRITE ? 'W' : 'R',
 		    value,
-		    (uint32_t)cpu->cd.mips.gpr[31],
-		    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+		    ra,
+		    sp,
 		    (uint32_t)cpu->cd.mips.gpr[16],
 		    (uint32_t)cpu->cd.mips.gpr[17],
 		    (uint32_t)cpu->cd.mips.gpr[18]);
 
-		for (rel = -16; rel <= 32; rel += 4) {
-			uint32_t va32 = pc + (uint32_t)rel;
-			uint64_t va = (uint64_t)(int64_t)(int32_t)va32;
+		log_resume_probe_window(cpu, probes[i].label, "code", pc, -16, 32);
+		if (ra != 0) {
+			uint32_t caller = ra - 8u;
 
-			if (cpu->memory_rw(cpu, cpu->mem, va, buf, sizeof(buf),
-			    MEM_READ, CACHE_DATA)) {
-				uint32_t w = (uint32_t)buf[0]
-				    | ((uint32_t)buf[1] << 8)
-				    | ((uint32_t)buf[2] << 16)
-				    | ((uint32_t)buf[3] << 24);
-				fprintf(stderr,
-				    "[WINCE_MMIO_PC] %s rel=%+03d va=0x%08x"
-				    " word=%08x\n",
-				    probes[i].label,
-				    rel,
-				    va32,
-				    w);
-			} else {
-				fprintf(stderr,
-				    "[WINCE_MMIO_PC] %s rel=%+03d va=0x%08x"
-				    " word=????????\n",
-				    probes[i].label,
-				    rel,
-				    va32);
-			}
+			fprintf(stderr,
+			    "[WINCE_MMIO_PC] %s caller=0x%08x ra=0x%08x\n",
+			    probes[i].label,
+			    caller,
+			    ra);
+			log_resume_probe_window(cpu, probes[i].label, "caller",
+			    caller, -16, 24);
+		}
+		if (sp != 0) {
+			fprintf(stderr,
+			    "[WINCE_MMIO_PC] %s stack_center=0x%08x\n",
+			    probes[i].label,
+			    sp);
+			log_resume_probe_window(cpu, probes[i].label, "stack",
+			    sp, -16, 48);
 		}
 		return;
 	}
