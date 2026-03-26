@@ -425,6 +425,8 @@ static bool allow_pa_seed_region(const char *name, bool resume_only)
         return true;
     if (strcmp(name, "low_sdram_1ac0") == 0)
         return true;
+    if (strcmp(name, "high_sdram_fd40e0") == 0)
+        return true;
     if (strcmp(name, "resume_ctx") == 0)
         return true;
     if (strcmp(name, "ctx_tlb") == 0)
