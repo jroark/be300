@@ -92,6 +92,7 @@ typedef struct {
     uint32_t replay_pc_probe_logged_mask;
     uint32_t replay_watch_write_logged_mask;
     uint32_t replay_mmio_watch_logged_mask;
+    uint32_t replay_mmio_read_logged_mask;
     uint32_t replay_resume_halt_pc;
     uint32_t replay_resume_entry_pc;
     uint32_t replay_resume_target_pc;

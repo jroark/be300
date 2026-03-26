@@ -37,6 +37,9 @@ typedef void (*wince_fault_site_dump_fn)(machine_t *m,
     const wince_fault_site_desc_t *site, uint32_t fault_pc, uint32_t fault_va,
     uint32_t exccode);
 
+static const char *format_word_or_unknown(char *buf, size_t buf_size, bool ok,
+    uint32_t value);
+
 typedef struct {
     const char *mnemonic;
     uint32_t rs;
@@ -277,6 +280,37 @@ static void dump_pa_window(machine_t *m, const char *label, uint32_t pa,
             load_pa_word(m, pa + off + 4u),
             load_pa_word(m, pa + off + 8u),
             load_pa_word(m, pa + off + 12u));
+    }
+}
+
+static void dump_vrc4173_latch_window(const char *label, uint32_t pa,
+    uint32_t size)
+{
+    uint32_t off;
+
+    for (off = 0; off < size; off += 16u) {
+        uint32_t w0 = 0;
+        uint32_t w1 = 0;
+        uint32_t w2 = 0;
+        uint32_t w3 = 0;
+        bool ok0 = be300_vrc4173_latch_read_u32(pa + off + 0u, &w0);
+        bool ok1 = be300_vrc4173_latch_read_u32(pa + off + 4u, &w1);
+        bool ok2 = be300_vrc4173_latch_read_u32(pa + off + 8u, &w2);
+        bool ok3 = be300_vrc4173_latch_read_u32(pa + off + 12u, &w3);
+        char b0[9];
+        char b1[9];
+        char b2[9];
+        char b3[9];
+
+        fprintf(stderr,
+            "[WINCE_HANDLER] %s+0x%03X PA=0x%08X: %s %s %s %s\n",
+            label,
+            off,
+            pa + off,
+            format_word_or_unknown(b0, sizeof(b0), ok0, w0),
+            format_word_or_unknown(b1, sizeof(b1), ok1, w1),
+            format_word_or_unknown(b2, sizeof(b2), ok2, w2),
+            format_word_or_unknown(b3, sizeof(b3), ok3, w3));
     }
 }
 
@@ -906,6 +940,13 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
         fprintf(stderr, "\n");
     }
 
+    dump_va_window(m, "dispatch_a0057000", UINT32_C(0xA0057000), 0x20u);
+    dump_pa_window(m, "dispatch_57000_pa", UINT32_C(0x00057000), 0x20u);
+    dump_vrc4173_latch_window("dispatch_aa000020_raw",
+        UINT32_C(0x0A000020), 0x20u);
+    dump_vrc4173_latch_window("dispatch_aa001b40_raw",
+        UINT32_C(0x0A001B40), 0x30u);
+
     if (ptr_region)
         log_replay_region_compare(m, ptr_region, "dispatch-ptr");
     if (page_region)
@@ -946,9 +987,14 @@ static void log_bootctx_stub_poststate(machine_t *m, const char *label)
     log_replay_pc_state(m, label ? label : "bootctx_poststate", pc);
     dump_va_window(m, "bootctx_stub_code", UINT32_C(0xA00063D0), 0x40u);
     dump_pa_window(m, "bootctx_stub_pa", UINT32_C(0x000063D0), 0x40u);
-    dump_va_window(m, "bootctx_aa000020", UINT32_C(0xAA000020), 0x20u);
-    dump_va_window(m, "bootctx_aa001b40", UINT32_C(0xAA001B40), 0x30u);
-    dump_va_window(m, "bootctx_aa01a0e0", UINT32_C(0xAA01A0E0), 0x20u);
+    dump_va_window(m, "bootctx_a0057000", UINT32_C(0xA0057000), 0x20u);
+    dump_pa_window(m, "bootctx_57000_pa", UINT32_C(0x00057000), 0x20u);
+    dump_vrc4173_latch_window("bootctx_aa000020_raw",
+        UINT32_C(0x0A000020), 0x20u);
+    dump_vrc4173_latch_window("bootctx_aa001b40_raw",
+        UINT32_C(0x0A001B40), 0x30u);
+    dump_vrc4173_latch_window("bootctx_aa01a0e0_raw",
+        UINT32_C(0x0A01A0E0), 0x20u);
     bootctx_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
         "bootctx_stub_63d0");
     if (bootctx_region)
@@ -2551,8 +2597,12 @@ void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
 {
     machine_t *m;
     size_t i;
+    uint32_t *logged_mask;
+    const char *op;
 
-    if (!cpu || !cpu->machine || writeflag != MEM_WRITE)
+    if (!cpu || !cpu->machine)
+        return;
+    if (writeflag != MEM_WRITE && writeflag != MEM_READ)
         return;
 
     m = wince_boot_from_gx(cpu->machine);
@@ -2561,29 +2611,36 @@ void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
         return;
     }
 
+    logged_mask = writeflag == MEM_WRITE
+        ? &m->wince.replay_mmio_watch_logged_mask
+        : &m->wince.replay_mmio_read_logged_mask;
+    op = writeflag == MEM_WRITE ? "W" : "R";
+
     for (i = 0; i < sizeof(wince_mmio_watches) / sizeof(wince_mmio_watches[0]);
         i++) {
         const wince_mmio_watch_desc_t *watch = &wince_mmio_watches[i];
         uint32_t bit = UINT32_C(1) << i;
 
-        if ((m->wince.replay_mmio_watch_logged_mask & bit) != 0)
+        if ((*logged_mask & bit) != 0)
             continue;
         if (!range_overlaps(paddr, (uint64_t)len, watch->pa, 4u))
             continue;
 
-        m->wince.replay_mmio_watch_logged_mask |= bit;
+        *logged_mask |= bit;
         fprintf(stderr,
-            "[WINCE_MMIO] label=%s paddr=0x%08" PRIx64
+            "[WINCE_MMIO] op=%s label=%s paddr=0x%08" PRIx64
             " value=0x%08" PRIx64 " len=%zu pc=0x%08" PRIx64 "\n",
+            op,
             watch->label,
             paddr,
             value,
             len,
             (uint64_t)cpu->pc);
-        if (strcmp(watch->label, "bootctx_aa001b54") == 0
+        if (writeflag == MEM_WRITE
+            && (strcmp(watch->label, "bootctx_aa001b54") == 0
             || strcmp(watch->label, "bootctx_aa001b58") == 0
             || strcmp(watch->label, "bootctx_aa000028") == 0
-            || strcmp(watch->label, "bootctx_aa01a0e4") == 0) {
+            || strcmp(watch->label, "bootctx_aa01a0e4") == 0)) {
             log_bootctx_stub_poststate(m, watch->label);
         }
     }

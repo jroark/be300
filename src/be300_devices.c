@@ -72,6 +72,8 @@ struct be300_vrc4173_latch {
     bool     log_mmio;
 };
 
+static struct be300_vrc4173_latch *g_be300_vrc4173_latch = NULL;
+
 struct be300_vrc4173_segment {
     struct be300_vrc4173_latch *latch;
     uint32_t offset_in_latch;    /* offset of this segment within the latch */
@@ -107,6 +109,26 @@ DEVICE_ACCESS(be300_vrc4173)
     }
 
     return 1;
+}
+
+bool be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out)
+{
+    uint32_t off;
+
+    if (!out || !g_be300_vrc4173_latch)
+        return false;
+    if (pa < (uint32_t)VRC4173_LATCH_BASE)
+        return false;
+
+    off = pa - (uint32_t)VRC4173_LATCH_BASE;
+    if (off + 4u > VRC4173_LATCH_SIZE)
+        return false;
+
+    *out = (uint32_t)g_be300_vrc4173_latch->bytes[off + 0u]
+         | ((uint32_t)g_be300_vrc4173_latch->bytes[off + 1u] << 8)
+         | ((uint32_t)g_be300_vrc4173_latch->bytes[off + 2u] << 16)
+         | ((uint32_t)g_be300_vrc4173_latch->bytes[off + 3u] << 24);
+    return true;
 }
 
 
@@ -159,6 +181,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
     struct be300_vrc4173_latch *latch;
     CHECK_ALLOCATION(latch = calloc(1, sizeof(struct be300_vrc4173_latch)));
     latch->log_mmio = log_mmio;
+    g_be300_vrc4173_latch = latch;
 
     /* Seed board ID: offset 0x0A0C0 = 0x7100 (BE-300 identifier) */
     uint32_t board_id = 0x00007100;
