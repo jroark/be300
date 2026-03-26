@@ -160,6 +160,7 @@ static const wince_fault_site_desc_t wince_fault_sites[] = {
 
 static const wince_replay_write_watch_desc_t wince_replay_write_watches[] = {
     { "dispatch_page_5100", UINT32_C(0x00051000), UINT32_C(0x0800) },
+    { "bootctx_counter_57000", UINT32_C(0x00057000), UINT32_C(0x0020) },
     { "dispatch_ptr_660160", UINT32_C(0x00660160), UINT32_C(0x00A0) },
     { "bootctx_stub_63d0", UINT32_C(0x000063D0), UINT32_C(0x0040) },
     { "obj_table_66bfc0", UINT32_C(0x0066BFC0), UINT32_C(0x0040) },
@@ -167,6 +168,9 @@ static const wince_replay_write_watch_desc_t wince_replay_write_watches[] = {
 };
 
 static const wince_mmio_watch_desc_t wince_mmio_watches[] = {
+    { "status_1b00", UINT32_C(0x0A001B00) },
+    { "status_1b10", UINT32_C(0x0A001B10) },
+    { "status_1b50", UINT32_C(0x0A001B50) },
     { "ack_1120", UINT32_C(0x0A001120) },
     { "ack_112c", UINT32_C(0x0A00112C) },
     { "ack_1b20", UINT32_C(0x0A001B20) },
@@ -944,8 +948,8 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
     dump_pa_window(m, "dispatch_57000_pa", UINT32_C(0x00057000), 0x20u);
     dump_vrc4173_latch_window("dispatch_aa000020_raw",
         UINT32_C(0x0A000020), 0x20u);
-    dump_vrc4173_latch_window("dispatch_aa001b40_raw",
-        UINT32_C(0x0A001B40), 0x30u);
+    dump_vrc4173_latch_window("dispatch_aa001b00_raw",
+        UINT32_C(0x0A001B00), 0x60u);
 
     if (ptr_region)
         log_replay_region_compare(m, ptr_region, "dispatch-ptr");
@@ -991,8 +995,8 @@ static void log_bootctx_stub_poststate(machine_t *m, const char *label)
     dump_pa_window(m, "bootctx_57000_pa", UINT32_C(0x00057000), 0x20u);
     dump_vrc4173_latch_window("bootctx_aa000020_raw",
         UINT32_C(0x0A000020), 0x20u);
-    dump_vrc4173_latch_window("bootctx_aa001b40_raw",
-        UINT32_C(0x0A001B40), 0x30u);
+    dump_vrc4173_latch_window("bootctx_aa001b00_raw",
+        UINT32_C(0x0A001B00), 0x60u);
     dump_vrc4173_latch_window("bootctx_aa01a0e0_raw",
         UINT32_C(0x0A01A0E0), 0x20u);
     bootctx_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
@@ -2590,6 +2594,55 @@ void wince_boot_note_ram_write(struct cpu *cpu, uint64_t paddr,
                 "first-mismatch");
         }
     }
+}
+
+bool wince_boot_override_vrc4173_read(struct cpu *cpu, uint32_t paddr,
+    size_t len, uint64_t *value_io)
+{
+    machine_t *m;
+    uint32_t raw_value;
+    uint32_t cmd_1b54 = 0;
+    uint32_t cmd_1b58 = 0;
+    uint32_t synth_value;
+
+    if (!cpu || !cpu->machine || !value_io || len != 4u
+        || paddr != UINT32_C(0x0A001B50)) {
+        return false;
+    }
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m || !replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->cfg.wince_resume_replay_full) {
+        return false;
+    }
+
+    raw_value = (uint32_t)*value_io;
+    if (raw_value != 0)
+        return false;
+    if (!be300_vrc4173_latch_read_u32(UINT32_C(0x0A001B54), &cmd_1b54)
+        || !be300_vrc4173_latch_read_u32(UINT32_C(0x0A001B58), &cmd_1b58)) {
+        return false;
+    }
+
+    synth_value = (cmd_1b54 & UINT32_C(0x7)) | (cmd_1b58 & UINT32_C(0x8));
+    if (synth_value == 0)
+        return false;
+
+    *value_io = synth_value;
+    if (m->wince.log_stall && !m->wince.replay_vrc4173_1b50_synth_logged) {
+        m->wince.replay_vrc4173_1b50_synth_logged = true;
+        fprintf(stderr,
+            "[WINCE_VRC4173] synth_read paddr=0x%08X raw=0x%08X"
+            " cmd_1b54=0x%08X cmd_1b58=0x%08X synth=0x%08X"
+            " pc=0x%08" PRIx64 "\n",
+            paddr,
+            raw_value,
+            cmd_1b54,
+            cmd_1b58,
+            synth_value,
+            (uint64_t)cpu->pc);
+    }
+    return true;
 }
 
 void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
