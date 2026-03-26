@@ -130,3 +130,4 @@ typedef be300_state_t machine_t;
 machine_t *be300_create(const machine_config_t *cfg);
 void       be300_run(machine_t *m);
 void       be300_destroy(machine_t *m);
+bool       be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out);
