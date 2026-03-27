@@ -122,6 +122,11 @@ static const wince_replay_pc_probe_desc_t wince_replay_pc_probes[] = {
     { UINT32_C(0x8009511C), "loop_8009511c", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x800953D4), "loop_800953d4", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x80096C40), "loop_80096c40", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x800A6054), "bootctx_follow_6054", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8007B0B4), "callback_8007b0b4", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8007B0F4), "callback_8007b0f4", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x8007B114), "callback_8007b114", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x800AADA0), "callback_800aada0", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x800A7B3C), "resume_poll_7b3c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800A7B64), "resume_poll_7b64", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800A7B68), "resume_poll_7b68", -0x20, 0x80u, 0x60u },
@@ -979,6 +984,39 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
         log_replay_region_compare(m, page_region, "dispatch-page");
 }
 
+static void log_bootctx_follow_state(machine_t *m, const char *label)
+{
+    uint32_t pc;
+    uint32_t ra;
+
+    if (!m || !m->wince.log_stall)
+        return;
+
+    pc = (uint32_t)m->cpu->pc;
+    ra = (uint32_t)m->cpu->cd.mips.gpr[31];
+
+    log_replay_pc_state(m, label ? label : "bootctx_follow", pc);
+    dump_gpr_window(m);
+    dump_va_window(m, "bootctx_follow_code", pc - UINT32_C(0x20), 0x60u);
+    if (ra != 0)
+        dump_va_window(m, "bootctx_follow_ra", ra - UINT32_C(0x20), 0x60u);
+    dump_va_window(m, "bootctx_callback_1740", UINT32_C(0xA0051740), 0x60u);
+    dump_pa_window(m, "bootctx_callback_1740_pa", UINT32_C(0x00051740),
+        0x60u);
+    dump_va_window(m, "bootctx_obj_660310", UINT32_C(0x80660310), 0x80u);
+    dump_pa_window(m, "bootctx_obj_660310_pa", UINT32_C(0x00660310), 0x80u);
+    dump_va_window(m, "bootctx_obj_660370", UINT32_C(0x80660370), 0x40u);
+    dump_pa_window(m, "bootctx_obj_660370_pa", UINT32_C(0x00660370), 0x40u);
+    dump_vrc4173_latch_window("bootctx_follow_aa000020_raw",
+        UINT32_C(0x0A000020), 0x20u);
+    dump_vrc4173_latch_window("bootctx_follow_aa000630_raw",
+        UINT32_C(0x0A000630), 0x10u);
+    dump_vrc4173_latch_window("bootctx_follow_aa001b00_raw",
+        UINT32_C(0x0A001B00), 0x60u);
+    dump_vrc4173_latch_window("bootctx_follow_aa01a0e0_raw",
+        UINT32_C(0x0A01A0E0), 0x20u);
+}
+
 static bool in_kseg0_or_kseg1(uint32_t va)
 {
     return (va & UINT32_C(0xE0000000)) == UINT32_C(0x80000000)
@@ -1509,6 +1547,14 @@ static void dump_replay_pc_probe(machine_t *m,
 
         snprintf(s0_label, sizeof(s0_label), "%s_s0_f0", probe->label);
         dump_va_window(m, s0_label, s0 + UINT32_C(0xF0), 0x60u);
+    }
+
+    if (pc == UINT32_C(0x800A6054)
+        || pc == UINT32_C(0x8007B0B4)
+        || pc == UINT32_C(0x8007B0F4)
+        || pc == UINT32_C(0x8007B114)
+        || pc == UINT32_C(0x800AADA0)) {
+        log_bootctx_follow_state(m, probe->label);
     }
 }
 
@@ -2808,6 +2854,8 @@ void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
             || strcmp(watch->label, "bootctx_aa001b58") == 0
             || strcmp(watch->label, "bootctx_aa000028") == 0
             || strcmp(watch->label, "bootctx_aa01a0e4") == 0)) {
+            if (strcmp(watch->label, "bootctx_aa000028") == 0)
+                log_bootctx_follow_state(m, watch->label);
             log_bootctx_stub_poststate(m, watch->label);
         }
     }
