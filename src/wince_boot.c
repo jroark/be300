@@ -59,6 +59,11 @@ typedef struct {
     uint32_t    pa;
 } wince_mmio_watch_desc_t;
 
+typedef struct {
+    uint32_t epc;
+    const char *label;
+} wince_replay_epc_probe_desc_t;
+
 struct wince_fault_site_desc {
     uint32_t log_bit;
     uint32_t pc;
@@ -168,6 +173,10 @@ static const wince_replay_write_watch_desc_t wince_replay_write_watches[] = {
 };
 
 static const wince_mmio_watch_desc_t wince_mmio_watches[] = {
+    { "bootctx_aa000630", UINT32_C(0x0A000630) },
+    { "bootctx_aa000634", UINT32_C(0x0A000634) },
+    { "bootctx_aa000638", UINT32_C(0x0A000638) },
+    { "bootctx_aa00063c", UINT32_C(0x0A00063C) },
     { "status_1b00", UINT32_C(0x0A001B00) },
     { "status_1b10", UINT32_C(0x0A001B10) },
     { "status_1b50", UINT32_C(0x0A001B50) },
@@ -179,6 +188,15 @@ static const wince_mmio_watch_desc_t wince_mmio_watches[] = {
     { "bootctx_aa001b58", UINT32_C(0x0A001B58) },
     { "bootctx_aa000028", UINT32_C(0x0A000028) },
     { "bootctx_aa01a0e4", UINT32_C(0x0A01A0E4) },
+};
+
+static const wince_replay_epc_probe_desc_t wince_replay_bootctx_epc_probes[] = {
+    { UINT32_C(0xA00063D4), "bootctx_epc_63d4" },
+    { UINT32_C(0xA00063DC), "bootctx_epc_63dc" },
+    { UINT32_C(0xA00063E4), "bootctx_epc_63e4" },
+    { UINT32_C(0xA00063EC), "bootctx_epc_63ec" },
+    { UINT32_C(0xA00063F4), "bootctx_epc_63f4" },
+    { UINT32_C(0xA0006404), "bootctx_epc_6404" },
 };
 
 static machine_t *wince_boot_from_gx(struct machine *gxm)
@@ -948,8 +966,12 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
     dump_pa_window(m, "dispatch_57000_pa", UINT32_C(0x00057000), 0x20u);
     dump_vrc4173_latch_window("dispatch_aa000020_raw",
         UINT32_C(0x0A000020), 0x20u);
+    dump_vrc4173_latch_window("dispatch_aa000630_raw",
+        UINT32_C(0x0A000630), 0x10u);
     dump_vrc4173_latch_window("dispatch_aa001b00_raw",
         UINT32_C(0x0A001B00), 0x60u);
+    dump_vrc4173_latch_window("dispatch_aa01a0e0_raw",
+        UINT32_C(0x0A01A0E0), 0x20u);
 
     if (ptr_region)
         log_replay_region_compare(m, ptr_region, "dispatch-ptr");
@@ -995,6 +1017,8 @@ static void log_bootctx_stub_poststate(machine_t *m, const char *label)
     dump_pa_window(m, "bootctx_57000_pa", UINT32_C(0x00057000), 0x20u);
     dump_vrc4173_latch_window("bootctx_aa000020_raw",
         UINT32_C(0x0A000020), 0x20u);
+    dump_vrc4173_latch_window("bootctx_aa000630_raw",
+        UINT32_C(0x0A000630), 0x10u);
     dump_vrc4173_latch_window("bootctx_aa001b00_raw",
         UINT32_C(0x0A001B00), 0x60u);
     dump_vrc4173_latch_window("bootctx_aa01a0e0_raw",
@@ -1026,6 +1050,91 @@ static void maybe_log_replay_bootctx_stub_poststate(machine_t *m)
 
     m->wince.replay_bootctx_stub_poststate_logged = true;
     log_bootctx_stub_poststate(m, "bootctx_poststate");
+}
+
+static void log_bootctx_stub_epc_probe(machine_t *m, const char *label,
+    uint32_t epc)
+{
+    uint32_t pc;
+    uint32_t sp;
+    uint32_t epc_pa;
+    char code_label[64];
+    char pa_label[64];
+    char stack_label[64];
+
+    if (!m || !m->wince.log_stall)
+        return;
+
+    pc = (uint32_t)m->cpu->pc;
+    sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+    epc_pa = epc & UINT32_C(0x1FFFFFFF);
+
+    log_replay_pc_state(m, label ? label : "bootctx_epc", pc);
+    fprintf(stderr,
+        "[WINCE_BOOTCTX] label=%s live_pc=0x%08X epc=0x%08X epc_pa=0x%08X"
+        " ra=0x%08X sp=0x%08X\n",
+        label ? label : "-",
+        pc,
+        epc,
+        epc_pa,
+        (uint32_t)m->cpu->cd.mips.gpr[31],
+        sp);
+
+    snprintf(code_label, sizeof(code_label), "%s_code",
+        label ? label : "bootctx_epc");
+    dump_va_window(m, code_label, epc & ~UINT32_C(0x1F), 0x40u);
+
+    snprintf(pa_label, sizeof(pa_label), "%s_pa",
+        label ? label : "bootctx_epc");
+    dump_pa_window(m, pa_label, epc_pa & ~UINT32_C(0x1F), 0x40u);
+
+    if (sp != 0) {
+        snprintf(stack_label, sizeof(stack_label), "%s_stack",
+            label ? label : "bootctx_epc");
+        dump_va_window(m, stack_label, sp - UINT32_C(0x20), 0x40u);
+    }
+
+    dump_vrc4173_latch_window("bootctx_aa000020_raw",
+        UINT32_C(0x0A000020), 0x20u);
+    dump_vrc4173_latch_window("bootctx_aa000630_raw",
+        UINT32_C(0x0A000630), 0x10u);
+    dump_vrc4173_latch_window("bootctx_aa001b00_raw",
+        UINT32_C(0x0A001B00), 0x60u);
+    dump_vrc4173_latch_window("bootctx_aa01a0e0_raw",
+        UINT32_C(0x0A01A0E0), 0x20u);
+}
+
+static void maybe_log_replay_bootctx_stub_epc_probe(machine_t *m)
+{
+    size_t i;
+    uint32_t pc;
+    uint32_t epc;
+
+    if (!m || !replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->wince.log_stall || !m->wince.replay_callback_redirect_attempted) {
+        return;
+    }
+
+    pc = (uint32_t)m->cpu->pc;
+    if (!replay_pc_in_bootctx_loop_corridor(pc))
+        return;
+
+    epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    for (i = 0; i < sizeof(wince_replay_bootctx_epc_probes)
+        / sizeof(wince_replay_bootctx_epc_probes[0]); i++) {
+        const wince_replay_epc_probe_desc_t *probe =
+            &wince_replay_bootctx_epc_probes[i];
+        uint32_t bit = UINT32_C(1) << i;
+
+        if (probe->epc != epc)
+            continue;
+        if ((m->wince.replay_bootctx_epc_probe_logged_mask & bit) != 0)
+            return;
+
+        m->wince.replay_bootctx_epc_probe_logged_mask |= bit;
+        log_bootctx_stub_epc_probe(m, probe->label, epc);
+        return;
+    }
 }
 
 static void maybe_probe_replay_callback_redirect(machine_t *m)
@@ -2467,6 +2576,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     maybe_log_replay_pc_probe(m);
     maybe_log_replay_resume_entry_probe(m);
     maybe_probe_replay_callback_redirect(m);
+    maybe_log_replay_bootctx_stub_epc_probe(m);
     maybe_log_replay_bootctx_stub_poststate(m);
 }
 
@@ -2690,7 +2800,11 @@ void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
             len,
             (uint64_t)cpu->pc);
         if (writeflag == MEM_WRITE
-            && (strcmp(watch->label, "bootctx_aa001b54") == 0
+            && (strcmp(watch->label, "bootctx_aa000630") == 0
+            || strcmp(watch->label, "bootctx_aa000634") == 0
+            || strcmp(watch->label, "bootctx_aa000638") == 0
+            || strcmp(watch->label, "bootctx_aa00063c") == 0
+            || strcmp(watch->label, "bootctx_aa001b54") == 0
             || strcmp(watch->label, "bootctx_aa001b58") == 0
             || strcmp(watch->label, "bootctx_aa000028") == 0
             || strcmp(watch->label, "bootctx_aa01a0e4") == 0)) {
