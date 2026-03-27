@@ -35,8 +35,15 @@ void rtc_init(rtc_state_t *s)
      * Linux 2.4 uses RTCL1 instead and never touches ECMP.
      */
     s->ecmp  = s->etime + UINT64_C(0x100000000);
-    s->rtcl1 = 0;
-    s->rtcl2 = 0;
+    /*
+     * Stable low-half warm-state survey values at 0x0F000110:
+     *   RTCL1LREG = 0x0021
+     *   RTCL2LREG = 0xFFFF
+     * The counter halves vary across captures, so leave those derived
+     * from ETIME instead of seeding a fixed value.
+     */
+    s->rtcl1 = 0x00000021u;
+    s->rtcl2 = 0x0000FFFFu;
     s->tclock = 0;
     s->rtcint = 0;
     s->elapsed_compare_fired = 0;

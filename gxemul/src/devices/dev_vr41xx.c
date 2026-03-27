@@ -934,19 +934,52 @@ DEVICE_ACCESS(vr41xx)
 			wince_boot_note_timer_config(cpu->machine, cpu,
 			    relative_addr, idata);
 		}
+		if (d->cpumodel == 4131 && relative_addr == 0x110) {
+			uint32_t rtc_off = (uint32_t)(relative_addr - 0x100);
+
+			if (writeflag == MEM_READ)
+				odata = rtc_read(&d->rtc, rtc_off,
+				    (unsigned)len);
+			else
+				rtc_write(&d->rtc, rtc_off, (unsigned)len,
+				    (uint32_t)idata);
+		}
 		break;
 	case 0xd2:	/*  RTCL1_H_REG_W (older VR41xx)  */
 	case 0x112:	/*  RTCL1_H_REG_W (VR4131 relocated)  */
+		if (d->cpumodel == 4131 && relative_addr == 0x112) {
+			uint32_t rtc_off = (uint32_t)(relative_addr - 0x100);
+
+			if (writeflag == MEM_READ)
+				odata = rtc_read(&d->rtc, rtc_off,
+				    (unsigned)len);
+			else
+				rtc_write(&d->rtc, rtc_off, (unsigned)len,
+				    (uint32_t)idata);
+		}
 		break;
 
 	/*
-	 *  VR4131 RTC elapsed-time registers (offset 0x100-0x13e).
-	 *  On older VR41xx chips, ETIME lives at 0xc0; on VR4131 it moved
-	 *  to 0x100.  Dispatch to the be300 rtc_state_t read-assist counter.
+	 *  VR4131 RTC block (offset 0x100-0x13e). On older VR41xx chips,
+	 *  only the ETIME/ECMP subset lives elsewhere; on VR4131 the full
+	 *  RTC/RTC2 window is relocated here.
 	 */
 	case 0x100:	/*  VR4131 ETIMELREG  */
 	case 0x102:	/*  VR4131 ETIMEMREG  */
 	case 0x104:	/*  VR4131 ETIMEHREG  */
+	case 0x108:	/*  VR4131 ECMPLREG / older VR41xx GIUINTREG  */
+	case 0x10a:	/*  VR4131 ECMPMREG  */
+	case 0x10c:	/*  VR4131 ECMPHREG  */
+	case 0x114:	/*  VR4131 RTCL1CNTLREG  */
+	case 0x116:	/*  VR4131 RTCL1CNTHREG  */
+	case 0x118:	/*  VR4131 RTCL2LREG  */
+	case 0x11a:	/*  VR4131 RTCL2HREG  */
+	case 0x11c:	/*  VR4131 RTCL2CNTLREG  */
+	case 0x11e:	/*  VR4131 RTCL2CNTHREG  */
+	case 0x120:	/*  VR4131 TCLKLREG  */
+	case 0x122:	/*  VR4131 TCLKHREG  */
+	case 0x124:	/*  VR4131 TCLKCNTLREG  */
+	case 0x126:	/*  VR4131 TCLKCNTHREG  */
 		if (d->cpumodel == 4131) {
 			uint32_t rtc_off = (uint32_t)(relative_addr - 0x100);
 			if (writeflag == MEM_READ)
@@ -956,34 +989,12 @@ DEVICE_ACCESS(vr41xx)
 				    (uint32_t)idata);
 			break;
 		}
-		goto unhandled;
-
-	case 0x108:
-		if (d->cpumodel == 4131) {
-			/*  VR4131 ECMPLREG  */
-			if (writeflag == MEM_READ)
-				odata = rtc_read(&d->rtc, RTC_ECMPLREG,
-				    (unsigned)len);
-			else
-				rtc_write(&d->rtc, RTC_ECMPLREG, (unsigned)len,
-				    (uint32_t)idata);
-		} else {
+		if (relative_addr == 0x108) {
 			/*  Older VR41xx: GIU interrupt register  */
 			if (writeflag == MEM_READ)
 				odata = d->giuint;
 			else
 				d->giuint &= ~idata;
-		}
-		break;
-	case 0x10a:	/*  VR4131 ECMPMREG  */
-	case 0x10c:	/*  VR4131 ECMPHREG  */
-		if (d->cpumodel == 4131) {
-			uint32_t rtc_off = (uint32_t)(relative_addr - 0x100);
-			if (writeflag == MEM_READ)
-				odata = rtc_read(&d->rtc, rtc_off, (unsigned)len);
-			else
-				rtc_write(&d->rtc, rtc_off, (unsigned)len,
-				    (uint32_t)idata);
 			break;
 		}
 		goto unhandled;
