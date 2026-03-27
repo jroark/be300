@@ -94,6 +94,8 @@ typedef struct {
     bool replay_etimer_consumed;
     bool replay_exec_80000180_post_etimer_logged;
     bool replay_exec_80094f58_post_etimer_logged;
+    bool replay_exec_8008b4f0_post_etimer_logged;
+    bool replay_exec_8008b478_post_etimer_logged;
     bool replay_dispatch_page_runtime_refilled;
     bool replay_post_handler_return_armed;
     bool replay_post_handler_return_logged;

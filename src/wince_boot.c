@@ -2646,6 +2646,38 @@ static void maybe_log_post_etimer_exec_80094f58(machine_t *m, uint32_t pc)
     log_replay_exec_probe(m, &post_probe, pc);
 }
 
+static void maybe_log_post_etimer_exec_8008b4f0(machine_t *m, uint32_t pc)
+{
+    wince_replay_exec_probe_desc_t post_probe;
+
+    if (!m || pc != UINT32_C(0x8008B4F0)
+        || !m->wince.replay_etimer_consumed
+        || m->wince.replay_exec_8008b4f0_post_etimer_logged) {
+        return;
+    }
+
+    post_probe = *find_replay_exec_probe(pc);
+    post_probe.label = "exec_8008b4f0_post_etimer";
+    m->wince.replay_exec_8008b4f0_post_etimer_logged = true;
+    log_replay_exec_probe(m, &post_probe, pc);
+}
+
+static void maybe_log_post_etimer_exec_8008b478(machine_t *m, uint32_t pc)
+{
+    wince_replay_exec_probe_desc_t post_probe;
+
+    if (!m || pc != UINT32_C(0x8008B478)
+        || !m->wince.replay_etimer_consumed
+        || m->wince.replay_exec_8008b478_post_etimer_logged) {
+        return;
+    }
+
+    post_probe = *find_replay_exec_probe(pc);
+    post_probe.label = "exec_8008b478_post_etimer";
+    m->wince.replay_exec_8008b478_post_etimer_logged = true;
+    log_replay_exec_probe(m, &post_probe, pc);
+}
+
 static void maybe_log_post_handler_return(machine_t *m, uint32_t pc)
 {
     if (!m->wince.replay_post_handler_return_armed
@@ -2853,6 +2885,8 @@ void wince_boot_note_exec_entry(struct cpu *cpu)
     maybe_log_late_exec_80000180(m, pc);
     maybe_log_post_etimer_exec_80000180(m, pc);
     maybe_log_post_etimer_exec_80094f58(m, pc);
+    maybe_log_post_etimer_exec_8008b4f0(m, pc);
+    maybe_log_post_etimer_exec_8008b478(m, pc);
 
     probe_index = (size_t)(probe - wince_replay_exec_probes);
     if ((m->wince.replay_exec_probe_logged_mask
