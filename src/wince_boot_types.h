@@ -86,6 +86,7 @@ typedef struct {
     bool replay_resume_entry_logged;
     bool replay_resume_exit_logged;
     bool replay_vrc4173_1b50_synth_logged;
+    bool replay_tlb_idx01_even_clone_applied;
     bool replay_dispatch_page_runtime_refilled;
     bool replay_post_handler_return_armed;
     bool replay_post_handler_return_logged;

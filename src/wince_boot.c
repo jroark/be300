@@ -101,7 +101,9 @@ static void log_replay_pc_state(machine_t *m, const char *label, uint32_t pc);
 static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc);
 static void log_dispatch_callback_state(machine_t *m, const char *label);
 static void maybe_log_replay_region_drift(machine_t *m);
+static void maybe_apply_replay_tlb_idx01_even_clone(machine_t *m);
 static void invalidate_all(machine_t *m);
+static bool replay_pc_in_late_exception_corridor(uint32_t pc);
 static bool probable_low_va_target(uint32_t value);
 static bool range_overlaps(uint64_t base_a, uint64_t size_a, uint64_t base_b,
     uint64_t size_b);
@@ -271,26 +273,41 @@ static uint64_t va32_to_mips64(uint32_t va)
     return (uint64_t)(int64_t)(int32_t)va;
 }
 
-static uint64_t debug_tlb_match_va(machine_t *m, uint32_t va)
+static uint64_t debug_tlb_region_bits(machine_t *m)
+{
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+        return 0;
+
+    return (uint64_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI]
+        & ENTRYHI_R_MASK;
+}
+
+static uint64_t debug_tlb_match_va_zeroext(machine_t *m, uint32_t va)
 {
     uint64_t payload;
-    uint64_t region_bits = 0;
-
-    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
-        return va32_to_mips64(va);
 
     /*
      * WinCE guest code here uses 32-bit virtual addresses. For diagnostics,
-     * keep the low 32-bit VPN2/page-offset payload intact and splice in only
-     * the live EntryHi R bits from the current fault context. Sign-extending
-     * the 32-bit VA up into the 40-bit VPN2 field breaks helper mappings such
-     * as 0xFFFFD800, whose live TLB hi values are still stored as
-     * 0x00000000ffffd800.
+     * keep the low 32-bit VPN2/page-offset payload intact and splice in the
+     * live EntryHi R bits from the current fault context. This matches the
+     * injected helper TLB entries, whose hi values remain zero-extended.
      */
     payload = (uint64_t)va & (ENTRYHI_VPN2_MASK | UINT64_C(0x1FFF));
-    region_bits = (uint64_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI]
-        & ENTRYHI_R_MASK;
-    return region_bits | payload;
+    return debug_tlb_region_bits(m) | payload;
+}
+
+static uint64_t debug_tlb_match_va_signext(machine_t *m, uint32_t va)
+{
+    uint64_t payload;
+
+    /*
+     * The live late-resume TLB entries can be stored with a fully
+     * sign-extended 32-bit hi value (for example 0xffffffffffffc000). Mirror
+     * that form as an alternate diagnostic candidate so late TLB-invalid
+     * sites can still be matched without regressing the helper mappings.
+     */
+    payload = va32_to_mips64(va) & (ENTRYHI_VPN2_MASK | UINT64_C(0x1FFF));
+    return debug_tlb_region_bits(m) | payload;
 }
 
 static uint32_t load_pa_word(machine_t *m, uint32_t pa)
@@ -584,7 +601,8 @@ static void log_memop_probe(machine_t *m, uint32_t fault_pc, uint32_t fault_va)
 
 static bool decode_tlb_match(machine_t *m, const struct mips_tlb *tlb,
     uint32_t va, uint64_t *pa_out, bool *valid_out, bool *dirty_out,
-    bool *global_out, bool *odd_out, uint32_t *page_mask_out)
+    bool *global_out, bool *odd_out, uint32_t *page_mask_out,
+    const char **mode_out)
 {
     /*
      * BE-300 uses a VR4131 (R4100-style MMU4K). Mirror GXemul's live
@@ -611,12 +629,17 @@ static bool decode_tlb_match(machine_t *m, const struct mips_tlb *tlb,
     uint64_t lo;
     uint64_t pfn;
     uint64_t paddr;
-    uint64_t match_va;
+    uint64_t match_va_zero;
+    uint64_t match_va_sign;
+    uint64_t chosen_match_va = 0;
     uint32_t page_mask;
     bool odd;
     bool global;
     bool valid;
     bool dirty;
+    size_t candidate_index;
+    bool matched = false;
+    const char *match_mode = NULL;
 
     if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0] || !tlb)
         return false;
@@ -625,43 +648,58 @@ static bool decode_tlb_match(machine_t *m, const struct mips_tlb *tlb,
     cached_hi = tlb->hi;
     cached_lo0 = tlb->lo0;
     cached_lo1 = tlb->lo1;
-    match_va = debug_tlb_match_va(m, va);
-
-    if (pmask == 0) {
-        entry_vpn2 = (cached_hi & vpn2_mask) >> pagemask_shift;
-        vaddr_vpn2 = (match_va & vpn2_mask) >> pagemask_shift;
-        page_mask = (UINT32_C(1) << (pagemask_shift - 1)) - 1u;
-        odd = (match_va >> (pagemask_shift - 1)) & 1u;
-    } else {
-        int pageshift;
-
-        switch (pmask | ((UINT32_C(1) << pagemask_shift) - 1u)) {
-        case 0x00007ff: pageshift = 10; break;
-        case 0x0001fff: pageshift = 12; break;
-        case 0x0007fff: pageshift = 14; break;
-        case 0x001ffff: pageshift = 16; break;
-        case 0x007ffff: pageshift = 18; break;
-        case 0x01fffff: pageshift = 20; break;
-        case 0x07fffff: pageshift = 22; break;
-        case 0x1ffffff: pageshift = 24; break;
-        case 0x7ffffff: pageshift = 26; break;
-        default:
-            return false;
-        }
-
-        entry_vpn2 = (cached_hi & vpn2_mask) >> (pageshift + 1);
-        vaddr_vpn2 = (match_va & vpn2_mask) >> (pageshift + 1);
-        page_mask = (UINT32_C(1) << pageshift) - 1u;
-        odd = (match_va >> pageshift) & 1u;
-    }
+    match_va_zero = debug_tlb_match_va_zeroext(m, va);
+    match_va_sign = debug_tlb_match_va_signext(m, va);
 
     entry_asid = cached_hi & ENTRYHI_ASID;
     current_asid = m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI] & ENTRYHI_ASID;
     global = (cached_lo0 & ENTRYLO_G) != 0 && (cached_lo1 & ENTRYLO_G) != 0;
 
-    if (entry_vpn2 != vaddr_vpn2)
-        return false;
-    if (entry_asid != current_asid && !global)
+    for (candidate_index = 0; candidate_index < 2; candidate_index++) {
+        uint64_t candidate_match_va =
+            candidate_index == 0 ? match_va_zero : match_va_sign;
+
+        if (pmask == 0) {
+            entry_vpn2 = (cached_hi & vpn2_mask) >> pagemask_shift;
+            vaddr_vpn2 = (candidate_match_va & vpn2_mask) >> pagemask_shift;
+            page_mask = (UINT32_C(1) << (pagemask_shift - 1)) - 1u;
+            odd = (candidate_match_va >> (pagemask_shift - 1)) & 1u;
+        } else {
+            int pageshift;
+
+            switch (pmask | ((UINT32_C(1) << pagemask_shift) - 1u)) {
+            case 0x00007ff: pageshift = 10; break;
+            case 0x0001fff: pageshift = 12; break;
+            case 0x0007fff: pageshift = 14; break;
+            case 0x001ffff: pageshift = 16; break;
+            case 0x007ffff: pageshift = 18; break;
+            case 0x01fffff: pageshift = 20; break;
+            case 0x07fffff: pageshift = 22; break;
+            case 0x1ffffff: pageshift = 24; break;
+            case 0x7ffffff: pageshift = 26; break;
+            default:
+                return false;
+            }
+
+            entry_vpn2 = (cached_hi & vpn2_mask) >> (pageshift + 1);
+            vaddr_vpn2 = (candidate_match_va & vpn2_mask)
+                >> (pageshift + 1);
+            page_mask = (UINT32_C(1) << pageshift) - 1u;
+            odd = (candidate_match_va >> pageshift) & 1u;
+        }
+
+        if (entry_vpn2 != vaddr_vpn2)
+            continue;
+        if (entry_asid != current_asid && !global)
+            continue;
+
+        chosen_match_va = candidate_match_va;
+        matched = true;
+        match_mode = candidate_index == 0 ? "zeroext" : "signext";
+        break;
+    }
+
+    if (!matched)
         return false;
 
     lo = odd ? cached_lo1 : cached_lo0;
@@ -669,7 +707,7 @@ static bool decode_tlb_match(machine_t *m, const struct mips_tlb *tlb,
     dirty = (lo & ENTRYLO_D) != 0;
     pfn = (lo & ENTRYLO_PFN_MASK) >> ENTRYLO_PFN_SHIFT;
     paddr = ((pfn << pfn_shift) & ~((uint64_t)page_mask))
-        | (match_va & page_mask);
+        | (chosen_match_va & page_mask);
 
     if (pa_out)
         *pa_out = paddr;
@@ -683,6 +721,8 @@ static bool decode_tlb_match(machine_t *m, const struct mips_tlb *tlb,
         *odd_out = odd;
     if (page_mask_out)
         *page_mask_out = page_mask;
+    if (mode_out)
+        *mode_out = match_mode;
     return true;
 }
 
@@ -690,7 +730,8 @@ static void dump_tlb_matches(machine_t *m, const char *label, uint32_t va)
 {
     struct mips_coproc *cp0;
     uint32_t asid;
-    uint64_t match_va;
+    uint64_t match_va_zero;
+    uint64_t match_va_sign;
     int i;
     int matches = 0;
     int raw_dumped = 0;
@@ -700,15 +741,18 @@ static void dump_tlb_matches(machine_t *m, const char *label, uint32_t va)
 
     cp0 = m->cpu->cd.mips.coproc[0];
     asid = (uint32_t)cp0->reg[COP0_ENTRYHI] & ENTRYHI_ASID;
-    match_va = debug_tlb_match_va(m, va);
+    match_va_zero = debug_tlb_match_va_zeroext(m, va);
+    match_va_sign = debug_tlb_match_va_signext(m, va);
 
     fprintf(stderr,
-        "[WINCE_TLB] label=%s va=0x%08X match_va=0x%016" PRIx64
+        "[WINCE_TLB] label=%s va=0x%08X match_zero=0x%016" PRIx64
+        " match_sign=0x%016" PRIx64
         " current_entryhi=0x%08X current_entryhi64=0x%016" PRIx64
         " asid=0x%02X tlbs=%d\n",
         label ? label : "-",
         va,
-        match_va,
+        match_va_zero,
+        match_va_sign,
         (uint32_t)cp0->reg[COP0_ENTRYHI],
         (uint64_t)cp0->reg[COP0_ENTRYHI],
         asid,
@@ -721,15 +765,16 @@ static void dump_tlb_matches(machine_t *m, const char *label, uint32_t va)
         bool global = false;
         bool odd = false;
         uint32_t page_mask = 0;
+        const char *mode = NULL;
 
         if (!decode_tlb_match(m, &cp0->tlbs[i], va, &pa, &valid, &dirty,
-            &global, &odd, &page_mask)) {
+            &global, &odd, &page_mask, &mode)) {
             continue;
         }
 
         fprintf(stderr,
             "[WINCE_TLB] label=%s match idx=%02d hi=0x%08X hi64=0x%016" PRIx64
-            " lo0=0x%08X lo1=0x%08X mask=0x%08X odd=%d valid=%d dirty=%d"
+            " lo0=0x%08X lo1=0x%08X mask=0x%08X mode=%s odd=%d valid=%d dirty=%d"
             " global=%d page_mask=0x%03X pa=0x%08" PRIx64 "\n",
             label ? label : "-",
             i,
@@ -738,6 +783,7 @@ static void dump_tlb_matches(machine_t *m, const char *label, uint32_t va)
             (uint32_t)cp0->tlbs[i].lo0,
             (uint32_t)cp0->tlbs[i].lo1,
             (uint32_t)cp0->tlbs[i].mask,
+            mode ? mode : "-",
             odd ? 1 : 0,
             valid ? 1 : 0,
             dirty ? 1 : 0,
@@ -989,6 +1035,55 @@ static void maybe_log_replay_region_drift(machine_t *m)
             dump_tlb_matches(m, "stack_frame_resume_sp",
                 m->wince.replay_resume_stack_pointer);
         }
+    }
+}
+
+static void maybe_apply_replay_tlb_idx01_even_clone(machine_t *m)
+{
+    struct mips_coproc *cp0;
+    struct mips_tlb *tlb;
+    uint32_t pc;
+    uint64_t old_lo0;
+
+    if (!m || !replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->cfg.wince_resume_replay_full
+        || m->wince.replay_tlb_idx01_even_clone_applied) {
+        return;
+    }
+    if (!replay_pc_in_late_exception_corridor((uint32_t)m->cpu->pc))
+        return;
+    if (!m->cpu || !m->cpu->cd.mips.coproc[0])
+        return;
+
+    cp0 = m->cpu->cd.mips.coproc[0];
+    if (cp0->nr_of_tlbs <= 1)
+        return;
+
+    tlb = &cp0->tlbs[1];
+    if (((uint32_t)tlb->hi) != UINT32_C(0xFFFFC000)
+        || ((uint32_t)tlb->mask) != UINT32_C(0x00001800)) {
+        return;
+    }
+    if ((tlb->lo0 & ENTRYLO_V) != 0 || (tlb->lo1 & ENTRYLO_V) == 0)
+        return;
+
+    old_lo0 = tlb->lo0;
+    tlb->lo0 = tlb->lo1;
+    m->wince.replay_tlb_idx01_even_clone_applied = true;
+    invalidate_all(m);
+
+    if (m->wince.log_stall) {
+        pc = (uint32_t)m->cpu->pc;
+        fprintf(stderr,
+            "[WINCE_REPLAY_TLB] action=clone_idx01_even pc=0x%08X"
+            " hi=0x%08X mask=0x%08X old_lo0=0x%08X new_lo0=0x%08X"
+            " lo1=0x%08X\n",
+            pc,
+            (uint32_t)tlb->hi,
+            (uint32_t)tlb->mask,
+            (uint32_t)old_lo0,
+            (uint32_t)tlb->lo0,
+            (uint32_t)tlb->lo1);
     }
 }
 
@@ -3275,6 +3370,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     scan_low_vectors(m);
     maybe_note_first_exception(m);
     maybe_log_fault_site(m);
+    maybe_apply_replay_tlb_idx01_even_clone(m);
     maybe_log_replay_region_drift(m);
     maybe_log_replay_pc_probe(m);
     maybe_log_replay_resume_entry_probe(m);
