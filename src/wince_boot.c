@@ -89,6 +89,7 @@ static const wince_resume_region_t *find_replay_region_by_name(
 static void log_replay_region_compare(machine_t *m,
     const wince_resume_region_t *region, const char *label);
 static void log_replay_pc_state(machine_t *m, const char *label, uint32_t pc);
+static void maybe_log_replay_region_drift(machine_t *m);
 static void invalidate_all(machine_t *m);
 static bool probable_low_va_target(uint32_t value);
 static bool range_overlaps(uint64_t base_a, uint64_t size_a, uint64_t base_b,
@@ -805,6 +806,108 @@ static void log_replay_region_compare(machine_t *m,
             format_word_or_unknown(e3, sizeof(e3), v3, exp3),
             live0, live1, live2, live3,
             v0 ? 1 : 0, v1 ? 1 : 0, v2 ? 1 : 0, v3 ? 1 : 0);
+    }
+}
+
+static bool find_first_replay_region_mismatch(machine_t *m,
+    const wince_resume_region_t *region, uint32_t *pa_out,
+    uint32_t *expected_out, uint32_t *live_out)
+{
+    uint32_t off;
+
+    if (!m || !region)
+        return false;
+
+    for (off = 0; off < region->size; off += 4u) {
+        uint32_t expected = 0;
+        uint32_t live;
+        bool valid_expected = false;
+
+        (void)replay_region_word(m, region, region->pa + off, &expected,
+            &valid_expected);
+        if (!valid_expected)
+            continue;
+
+        live = load_pa_word(m, region->pa + off);
+        if (live == expected)
+            continue;
+
+        if (pa_out)
+            *pa_out = region->pa + off;
+        if (expected_out)
+            *expected_out = expected;
+        if (live_out)
+            *live_out = live;
+        return true;
+    }
+
+    return false;
+}
+
+static void maybe_log_replay_region_drift(machine_t *m)
+{
+    uint32_t i;
+
+    if (!replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->wince.log_stall)
+        return;
+
+    for (i = 0; i < wince_resume_replay_snapshot.region_count; i++) {
+        const wince_resume_region_t *region = &wince_resume_replay_snapshot.regions[i];
+        uint32_t region_bit = UINT32_C(1) << i;
+        uint32_t word_pa = 0;
+        uint32_t expected = 0;
+        uint32_t live = 0;
+
+        if ((m->wince.replay_region_drift_logged_mask & region_bit) != 0)
+            continue;
+        if (!find_first_replay_region_mismatch(m, region, &word_pa, &expected,
+            &live))
+            continue;
+
+        m->wince.replay_region_drift_logged_mask |= region_bit;
+        fprintf(stderr,
+            "[WINCE_REPLAY_DRIFT] region=%s paddr=0x%08X"
+            " expected=0x%08X live=0x%08X pc=0x%08" PRIx64
+            " ra=0x%08X sp=0x%08X epc=0x%08X badva=0x%08X\n",
+            region->name ? region->name : "-",
+            word_pa,
+            expected,
+            live,
+            (uint64_t)m->cpu->pc,
+            (uint32_t)m->cpu->cd.mips.gpr[31],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR]);
+        dump_pa_window(m, region->name ? region->name : "replay_region",
+            word_pa & ~UINT32_C(0x1F), 0x40u);
+
+        if (region->name != NULL
+            && strcmp(region->name, "stack_frame_1770") == 0) {
+            uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+            uint64_t sp_pa = 0;
+
+            if (sp != 0) {
+                if (translate_va(m, sp, &sp_pa)) {
+                    fprintf(stderr,
+                        "[WINCE_REPLAY_DRIFT] region=%s"
+                        " current_sp_va=0x%08X current_sp_pa=0x%08X\n",
+                        region->name,
+                        sp,
+                        (uint32_t)sp_pa);
+                } else {
+                    fprintf(stderr,
+                        "[WINCE_REPLAY_DRIFT] region=%s"
+                        " current_sp_va=0x%08X current_sp_pa=unmapped\n",
+                        region->name,
+                        sp);
+                }
+                dump_va_window(m, "stack_frame_live_sp", sp - 0x20u, 0x80u);
+                dump_tlb_matches(m, "stack_frame_live_sp", sp);
+            }
+            dump_tlb_matches(m, "stack_frame_resume_sp",
+                m->wince.replay_resume_stack_pointer);
+        }
     }
 }
 
@@ -2621,6 +2724,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     scan_low_vectors(m);
     maybe_note_first_exception(m);
     maybe_log_fault_site(m);
+    maybe_log_replay_region_drift(m);
     maybe_log_replay_pc_probe(m);
     maybe_log_replay_resume_entry_probe(m);
     maybe_probe_replay_callback_redirect(m);
