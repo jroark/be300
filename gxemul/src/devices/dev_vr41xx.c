@@ -80,6 +80,7 @@ struct vr41xx_data {
 
 	/*  Timer:  */
 	int		pending_timer_interrupts;
+	int		replay_etimer_suppressed;
 	struct interrupt timer_irq;
 	struct timer	*timer;
 
@@ -90,6 +91,7 @@ struct vr41xx_data {
 	uint16_t	giumask;
 	uint16_t	sysint2;
 	uint16_t	msysint2;
+	uint16_t	giu_regs[16];
 	struct interrupt giu_irq;
 
 	/*  VR4131 RTC (elapsed time counter with read-assist):  */
@@ -154,9 +156,11 @@ bool vr41xx_diag_get_state(struct machine *machine,
 	out->msysint1 = d->msysint1;
 	out->giuint = d->giuint;
 	out->giumask = d->giumask;
+	out->giuintenl = d->giu_regs[(0x14c - 0x140) / 2];
 	out->sysint2 = d->sysint2;
 	out->msysint2 = d->msysint2;
 	out->pending_timer_interrupts = (uint32_t)d->pending_timer_interrupts;
+	out->pmucntreg = d->pmu.pmucntreg;
 	return true;
 }
 
@@ -469,7 +473,34 @@ static void maybe_consume_wince_replay_etimer(struct cpu *cpu,
 	d->pending_timer_interrupts = 0;
 	d->sysint1 &= ~(1 << VRIP_INTR_ETIMER);
 	d->rtc.rtcint &= (uint16_t)~RTCINT_ELAPSEDTIME_INT;
+	d->replay_etimer_suppressed = 1;
 	INTERRUPT_DEASSERT(d->timer_irq);
+}
+
+static void maybe_rearm_wince_replay_etimer(struct cpu *cpu,
+	struct vr41xx_data *d, uint64_t relative_addr, int writeflag)
+{
+	if (cpu == NULL || d == NULL || writeflag != MEM_WRITE)
+		return;
+	if (!d->replay_etimer_suppressed)
+		return;
+	if (!wince_boot_replay_full_active(cpu->machine))
+		return;
+	if (!((relative_addr >= 0x108 && relative_addr <= 0x126)
+	    || relative_addr == 0x0d0
+	    || relative_addr == 0x0d2
+	    || relative_addr == 0x13e)) {
+		return;
+	}
+
+	d->replay_etimer_suppressed = 0;
+	fprintf(stderr,
+	    "[WINCE_ETIMER] replay-rearm pc=0x%08" PRIx64
+	    " off=0x%03" PRIx64 " pending=0x%04x rtcint=0x%04x\n",
+	    (uint64_t)cpu->pc,
+	    relative_addr,
+	    d->pending_timer_interrupts,
+	    d->rtc.rtcint);
 }
 
 
@@ -778,6 +809,9 @@ static void vr41xx_keytick(struct cpu *cpu, struct vr41xx_data *d)
 static void timer_tick(struct timer *timer, void *extra)
 {
 	struct vr41xx_data *d = (struct vr41xx_data *) extra;
+
+	if (d->replay_etimer_suppressed)
+		return;
 	d->pending_timer_interrupts ++;
 }
 
@@ -917,6 +951,7 @@ DEVICE_ACCESS(vr41xx)
 
 	maybe_log_resume_mmio_probe(cpu, relative_addr, writeflag,
 	    writeflag == MEM_WRITE ? idata : 0);
+	maybe_rearm_wince_replay_etimer(cpu, d, relative_addr, writeflag);
 
 	// int regnr = relative_addr / sizeof(uint64_t);
 
@@ -1214,11 +1249,10 @@ DEVICE_ACCESS(vr41xx)
 		{
 			int idx = ((int)relative_addr - 0x140) / 2;
 			if (idx >= 0 && idx < 16) {
-				static uint16_t giu_regs[16];
 				if (writeflag == MEM_WRITE)
-					giu_regs[idx] = (uint16_t)idata;
+					d->giu_regs[idx] = (uint16_t)idata;
 				else
-					odata = giu_regs[idx];
+					odata = d->giu_regs[idx];
 			}
 		}
 		break;

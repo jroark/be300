@@ -107,11 +107,18 @@ static void gather_statistics(struct cpu *cpu)
 
 #define S		gather_statistics(cpu)
 
+#ifndef DYNTRANS_EXEC_HOOK
+#define DYNTRANS_EXEC_HOOK(cpu) do { } while (0)
+#endif
 
 #if 1
 
 /*  The normal instruction execution core:  */
-#define I	ic = cpu->cd.DYNTRANS_ARCH.next_ic ++; ic->f(cpu, ic);
+#define I	do {						\
+		ic = cpu->cd.DYNTRANS_ARCH.next_ic ++;	\
+		DYNTRANS_EXEC_HOOK(cpu);		\
+		ic->f(cpu, ic);				\
+	} while (0)
 
 #else
 
@@ -1985,4 +1992,3 @@ stop_running_translated:
 	ic->f(cpu, ic);
 
 #endif	/*  DYNTRANS_TO_BE_TRANSLATED_TAIL  */
-
