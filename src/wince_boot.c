@@ -252,6 +252,7 @@ static const wince_replay_exec_probe_desc_t wince_replay_exec_probes[] = {
     { UINT32_C(0x8008B268), "exec_8008b268", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B274), "exec_8008b274", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B278), "exec_8008b278", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x8008B778), "exec_8008b778", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B3F0), "exec_8008b3f0", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B42C), "exec_8008b42c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B478), "exec_8008b478", -0x20, 0x80u, 0x60u },
@@ -1907,6 +1908,7 @@ static bool replay_pc_in_bootctx_loop_corridor(uint32_t pc)
         || pc == UINT32_C(0x8008B264)
         || pc == UINT32_C(0x8008B274)
         || pc == UINT32_C(0x8008B278)
+        || pc == UINT32_C(0x8008B778)
         || pc == UINT32_C(0x8008B3F0);
 }
 
@@ -1920,6 +1922,7 @@ static bool replay_pc_in_late_exception_corridor(uint32_t pc)
         || pc == UINT32_C(0x8008B254)
         || pc == UINT32_C(0x8008B264)
         || pc == UINT32_C(0x8008B274)
+        || pc == UINT32_C(0x8008B778)
         || pc == UINT32_C(0x8008B278)
         || pc == UINT32_C(0x8008B3F0)
         || pc == UINT32_C(0x80094F24)
@@ -2594,6 +2597,7 @@ static void log_replay_exec_probe(machine_t *m,
         || pc == UINT32_C(0x8008B264)
         || pc == UINT32_C(0x8008B268)
         || pc == UINT32_C(0x8008B274)
+        || pc == UINT32_C(0x8008B778)
         || (pc == UINT32_C(0x80000180) && m->wince.replay_etimer_consumed)) {
         log_slot_1ac0_snapshot(m, probe->label);
     }
