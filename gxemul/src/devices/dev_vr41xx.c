@@ -475,6 +475,7 @@ static void maybe_consume_wince_replay_etimer(struct cpu *cpu,
 	d->rtc.rtcint &= (uint16_t)~RTCINT_ELAPSEDTIME_INT;
 	d->replay_etimer_suppressed = 1;
 	INTERRUPT_DEASSERT(d->timer_irq);
+	wince_boot_note_replay_etimer_consumed(cpu->machine, cpu);
 }
 
 static void maybe_rearm_wince_replay_etimer(struct cpu *cpu,

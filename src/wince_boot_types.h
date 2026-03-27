@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define WINCE_VECTOR_WORDS 8u
+#define WINCE_REPLAY_SLOT_1AC0_WORDS 16u
 
 typedef enum {
     WINCE_VECTOR_NONE = 0,
@@ -89,10 +90,16 @@ typedef struct {
     bool replay_tlb_idx01_even_clone_applied;
     bool replay_tlb_b000_helper_installed;
     bool replay_tlb_b000_even_clone_applied;
+    bool replay_exec_80000180_late_logged;
+    bool replay_etimer_consumed;
+    bool replay_exec_80000180_post_etimer_logged;
+    bool replay_exec_80094f58_post_etimer_logged;
     bool replay_dispatch_page_runtime_refilled;
     bool replay_post_handler_return_armed;
     bool replay_post_handler_return_logged;
     bool replay_post_handler_mutation_logged;
+    bool replay_slot_1ac0_baseline_valid;
+    bool replay_slot_1ac0_drift_logged;
 
     uint32_t fault_site_logged_mask;
     uint32_t replay_region_drift_logged_mask;
@@ -115,4 +122,5 @@ typedef struct {
     wince_resume_mode_t resume_mode;
     uint32_t synthetic_low_tlb[WINCE_VECTOR_WORDS];
     uint32_t synthetic_low_general[WINCE_VECTOR_WORDS];
+    uint32_t replay_slot_1ac0_baseline[WINCE_REPLAY_SLOT_1AC0_WORDS];
 } wince_boot_state_t;
