@@ -96,7 +96,39 @@ struct vr41xx_data {
 	rtc_state_t	rtc;
 	cmu_state_t	cmu;
 	pmu_state_t	pmu;
+	uint8_t		dmaau_regs[0x20];
+	uint8_t		dcu_regs[0x20];
+	uint8_t		sdramu_regs[0x10];
 };
+
+static uint64_t vr41xx_latch_read(const uint8_t *regs, uint32_t off,
+	unsigned len)
+{
+	uint64_t value = 0;
+	unsigned i;
+
+	for (i = 0; i < len; i++)
+		value |= (uint64_t)regs[off + i] << (i * 8);
+
+	return value;
+}
+
+static void vr41xx_latch_write(uint8_t *regs, uint32_t off, unsigned len,
+	uint64_t value)
+{
+	unsigned i;
+
+	for (i = 0; i < len; i++)
+		regs[off + i] = (uint8_t)(value >> (i * 8));
+}
+
+static void vr41xx_seed_latch32(uint8_t *regs, uint32_t off, uint32_t value)
+{
+	regs[off + 0] = (uint8_t)(value & 0xff);
+	regs[off + 1] = (uint8_t)((value >> 8) & 0xff);
+	regs[off + 2] = (uint8_t)((value >> 16) & 0xff);
+	regs[off + 3] = (uint8_t)((value >> 24) & 0xff);
+}
 
 static void log_resume_probe_window(struct cpu *cpu, const char *label,
 	const char *kind, uint32_t center, int start_rel, int stop_rel)
@@ -203,6 +235,60 @@ static void maybe_log_resume_mmio_probe(struct cpu *cpu,
 			log_resume_probe_window(cpu, probes[i].label, "stack",
 			    sp, -16, 48);
 		}
+		return;
+	}
+}
+
+static void maybe_log_resume_setup_state(struct cpu *cpu,
+	struct vr41xx_data *d, uint64_t relative_addr, int writeflag,
+	uint64_t value)
+{
+	static const struct {
+		uint32_t pc;
+		const char *label;
+	} probes[] = {
+		{ 0xa007957c, "pre_replay_sdramu_957c" },
+		{ 0x800a5e94, "resume_setup_5e94" },
+		{ 0x800a5fd0, "resume_setup_5fd0" },
+	};
+	static uint32_t logged_mask = 0;
+	uint32_t pc = (uint32_t)cpu->pc;
+	size_t i;
+
+	for (i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+		uint32_t bit = 1u << i;
+
+		if (probes[i].pc != pc)
+			continue;
+		if (logged_mask & bit)
+			return;
+		logged_mask |= bit;
+
+		fprintf(stderr,
+		    "[WINCE_VR41XX_SETUP] label=%s pc=0x%08x off=0x%03" PRIx64
+		    " op=%c value=0x%04" PRIx64
+		    " dmaau20=0x%08" PRIx64 " dmaau30=0x%08" PRIx64
+		    " dcu40=0x%08" PRIx64 " dcu44=0x%08" PRIx64
+		    " cmu60=0x%04x pmu_c0=0x%04x pmu_c2=0x%04x"
+		    " pmu_c8=0x%04x pmu_cc=0x%04x sdramu400=0x%08" PRIx64
+		    " sdramu404=0x%08" PRIx64 " sdramu408=0x%08" PRIx64 "\n",
+		    probes[i].label,
+		    pc,
+		    relative_addr,
+		    writeflag == MEM_WRITE ? 'W' : 'R',
+		    value,
+		    vr41xx_latch_read(d->dmaau_regs, 0x00, 4),
+		    vr41xx_latch_read(d->dmaau_regs, 0x10, 4),
+		    vr41xx_latch_read(d->dcu_regs, 0x00, 4),
+		    vr41xx_latch_read(d->dcu_regs, 0x04, 4),
+		    d->cmu.clkmsk,
+		    d->pmu.pmuintreg,
+		    d->pmu.pmucntreg,
+		    d->pmu.pmuwaitreg,
+		    d->pmu.pmudivreg,
+		    vr41xx_latch_read(d->sdramu_regs, 0x00, 4),
+		    vr41xx_latch_read(d->sdramu_regs, 0x04, 4),
+		    vr41xx_latch_read(d->sdramu_regs, 0x08, 4));
 		return;
 	}
 }
@@ -664,6 +750,38 @@ DEVICE_ACCESS(vr41xx)
 	}
 
 	/*  TODO: Maybe these should be handled separately as well?  */
+	if (d->cpumodel == 4131) {
+		if (relative_addr >= 0x20 && relative_addr < 0x40) {
+			uint32_t off = (uint32_t)(relative_addr - 0x20);
+			if (writeflag == MEM_READ)
+				odata = vr41xx_latch_read(d->dmaau_regs, off,
+				    (unsigned)len);
+			else
+				vr41xx_latch_write(d->dmaau_regs, off,
+				    (unsigned)len, idata);
+			goto ret;
+		}
+		if (relative_addr >= 0x40 && relative_addr < 0x60) {
+			uint32_t off = (uint32_t)(relative_addr - 0x40);
+			if (writeflag == MEM_READ)
+				odata = vr41xx_latch_read(d->dcu_regs, off,
+				    (unsigned)len);
+			else
+				vr41xx_latch_write(d->dcu_regs, off,
+				    (unsigned)len, idata);
+			goto ret;
+		}
+		if (relative_addr >= 0x400 && relative_addr < 0x410) {
+			uint32_t off = (uint32_t)(relative_addr - 0x400);
+			if (writeflag == MEM_READ)
+				odata = vr41xx_latch_read(d->sdramu_regs, off,
+				    (unsigned)len);
+			else
+				vr41xx_latch_write(d->sdramu_regs, off,
+				    (unsigned)len, idata);
+			goto ret;
+		}
+	}
 
 	switch (relative_addr) {
 
@@ -940,6 +1058,9 @@ DEVICE_ACCESS(vr41xx)
 	 *  Log all VR4131 register accesses during emulation so we can
 	 *  trace WinCE's timer/interrupt setup.
 	 */
+	maybe_log_resume_setup_state(cpu, d, relative_addr, writeflag,
+	    writeflag == MEM_WRITE ? idata : odata);
+
 	{
 		static int vr41xx_log_count = 0;
 		/* Only log NK.exe accesses (skip SPL at 0x80F0xxxx) */
@@ -1035,6 +1156,22 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 	rtc_init(&d->rtc);
 	cmu_init(&d->cmu);
 	pmu_init(&d->pmu);
+	/*
+	 * Stable warm-state survey seeds for the otherwise-unimplemented
+	 * DMAAU/DCU windows that WinCE touches during resume setup:
+	 *   0x0f000020: 01fff800 01fff800 01fff800 01fff800
+	 *   0x0f000030: 00003800 00003800 00000000 00000000
+	 *   0x0f000040: 00010000 00000000 00000000 00000000
+	 * The 0x0f000400 SDRAMU window surveys as zero, so leave it zeroed
+	 * but make it stateful so WinCE can observe its own writes.
+	 */
+	vr41xx_seed_latch32(d->dmaau_regs, 0x00, 0x01fff800);
+	vr41xx_seed_latch32(d->dmaau_regs, 0x04, 0x01fff800);
+	vr41xx_seed_latch32(d->dmaau_regs, 0x08, 0x01fff800);
+	vr41xx_seed_latch32(d->dmaau_regs, 0x0c, 0x01fff800);
+	vr41xx_seed_latch32(d->dmaau_regs, 0x10, 0x00003800);
+	vr41xx_seed_latch32(d->dmaau_regs, 0x14, 0x00003800);
+	vr41xx_seed_latch32(d->dcu_regs, 0x00, 0x00010000);
 
 	/*  TODO: VRC4173 has the KIU at offset 0x100?  */
 	d->kiu_offset = 0x180;
