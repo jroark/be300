@@ -196,6 +196,7 @@ static const wince_fault_site_desc_t wince_fault_sites[] = {
 
 static const wince_replay_write_watch_desc_t wince_replay_write_watches[] = {
     { "stack_frame_1770", UINT32_C(0x00001770), UINT32_C(0x0090) },
+    { "slot_1ac0", UINT32_C(0x00001AC0), UINT32_C(0x0040) },
     { "resume_context_22a0", UINT32_C(0x000022A0), UINT32_C(0x0040) },
     { "dispatch_page_5100", UINT32_C(0x00051000), UINT32_C(0x0800) },
     { "bootctx_counter_57000", UINT32_C(0x00057000), UINT32_C(0x0020) },
