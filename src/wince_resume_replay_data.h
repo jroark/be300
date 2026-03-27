@@ -49,6 +49,21 @@ static const uint8_t wince_resume_dispatch_ptr_table_660170_valid[] = {
     0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
     0x01, 0x01, 0x01, 0x01,
 };
+static const uint32_t wince_resume_dispatch_slot_table_660310_words[] = {
+    UINT32_C(0x800AAD2C), UINT32_C(0x800AAD34), UINT32_C(0x800AAD80), UINT32_C(0x800AADA0),
+    UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x800AAE6C), UINT32_C(0x800AAE74),
+    UINT32_C(0x800AAE94), UINT32_C(0x800AAEB4), UINT32_C(0x00000000), UINT32_C(0x00000000),
+    UINT32_C(0x800AB108), UINT32_C(0x800AB0FC), UINT32_C(0x800AB108), UINT32_C(0x00000000),
+    UINT32_C(0x800AB03C), UINT32_C(0x800AB064), UINT32_C(0x800AB0A8), UINT32_C(0x00000000),
+    UINT32_C(0x800AB14C), UINT32_C(0x800AB130), UINT32_C(0x800AB14C), UINT32_C(0x00000000),
+    UINT32_C(0x8007B088), UINT32_C(0x8007B0B4), UINT32_C(0x8007B0F4), UINT32_C(0x8007B114),
+};
+static const uint8_t wince_resume_dispatch_slot_table_660310_valid[] = {
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01,
+};
 static const uint32_t wince_resume_callback_table_a0051680_words[] = {
     UINT32_C(0x800AAE6C), UINT32_C(0x800AAE74), UINT32_C(0x800AAE94), UINT32_C(0x800AAEB4),
     UINT32_C(0x00000000), UINT32_C(0x800A8D94), UINT32_C(0x800A8D9C), UINT32_C(0x800A8DA4),
@@ -106,6 +121,7 @@ static const wince_resume_region_t wince_resume_replay_regions[] = {
     { "stack_frame_1770", UINT32_C(0x00001770), UINT32_C(0x0090), UINT32_C(36), wince_resume_stack_frame_1770_words, wince_resume_stack_frame_1770_valid },
     { "bootctx_stub_63d0", UINT32_C(0x000063D0), UINT32_C(0x0040), UINT32_C(16), wince_resume_bootctx_stub_63d0_words, wince_resume_bootctx_stub_63d0_valid },
     { "dispatch_ptr_table_660170", UINT32_C(0x00660170), UINT32_C(0x0030), UINT32_C(12), wince_resume_dispatch_ptr_table_660170_words, wince_resume_dispatch_ptr_table_660170_valid },
+    { "dispatch_slot_table_660310", UINT32_C(0x00660310), UINT32_C(0x0070), UINT32_C(28), wince_resume_dispatch_slot_table_660310_words, wince_resume_dispatch_slot_table_660310_valid },
     { "callback_table_a0051680", UINT32_C(0x00051680), UINT32_C(0x0200), UINT32_C(128), wince_resume_callback_table_a0051680_words, wince_resume_callback_table_a0051680_valid },
 };
 
@@ -114,7 +130,7 @@ static const wince_resume_snapshot_t wince_resume_replay_snapshot = {
     UINT32_C(0x00000000),
     UINT32_C(0x8008B52C),
     wince_resume_replay_regions,
-    UINT32_C(5),
+    UINT32_C(6),
     NULL,
     UINT32_C(0),
 };

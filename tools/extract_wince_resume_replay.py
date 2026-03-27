@@ -44,6 +44,8 @@ WINDOW_SPECS = (
         0x000063D0, 0x40),
     WindowSpec("dispatch_ptr_table_660170", ("objptr_table_80660000",),
         0x00660170, 0x30),
+    WindowSpec("dispatch_slot_table_660310", ("objptr_table_80660000",),
+        0x00660310, 0x70),
     WindowSpec("callback_table_a0051680",
         ("callback_table_A0051680", "callback_table_51600"),
         0x00051680, 0x200),
