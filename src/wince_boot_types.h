@@ -93,6 +93,8 @@ typedef struct {
     bool replay_exec_80000180_late_logged;
     bool replay_etimer_consumed;
     bool replay_exec_80000180_post_etimer_logged;
+    bool replay_exec_80094f08_post_etimer_logged;
+    bool replay_exec_80094f24_post_etimer_logged;
     bool replay_exec_80094f58_post_etimer_logged;
     bool replay_exec_8008b4f0_post_etimer_logged;
     bool replay_exec_8008b478_post_etimer_logged;
