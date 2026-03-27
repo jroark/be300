@@ -759,7 +759,7 @@ DEVICE_ACCESS(vr41xx)
 			else
 				vr41xx_latch_write(d->dmaau_regs, off,
 				    (unsigned)len, idata);
-			goto ret;
+			goto log_access;
 		}
 		if (relative_addr >= 0x40 && relative_addr < 0x60) {
 			uint32_t off = (uint32_t)(relative_addr - 0x40);
@@ -769,7 +769,7 @@ DEVICE_ACCESS(vr41xx)
 			else
 				vr41xx_latch_write(d->dcu_regs, off,
 				    (unsigned)len, idata);
-			goto ret;
+			goto log_access;
 		}
 		if (relative_addr >= 0x400 && relative_addr < 0x410) {
 			uint32_t off = (uint32_t)(relative_addr - 0x400);
@@ -779,7 +779,7 @@ DEVICE_ACCESS(vr41xx)
 			else
 				vr41xx_latch_write(d->sdramu_regs, off,
 				    (unsigned)len, idata);
-			goto ret;
+			goto log_access;
 		}
 	}
 
@@ -1054,9 +1054,12 @@ DEVICE_ACCESS(vr41xx)
 			    "0x%" PRIx64" ]\n", (uint64_t) relative_addr);
 	}
 
+log_access:
 	/*
 	 *  Log all VR4131 register accesses during emulation so we can
-	 *  trace WinCE's timer/interrupt setup.
+	 *  trace WinCE's timer/interrupt setup. The latch-backed warm-state
+	 *  windows above must flow through here too; otherwise the one-shot
+	 *  resume setup probes never see them.
 	 */
 	maybe_log_resume_setup_state(cpu, d, relative_addr, writeflag,
 	    writeflag == MEM_WRITE ? idata : odata);

@@ -13,6 +13,7 @@
 
 typedef struct {
     uint16_t clkmsk;
+    uint16_t sticky_bits;
 } cmu_state_t;
 
 void     cmu_init (cmu_state_t *s);
