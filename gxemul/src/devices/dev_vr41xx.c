@@ -101,6 +101,65 @@ struct vr41xx_data {
 	uint8_t		sdramu_regs[0x10];
 };
 
+struct vr41xx_diag_binding {
+	struct machine *machine;
+	struct vr41xx_data *data;
+	struct vr41xx_diag_binding *next;
+};
+
+static struct vr41xx_diag_binding *g_vr41xx_diag_bindings = NULL;
+
+static void vr41xx_diag_register(struct machine *machine,
+	struct vr41xx_data *data)
+{
+	struct vr41xx_diag_binding *binding;
+
+	for (binding = g_vr41xx_diag_bindings; binding != NULL;
+	    binding = binding->next) {
+		if (binding->machine == machine) {
+			binding->data = data;
+			return;
+		}
+	}
+
+	CHECK_ALLOCATION(binding = (struct vr41xx_diag_binding *)malloc(
+	    sizeof(struct vr41xx_diag_binding)));
+	binding->machine = machine;
+	binding->data = data;
+	binding->next = g_vr41xx_diag_bindings;
+	g_vr41xx_diag_bindings = binding;
+}
+
+bool vr41xx_diag_get_state(struct machine *machine,
+	struct vr41xx_diag_state *out)
+{
+	struct vr41xx_diag_binding *binding;
+	struct vr41xx_data *d;
+
+	if (out != NULL)
+		memset(out, 0, sizeof(*out));
+	if (machine == NULL || out == NULL)
+		return false;
+
+	for (binding = g_vr41xx_diag_bindings; binding != NULL;
+	    binding = binding->next) {
+		if (binding->machine == machine)
+			break;
+	}
+	if (binding == NULL || binding->data == NULL)
+		return false;
+
+	d = binding->data;
+	out->sysint1 = d->sysint1;
+	out->msysint1 = d->msysint1;
+	out->giuint = d->giuint;
+	out->giumask = d->giumask;
+	out->sysint2 = d->sysint2;
+	out->msysint2 = d->msysint2;
+	out->pending_timer_interrupts = (uint32_t)d->pending_timer_interrupts;
+	return true;
+}
+
 static uint64_t vr41xx_latch_read(const uint8_t *regs, uint32_t off,
 	unsigned len)
 {
@@ -1262,6 +1321,8 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 	    0x14000000, eg IBM WorkPad Z50.  */
 	dev_ram_init(machine, 0x15000000, 0x1000000, DEV_RAM_MIRROR,
 	    0x14000000, NULL);
+
+	vr41xx_diag_register(machine, d);
 
 	return d;
 }
