@@ -504,9 +504,11 @@ struct vr41xx_diag_state {
 	uint32_t	msysint1;
 	uint32_t	giuint;
 	uint32_t	giumask;
+	uint32_t	giuintenl;
 	uint32_t	sysint2;
 	uint32_t	msysint2;
 	uint32_t	pending_timer_interrupts;
+	uint32_t	pmucntreg;
 };
 struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 	struct memory *mem, int cpumodel);

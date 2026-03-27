@@ -87,12 +87,16 @@ typedef struct {
     bool replay_resume_exit_logged;
     bool replay_vrc4173_1b50_synth_logged;
     bool replay_dispatch_page_runtime_refilled;
+    bool replay_post_handler_return_armed;
+    bool replay_post_handler_return_logged;
+    bool replay_post_handler_mutation_logged;
 
     uint32_t fault_site_logged_mask;
     uint32_t replay_region_drift_logged_mask;
     uint32_t replay_region_write_logged_mask;
     uint32_t replay_region_mismatch_logged_mask;
     uint64_t replay_pc_probe_logged_mask;
+    uint32_t replay_exec_probe_logged_mask;
     uint32_t replay_bootctx_epc_probe_logged_mask;
     uint32_t replay_watch_write_logged_mask;
     uint32_t replay_mmio_watch_logged_mask;
@@ -102,6 +106,7 @@ typedef struct {
     uint32_t replay_resume_target_pc;
     uint32_t replay_resume_stack_pointer;
     uint32_t replay_synthetic_ra;
+    uint32_t replay_post_handler_return_pc;
     uint32_t hibernate_redirect_count;
     wince_vector_owner_t vector_owner;
     wince_resume_mode_t resume_mode;

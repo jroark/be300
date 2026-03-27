@@ -2023,4 +2023,6 @@ void mips_cpu_exception(struct cpu *cpu, int exccode, int tlb, uint64_t vaddr,
 #include "memory_mips.c"
 
 
+#define DYNTRANS_EXEC_HOOK(cpu) wince_boot_note_exec_entry(cpu)
 #include "tmp_mips_tail.c"
+#undef DYNTRANS_EXEC_HOOK
