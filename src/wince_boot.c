@@ -131,7 +131,12 @@ static const wince_replay_pc_probe_desc_t wince_replay_pc_probes[] = {
     { UINT32_C(0x800AAD2C), "dispatch_800aad2c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800AADA0), "callback_800aada0", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x800AAE20), "dispatch_800aae20", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x800AAE48), "dispatch_800aae48", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800AAE6C), "dispatch_800aae6c", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x800AAE74), "dispatch_800aae74", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x800AAE94), "dispatch_800aae94", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x800AAEB4), "dispatch_800aaeb4", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x800A8BF0), "dispatch_800a8bf0", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800A7B3C), "resume_poll_7b3c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800A7B64), "resume_poll_7b64", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800A7B68), "resume_poll_7b68", -0x20, 0x80u, 0x60u },
@@ -1012,8 +1017,9 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
     bool sysint1_ok;
     bool sysint2_ok;
     bool giuint_ok;
-    uint32_t dispatch_index = UINT32_MAX;
+    uint32_t dispatch_page_index = UINT32_MAX;
     uint32_t dispatch_bit = UINT32_MAX;
+    uint32_t dispatch_slot_offset = UINT32_MAX;
     uint32_t ptr_pa = 0;
     uint32_t live_ptr = 0;
     uint32_t replay_ptr = 0;
@@ -1051,38 +1057,31 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
     if (sysint1_ok && sysint1 != 0 && (sysint1 & (sysint1 - 1u)) == 0) {
         dispatch_bit = ctz32_nonzero(sysint1);
         source = "sysint1";
-        /*
-         * The active replay loop consistently arrives here with the ETIMER
-         * source mapped to the first dispatch page. Keep the decode narrow
-         * and log the raw bit alongside the derived slot.
-         */
-        if (sysint1 == UINT32_C(0x00000004) || sysint1 == UINT32_C(0x00000008))
-            dispatch_index = 0;
-        else if (dispatch_bit >= 2u)
-            dispatch_index = dispatch_bit - 2u;
+        dispatch_page_index = 0;
+        dispatch_slot_offset = dispatch_bit * 4u;
     } else if (sysint2_ok && sysint2 != 0 && (sysint2 & (sysint2 - 1u)) == 0) {
         dispatch_bit = ctz32_nonzero(sysint2);
-        dispatch_index = dispatch_bit;
         source = "sysint2";
     } else if (giuint_ok && giuint != 0
         && (giuint & (giuint - 1u)) == 0) {
         dispatch_bit = ctz32_nonzero(giuint);
-        dispatch_index = dispatch_bit;
         source = "giu";
     }
 
-    if (ptr_region && dispatch_index != UINT32_MAX
-        && dispatch_index < ptr_region->word_count) {
-        ptr_pa = ptr_region->pa + dispatch_index * 4u;
+    if (ptr_region && dispatch_page_index != UINT32_MAX
+        && dispatch_page_index < ptr_region->word_count) {
+        ptr_pa = ptr_region->pa + dispatch_page_index * 4u;
         live_ptr = load_pa_word(m, ptr_pa);
         (void)replay_region_word(m, ptr_region, ptr_pa, &replay_ptr,
             &replay_ptr_ok);
     }
 
-    if (live_ptr != 0)
-        slot_va = live_ptr;
-    else if (replay_ptr_ok)
-        slot_va = replay_ptr;
+    if (dispatch_slot_offset != UINT32_MAX) {
+        if (live_ptr != 0)
+            slot_va = live_ptr + dispatch_slot_offset;
+        else if (replay_ptr_ok)
+            slot_va = replay_ptr + dispatch_slot_offset;
+    }
 
     if (slot_va != 0)
         live_slot_ok = load_va_word(m, slot_va, &live_slot);
@@ -1091,7 +1090,7 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
             &replay_slot_ok)) {
         if (live_slot_ok && live_slot == 0 && replay_slot_ok) {
             if (maybe_runtime_refill_dispatch_page(m, slot_region, source,
-                dispatch_index)) {
+                dispatch_page_index)) {
                 live_slot_ok = load_va_word(m, slot_va, &live_slot);
             }
         }
@@ -1123,8 +1122,10 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
             source);
         if (dispatch_bit != UINT32_MAX)
             fprintf(stderr, " bit=%u", dispatch_bit);
-        if (dispatch_index != UINT32_MAX)
-            fprintf(stderr, " table_index=%u", dispatch_index);
+        if (dispatch_page_index != UINT32_MAX)
+            fprintf(stderr, " page_index=%u", dispatch_page_index);
+        if (dispatch_slot_offset != UINT32_MAX)
+            fprintf(stderr, " slot_offset=0x%02X", dispatch_slot_offset);
         if (ptr_pa != 0)
             fprintf(stderr, " ptr_pa=0x%08X", ptr_pa);
         fprintf(stderr, " live_ptr=0x%08X replay_ptr=%s",
@@ -1214,6 +1215,65 @@ static void log_bootctx_follow_state(machine_t *m, const char *label)
         UINT32_C(0x0A001B00), 0x60u);
     dump_vrc4173_latch_window("bootctx_follow_aa01a0e0_raw",
         UINT32_C(0x0A01A0E0), 0x20u);
+}
+
+static void log_dispatch_callback_state(machine_t *m, const char *label)
+{
+    uint32_t a0;
+    uint32_t a1;
+    uint32_t a2;
+    uint32_t a3;
+    uint32_t v0;
+    uint32_t v1;
+    uint32_t t0;
+    uint32_t t1;
+
+    if (!m || !m->wince.log_stall)
+        return;
+
+    a0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0];
+    a1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1];
+    a2 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A2];
+    a3 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A3];
+    v0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V0];
+    v1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V1];
+    t0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_T0];
+    t1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_T1];
+
+    fprintf(stderr,
+        "[WINCE_CALLBACK] label=%s a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+        " v0=0x%08X v1=0x%08X t0=0x%08X t1=0x%08X\n",
+        label ? label : "-",
+        a0,
+        a1,
+        a2,
+        a3,
+        v0,
+        v1,
+        t0,
+        t1);
+
+    dump_gpr_window(m);
+    dump_va_window(m, "dispatch_slot_obj_660320", UINT32_C(0x80660320), 0x20u);
+    dump_pa_window(m, "dispatch_slot_obj_660320_pa", UINT32_C(0x00660320),
+        0x20u);
+    dump_va_window(m, "dispatch_slot_obj_660328", UINT32_C(0x80660328), 0x20u);
+    dump_pa_window(m, "dispatch_slot_obj_660328_pa", UINT32_C(0x00660328),
+        0x20u);
+    dump_va_window(m, "dispatch_slot_page_a0051680", UINT32_C(0xA0051680),
+        0xE0u);
+    dump_va_window(m, "dispatch_slot_page_a0051740", UINT32_C(0xA0051740),
+        0x40u);
+    dump_va_window(m, "dispatch_slot_page_a0051000", UINT32_C(0xA0051000),
+        0x40u);
+    if (a0 != 0)
+        dump_va_window(m, "dispatch_arg_a0", a0 & ~UINT32_C(0x1F), 0x40u);
+    if (a1 != 0)
+        dump_va_window(m, "dispatch_arg_a1", a1 & ~UINT32_C(0x1F), 0x40u);
+    if (a2 != 0)
+        dump_va_window(m, "dispatch_arg_a2", a2 & ~UINT32_C(0x1F), 0x40u);
+    if (a3 != 0)
+        dump_va_window(m, "dispatch_arg_a3", a3 & ~UINT32_C(0x1F), 0x40u);
 }
 
 static bool in_kseg0_or_kseg1(uint32_t va)
@@ -1755,6 +1815,17 @@ static void dump_replay_pc_probe(machine_t *m,
         || pc == UINT32_C(0x800AADA0)) {
         log_bootctx_follow_state(m, probe->label);
     }
+
+    if (pc == UINT32_C(0x800AADA0)
+        || pc == UINT32_C(0x800AAE20)
+        || pc == UINT32_C(0x800AAE48)
+        || pc == UINT32_C(0x800AAE6C)
+        || pc == UINT32_C(0x800AAE74)
+        || pc == UINT32_C(0x800AAE94)
+        || pc == UINT32_C(0x800AAEB4)
+        || pc == UINT32_C(0x800A8BF0)) {
+        log_dispatch_callback_state(m, probe->label);
+    }
 }
 
 static void maybe_log_replay_resume_entry_probe(machine_t *m)
@@ -1800,7 +1871,7 @@ static void maybe_log_replay_pc_probe(machine_t *m)
     for (i = 0; i < sizeof(wince_replay_pc_probes) / sizeof(wince_replay_pc_probes[0]);
         i++) {
         const wince_replay_pc_probe_desc_t *probe = &wince_replay_pc_probes[i];
-        uint32_t bit = UINT32_C(1) << i;
+        uint64_t bit = UINT64_C(1) << i;
 
         if (probe->pc != pc)
             continue;

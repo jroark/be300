@@ -225,6 +225,83 @@ static void log_resume_probe_window(struct cpu *cpu, const char *label,
 	}
 }
 
+static void log_resume_dispatch_state(struct cpu *cpu, const char *label)
+{
+	uint32_t pc = (uint32_t)cpu->pc;
+	uint32_t ra = (uint32_t)cpu->cd.mips.gpr[31];
+	uint32_t sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+	uint32_t gp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_GP];
+	uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+	uint32_t a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+	uint32_t a2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+	uint32_t a3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3];
+	uint32_t v0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0];
+	uint32_t v1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1];
+	uint32_t t0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T0];
+	uint32_t t1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T1];
+	uint32_t t2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T2];
+	uint32_t t3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T3];
+	uint32_t t4 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T4];
+	uint32_t t5 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T5];
+	uint32_t t6 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T6];
+	uint32_t t7 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T7];
+	uint32_t t8 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T8];
+	uint32_t t9 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T9];
+
+	fprintf(stderr,
+	    "[WINCE_MMIO_DISPATCH] label=%s pc=0x%08x ra=0x%08x sp=0x%08x"
+	    " gp=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x"
+	    " v0=0x%08x v1=0x%08x t0=0x%08x t1=0x%08x"
+	    " t2=0x%08x t3=0x%08x t4=0x%08x t5=0x%08x"
+	    " t6=0x%08x t7=0x%08x t8=0x%08x t9=0x%08x\n",
+	    label,
+	    pc,
+	    ra,
+	    sp,
+	    gp,
+	    a0,
+	    a1,
+	    a2,
+	    a3,
+	    v0,
+	    v1,
+	    t0,
+	    t1,
+	    t2,
+	    t3,
+	    t4,
+	    t5,
+	    t6,
+	    t7,
+	    t8,
+	    t9);
+
+	log_resume_probe_window(cpu, label, "slot0_root", 0x800aad2c, -16, 96);
+	log_resume_probe_window(cpu, label, "slot0_wrapper", 0x800aada0, -16, 48);
+	log_resume_probe_window(cpu, label, "slot0_helper", 0x800aae20, -16, 48);
+	log_resume_probe_window(cpu, label, "slot0_follow", 0x800aae48, -16, 64);
+	log_resume_probe_window(cpu, label, "dispatch_ptrs", 0x80660170, 0, 44);
+	log_resume_probe_window(cpu, label, "dispatch_slots", 0x80660310, 0, 124);
+	log_resume_probe_window(cpu, label, "dispatch_slots_hi", 0x80660320, 0, 60);
+	log_resume_probe_window(cpu, label, "callback_page", 0xa0051680, 0, 252);
+	log_resume_probe_window(cpu, label, "callback_page_1740", 0xa0051740, 0, 60);
+	log_resume_probe_window(cpu, label, "dispatch_page_1000", 0xa0051000, 0, 60);
+	log_resume_probe_window(cpu, label, "bootctx_stub", 0xa00063d0, 0, 60);
+	log_resume_probe_window(cpu, label, "obj_table_66bfc0", 0x8066bfc0, 0, 60);
+	if (a0 != 0)
+		log_resume_probe_window(cpu, label, "arg_a0",
+		    a0 & ~0x1fu, 0, 60);
+	if (a1 != 0)
+		log_resume_probe_window(cpu, label, "arg_a1",
+		    a1 & ~0x1fu, 0, 60);
+	if (a2 != 0)
+		log_resume_probe_window(cpu, label, "arg_a2",
+		    a2 & ~0x1fu, 0, 60);
+	if (a3 != 0)
+		log_resume_probe_window(cpu, label, "arg_a3",
+		    a3 & ~0x1fu, 0, 60);
+}
+
 static void maybe_log_resume_mmio_probe(struct cpu *cpu,
 	uint64_t relative_addr, int writeflag, uint64_t value)
 {
@@ -297,6 +374,8 @@ static void maybe_log_resume_mmio_probe(struct cpu *cpu,
 			log_resume_probe_window(cpu, probes[i].label, "stack",
 			    sp, -16, 48);
 		}
+		if (pc == 0x800aad2c || pc == 0x800aae20 || pc == 0x800aae6c)
+			log_resume_dispatch_state(cpu, probes[i].label);
 		return;
 	}
 }
