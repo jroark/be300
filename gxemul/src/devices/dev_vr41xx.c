@@ -52,6 +52,8 @@
 #include "thirdparty/vr_rtcreg.h"
 
 #include "hw/rtc.h"
+#include "hw/cmu.h"
+#include "hw/pmu.h"
 #include "cop0.h"
 #include "wince_boot.h"
 
@@ -92,6 +94,8 @@ struct vr41xx_data {
 
 	/*  VR4131 RTC (elapsed time counter with read-assist):  */
 	rtc_state_t	rtc;
+	cmu_state_t	cmu;
+	pmu_state_t	pmu;
 };
 
 static void log_resume_probe_window(struct cpu *cpu, const char *label,
@@ -694,6 +698,18 @@ DEVICE_ACCESS(vr41xx)
 	/*  DCU:  0x40 .. 0x5c  */
 
 	/*  CMU:  0x60 .. 0x7c  */
+	case 0x60:
+	case 0x62:
+		if (d->cpumodel == 4131) {
+			uint32_t cmu_off = (uint32_t)(relative_addr - 0x60);
+			if (writeflag == MEM_READ)
+				odata = cmu_read(&d->cmu, cmu_off, (unsigned)len);
+			else
+				cmu_write(&d->cmu, cmu_off, (unsigned)len,
+				    (uint32_t)idata);
+			break;
+		}
+		goto unhandled;
 
 	/*  ICU:  0x80 .. 0xbc  */
 	case 0x80:	/*  Level 1 system interrupt reg 1...  */
@@ -746,10 +762,24 @@ DEVICE_ACCESS(vr41xx)
 			d->msysint2 = idata;
 		break;
 
-	/*  RTC:  */
+	/*  VR4131 PMU lives at 0xc0; older VR41xx chips use this as RTC.  */
 	case 0xc0:
 	case 0xc2:
 	case 0xc4:
+	case 0xc6:
+	case 0xc8:
+	case 0xcc:
+		if (d->cpumodel == 4131) {
+			uint32_t pmu_off = (uint32_t)(relative_addr - 0xc0);
+			if (writeflag == MEM_READ)
+				odata = pmu_read(&d->pmu, pmu_off, (unsigned)len);
+			else
+				pmu_write(&d->pmu, pmu_off, (unsigned)len,
+				    (uint32_t)idata);
+			break;
+		}
+		if (relative_addr > 0xc4)
+			goto unhandled;
 		{
 			struct timeval tv;
 			gettimeofday(&tv, NULL);
@@ -1003,6 +1033,8 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 
 	/*  VR4131 RTC elapsed-time counter (read-assist for SPL polling):  */
 	rtc_init(&d->rtc);
+	cmu_init(&d->cmu);
+	pmu_init(&d->pmu);
 
 	/*  TODO: VRC4173 has the KIU at offset 0x100?  */
 	d->kiu_offset = 0x180;
