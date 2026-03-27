@@ -92,7 +92,7 @@ typedef struct {
     uint32_t replay_region_drift_logged_mask;
     uint32_t replay_region_write_logged_mask;
     uint32_t replay_region_mismatch_logged_mask;
-    uint32_t replay_pc_probe_logged_mask;
+    uint64_t replay_pc_probe_logged_mask;
     uint32_t replay_bootctx_epc_probe_logged_mask;
     uint32_t replay_watch_write_logged_mask;
     uint32_t replay_mmio_watch_logged_mask;

@@ -128,7 +128,10 @@ static const wince_replay_pc_probe_desc_t wince_replay_pc_probes[] = {
     { UINT32_C(0x8007B0B4), "callback_8007b0b4", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x8007B0F4), "callback_8007b0f4", -0x20, 0x60u, 0x60u },
     { UINT32_C(0x8007B114), "callback_8007b114", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x800AAD2C), "dispatch_800aad2c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800AADA0), "callback_800aada0", -0x20, 0x60u, 0x60u },
+    { UINT32_C(0x800AAE20), "dispatch_800aae20", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x800AAE6C), "dispatch_800aae6c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800A7B3C), "resume_poll_7b3c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800A7B64), "resume_poll_7b64", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800A7B68), "resume_poll_7b68", -0x20, 0x80u, 0x60u },
@@ -1358,7 +1361,7 @@ static void maybe_log_replay_bootctx_stub_epc_probe(machine_t *m)
         / sizeof(wince_replay_bootctx_epc_probes[0]); i++) {
         const wince_replay_epc_probe_desc_t *probe =
             &wince_replay_bootctx_epc_probes[i];
-        uint32_t bit = UINT32_C(1) << i;
+        uint64_t bit = UINT64_C(1) << i;
 
         if (probe->epc != epc)
             continue;
@@ -2996,6 +2999,15 @@ bool wince_boot_override_vrc4173_read(struct cpu *cpu, uint32_t paddr,
             (uint64_t)cpu->pc);
     }
     return true;
+}
+
+bool wince_boot_replay_full_active(struct machine *gxm)
+{
+    machine_t *m = wince_boot_from_gx(gxm);
+
+    if (!m || !replay_mode_enabled(m) || !m->wince.cold_boot_redirected)
+        return false;
+    return m->cfg.wince_resume_replay_full;
 }
 
 void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
