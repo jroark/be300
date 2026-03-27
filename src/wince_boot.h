@@ -35,6 +35,8 @@ void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
 bool wince_boot_override_vrc4173_read(struct cpu *cpu, uint32_t paddr,
     size_t len, uint64_t *value_io);
 bool wince_boot_replay_full_active(struct machine *gxm);
+void wince_boot_note_replay_etimer_consumed(struct machine *gxm,
+    struct cpu *cpu);
 void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
     size_t len);
 void wince_boot_note_fb_oob(struct cpu *cpu, uint64_t paddr, size_t len);
