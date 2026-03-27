@@ -7,6 +7,7 @@
 #include "cop0.h"
 #include "cpu.h"
 #include "cpu_mips.h"
+#include "devices.h"
 #include "machine.h"
 #include "memory.h"
 #include "wince_hw_seed_data.h"
@@ -239,7 +240,7 @@ static uint32_t load_pa_word(machine_t *m, uint32_t pa)
 
 static bool load_va_word(machine_t *m, uint32_t va, uint32_t *out)
 {
-    unsigned char buf[4];
+    unsigned char buf[4] = { 0, 0, 0, 0 };
 
     if (!m || !m->cpu || !out)
         return false;
@@ -937,16 +938,77 @@ static void log_replay_watch_write(machine_t *m, const char *label,
         (uint64_t)m->cpu->pc);
 }
 
+static bool replay_dispatch_alias_word(machine_t *m,
+    const wince_resume_region_t *slot_region, uint32_t slot_va,
+    uint32_t *word_out, bool *ok_out)
+{
+    uint32_t slot_off;
+
+    if (ok_out)
+        *ok_out = false;
+    if (!m || !slot_region || slot_va < UINT32_C(0xA0051000))
+        return false;
+
+    slot_off = slot_va - UINT32_C(0xA0051000);
+    if (slot_off >= slot_region->size)
+        return false;
+
+    (void)replay_region_word(m, slot_region, slot_region->pa + slot_off,
+        word_out, ok_out);
+    return true;
+}
+
+static bool maybe_runtime_refill_dispatch_page(machine_t *m,
+    const wince_resume_region_t *slot_region, const char *source,
+    uint32_t dispatch_index)
+{
+    uint32_t word_index;
+
+    if (!m || !slot_region || !replay_mode_enabled(m)
+        || !m->cfg.wince_resume_replay_full
+        || m->wince.replay_dispatch_page_runtime_refilled) {
+        return false;
+    }
+
+    for (word_index = 0; word_index < slot_region->word_count; word_index++) {
+        uint32_t pa = UINT32_C(0x00051000) + word_index * 4u;
+
+        store_32bit_word(m->cpu, pa_to_kseg0(pa), slot_region->words[word_index]);
+    }
+    invalidate_all(m);
+    m->wince.replay_dispatch_page_runtime_refilled = true;
+
+    if (m->wince.log_stall) {
+        fprintf(stderr,
+            "[WINCE_REPLAY] dispatch_page_5100_runtime_refill"
+            " words=%u source=%s table_index=%u source_region=%s\n",
+            slot_region->word_count,
+            source ? source : "-",
+            dispatch_index,
+            slot_region->name ? slot_region->name : "-");
+        dump_pa_window(m, "dispatch_page_5100_runtime_refill",
+            UINT32_C(0x00051000), 0x80u);
+    }
+    return true;
+}
+
 static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
 {
     const wince_resume_region_t *ptr_region;
-    const wince_resume_region_t *page_region;
+    const wince_resume_region_t *slot_region;
+    const wince_resume_region_t *callback_region;
+    struct vr41xx_diag_state vr41_state;
+    bool vr41_ok = false;
     uint32_t sysint1 = 0;
+    uint32_t msysint1 = 0;
     uint32_t sysint2 = 0;
-    uint32_t giuintl = 0;
+    uint32_t msysint2 = 0;
+    uint32_t giuint = 0;
+    uint32_t giumask = 0;
+    uint32_t pending_timer = 0;
     bool sysint1_ok;
     bool sysint2_ok;
-    bool giuintl_ok;
+    bool giuint_ok;
     uint32_t dispatch_index = UINT32_MAX;
     uint32_t dispatch_bit = UINT32_MAX;
     uint32_t ptr_pa = 0;
@@ -963,12 +1025,24 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
     if (!m->wince.log_stall)
         return;
 
-    sysint1_ok = load_va_word(m, UINT32_C(0xAF000080), &sysint1);
-    sysint2_ok = load_va_word(m, UINT32_C(0xAF0000A0), &sysint2);
-    giuintl_ok = load_va_word(m, UINT32_C(0xAF000088), &giuintl);
+    vr41_ok = vr41xx_diag_get_state(m->gxe_machine, &vr41_state);
+    if (vr41_ok) {
+        sysint1 = vr41_state.sysint1;
+        msysint1 = vr41_state.msysint1;
+        sysint2 = vr41_state.sysint2;
+        msysint2 = vr41_state.msysint2;
+        giuint = vr41_state.giuint;
+        giumask = vr41_state.giumask;
+        pending_timer = vr41_state.pending_timer_interrupts;
+    }
+    sysint1_ok = vr41_ok;
+    sysint2_ok = vr41_ok;
+    giuint_ok = vr41_ok;
     ptr_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
         "dispatch_ptr_table_660170");
-    page_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
+    slot_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
+        "dispatch_slot_table_660310");
+    callback_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
         "callback_table_a0051680");
 
     if (sysint1_ok && sysint1 != 0 && (sysint1 & (sysint1 - 1u)) == 0) {
@@ -987,9 +1061,9 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
         dispatch_bit = ctz32_nonzero(sysint2);
         dispatch_index = dispatch_bit;
         source = "sysint2";
-    } else if (giuintl_ok && giuintl != 0
-        && (giuintl & (giuintl - 1u)) == 0) {
-        dispatch_bit = ctz32_nonzero(giuintl);
+    } else if (giuint_ok && giuint != 0
+        && (giuint & (giuint - 1u)) == 0) {
+        dispatch_bit = ctz32_nonzero(giuint);
         dispatch_index = dispatch_bit;
         source = "giu";
     }
@@ -1009,10 +1083,20 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
 
     if (slot_va != 0)
         live_slot_ok = load_va_word(m, slot_va, &live_slot);
-    if (page_region && slot_va != 0
-        && (slot_va & UINT32_C(0x1FFFFFFF)) >= page_region->pa
-        && (slot_va & UINT32_C(0x1FFFFFFF)) < page_region->pa + page_region->size) {
-        (void)replay_region_word(m, page_region,
+    if (slot_region && slot_va != 0
+        && replay_dispatch_alias_word(m, slot_region, slot_va, &replay_slot,
+            &replay_slot_ok)) {
+        if (live_slot_ok && live_slot == 0 && replay_slot_ok) {
+            if (maybe_runtime_refill_dispatch_page(m, slot_region, source,
+                dispatch_index)) {
+                live_slot_ok = load_va_word(m, slot_va, &live_slot);
+            }
+        }
+    } else if (callback_region && slot_va != 0
+        && (slot_va & UINT32_C(0x1FFFFFFF)) >= callback_region->pa
+        && (slot_va & UINT32_C(0x1FFFFFFF))
+            < callback_region->pa + callback_region->size) {
+        (void)replay_region_word(m, callback_region,
             slot_va & UINT32_C(0x1FFFFFFF), &replay_slot, &replay_slot_ok);
     }
 
@@ -1023,11 +1107,16 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
 
         fprintf(stderr,
             "[WINCE_REPLAY_DISPATCH] pc=0x%08X sysint1=%s(0x%08X)"
-            " sysint2=%s(0x%08X) giuintl=%s(0x%08X) source=%s",
+            " msysint1=0x%08X sysint2=%s(0x%08X) msysint2=0x%08X"
+            " giuint=%s(0x%08X) giumask=0x%08X pending_timer=%u source=%s",
             pc,
             sysint1_ok ? "ok" : "bad", sysint1,
+            msysint1,
             sysint2_ok ? "ok" : "bad", sysint2,
-            giuintl_ok ? "ok" : "bad", giuintl,
+            msysint2,
+            giuint_ok ? "ok" : "bad", giuint,
+            giumask,
+            pending_timer,
             source);
         if (dispatch_bit != UINT32_MAX)
             fprintf(stderr, " bit=%u", dispatch_bit);
@@ -1085,8 +1174,10 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc)
 
     if (ptr_region)
         log_replay_region_compare(m, ptr_region, "dispatch-ptr");
-    if (page_region)
-        log_replay_region_compare(m, page_region, "dispatch-page");
+    if (slot_region)
+        log_replay_region_compare(m, slot_region, "dispatch-slot");
+    if (callback_region)
+        log_replay_region_compare(m, callback_region, "dispatch-callback");
 }
 
 static void log_bootctx_follow_state(machine_t *m, const char *label)
