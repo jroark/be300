@@ -102,6 +102,8 @@ static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc);
 static void log_dispatch_callback_state(machine_t *m, const char *label);
 static void maybe_log_replay_region_drift(machine_t *m);
 static void maybe_apply_replay_tlb_idx01_even_clone(machine_t *m);
+static void maybe_apply_replay_tlb_b000_helper(machine_t *m);
+static void maybe_apply_replay_tlb_b000_even_clone(machine_t *m);
 static void invalidate_all(machine_t *m);
 static bool replay_pc_in_late_exception_corridor(uint32_t pc);
 static bool probable_low_va_target(uint32_t value);
@@ -1084,6 +1086,167 @@ static void maybe_apply_replay_tlb_idx01_even_clone(machine_t *m)
             (uint32_t)old_lo0,
             (uint32_t)tlb->lo0,
             (uint32_t)tlb->lo1);
+    }
+}
+
+static void maybe_apply_replay_tlb_b000_helper(machine_t *m)
+{
+    struct mips_coproc *cp0;
+    uint64_t c000_pa = 0;
+    uint64_t b000_pa;
+    uint64_t late_hi;
+    uint32_t pc;
+    uint32_t badva;
+    uint32_t entryhi;
+    int i;
+    int entry_index;
+
+    if (!m || !replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->cfg.wince_resume_replay_full
+        || m->wince.replay_tlb_b000_helper_installed) {
+        return;
+    }
+    if (!replay_pc_in_late_exception_corridor((uint32_t)m->cpu->pc))
+        return;
+    if (!m->cpu || !m->cpu->cd.mips.coproc[0])
+        return;
+
+    badva = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR];
+    entryhi = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI];
+    if ((entryhi & UINT32_C(0xFFFFF000)) != UINT32_C(0xFFFFB000)
+        && (badva & UINT32_C(0xFFFFF000)) != UINT32_C(0xFFFFB000)) {
+        return;
+    }
+
+    cp0 = m->cpu->cd.mips.coproc[0];
+    for (i = 0; i < cp0->nr_of_tlbs; i++) {
+        uint64_t pa = 0;
+        bool valid = false;
+        bool dirty = false;
+        bool global = false;
+        bool odd = false;
+        uint32_t page_mask = 0;
+        const char *mode = NULL;
+
+        if (!decode_tlb_match(m, &cp0->tlbs[i], UINT32_C(0xFFFFBF0C), &pa,
+            &valid, &dirty, &global, &odd, &page_mask, &mode)) {
+            continue;
+        }
+        if (valid)
+            return;
+    }
+
+    if (!translate_va(m, UINT32_C(0xFFFFC000), &c000_pa))
+        return;
+
+    c000_pa &= ~UINT64_C(0x0FFF);
+    if (c000_pa < UINT64_C(0x1000))
+        return;
+
+    b000_pa = c000_pa - UINT64_C(0x1000);
+    entry_index = cp0->nr_of_tlbs - 2;
+    if (entry_index < 0)
+        return;
+
+    /*
+     * Full replay cleared the old 0xFFFFCFxx miss and immediately fell into
+     * the next lower stack page at 0xFFFFBFxx. On a 4KB dual-page entry with
+     * hi=0xFFFFB000, the live faulting page is the odd half (lo1), covering
+     * 0xFFFFB000..0xFFFFBFFF. Seed only that half from the already-live
+     * 0xFFFFC000 mapping and leave the even half invalid so this helper stays
+     * narrowly scoped to the late replay stack miss.
+     */
+    mips_coproc_tlb_set_entry(m->cpu, entry_index, 4096,
+        UINT32_C(0xFFFFB000), b000_pa, b000_pa, 0, 1, 0, 1, 1, 0, 3, 3);
+    late_hi = debug_tlb_match_va_signext(m, UINT32_C(0xFFFFB000))
+        & (ENTRYHI_R_MASK | ENTRYHI_VPN2_MASK);
+    cp0->tlbs[entry_index].hi = late_hi
+        | (cp0->tlbs[entry_index].hi & (ENTRYHI_ASID | TLB_G));
+    cp0->tlbs[entry_index].mask = UINT32_C(0x00001800);
+    m->wince.replay_tlb_b000_helper_installed = true;
+    invalidate_all(m);
+
+    if (m->wince.log_stall) {
+        pc = (uint32_t)m->cpu->pc;
+        fprintf(stderr,
+            "[WINCE_REPLAY_TLB] action=install_b000_helper pc=0x%08X"
+            " idx=%d source_c000_pa=0x%08X new_b000_pa=0x%08X"
+            " hi=0x%08X hi64=0x%016" PRIx64
+            " mask=0x%08X lo0=0x%08X lo1=0x%08X\n",
+            pc,
+            entry_index,
+            (uint32_t)c000_pa,
+            (uint32_t)b000_pa,
+            (uint32_t)cp0->tlbs[entry_index].hi,
+            (uint64_t)cp0->tlbs[entry_index].hi,
+            (uint32_t)cp0->tlbs[entry_index].mask,
+            (uint32_t)cp0->tlbs[entry_index].lo0,
+            (uint32_t)cp0->tlbs[entry_index].lo1);
+        dump_tlb_matches(m, "helper_bf0c", UINT32_C(0xFFFFBF0C));
+        dump_tlb_matches(m, "helper_bf30", UINT32_C(0xFFFFBF30));
+    }
+}
+
+static void maybe_apply_replay_tlb_b000_even_clone(machine_t *m)
+{
+    struct mips_coproc *cp0;
+    struct mips_tlb *tlb;
+    uint32_t pc;
+    uint32_t badva;
+    uint32_t entryhi;
+    uint64_t old_lo0;
+    int entry_index;
+
+    if (!m || !replay_mode_enabled(m) || !m->wince.cold_boot_redirected
+        || !m->cfg.wince_resume_replay_full
+        || m->wince.replay_tlb_b000_even_clone_applied) {
+        return;
+    }
+    if (!replay_pc_in_late_exception_corridor((uint32_t)m->cpu->pc))
+        return;
+    if (!m->cpu || !m->cpu->cd.mips.coproc[0])
+        return;
+
+    cp0 = m->cpu->cd.mips.coproc[0];
+    badva = (uint32_t)cp0->reg[COP0_BADVADDR];
+    entryhi = (uint32_t)cp0->reg[COP0_ENTRYHI];
+    if ((entryhi & UINT32_C(0xFFFFF000)) != UINT32_C(0xFFFFA000)
+        && (badva & UINT32_C(0xFFFFF000)) != UINT32_C(0xFFFFA000)) {
+        return;
+    }
+
+    entry_index = cp0->nr_of_tlbs - 2;
+    if (entry_index < 0)
+        return;
+
+    tlb = &cp0->tlbs[entry_index];
+    if (((uint32_t)tlb->hi) != UINT32_C(0xFFFFB000)
+        || ((uint32_t)tlb->mask) != UINT32_C(0x00001800)) {
+        return;
+    }
+    if ((tlb->lo0 & ENTRYLO_V) != 0 || (tlb->lo1 & ENTRYLO_V) == 0)
+        return;
+
+    old_lo0 = tlb->lo0;
+    tlb->lo0 = tlb->lo1;
+    m->wince.replay_tlb_b000_even_clone_applied = true;
+    invalidate_all(m);
+
+    if (m->wince.log_stall) {
+        pc = (uint32_t)m->cpu->pc;
+        fprintf(stderr,
+            "[WINCE_REPLAY_TLB] action=clone_b000_even pc=0x%08X"
+            " idx=%d hi=0x%08X mask=0x%08X old_lo0=0x%08X new_lo0=0x%08X"
+            " lo1=0x%08X\n",
+            pc,
+            entry_index,
+            (uint32_t)tlb->hi,
+            (uint32_t)tlb->mask,
+            (uint32_t)old_lo0,
+            (uint32_t)tlb->lo0,
+            (uint32_t)tlb->lo1);
+        dump_tlb_matches(m, "helper_af44", UINT32_C(0xFFFFAF44));
+        dump_tlb_matches(m, "helper_af68", UINT32_C(0xFFFFAF68));
     }
 }
 
@@ -3371,6 +3534,8 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     maybe_note_first_exception(m);
     maybe_log_fault_site(m);
     maybe_apply_replay_tlb_idx01_even_clone(m);
+    maybe_apply_replay_tlb_b000_helper(m);
+    maybe_apply_replay_tlb_b000_even_clone(m);
     maybe_log_replay_region_drift(m);
     maybe_log_replay_pc_probe(m);
     maybe_log_replay_resume_entry_probe(m);
