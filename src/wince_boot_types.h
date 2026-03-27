@@ -88,6 +88,7 @@ typedef struct {
     bool replay_vrc4173_1b50_synth_logged;
 
     uint32_t fault_site_logged_mask;
+    uint32_t replay_region_drift_logged_mask;
     uint32_t replay_region_write_logged_mask;
     uint32_t replay_region_mismatch_logged_mask;
     uint32_t replay_pc_probe_logged_mask;
