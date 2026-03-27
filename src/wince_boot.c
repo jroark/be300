@@ -197,6 +197,8 @@ static const wince_replay_write_watch_desc_t wince_replay_write_watches[] = {
     { "bootctx_stub_63d0", UINT32_C(0x000063D0), UINT32_C(0x0040) },
     { "obj_table_66bfc0", UINT32_C(0x0066BFC0), UINT32_C(0x0040) },
     { "callback_table_1740", UINT32_C(0x00051740), UINT32_C(0x0040) },
+    { "object_page_d50940", UINT32_C(0x00D50940), UINT32_C(0x0100) },
+    { "page_table_fd7000", UINT32_C(0x00FD7000), UINT32_C(0x0040) },
 };
 
 static const wince_mmio_watch_desc_t wince_mmio_watches[] = {
@@ -267,6 +269,28 @@ static uint64_t pa_to_kseg0(uint32_t pa)
 static uint64_t va32_to_mips64(uint32_t va)
 {
     return (uint64_t)(int64_t)(int32_t)va;
+}
+
+static uint64_t debug_tlb_match_va(machine_t *m, uint32_t va)
+{
+    uint64_t payload;
+    uint64_t region_bits = 0;
+
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+        return va32_to_mips64(va);
+
+    /*
+     * WinCE guest code here uses 32-bit virtual addresses. For diagnostics,
+     * keep the low 32-bit VPN2/page-offset payload intact and splice in only
+     * the live EntryHi R bits from the current fault context. Sign-extending
+     * the 32-bit VA up into the 40-bit VPN2 field breaks helper mappings such
+     * as 0xFFFFD800, whose live TLB hi values are still stored as
+     * 0x00000000ffffd800.
+     */
+    payload = (uint64_t)va & (ENTRYHI_VPN2_MASK | UINT64_C(0x1FFF));
+    region_bits = (uint64_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI]
+        & ENTRYHI_R_MASK;
+    return region_bits | payload;
 }
 
 static uint32_t load_pa_word(machine_t *m, uint32_t pa)
@@ -601,7 +625,7 @@ static bool decode_tlb_match(machine_t *m, const struct mips_tlb *tlb,
     cached_hi = tlb->hi;
     cached_lo0 = tlb->lo0;
     cached_lo1 = tlb->lo1;
-    match_va = m->cpu->is_32bit? (uint64_t)(int64_t)(int32_t)va : (uint64_t)va;
+    match_va = debug_tlb_match_va(m, va);
 
     if (pmask == 0) {
         entry_vpn2 = (cached_hi & vpn2_mask) >> pagemask_shift;
@@ -676,7 +700,7 @@ static void dump_tlb_matches(machine_t *m, const char *label, uint32_t va)
 
     cp0 = m->cpu->cd.mips.coproc[0];
     asid = (uint32_t)cp0->reg[COP0_ENTRYHI] & ENTRYHI_ASID;
-    match_va = m->cpu->is_32bit? (uint64_t)(int64_t)(int32_t)va : (uint64_t)va;
+    match_va = debug_tlb_match_va(m, va);
 
     fprintf(stderr,
         "[WINCE_TLB] label=%s va=0x%08X match_va=0x%016" PRIx64
