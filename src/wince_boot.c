@@ -103,6 +103,8 @@ static void log_dispatch_callback_state(machine_t *m, const char *label);
 static void log_va_probe(machine_t *m, const char *label, uint32_t va);
 static void maybe_log_replay_region_drift(machine_t *m);
 static void capture_replay_slot_1ac0_baseline(machine_t *m);
+static void log_slot_1ac0_snapshot(machine_t *m, const char *label);
+static void search_slot_1ac0_copies(machine_t *m, const char *label);
 static void maybe_apply_replay_tlb_idx01_even_clone(machine_t *m);
 static void maybe_apply_replay_tlb_b000_helper(machine_t *m);
 static void maybe_apply_replay_tlb_b000_even_clone(machine_t *m);
@@ -247,9 +249,13 @@ static const wince_replay_exec_probe_desc_t wince_replay_exec_probes[] = {
     { UINT32_C(0x8008B240), "exec_8008b240", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B254), "exec_8008b254", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B264), "exec_8008b264", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x8008B268), "exec_8008b268", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B274), "exec_8008b274", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B278), "exec_8008b278", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B3F0), "exec_8008b3f0", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x8008B42C), "exec_8008b42c", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x8008B478), "exec_8008b478", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x8008B4F0), "exec_8008b4f0", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x80094F24), "exec_80094f24", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x80094F58), "exec_80094f58", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x80094FD4), "exec_80094fd4", -0x20, 0x80u, 0x60u },
@@ -994,6 +1000,178 @@ static void capture_replay_slot_1ac0_baseline(machine_t *m)
     m->wince.replay_slot_1ac0_drift_logged = false;
 }
 
+static bool slot_1ac0_words_look_utf16_ascii(const uint32_t *words,
+    size_t word_count)
+{
+    size_t total_units = 0;
+    size_t printable_units = 0;
+    size_t zero_high_bytes = 0;
+    size_t i;
+
+    if (!words)
+        return false;
+
+    for (i = 0; i < word_count; i++) {
+        uint16_t units[2];
+        size_t j;
+
+        units[0] = (uint16_t)(words[i] & 0xFFFFu);
+        units[1] = (uint16_t)((words[i] >> 16) & 0xFFFFu);
+        for (j = 0; j < 2u; j++) {
+            uint16_t unit = units[j];
+            unsigned char ch = (unsigned char)(unit & 0xFFu);
+
+            if (unit == 0)
+                continue;
+
+            total_units++;
+            if ((unit & 0xFF00u) == 0)
+                zero_high_bytes++;
+            if ((ch >= 0x20u && ch <= 0x7Eu)
+                || ch == '\r' || ch == '\n' || ch == '\t') {
+                printable_units++;
+            }
+        }
+    }
+
+    return total_units >= 12u
+        && printable_units + 2u >= total_units
+        && zero_high_bytes + 2u >= total_units;
+}
+
+static void format_slot_1ac0_utf16_ascii(const uint32_t *words,
+    size_t word_count, char *buf, size_t buf_size)
+{
+    size_t out = 0;
+    size_t i;
+
+    if (!buf || buf_size == 0)
+        return;
+
+    buf[0] = '\0';
+    if (!words)
+        return;
+
+    for (i = 0; i < word_count; i++) {
+        uint16_t units[2];
+        size_t j;
+
+        units[0] = (uint16_t)(words[i] & 0xFFFFu);
+        units[1] = (uint16_t)((words[i] >> 16) & 0xFFFFu);
+        for (j = 0; j < 2u; j++) {
+            uint16_t unit = units[j];
+            unsigned char ch = (unsigned char)(unit & 0xFFu);
+
+            if (unit == 0)
+                continue;
+            if (out + 1u >= buf_size)
+                goto done;
+            if ((unit & 0xFF00u) == 0
+                && ((ch >= 0x20u && ch <= 0x7Eu)
+                    || ch == '\r' || ch == '\n' || ch == '\t')) {
+                buf[out++] = (char)ch;
+            } else {
+                buf[out++] = '.';
+            }
+        }
+    }
+
+done:
+    buf[out] = '\0';
+}
+
+static void log_slot_1ac0_snapshot(machine_t *m, const char *label)
+{
+    uint32_t words[WINCE_REPLAY_SLOT_1AC0_WORDS];
+    bool changed = false;
+    bool looks_utf16;
+    uint32_t i;
+
+    if (!m || !m->wince.log_stall)
+        return;
+
+    for (i = 0; i < WINCE_REPLAY_SLOT_1AC0_WORDS; i++) {
+        uint32_t word_pa = UINT32_C(0x00001AC0) + i * UINT32_C(4);
+        words[i] = load_pa_word(m, word_pa);
+        if (m->wince.replay_slot_1ac0_baseline_valid
+            && words[i] != m->wince.replay_slot_1ac0_baseline[i]) {
+            changed = true;
+        }
+    }
+
+    fprintf(stderr,
+        "[WINCE_SLOT_1AC0] label=%s changed=%d words=%08X/%08X/%08X/%08X\n",
+        label ? label : "-",
+        changed ? 1 : 0,
+        words[0], words[1], words[2], words[3]);
+
+    looks_utf16 = slot_1ac0_words_look_utf16_ascii(words,
+        WINCE_REPLAY_SLOT_1AC0_WORDS);
+    if (looks_utf16) {
+        char text[64];
+
+        format_slot_1ac0_utf16_ascii(words, WINCE_REPLAY_SLOT_1AC0_WORDS,
+            text, sizeof(text));
+        fprintf(stderr,
+            "[WINCE_SLOT_1AC0] label=%s utf16=\"%s\"\n",
+            label ? label : "-",
+            text);
+    }
+}
+
+static void search_slot_1ac0_copies(machine_t *m, const char *label)
+{
+    uint32_t limit;
+    uint32_t pa;
+    uint32_t hits = 0;
+    const uint32_t slot_pa = UINT32_C(0x00001AC0);
+    const uint32_t slot_size = UINT32_C(0x40);
+    uint32_t first0;
+    uint32_t first1;
+
+    if (!m || !m->cpu || !m->cpu->mem)
+        return;
+
+    limit = m->cfg.sdram_size != 0 ? m->cfg.sdram_size : PA_SDRAM_SIZE;
+    if (limit < slot_pa + slot_size)
+        return;
+
+    first0 = load_pa_word(m, slot_pa + 0u);
+    first1 = load_pa_word(m, slot_pa + 4u);
+
+    for (pa = 0; pa + slot_size <= limit; pa += 4u) {
+        uint32_t off;
+
+        if (pa == slot_pa)
+            continue;
+        if (load_pa_word(m, pa + 0u) != first0
+            || load_pa_word(m, pa + 4u) != first1) {
+            continue;
+        }
+
+        for (off = 8u; off < slot_size; off += 4u) {
+            if (load_pa_word(m, pa + off) != load_pa_word(m, slot_pa + off))
+                break;
+        }
+        if (off != slot_size)
+            continue;
+
+        fprintf(stderr,
+            "[WINCE_SLOT_SCAN] label=%s match_pa=0x%08X\n",
+            label ? label : "-",
+            pa);
+        hits++;
+        if (hits >= 8u)
+            break;
+    }
+
+    if (hits == 0) {
+        fprintf(stderr,
+            "[WINCE_SLOT_SCAN] label=%s no-other-copies\n",
+            label ? label : "-");
+    }
+}
+
 static void maybe_log_replay_region_drift(machine_t *m)
 {
     uint32_t i;
@@ -1088,6 +1266,8 @@ static void maybe_log_replay_region_drift(machine_t *m)
             (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR]);
         dump_pa_window(m, "slot_1ac0_drift", UINT32_C(0x00001AC0), 0x40u);
         dump_va_window(m, "slot_1ac0_drift_va", UINT32_C(0xFFFFDAC0), 0x40u);
+        log_slot_1ac0_snapshot(m, "slot_1ac0_drift");
+        search_slot_1ac0_copies(m, "slot_1ac0_drift");
         break;
     }
 }
@@ -2404,6 +2584,18 @@ static void log_replay_exec_probe(machine_t *m,
     log_replay_exec_irq_state(m, probe->label, pc);
     log_dispatch_callback_state(m, probe->label);
     log_replay_late_corridor_state(m, probe->label, pc);
+
+    if (pc == UINT32_C(0x8008B42C)
+        || pc == UINT32_C(0x8008B478)
+        || pc == UINT32_C(0x8008B4F0)
+        || pc == UINT32_C(0x80094F24)
+        || pc == UINT32_C(0x80094F58)
+        || pc == UINT32_C(0x8008B264)
+        || pc == UINT32_C(0x8008B268)
+        || pc == UINT32_C(0x8008B274)
+        || (pc == UINT32_C(0x80000180) && m->wince.replay_etimer_consumed)) {
+        log_slot_1ac0_snapshot(m, probe->label);
+    }
 }
 
 static void maybe_log_late_exec_80000180(machine_t *m, uint32_t pc)
