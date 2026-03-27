@@ -238,6 +238,9 @@ static void maybe_log_resume_mmio_probe(struct cpu *cpu,
 		{ 0x8007a114, "resume_mmio_7a114", -16, 32 },
 		{ 0x800a5e94, "resume_mmio_a5e94", -16, 32 },
 		{ 0x80079724, "resume_mmio_79724", -16, 32 },
+		{ 0x800aad2c, "dispatch_mmio_aad2c", -32, 64 },
+		{ 0x800aae20, "dispatch_mmio_aae20", -32, 64 },
+		{ 0x800aae6c, "dispatch_mmio_aae6c", -32, 64 },
 		{ 0x800a7b3c, "resume_poll_7b3c", -32, 64 },
 		{ 0x800a7b64, "resume_poll_7b64", -32, 64 },
 		{ 0x800a7bc4, "resume_poll_7bc4", -32, 64 },
@@ -350,6 +353,44 @@ static void maybe_log_resume_setup_state(struct cpu *cpu,
 		    vr41xx_latch_read(d->sdramu_regs, 0x08, 4));
 		return;
 	}
+}
+
+static void maybe_consume_wince_replay_etimer(struct cpu *cpu,
+	struct vr41xx_data *d, uint64_t relative_addr, int writeflag)
+{
+	if (cpu == NULL || d == NULL || writeflag != MEM_WRITE)
+		return;
+	if (!wince_boot_replay_full_active(cpu->machine))
+		return;
+
+	/*
+	 * The replay-only ETIMER path now reaches the real helper at
+	 * 0x800AAE1C..0x800AAE40, which clears GIUINTENL bit1 and
+	 * PMUCNTREG bit13 before returning. On real hardware this helper
+	 * appears to retire the forwarded timer source; in the emulator,
+	 * the synthetic pending_timer_interrupts queue keeps growing and
+	 * sysint1 bit 3 never drops. Consume the queued ETIMER here once
+	 * to test whether the remaining loop is just our internal latch
+	 * model.
+	 */
+	if ((uint32_t)cpu->pc != 0x800aae3c || relative_addr != 0x0c2)
+		return;
+	if ((d->sysint1 & (1 << VRIP_INTR_ETIMER)) == 0
+	    && d->pending_timer_interrupts == 0)
+		return;
+
+	fprintf(stderr,
+	    "[WINCE_ETIMER] replay-consume pc=0x%08" PRIx64
+	    " pending_before=%d sysint1_before=0x%04x rtcint_before=0x%04x\n",
+	    (uint64_t)cpu->pc,
+	    d->pending_timer_interrupts,
+	    d->sysint1,
+	    d->rtc.rtcint);
+
+	d->pending_timer_interrupts = 0;
+	d->sysint1 &= ~(1 << VRIP_INTR_ETIMER);
+	d->rtc.rtcint &= (uint16_t)~RTCINT_ELAPSEDTIME_INT;
+	INTERRUPT_DEASSERT(d->timer_irq);
 }
 
 
@@ -953,6 +994,8 @@ DEVICE_ACCESS(vr41xx)
 			else
 				pmu_write(&d->pmu, pmu_off, (unsigned)len,
 				    (uint32_t)idata);
+			maybe_consume_wince_replay_etimer(cpu, d, relative_addr,
+			    writeflag);
 			break;
 		}
 		if (relative_addr > 0xc4)
