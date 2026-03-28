@@ -102,6 +102,8 @@ typedef struct {
     bool replay_post_handler_return_armed;
     bool replay_post_handler_return_logged;
     bool replay_post_handler_mutation_logged;
+    bool low_vector_observed_valid;
+    bool low_vector_runtime_drift_logged;
     bool replay_slot_1ac0_baseline_valid;
     bool replay_slot_1ac0_drift_logged;
 
@@ -126,5 +128,7 @@ typedef struct {
     wince_resume_mode_t resume_mode;
     uint32_t synthetic_low_tlb[WINCE_VECTOR_WORDS];
     uint32_t synthetic_low_general[WINCE_VECTOR_WORDS];
+    uint32_t observed_low_tlb[WINCE_VECTOR_WORDS];
+    uint32_t observed_low_general[WINCE_VECTOR_WORDS];
     uint32_t replay_slot_1ac0_baseline[WINCE_REPLAY_SLOT_1AC0_WORDS];
 } wince_boot_state_t;
