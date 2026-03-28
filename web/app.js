@@ -5,15 +5,18 @@ const cmdlineInput = document.querySelector("#cmdline");
 const bootBtn = document.querySelector("#bootBtn");
 const stopBtn = document.querySelector("#stopBtn");
 const resetBtn = document.querySelector("#resetBtn");
+const toggleSerialBtn = document.querySelector("#toggleSerialBtn");
 const clearSerialBtn = document.querySelector("#clearSerialBtn");
 const statusEl = document.querySelector("#status");
 const serialEl = document.querySelector("#serial");
+const serialPanelEl = document.querySelector(".serial-panel");
 const screenEl = document.querySelector("#screen");
 const screenCtx = screenEl.getContext("2d", { alpha: false });
 
 let kernelFile = null;
 let running = false;
 let bootInFlight = false;
+let serialCollapsed = false;
 let imageData = screenCtx.createImageData(screenEl.width, screenEl.height);
 let btnSet1 = 0;
 let btnSet2 = 0;
@@ -59,13 +62,20 @@ function appendSerial(text) {
   serialEl.scrollTop = serialEl.scrollHeight;
 }
 
+function setSerialCollapsed(collapsed) {
+  serialCollapsed = collapsed;
+  serialPanelEl.classList.toggle("collapsed", collapsed);
+  toggleSerialBtn.textContent = collapsed ? "Expand" : "Collapse";
+  toggleSerialBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+}
+
 kernelFileInput.addEventListener("change", () => {
   kernelFile = kernelFileInput.files?.[0] ?? null;
   syncButtons();
   if (kernelFile) {
     setStatus(`Ready to boot ${kernelFile.name}.`);
   } else {
-    setStatus("Waiting for kernel upload and cmdline.");
+    setStatus("Waiting for kernel upload.");
   }
 });
 
@@ -101,6 +111,10 @@ resetBtn.addEventListener("click", () => {
 
 clearSerialBtn.addEventListener("click", () => {
   serialEl.textContent = "";
+});
+
+toggleSerialBtn.addEventListener("click", () => {
+  setSerialCollapsed(!serialCollapsed);
 });
 
 screenEl.addEventListener("pointerdown", (event) => {
@@ -202,3 +216,4 @@ worker.addEventListener("message", ({ data }) => {
 });
 
 syncButtons();
+setSerialCollapsed(false);

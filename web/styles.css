@@ -67,6 +67,7 @@ input[type="file"] {
 
 .actions,
 .serial-header,
+.serial-actions,
 .controls-grid,
 .action-buttons,
 .dpad {
@@ -168,6 +169,19 @@ button:not(:disabled):hover {
 .serial-header {
   justify-content: space-between;
   align-items: center;
+}
+
+.serial-actions {
+  align-items: center;
+}
+
+.serial-panel.collapsed {
+  height: auto;
+  grid-template-rows: auto;
+}
+
+.serial-panel.collapsed #serial {
+  display: none;
 }
 
 #serial {

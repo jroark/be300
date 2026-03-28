@@ -16,14 +16,14 @@
       </label>
       <label class="field">
         <span>Kernel cmdline</span>
-        <input id="cmdline" type="text" spellcheck="false" placeholder="console=tty0 console=ttyS0,9600 root=/dev/ram">
+        <input id="cmdline" type="text" spellcheck="false" value="console=tty0 console=ttyS0,9600 root=/dev/ram" placeholder="console=tty0 console=ttyS0,9600 root=/dev/ram">
       </label>
       <div class="actions">
         <button id="bootBtn" disabled>Boot</button>
         <button id="stopBtn" disabled>Stop</button>
         <button id="resetBtn" disabled>Reset</button>
       </div>
-      <p id="status" class="status">Waiting for kernel upload and cmdline.</p>
+      <p id="status" class="status">Waiting for kernel upload.</p>
     </section>
 
     <section class="panel screen-panel">
@@ -48,7 +48,10 @@
     <section class="panel serial-panel">
       <div class="serial-header">
         <h2>Serial Output</h2>
-        <button id="clearSerialBtn">Clear</button>
+        <div class="serial-actions">
+          <button id="toggleSerialBtn" type="button" aria-controls="serial" aria-expanded="true">Collapse</button>
+          <button id="clearSerialBtn" type="button">Clear</button>
+        </div>
       </div>
       <pre id="serial"></pre>
     </section>
