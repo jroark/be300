@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include "host_io.h"
 #include "siu.h"
 
 void siu_init(siu_state_t *s)
@@ -61,9 +62,12 @@ void siu_write(siu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
         if (dlab) {
             s->divisor = (s->divisor & 0xFF00) | (val & 0xFF);
         } else {
-            /* Output the character to the host terminal */
-            putchar((int)(val & 0xFF));
-            fflush(stdout);
+            int ch = (int)(val & 0xFF);
+            host_io_emit_serial(ch);
+            if (host_io_stdout_enabled()) {
+                putchar(ch);
+                fflush(stdout);
+            }
         }
         break;
 

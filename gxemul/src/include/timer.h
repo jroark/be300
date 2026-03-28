@@ -39,8 +39,10 @@ void timer_remove_all(void);
 
 void timer_update_frequency(struct timer *t, double new_freq);
 
+void timer_reset_state(void);
 void timer_start(void);
 void timer_stop(void);
+void timer_tick_manual(void);
 
 void timer_init(void);
 

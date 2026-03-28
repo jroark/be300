@@ -72,6 +72,7 @@
 #include <sys/types.h>
 #include <time.h>
 
+#include "host_io.h"
 #include "console.h"
 #include "emul.h"
 #include "machine.h"
@@ -464,12 +465,15 @@ void console_putchar(int handle, int ch)
 	    !console_handles[handle].outputonly)
 		console_change_inputability(handle, 1);
 
+	host_io_emit_serial(ch);
+
 	if (!allow_slaves) {
 		/*  stdout:  */
-		putchar(ch);
+		if (host_io_stdout_enabled())
+			putchar(ch);
 
 		/*  Assume flushes by OS or libc on newlines:  */
-		if (ch == '\n')
+		if (!host_io_stdout_enabled() || ch == '\n')
 			console_stdout_pending = 0;
 		else
 			console_stdout_pending = 1;
@@ -500,7 +504,7 @@ void console_putchar(int handle, int ch)
  */
 void console_flush(void)
 {
-	if (console_stdout_pending)
+	if (console_stdout_pending && host_io_stdout_enabled())
 		fflush(stdout);
 
 	console_stdout_pending = 0;
@@ -1037,4 +1041,3 @@ void console_deinit(void)
 	settings_remove(console_settings, "allow_slaves");
 	settings_remove(global_settings, "console");
 }
-
