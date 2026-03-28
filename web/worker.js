@@ -20,7 +20,7 @@ let serialPtr = 0;
 let widthPtr = 0;
 let heightPtr = 0;
 let cachedKernel = null;
-let cachedCmdline = "";
+let cachedCmdline = null;
 let lastFrameAt = 0;
 
 function postStatus(message, extra = {}) {
@@ -176,12 +176,28 @@ async function bootKernel(kernelBytes, cmdline) {
   scheduleTick();
 }
 
+async function loadKernelBytes(data) {
+  if (data.kernelFile) {
+    return new Uint8Array(await data.kernelFile.arrayBuffer());
+  }
+
+  if (data.kernelUrl) {
+    const response = await fetch(data.kernelUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch ${data.kernelName || "kernel"} (${response.status})`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  throw new Error("No kernel selected.");
+}
+
 self.addEventListener("message", async ({ data }) => {
   switch (data.type) {
     case "bootLinux": {
       try {
         postStatus("Loading kernel image...", { bootInFlight: true });
-        const kernelBytes = new Uint8Array(await data.kernelFile.arrayBuffer());
+        const kernelBytes = await loadKernelBytes(data);
         await bootKernel(kernelBytes, data.cmdline);
       } catch (error) {
         destroyMachine();
@@ -193,7 +209,7 @@ self.addEventListener("message", async ({ data }) => {
       break;
     }
     case "reset":
-      if (cachedKernel && cachedCmdline) {
+      if (cachedKernel && cachedCmdline !== null) {
         postStatus("Resetting emulator...", { bootInFlight: true });
         await bootKernel(cachedKernel, cachedCmdline);
       }
