@@ -12,8 +12,18 @@
     <section class="panel controls">
       <h1>BE-300 WebAssembly</h1>
       <label class="field">
-        <span>Linux kernel (`vmlinux`)</span>
+        <span>Bundled kernel</span>
+        <select id="presetKernel">
+          <option value="vmlinux-pgui-demo">vmlinux-pgui-demo</option>
+          <option value="vmlinux-mw">vmlinux-mw</option>
+          <option value="vmlinux-2.6">vmlinux-2.6</option>
+          <option value="custom-upload">Custom upload</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Custom kernel (`vmlinux`)</span>
         <input id="kernelFile" type="file">
+        <small class="field-hint">Choosing a file switches the selector above to custom upload.</small>
       </label>
       <label class="field">
         <span>Kernel cmdline</span>
@@ -24,7 +34,7 @@
         <button id="stopBtn" disabled>Stop</button>
         <button id="resetBtn" disabled>Reset</button>
       </div>
-      <p id="status" class="status">Waiting for kernel upload.</p>
+      <p id="status" class="status">Ready to boot vmlinux-pgui-demo.</p>
     </section>
 
     <section class="panel screen-panel">

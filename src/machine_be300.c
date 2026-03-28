@@ -153,8 +153,8 @@ static int be300_boot_linux_memory_internal(machine_t *m,
     uint32_t entry_va = 0;
     uint32_t jiffies_pa = 0;
 
-    if (!m || !kernel_data || kernel_size == 0 || !cmdline || !cmdline[0]) {
-        fprintf(stderr, "[BE300] Web boot requires a kernel image and non-empty cmdline\n");
+    if (!m || !kernel_data || kernel_size == 0 || !cmdline) {
+        fprintf(stderr, "[BE300] Web boot requires a kernel image\n");
         return -1;
     }
     if (m->boot_mode != BE300_BOOT_NONE) {

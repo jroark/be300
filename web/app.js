@@ -1,5 +1,6 @@
 const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 
+const presetKernelSelect = document.querySelector("#presetKernel");
 const kernelFileInput = document.querySelector("#kernelFile");
 const cmdlineInput = document.querySelector("#cmdline");
 const bootBtn = document.querySelector("#bootBtn");
@@ -14,7 +15,26 @@ const screenEl = document.querySelector("#screen");
 const screenCtx = screenEl.getContext("2d", { alpha: false });
 const controlButtons = Array.from(document.querySelectorAll("[data-set][data-mask]"));
 
-let kernelFile = null;
+const CUSTOM_UPLOAD_ID = "custom-upload";
+const presetKernels = {
+  "vmlinux-pgui-demo": {
+    name: "vmlinux-pgui-demo",
+    url: "./kernels/vmlinux-pgui-demo",
+    defaultCmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram",
+  },
+  "vmlinux-mw": {
+    name: "vmlinux-mw",
+    url: "./kernels/vmlinux-mw",
+    defaultCmdline: "console=tty0 root=/dev/ram",
+  },
+  "vmlinux-2.6": {
+    name: "vmlinux-2.6",
+    url: "./kernels/vmlinux-2.6",
+    defaultCmdline: "",
+  },
+};
+
+let uploadedKernelFile = null;
 let running = false;
 let bootInFlight = false;
 let serialCollapsed = false;
@@ -26,14 +46,39 @@ function setStatus(text) {
   statusEl.textContent = text;
 }
 
+function getActiveKernel() {
+  if (presetKernelSelect.value === CUSTOM_UPLOAD_ID) {
+    return uploadedKernelFile
+      ? {
+          kind: "upload",
+          name: uploadedKernelFile.name,
+          file: uploadedKernelFile,
+        }
+      : null;
+  }
+
+  const preset = presetKernels[presetKernelSelect.value];
+  return preset ? { kind: "preset", ...preset } : null;
+}
+
+function updateKernelStatus() {
+  const activeKernel = getActiveKernel();
+
+  if (!activeKernel) {
+    setStatus("Select a bundled kernel or upload a custom kernel.");
+    return;
+  }
+
+  setStatus(`Ready to boot ${activeKernel.name}.`);
+}
+
 function syncButtons() {
-  const hasKernel = Boolean(kernelFile);
-  const hasCmdline = cmdlineInput.value.trim().length > 0;
-  const bootable = hasKernel && hasCmdline && !bootInFlight;
+  const hasKernel = Boolean(getActiveKernel());
+  const bootable = hasKernel && !bootInFlight;
 
   bootBtn.disabled = !bootable;
   stopBtn.disabled = !running;
-  resetBtn.disabled = !hasKernel || !hasCmdline || bootInFlight;
+  resetBtn.disabled = !hasKernel || bootInFlight;
 }
 
 function clamp(value, min, max) {
@@ -102,14 +147,28 @@ function setSerialCollapsed(collapsed) {
   toggleSerialBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
 }
 
-kernelFileInput.addEventListener("change", () => {
-  kernelFile = kernelFileInput.files?.[0] ?? null;
-  syncButtons();
-  if (kernelFile) {
-    setStatus(`Ready to boot ${kernelFile.name}.`);
-  } else {
-    setStatus("Waiting for kernel upload.");
+presetKernelSelect.addEventListener("change", () => {
+  if (presetKernelSelect.value === CUSTOM_UPLOAD_ID) {
+    updateKernelStatus();
+    syncButtons();
+    return;
   }
+
+  uploadedKernelFile = null;
+  kernelFileInput.value = "";
+  cmdlineInput.value = presetKernels[presetKernelSelect.value].defaultCmdline;
+  updateKernelStatus();
+  syncButtons();
+});
+
+kernelFileInput.addEventListener("change", () => {
+  uploadedKernelFile = kernelFileInput.files?.[0] ?? null;
+  if (uploadedKernelFile) {
+    presetKernelSelect.value = CUSTOM_UPLOAD_ID;
+  }
+
+  updateKernelStatus();
+  syncButtons();
 });
 
 cmdlineInput.addEventListener("input", () => {
@@ -117,20 +176,31 @@ cmdlineInput.addEventListener("input", () => {
 });
 
 bootBtn.addEventListener("click", () => {
-  if (!kernelFile || !cmdlineInput.value.trim()) {
+  const activeKernel = getActiveKernel();
+
+  if (!activeKernel) {
     return;
   }
+
   bootInFlight = true;
   running = false;
   clearGuestButtons();
   serialEl.textContent = "";
-  setStatus(`Booting ${kernelFile.name}...`);
+  setStatus(`Booting ${activeKernel.name}...`);
   syncButtons();
-  worker.postMessage({
+  const message = {
     type: "bootLinux",
-    kernelFile,
-    cmdline: cmdlineInput.value.trim(),
-  });
+    kernelName: activeKernel.name,
+    cmdline: cmdlineInput.value,
+  };
+
+  if (activeKernel.kind === "upload") {
+    message.kernelFile = activeKernel.file;
+  } else {
+    message.kernelUrl = activeKernel.url;
+  }
+
+  worker.postMessage(message);
 });
 
 stopBtn.addEventListener("click", () => {
@@ -254,3 +324,4 @@ worker.addEventListener("message", ({ data }) => {
 syncButtons();
 syncControlButtonStates();
 setSerialCollapsed(false);
+updateKernelStatus();

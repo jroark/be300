@@ -121,9 +121,15 @@ if(BUILD_WEB)
 
     set(WEB_OUTPUT_DIR ${CMAKE_BINARY_DIR}/web)
     file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR})
+    file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR}/kernels)
     foreach(asset index.html app.js worker.js styles.css be300_frame.png favicon.svg)
         configure_file(${CMAKE_SOURCE_DIR}/web/${asset}
                        ${WEB_OUTPUT_DIR}/${asset}
+                       COPYONLY)
+    endforeach()
+    foreach(kernel_asset vmlinux-pgui-demo vmlinux-mw vmlinux-2.6)
+        configure_file(${CMAKE_SOURCE_DIR}/kernels/${kernel_asset}
+                       ${WEB_OUTPUT_DIR}/kernels/${kernel_asset}
                        COPYONLY)
     endforeach()
 
