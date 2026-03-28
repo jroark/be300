@@ -323,6 +323,15 @@ void console_makeavail(int handle, char ch)
  */
 static int console_stdin_avail(int handle)
 {
+#ifdef __EMSCRIPTEN__
+	/*
+	 * The browser build has no host stdin. Touch/buttons are injected
+	 * through BE-300-specific MMIO state, so probing stdin here only
+	 * triggers unsupported poll/select stream syscalls in Emscripten.
+	 */
+	(void)handle;
+	return 0;
+#else
 	if (!console_handles[handle].in_use_for_input)
 		return 0;
 
@@ -334,6 +343,7 @@ static int console_stdin_avail(int handle)
 		return 0;
 
 	return d_avail(console_handles[handle].r_descriptor);
+#endif
 }
 
 
