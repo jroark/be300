@@ -3,6 +3,7 @@ package com.jroark.be300android
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.Handler
@@ -29,6 +30,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var frameContainer: FrameLayout
     private lateinit var framebufferView: ImageView
     private lateinit var frameOverlayView: ImageView
+    private lateinit var controlOverlayView: Be300ControlOverlayView
     private lateinit var kernelSpinner: Spinner
     private lateinit var statusText: TextView
 
@@ -41,6 +43,12 @@ class MainActivity : AppCompatActivity() {
     private var screenMask: ScreenMask? = null
     private var frameAspectRatio: String = FRAME_ASPECT_RATIO_FALLBACK
     private lateinit var doubleTapDetector: GestureDetector
+    private var btnSet1State = 0
+    private var btnSet2State = 0
+    private var lastTouchX = 0
+    private var lastTouchY = 0
+    private var activePointerId = MotionEvent.INVALID_POINTER_ID
+    private var activeInputKind = ActiveInputKind.NONE
 
     private data class KernelBundle(
         val id: String,
@@ -71,6 +79,13 @@ class MainActivity : AppCompatActivity() {
         val heightFrac: Float
     )
 
+    private enum class ActiveInputKind {
+        NONE,
+        SCREEN,
+        TOUCH_STRIP,
+        BUTTONS
+    }
+
     private val framePump = object : Runnable {
         override fun run() {
             if (emulatorHandle != 0L) {
@@ -95,6 +110,7 @@ class MainActivity : AppCompatActivity() {
         frameContainer = findViewById(R.id.deviceFrameContainer)
         framebufferView = findViewById(R.id.framebufferView)
         frameOverlayView = findViewById(R.id.frameOverlayView)
+        controlOverlayView = findViewById(R.id.controlOverlayView)
         kernelSpinner = findViewById(R.id.kernelSpinner)
         statusText = findViewById(R.id.statusText)
 
@@ -110,6 +126,7 @@ class MainActivity : AppCompatActivity() {
             screenMask = detectScreenMask(frameBitmap)
             placeFramebufferViewport(frameContainer, framebufferView, screenMask)
             applyFrameOverlayCutout(frameContainer, frameOverlayView, frameBitmap, screenMask)
+            controlOverlayView.post { updateControlOverlayLayout() }
             frameBitmap.recycle()
         }
 
@@ -142,38 +159,172 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    override fun onPause() {
+        releaseAllInputState()
+        super.onPause()
+    }
+
     private fun setupDoubleTapToggle() {
         doubleTapDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
+                releaseAllInputState()
                 isFullscreenFramebuffer = !isFullscreenFramebuffer
                 applyDisplayMode()
                 return true
             }
         })
 
-        // Bezel area (outside framebufferView): double-tap only
-        frameContainer.setOnTouchListener { _, event ->
+        controlOverlayView.setOnTouchListener { _, event ->
             doubleTapDetector.onTouchEvent(event)
-        }
-
-        // Screen area: forward touch coords to emulator + double-tap
-        framebufferView.setOnTouchListener { v, event ->
-            doubleTapDetector.onTouchEvent(event)
-
-            if (emulatorHandle != 0L) {
-                val be300X = ((event.x / v.width) * 239f).toInt().coerceIn(0, 239)
-                val be300Y = ((event.y / v.height) * 319f).toInt().coerceIn(0, 319)
-                val down = event.action == MotionEvent.ACTION_DOWN ||
-                           event.action == MotionEvent.ACTION_MOVE
-                native.nativeSendTouch(emulatorHandle, down, be300X, be300Y)
-            }
+            handleOverlayTouch(event)
             true
         }
     }
 
+    private fun handleOverlayTouch(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                activePointerId = event.getPointerId(0)
+                handleActivePointer(event)
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (activePointerId == MotionEvent.INVALID_POINTER_ID) {
+                    activePointerId = event.getPointerId(event.actionIndex)
+                    handleActivePointer(event)
+                }
+            }
+            MotionEvent.ACTION_MOVE -> handleActivePointer(event)
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (event.getPointerId(event.actionIndex) == activePointerId) {
+                    releaseAllInputState()
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> releaseAllInputState()
+        }
+    }
+
+    private fun handleActivePointer(event: MotionEvent) {
+        if (activePointerId == MotionEvent.INVALID_POINTER_ID) {
+            return
+        }
+
+        val pointerIndex = event.findPointerIndex(activePointerId)
+        if (pointerIndex < 0) {
+            releaseAllInputState()
+            return
+        }
+
+        if (activeInputKind == ActiveInputKind.SCREEN) {
+            sendScreenTouchAtPoint(event.getX(pointerIndex), event.getY(pointerIndex), down = true)
+            return
+        }
+
+        when (val hit = controlOverlayView.hitTest(event.getX(pointerIndex), event.getY(pointerIndex))) {
+            is Be300ControlOverlayView.HitTarget.Screen -> {
+                activeInputKind = ActiveInputKind.SCREEN
+                controlOverlayView.setPressedControls(emptySet())
+                setGuestButtons(0, 0)
+                sendScreenTouch(hit.normalizedX, hit.normalizedY, down = true)
+            }
+            is Be300ControlOverlayView.HitTarget.TouchStrip -> {
+                activeInputKind = ActiveInputKind.TOUCH_STRIP
+                controlOverlayView.setPressedControls(setOf(hit.controlId))
+                setGuestButtons(0, 0)
+                sendTouchStripSlot(hit.slot, down = true)
+            }
+            is Be300ControlOverlayView.HitTarget.Buttons -> {
+                activeInputKind = ActiveInputKind.BUTTONS
+                releaseGuestTouch()
+                controlOverlayView.setPressedControls(hit.highlights)
+                setGuestButtons(hit.btnSet1Mask, hit.btnSet2Mask)
+            }
+            Be300ControlOverlayView.HitTarget.None -> {
+                when (activeInputKind) {
+                    ActiveInputKind.TOUCH_STRIP -> releaseGuestTouch()
+                    ActiveInputKind.BUTTONS -> setGuestButtons(0, 0)
+                    else -> Unit
+                }
+                activeInputKind = ActiveInputKind.NONE
+                controlOverlayView.setPressedControls(emptySet())
+            }
+        }
+    }
+
+    private fun sendScreenTouchAtPoint(x: Float, y: Float, down: Boolean) {
+        val rect = currentFramebufferRect()
+        if (rect.width() <= 0f || rect.height() <= 0f) {
+            return
+        }
+
+        val clampedX = x.coerceIn(rect.left, rect.right)
+        val clampedY = y.coerceIn(rect.top, rect.bottom)
+        val normalizedX = ((clampedX - rect.left) / rect.width()).coerceIn(0f, 1f)
+        val normalizedY = ((clampedY - rect.top) / rect.height()).coerceIn(0f, 1f)
+        sendScreenTouch(normalizedX, normalizedY, down)
+    }
+
+    private fun sendScreenTouch(normalizedX: Float, normalizedY: Float, down: Boolean) {
+        val be300X = (normalizedX * (FB_WIDTH - 1).toFloat()).roundToInt().coerceIn(0, FB_WIDTH - 1)
+        val be300Y = (normalizedY * (FB_HEIGHT - 1).toFloat()).roundToInt().coerceIn(0, FB_HEIGHT - 1)
+        setGuestTouch(down, be300X, be300Y)
+    }
+
+    private fun sendTouchStripSlot(slot: Int, down: Boolean) {
+        val slotCenter = ((slot + 0.5f) * FB_WIDTH.toFloat() / TOUCH_STRIP_SLOT_COUNT.toFloat())
+        val be300X = slotCenter.roundToInt().coerceIn(0, FB_WIDTH - 1)
+        setGuestTouch(down, be300X, TOUCH_STRIP_CENTER_Y)
+    }
+
+    private fun setGuestTouch(down: Boolean, x: Int, y: Int) {
+        lastTouchX = x
+        lastTouchY = y
+        if (emulatorHandle != 0L) {
+            native.nativeSendTouch(emulatorHandle, down, x, y)
+        }
+    }
+
+    private fun releaseGuestTouch() {
+        if (emulatorHandle != 0L) {
+            native.nativeSendTouch(emulatorHandle, false, lastTouchX, lastTouchY)
+        }
+    }
+
+    private fun setGuestButtons(btn1: Int, btn2: Int) {
+        if (btnSet1State == btn1 && btnSet2State == btn2) {
+            return
+        }
+        btnSet1State = btn1
+        btnSet2State = btn2
+        if (emulatorHandle != 0L) {
+            native.nativeSendButton(emulatorHandle, btnSet1State, btnSet2State)
+        }
+    }
+
+    private fun releaseAllInputState() {
+        releaseGuestTouch()
+        setGuestButtons(0, 0)
+        activePointerId = MotionEvent.INVALID_POINTER_ID
+        activeInputKind = ActiveInputKind.NONE
+        controlOverlayView.setPressedControls(emptySet())
+    }
+
+    private fun updateControlOverlayLayout() {
+        controlOverlayView.updateLayout(currentFramebufferRect(), isFullscreenFramebuffer)
+    }
+
+    private fun currentFramebufferRect(): RectF {
+        return RectF(
+            framebufferView.left.toFloat(),
+            framebufferView.top.toFloat(),
+            framebufferView.right.toFloat(),
+            framebufferView.bottom.toFloat()
+        )
+    }
+
     private fun applyDisplayMode() {
+        releaseAllInputState()
         val lp = frameContainer.layoutParams as ConstraintLayout.LayoutParams
         if (isFullscreenFramebuffer) {
             lp.width = 0
@@ -215,6 +366,7 @@ class MainActivity : AppCompatActivity() {
                 applyFrameOverlayCutout(frameContainer, frameOverlayView, frameBitmap, screenMask)
                 frameBitmap.recycle()
             }
+            controlOverlayView.post { updateControlOverlayLayout() }
         }
     }
 
@@ -278,7 +430,7 @@ class MainActivity : AppCompatActivity() {
         kernelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
                 if (!spinnerReady) return
-                startKernel(position, fromUserSelection = true)
+                startKernel(position)
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) {
@@ -286,13 +438,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        startKernel(initialIndex, fromUserSelection = false)
+        startKernel(initialIndex)
 
         // After all pending messages drain, trust onItemSelected callbacks.
         kernelSpinner.post { spinnerReady = true }
     }
 
-    private fun startKernel(index: Int, fromUserSelection: Boolean) {
+    private fun startKernel(index: Int) {
         if (index !in kernelChoices.indices) return
         val choice = kernelChoices[index]
         // Don't restart if this kernel is already running.
@@ -353,6 +505,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopEmulator() {
         uiHandler.removeCallbacks(framePump)
+        releaseAllInputState()
         if (emulatorHandle != 0L) {
             native.nativeDestroy(emulatorHandle)
             emulatorHandle = 0
@@ -759,6 +912,8 @@ class MainActivity : AppCompatActivity() {
         private const val SCREEN_TOP_FRAC = 0.1000f
         private const val SCREEN_WIDTH_FRAC = 0.7450f
         private const val SCREEN_HEIGHT_FRAC = 0.6320f
+        private const val TOUCH_STRIP_SLOT_COUNT = 7
+        private const val TOUCH_STRIP_CENTER_Y = 340
         private const val FRAME_ASPECT_RATIO_FALLBACK = "1024:1536"
     }
 }
