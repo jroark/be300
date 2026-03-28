@@ -130,10 +130,10 @@ button:not(:disabled):hover {
 
 .screen-viewport {
   position: absolute;
-  left: 11%;
-  top: 10%;
-  width: 74.5%;
-  height: 63.2%;
+  left: 18.2617%;
+  top: 14.1927%;
+  width: 62.8906%;
+  height: 51.6927%;
   display: grid;
   place-items: center;
   overflow: hidden;
