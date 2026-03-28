@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20260328b";
+const ASSET_VERSION = "20260328c";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });

@@ -1,10 +1,10 @@
-import createBe300Module from "./be300_web.js?v=20260328b";
+import createBe300Module from "./be300_web.js?v=20260328c";
 
 const FRAME_WIDTH = 240;
 const FRAME_HEIGHT = 320;
 const FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 4;
 const SERIAL_BYTES = 16384;
-const BATCHES_PER_TICK = 64;
+const BATCHES_PER_TICK = 15;
 const FRAME_INTERVAL_MS = 33;
 
 const textEncoder = new TextEncoder();
