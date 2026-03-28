@@ -1,4 +1,7 @@
-const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+const ASSET_VERSION = "20260328b";
+const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
+  type: "module",
+});
 
 const presetKernelSelect = document.querySelector("#presetKernel");
 const kernelFileInput = document.querySelector("#kernelFile");
@@ -175,7 +178,7 @@ cmdlineInput.addEventListener("input", () => {
   syncButtons();
 });
 
-bootBtn.addEventListener("click", () => {
+bootBtn.addEventListener("click", async () => {
   const activeKernel = getActiveKernel();
 
   if (!activeKernel) {
@@ -194,13 +197,26 @@ bootBtn.addEventListener("click", () => {
     cmdline: cmdlineInput.value,
   };
 
-  if (activeKernel.kind === "upload") {
-    message.kernelFile = activeKernel.file;
-  } else {
-    message.kernelUrl = activeKernel.url;
+  try {
+    if (activeKernel.kind === "upload") {
+      message.kernelBytes = await activeKernel.file.arrayBuffer();
+    } else {
+      message.kernelUrl = `${activeKernel.url}?v=${ASSET_VERSION}`;
+    }
+  } catch (error) {
+    bootInFlight = false;
+    const messageText = `Boot failed: ${error instanceof Error ? error.message : String(error)}`;
+    setStatus(messageText);
+    appendSerial(`\n[FATAL] ${messageText}\n`);
+    syncButtons();
+    return;
   }
 
-  worker.postMessage(message);
+  if (message.kernelBytes) {
+    worker.postMessage(message, [message.kernelBytes]);
+  } else {
+    worker.postMessage(message);
+  }
 });
 
 stopBtn.addEventListener("click", () => {

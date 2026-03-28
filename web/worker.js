@@ -1,4 +1,4 @@
-import createBe300Module from "./be300_web.js";
+import createBe300Module from "./be300_web.js?v=20260328b";
 
 const FRAME_WIDTH = 240;
 const FRAME_HEIGHT = 320;
@@ -177,7 +177,14 @@ async function bootKernel(kernelBytes, cmdline) {
 }
 
 async function loadKernelBytes(data) {
+  if (data.kernelBytes) {
+    return new Uint8Array(data.kernelBytes);
+  }
+
   if (data.kernelFile) {
+    if (typeof data.kernelFile.arrayBuffer !== "function") {
+      throw new Error("Uploaded kernel could not be read. Reload the page and try again.");
+    }
     return new Uint8Array(await data.kernelFile.arrayBuffer());
   }
 
