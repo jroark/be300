@@ -250,6 +250,16 @@ static const wince_replay_exec_probe_desc_t wince_replay_exec_probes[] = {
     { UINT32_C(0x80000184), "exec_80000184", -0x10, 0x40u, 0x60u },
     { UINT32_C(0x80000188), "exec_80000188", -0x10, 0x40u, 0x60u },
     { UINT32_C(0x8000018C), "exec_8000018c", -0x10, 0x40u, 0x60u },
+    { UINT32_C(0x80078260), "exec_80078260", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x80078308), "exec_80078308", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x80078338), "exec_80078338", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x80078354), "exec_80078354", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x8007846C), "exec_8007846c", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x800784F4), "exec_800784f4", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x80078BF4), "exec_80078bf4", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x80078C10), "exec_80078c10", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x80078C3C), "exec_80078c3c", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x80078D28), "exec_80078d28", -0x20, 0x80u, 0x80u },
     { UINT32_C(0x8007B670), "exec_8007b670", -0x20, 0x80u, 0x80u },
     { UINT32_C(0x8007B81C), "exec_8007b81c", -0x20, 0x80u, 0x80u },
     { UINT32_C(0x8007B82C), "exec_8007b82c", -0x20, 0x80u, 0x80u },
@@ -1997,6 +2007,7 @@ static void log_bootctx_follow_state(machine_t *m, const char *label)
 
 static void log_dispatch_callback_state(machine_t *m, const char *label)
 {
+    const wince_resume_region_t *jalr_region;
     uint32_t pc;
     uint32_t a0;
     uint32_t a1;
@@ -2017,6 +2028,8 @@ static void log_dispatch_callback_state(machine_t *m, const char *label)
     if (!m || !m->wince.log_stall)
         return;
 
+    jalr_region = find_replay_region_by_name(&wince_resume_replay_snapshot,
+        "dispatch_jalr_slot_660080");
     pc = (uint32_t)m->cpu->pc;
     a0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0];
     a1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1];
@@ -2041,6 +2054,9 @@ static void log_dispatch_callback_state(machine_t *m, const char *label)
         t1);
 
     dump_gpr_window(m);
+    dump_va_window(m, "dispatch_jalr_slot_660080", UINT32_C(0x80660080), 0x20u);
+    dump_pa_window(m, "dispatch_jalr_slot_660080_pa", UINT32_C(0x00660080),
+        0x20u);
     dump_va_window(m, "dispatch_slot_obj_660320", UINT32_C(0x80660320), 0x20u);
     dump_pa_window(m, "dispatch_slot_obj_660320_pa", UINT32_C(0x00660320),
         0x20u);
@@ -2053,6 +2069,8 @@ static void log_dispatch_callback_state(machine_t *m, const char *label)
         0x40u);
     dump_va_window(m, "dispatch_slot_page_a0051000", UINT32_C(0xA0051000),
         0x40u);
+    if (jalr_region)
+        log_replay_region_compare(m, jalr_region, "dispatch-jalr-slot");
     if (a0 != 0)
         dump_va_window(m, "dispatch_arg_a0", a0 & ~UINT32_C(0x1F), 0x40u);
     if (a1 != 0)
@@ -2767,6 +2785,10 @@ static void log_replay_exec_windows(machine_t *m, const char *label,
         0x100u);
     dump_va_window(m, "exec_callback_page_a0051740", UINT32_C(0xA0051740),
         0x40u);
+    dump_va_window(m, "exec_dispatch_jalr_80660080", UINT32_C(0x80660080),
+        0x20u);
+    dump_pa_window(m, "exec_dispatch_jalr_660080_pa", UINT32_C(0x00660080),
+        0x20u);
     dump_va_window(m, "exec_dispatch_obj_80660320", UINT32_C(0x80660320),
         0x20u);
     dump_va_window(m, "exec_dispatch_obj_80660328", UINT32_C(0x80660328),

@@ -40,6 +40,12 @@ static const uint8_t wince_resume_bootctx_stub_63d0_valid[] = {
     0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
     0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
 };
+static const uint32_t wince_resume_dispatch_jalr_slot_660080_words[] = {
+    UINT32_C(0x00000100), UINT32_C(0x80078C3C), UINT32_C(0x80078D28), UINT32_C(0x80078C10),
+};
+static const uint8_t wince_resume_dispatch_jalr_slot_660080_valid[] = {
+    0x01, 0x01, 0x01, 0x01,
+};
 static const uint32_t wince_resume_dispatch_ptr_table_660170_words[] = {
     UINT32_C(0xA0051000), UINT32_C(0xA0051080), UINT32_C(0xA0051100), UINT32_C(0xA0051180),
     UINT32_C(0xA0051200), UINT32_C(0xA0051280), UINT32_C(0xA0051300), UINT32_C(0xA0051380),
@@ -120,6 +126,7 @@ static const wince_resume_region_t wince_resume_replay_regions[] = {
     { "resume_context_22a0", UINT32_C(0x000022A0), UINT32_C(0x0020), UINT32_C(8), wince_resume_resume_context_22a0_words, wince_resume_resume_context_22a0_valid },
     { "stack_frame_1770", UINT32_C(0x00001770), UINT32_C(0x0090), UINT32_C(36), wince_resume_stack_frame_1770_words, wince_resume_stack_frame_1770_valid },
     { "bootctx_stub_63d0", UINT32_C(0x000063D0), UINT32_C(0x0040), UINT32_C(16), wince_resume_bootctx_stub_63d0_words, wince_resume_bootctx_stub_63d0_valid },
+    { "dispatch_jalr_slot_660080", UINT32_C(0x00660080), UINT32_C(0x0010), UINT32_C(4), wince_resume_dispatch_jalr_slot_660080_words, wince_resume_dispatch_jalr_slot_660080_valid },
     { "dispatch_ptr_table_660170", UINT32_C(0x00660170), UINT32_C(0x0030), UINT32_C(12), wince_resume_dispatch_ptr_table_660170_words, wince_resume_dispatch_ptr_table_660170_valid },
     { "dispatch_slot_table_660310", UINT32_C(0x00660310), UINT32_C(0x0070), UINT32_C(28), wince_resume_dispatch_slot_table_660310_words, wince_resume_dispatch_slot_table_660310_valid },
     { "callback_table_a0051680", UINT32_C(0x00051680), UINT32_C(0x0200), UINT32_C(128), wince_resume_callback_table_a0051680_words, wince_resume_callback_table_a0051680_valid },
@@ -130,7 +137,7 @@ static const wince_resume_snapshot_t wince_resume_replay_snapshot = {
     UINT32_C(0x00000000),
     UINT32_C(0x8008B52C),
     wince_resume_replay_regions,
-    UINT32_C(6),
+    UINT32_C(7),
     NULL,
     UINT32_C(0),
 };

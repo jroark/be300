@@ -42,6 +42,8 @@ WINDOW_SPECS = (
     WindowSpec("stack_frame_1770", ("stack_frame_1700",), 0x00001770, 0x90),
     WindowSpec("bootctx_stub_63d0", ("bootctx_alias_A0006000",),
         0x000063D0, 0x40),
+    WindowSpec("dispatch_jalr_slot_660080", ("objptr_table_80660000",),
+        0x00660080, 0x10),
     WindowSpec("dispatch_ptr_table_660170", ("objptr_table_80660000",),
         0x00660170, 0x30),
     WindowSpec("dispatch_slot_table_660310", ("objptr_table_80660000",),
