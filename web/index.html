@@ -32,20 +32,7 @@
           <div class="screen-viewport">
             <canvas id="screen" width="240" height="320"></canvas>
           </div>
-          <svg class="device-frame-overlay" viewBox="0 0 1024 1536" aria-hidden="true" focusable="false">
-            <defs>
-              <mask id="be300-frame-hole-mask" maskUnits="userSpaceOnUse">
-                <rect x="0" y="0" width="1024" height="1536" fill="white"></rect>
-                <rect x="187" y="218" width="644" height="859" fill="black"></rect>
-              </mask>
-            </defs>
-            <image
-              href="./be300_frame.png"
-              width="1024"
-              height="1536"
-              preserveAspectRatio="none"
-              mask="url(#be300-frame-hole-mask)"></image>
-          </svg>
+          <img class="device-frame-overlay" src="./be300_frame.png" alt="" aria-hidden="true">
         </div>
       </div>
       <div class="controls-grid">

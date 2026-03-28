@@ -124,16 +124,16 @@ button:not(:disabled):hover {
 .device-frame {
   position: relative;
   width: min(100%, 460px);
-  aspect-ratio: 1024 / 1536;
+  aspect-ratio: 1024 / 1601;
   filter: drop-shadow(0 28px 50px rgba(0, 0, 0, 0.35));
 }
 
 .screen-viewport {
   position: absolute;
   left: 18.2617%;
-  top: 14.1927%;
+  top: 13.6165%;
   width: 62.8906%;
-  height: 55.9245%;
+  height: 53.6540%;
   display: grid;
   place-items: center;
   overflow: hidden;
