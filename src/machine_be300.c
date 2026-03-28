@@ -13,6 +13,7 @@
 #include <time.h>
 
 #include "be300.h"
+#include "host_io.h"
 #include "loader.h"
 #include "ui.h"
 #include "wince_boot.h"
@@ -36,6 +37,149 @@
 extern volatile bool emul_shutdown;
 extern volatile bool emul_executing;
 
+static void be300_serial_ring_push(machine_t *m, int ch)
+{
+    if (!m)
+        return;
+
+    if (m->serial_count == BE300_SERIAL_RING_CAP) {
+        m->serial_tail = (m->serial_tail + 1u) % BE300_SERIAL_RING_CAP;
+        m->serial_count--;
+    }
+
+    m->serial_ring[m->serial_head] = (char)ch;
+    m->serial_head = (m->serial_head + 1u) % BE300_SERIAL_RING_CAP;
+    m->serial_count++;
+}
+
+static void be300_serial_sink(int ch, void *user_data)
+{
+    be300_serial_ring_push((machine_t *)user_data, ch);
+}
+
+static void be300_register_linux_input_if_needed(machine_t *m)
+{
+    if (m->input_registered)
+        return;
+
+    extern void be300_register_input(struct machine *, machine_t *, bool);
+    be300_register_input(m->gxe_machine, m, m->cfg.log_mmio);
+    m->input_registered = true;
+}
+
+static void be300_set_linux_boot_strings(machine_t *m,
+                                         const char *kernel_name,
+                                         const char *cmdline)
+{
+    struct machine *gxm = m->gxe_machine;
+    const char *safe_kernel = kernel_name ? kernel_name : "vmlinux";
+    const char *safe_cmdline = cmdline ? cmdline : "";
+
+    free(gxm->boot_kernel_filename);
+    gxm->boot_kernel_filename = strdup(safe_kernel);
+
+    free(gxm->boot_string_argument);
+    gxm->boot_string_argument = strdup(safe_cmdline);
+
+    gxm->bootstr = gxm->boot_kernel_filename;
+    gxm->bootarg = gxm->boot_string_argument[0] ? gxm->boot_string_argument : NULL;
+}
+
+static void be300_refresh_linux_bootinfo(machine_t *m)
+{
+    struct machine *gxm = m->gxe_machine;
+    uint64_t ram_top;
+    uint64_t argv_base;
+
+    if (!gxm->prom_emulation)
+        return;
+
+    ram_top = 0x80000000ULL + ((uint64_t)gxm->physical_ram_in_mb << 20);
+    argv_base = ram_top - 512;
+
+    m->cpu->cd.mips.gpr[MIPS_GPR_A0] = 1;
+    m->cpu->cd.mips.gpr[MIPS_GPR_A1] = argv_base;
+    m->cpu->cd.mips.gpr[MIPS_GPR_A2] = ram_top - 256;
+
+    store_32bit_word(m->cpu, argv_base, argv_base + 16);
+    store_32bit_word(m->cpu, argv_base + 4, 0);
+    store_32bit_word(m->cpu, argv_base + 8, 0);
+    store_string(m->cpu, argv_base + 16, gxm->boot_kernel_filename);
+
+    if (gxm->boot_string_argument && gxm->boot_string_argument[0]) {
+        m->cpu->cd.mips.gpr[MIPS_GPR_A0]++;
+        store_32bit_word(m->cpu, argv_base + 4, argv_base + 64);
+        store_32bit_word(m->cpu, argv_base + 8, 0);
+        store_string(m->cpu, argv_base + 64, gxm->boot_string_argument);
+    }
+}
+
+static int be300_boot_linux_path(machine_t *m, const char *kernel_path,
+                                 const char *cmdline, const char *ram_path)
+{
+    uint32_t entry_va = 0;
+    uint32_t jiffies_pa = 0;
+
+    if (!kernel_path)
+        return -1;
+
+    be300_set_linux_boot_strings(m, kernel_path, cmdline);
+    be300_refresh_linux_bootinfo(m);
+
+    if (loader_load_elf(m, kernel_path, &entry_va, &jiffies_pa) != 0) {
+        fprintf(stderr, "[BE300] Failed to load kernel ELF\n");
+        return -1;
+    }
+
+    m->cpu->pc = (uint64_t)(int32_t)entry_va;
+    m->boot_mode = BE300_BOOT_LINUX_PATH;
+    fprintf(stderr, "[BE300] Kernel entry: PC=0x%08X\n", entry_va);
+
+    if (cmdline && cmdline[0])
+        fprintf(stderr, "[BE300] Kernel cmdline: %s\n", cmdline);
+
+    if (ram_path)
+        loader_load_ram(m, ram_path);
+
+    be300_register_linux_input_if_needed(m);
+    return 0;
+}
+
+static int be300_boot_linux_memory_internal(machine_t *m,
+                                            const void *kernel_data,
+                                            size_t kernel_size,
+                                            const char *cmdline)
+{
+    uint32_t entry_va = 0;
+    uint32_t jiffies_pa = 0;
+
+    if (!m || !kernel_data || kernel_size == 0 || !cmdline || !cmdline[0]) {
+        fprintf(stderr, "[BE300] Web boot requires a kernel image and non-empty cmdline\n");
+        return -1;
+    }
+    if (m->boot_mode != BE300_BOOT_NONE) {
+        fprintf(stderr, "[BE300] Machine already has boot media loaded\n");
+        return -1;
+    }
+
+    be300_set_linux_boot_strings(m, "vmlinux", cmdline);
+    be300_refresh_linux_bootinfo(m);
+
+    if (loader_load_elf_from_memory(m, kernel_data, kernel_size,
+                                    &entry_va, &jiffies_pa) != 0) {
+        fprintf(stderr, "[BE300] Failed to load in-memory kernel ELF\n");
+        return -1;
+    }
+
+    m->cpu->pc = (uint64_t)(int32_t)entry_va;
+    m->boot_mode = BE300_BOOT_LINUX_MEMORY;
+    fprintf(stderr, "[BE300] In-memory kernel entry: PC=0x%08X\n", entry_va);
+    fprintf(stderr, "[BE300] Kernel cmdline: %s\n", cmdline);
+
+    be300_register_linux_input_if_needed(m);
+    return 0;
+}
+
 
 machine_t *be300_create(const machine_config_t *cfg)
 {
@@ -43,6 +187,13 @@ machine_t *be300_create(const machine_config_t *cfg)
     machine_t *m = calloc(1, sizeof(machine_t));
     if (!m) return NULL;
     m->cfg = *cfg;
+    m->boot_mode = BE300_BOOT_NONE;
+    m->use_builtin_ui = true;
+    m->save_exit_screenshot = true;
+    m->mirror_serial_to_stdout = true;
+    m->fb_width = 240;
+    m->fb_height = 320;
+    m->fb_stride = 256;
     wince_boot_init(m);
 
     /*
@@ -153,28 +304,11 @@ machine_t *be300_create(const machine_config_t *cfg)
      * Load kernel or NAND image.
      */
     if (cfg->kernel_path) {
-        uint32_t entry_va = 0;
-        uint32_t jiffies_pa = 0;
-
-        if (loader_load_elf(m, cfg->kernel_path, &entry_va, &jiffies_pa) != 0) {
-            fprintf(stderr, "[BE300] Failed to load kernel ELF\n");
+        if (be300_boot_linux_path(m, cfg->kernel_path, cfg->cmdline,
+                                  cfg->ram_path) != 0) {
             free(m);
             return NULL;
         }
-
-        m->cpu->pc = (uint64_t)(int32_t)entry_va;
-        fprintf(stderr, "[BE300] Kernel entry: PC=0x%08X\n", entry_va);
-
-        if (cfg->cmdline && cfg->cmdline[0])
-            fprintf(stderr, "[BE300] Kernel cmdline: %s\n", cfg->cmdline);
-
-        if (cfg->ram_path)
-            loader_load_ram(m, cfg->ram_path);
-
-        /* Register input devices (touch + buttons) for Linux kernel boot.
-         * These addresses are unclaimed for Linux boots. */
-        extern void be300_register_input(struct machine *, machine_t *, bool);
-        be300_register_input(gxm, m, cfg->log_mmio);
 
     } else if (cfg->nand_path) {
         uint32_t entry_va = 0;
@@ -186,6 +320,7 @@ machine_t *be300_create(const machine_config_t *cfg)
         }
 
         m->cpu->pc = (uint64_t)(int32_t)entry_va;
+        m->boot_mode = BE300_BOOT_NAND;
         fprintf(stderr, "[BE300] NAND SPL entry: PC=0x%08X\n", entry_va);
 
         /* Re-initialize NAND controller with image data */
@@ -298,6 +433,7 @@ machine_t *be300_create(const machine_config_t *cfg)
         /* Register input devices AFTER latch/NAND (fills pre-carved gaps) */
         extern void be300_register_input(struct machine *, machine_t *, bool);
         be300_register_input(gxm, m, cfg->log_mmio);
+        m->input_registered = true;
         wince_boot_note_spl_handoff(m);
 
     } else if (cfg->rom_path) {
@@ -306,6 +442,7 @@ machine_t *be300_create(const machine_config_t *cfg)
             free(m);
             return NULL;
         }
+        m->boot_mode = BE300_BOOT_ROM;
     }
 
     wince_boot_attach_machine(m);
@@ -323,10 +460,13 @@ static uint64_t monotonic_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
-void be300_run(machine_t *m)
+static void be300_runtime_start(machine_t *m)
 {
     struct machine *gxm = m->gxe_machine;
     struct emul *emul = m->emul;
+
+    if (m->runtime_initialized)
+        return;
 
     fprintf(stderr, "[BE300] Starting emulation at PC=0x%08" PRIx64 "\n",
             m->cpu->pc);
@@ -334,287 +474,421 @@ void be300_run(machine_t *m)
     cpu_run_init(gxm);
     m->cpu->running = true;
 
-    timer_start();
+    if (m->web_mode)
+        timer_reset_state();
+    else
+        timer_start();
     console_init_main(emul);
 
-    ui_init(m);
+    if (m->use_builtin_ui)
+        ui_init(m);
 
     if (m->cfg.target_mhz > 0)
         fprintf(stderr, "[BE300] Throttle: targeting %u MHz\n", m->cfg.target_mhz);
     else
         fprintf(stderr, "[BE300] Throttle: disabled (unthrottled)\n");
 
+    m->throttle_target_ips = (uint64_t)m->cfg.target_mhz * 1000000ULL;
+    m->throttle_wall_origin = 0;
+    m->throttle_instr_origin = 0;
+    m->last_report = 0;
+    m->loop_count = 0;
+    m->runtime_initialized = true;
+    m->runtime_stopped = false;
+    m->runtime_finalized = false;
     emul_executing = true;
 
-    signal(SIGINT, SIG_DFL);
+    if (!m->web_mode)
+        signal(SIGINT, SIG_DFL);
 
-    /* Throttle state: track wall-clock origin and instruction origin for pacing */
-    uint64_t throttle_target_ips  = (uint64_t)m->cfg.target_mhz * 1000000ULL;
-    uint64_t throttle_wall_origin = 0;
-    uint64_t throttle_instr_origin = 0;
+    host_io_set_serial_sink(be300_serial_sink, m);
+    host_io_set_stdout_enabled(m->mirror_serial_to_stdout);
+}
 
-    /*
-     * Main emulation loop: machine_run() (GXemul) runs one batch
-     * of ~8K instructions, then processes hardware tick functions.
-     */
-    int64_t last_report = 0;
-    int loop_count = 0;
-    while (1) {
-        __sync_synchronize();
-        if (emul_shutdown) {
-            fprintf(stderr, "[BE300] Loop exit: emul_shutdown is true\n");
-            break;
-        }
+static void be300_runtime_finalize(machine_t *m)
+{
+    if (!m || !m->runtime_initialized || m->runtime_finalized)
+        return;
 
-        if (loop_count % 1000 == 0) {
-            fprintf(stderr, "[BE300] Loop batch %d, PC=0x%08" PRIx64 "\n", loop_count, m->cpu->pc);
-        }
+    if (m->save_exit_screenshot)
+        ui_save_screenshot(m);
 
-        bool still_running = machine_run(gxm);
-        if (!still_running) {
-            wince_boot_note_fatal_stop(m, "machine-no-longer-running");
-            fprintf(stderr, "[BE300] Loop exit: machine no longer running\n");
-            break;
-        }
-
-        if (loop_count % 1000 == 0) {
-            fprintf(stderr, "[BE300] Loop batch %d done\n", loop_count);
-        }
-
-        /* Throttle: sleep until wall time matches target CPU speed */
-        if (throttle_target_ips > 0) {
-            uint64_t now_ns = monotonic_ns();
-            uint64_t instrs  = (uint64_t)m->cpu->ninstrs;
-
-            if (throttle_wall_origin == 0) {
-                /* First iteration: set reference point */
-                throttle_wall_origin   = now_ns;
-                throttle_instr_origin  = instrs;
-            } else {
-                uint64_t elapsed_instrs = instrs - throttle_instr_origin;
-                uint64_t target_ns = (elapsed_instrs * 1000000000ULL)
-                                     / throttle_target_ips;
-                uint64_t actual_ns = now_ns - throttle_wall_origin;
-
-                if (target_ns > actual_ns) {
-                    uint64_t sleep_ns = target_ns - actual_ns;
-                    /* Cap at 50ms to stay responsive to SDL events */
-                    if (sleep_ns > 50000000ULL)
-                        sleep_ns = 50000000ULL;
-                    struct timespec ts = {
-                        (time_t)(sleep_ns / 1000000000ULL),
-                        (long)(sleep_ns % 1000000000ULL)
-                    };
-                    nanosleep(&ts, NULL);
-                }
-
-                /* Re-sync every ~1M instructions to prevent drift accumulation */
-                if (elapsed_instrs >= 1000000ULL) {
-                    throttle_wall_origin  = monotonic_ns();
-                    throttle_instr_origin = instrs;
-                }
-            }
-        }
-
-        console_flush();
-        ui_update(m);
-
-        if (ui_should_quit(m)) {
-            fprintf(stderr, "[BE300] Loop exit: ui_should_quit is true\n");
-            break;
-        }
-
-        /* Periodic progress report to stderr */
-        if (m->cpu->ninstrs - last_report >= 50000000LL) {
-            fprintf(stderr, "[BE300] Progress: %" PRIi64 "M instrs, PC=0x%08" PRIx64 "\n",
-                    m->cpu->ninstrs / 1000000LL, m->cpu->pc);
-            last_report = m->cpu->ninstrs;
-        }
-
-        /*
-         * WinCE cold-boot hibernate redirect.
-         *
-         * The OAL power-down code ends with a hibernate instruction.
-         * After hibernate, the OAL has:
-         *   +0x00-0x18: NOPs
-         *   +0x1C-0x3C: resume path (loads saved CP0, JR to kernel)
-         *   +0x40:      COLD BOOT init (JAL calls to full kernel init)
-         *
-         * On real hardware, the cold boot cycle is:
-         *   ROM → SPL → NK.exe → OAL init → hibernate →
-         *   RTC alarm wakes CPU → ROM → resume → kernel
-         *
-         * We shortcut: when the CPU halts at hibernate, skip 0x40
-         * bytes forward to the cold boot init path.
-         */
-        if (m->cpu->is_halted) {
-            if (m->wince.hibernate_redirect_count < 5) {
-                uint32_t norm = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
-                if (norm >= 0x00060000u && norm < 0x00100000u) {
-                    uint64_t old_pc = m->cpu->pc;
-                    static const uint32_t tlb_h[] = {
-                        0x401B5000, 0x001BD1C2, 0x375A001F,
-                        0x409A1000, 0x275B0040, 0x409B1800,
-                        0x42000006, 0x42000018,
-                    };
-
-                    /* Re-install TLB refill handler (may have been
-                     * overwritten by NK.exe OAL init) and invalidate
-                     * dyntrans caches so the new code takes effect. */
-                    wince_boot_install_synthetic_low_vectors(m, tlb_h,
-                        sizeof(tlb_h) / sizeof(tlb_h[0]),
-                        m->cfg.wince_resume_replay
-                            ? "resume-replay"
-                            : "cold-boot-redirect");
-
-                    if (m->cfg.wince_resume_replay) {
-                        uint32_t target_pc = 0;
-                        uint32_t target_sp = 0;
-
-                        if (!wince_boot_prepare_resume_replay(m,
-                            (uint32_t)old_pc, &target_pc, &target_sp)) {
-                            wince_boot_note_fatal_stop(m,
-                                "resume-replay-prepare-failed");
-                            fprintf(stderr,
-                                "[BE300] Resume replay prepare failed"
-                                " at halt PC=0x%08" PRIx64 "\n",
-                                old_pc);
-                            break;
-                        }
-
-                        m->cpu->pc = (uint64_t)(int32_t)target_pc;
-                        if (target_sp != 0)
-                            m->cpu->cd.mips.gpr[MIPS_GPR_SP] = target_sp;
-                        m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] =
-                            m->wince.replay_resume_target_pc != 0
-                                ? m->wince.replay_resume_target_pc
-                                : target_pc;
-                        m->cpu->is_halted = false;
-                        m->wince.hibernate_redirect_count++;
-
-                        fprintf(stderr,
-                            "[BE300] Resume replay: PC 0x%08" PRIx64
-                            " -> 0x%08X EPC=0x%08X SP=%s0x%08X\n",
-                            old_pc,
-                            target_pc,
-                            m->wince.replay_resume_target_pc != 0
-                                ? m->wince.replay_resume_target_pc
-                                : target_pc,
-                            target_sp != 0 ? "" : "(keep) ",
-                            target_sp);
-                        wince_boot_note_cold_boot_redirect(
-                            m, "hibernate-to-resume-replay");
-                        continue;
-                    }
-
-                    m->cpu->pc += 0x9C;  /* skip to warm init (JAL 0x80078BC0) at 0xA0079634 */
-                    m->cpu->is_halted = false;
-                    m->wince.hibernate_redirect_count++;
-                    /*
-                     * Set CP0 Status directly before cold boot init.
-                     * Status needs: BEV=0, IE=0, EXL=0, IM=all enabled.
-                     * IE stays 0 so interrupts don't fire until WinCE
-                     * installs proper exception handlers and enables IE.
-                     */
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
-                        0x1000FF00u;  /* BEV=0, IM=0xFF, IE=0 */
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED] = 0;
-
-                    fprintf(stderr,
-                        "[BE300] Cold boot: skip hibernate+resume,"
-                        " PC 0x%08" PRIx64 " → 0x%08" PRIx64
-                        " Status=0x%08X\n",
-                        old_pc, m->cpu->pc,
-                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
-
-                    /* Keep the large cold-init dump behind the explicit
-                     * WinCE diagnostics flag. */
-                    if (m->cfg.log_wince_stall
-                        && m->wince.hibernate_redirect_count == 1) {
-                        fprintf(stderr, "[COLD_INIT] Dumping 0x80079DF8:\n");
-                        for (int i = 0; i < 128; i++) {
-                            unsigned char buf[4];
-                            uint64_t addr = 0xffffffff80079DF8ULL + i * 4;
-                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                                    addr, buf, 4, MEM_READ, CACHE_DATA)) {
-                                uint32_t w = buf[0] | (buf[1]<<8) |
-                                             (buf[2]<<16) | (buf[3]<<24);
-                                fprintf(stderr, "[COLD_INIT] 0x%08" PRIx64
-                                    ": %08X\n", addr, w);
-                            }
-                        }
-                    }
-
-                    /*
-                     * Seed the CP0 save area at PA 0x00002280 with
-                     * values from a real BE-300 (BEDiag hwseed dump).
-                     * The warm resume code at 0x80079668 loads CP0
-                     * registers from this area after the init functions
-                     * have run.  Key: Status at offset 0xB0 must have
-                     * BEV=0 and IE bits set for proper operation.
-                     *
-                     * From BEDiag resume_ctx at PA 0x00002200+0x80:
-                     */
-                    {
-                        static const uint32_t cp0_seed[] = {
-                            /* off 0x80: Index, Random, EntryLo0, EntryLo1 */
-                            0x00000000, 0x00000007, 0x00000000, 0x00000000,
-                            /* off 0x90: Context, PageMask, Wired, reserved */
-                            0x00000000, 0x00001800, 0x00000000, 0x00000000,
-                            /* off 0xA0: BadVAddr, Count, EntryHi, Compare */
-                            0x00000000, 0x00000000, 0x00000000, 0x00000000,
-                            /* off 0xB0: Status, Cause, EPC, PRId
-                             * Status: BEV=0, IE=0 (interrupts off until
-                             * WinCE installs proper exception handlers
-                             * and explicitly enables interrupts).
-                             * IM=0xFF (all masks ready for when IE is set).
-                             */
-                            0x1000FF00, 0x00000000, 0x00000000, 0x00000C80,
-                            /* off 0xC0: Config, LLAddr, reserved, reserved */
-                            0x00000000, 0x00000000, 0x00000000, 0x00000000,
-                        };
-                        uint64_t base = 0xffffffff80002280ULL;
-                        for (unsigned si = 0; si < sizeof(cp0_seed)/4; si++)
-                            store_32bit_word(m->cpu, base + si * 4,
-                                cp0_seed[si]);
-                    }
-                    wince_boot_apply_resume_seed(m);
-                    wince_boot_note_cold_boot_redirect(
-                        m, "hibernate-to-cold-boot");
-                }
-            }
-        }
-
-        /*
-         * Fix stuck EXL: after WinCE kernel init installs exception
-         * handlers and enters the scheduler, clear EXL and enable IE
-         * so timer interrupts can fire and drive the scheduler.
-         */
-        /* EXL/IE management removed — rely on WinCE to set Status */
-
-        if (++loop_count % 100 == 0) {
-            // Optional: add extremely verbose logging here if needed
-        }
-    }
-
-    /* Save framebuffer screenshot on exit */
-    ui_save_screenshot(m);
-
-    ui_destroy(m);
+    if (m->use_builtin_ui)
+        ui_destroy(m);
 
     timer_stop();
+    host_io_set_serial_sink(NULL, NULL);
+    host_io_set_stdout_enabled(true);
 
     emul_executing = false;
-    cpu_run_deinit(gxm);
+    cpu_run_deinit(m->gxe_machine);
+    m->runtime_stopped = true;
+    m->runtime_finalized = true;
 
     fprintf(stderr, "[BE300] Emulation stopped after %" PRIi64 " instructions\n",
             m->cpu->ninstrs);
+}
+
+static bool be300_run_batch(machine_t *m)
+{
+    struct machine *gxm = m->gxe_machine;
+
+    __sync_synchronize();
+    if (emul_shutdown) {
+        fprintf(stderr, "[BE300] Loop exit: emul_shutdown is true\n");
+        return false;
+    }
+
+    if (m->loop_count % 1000 == 0) {
+        fprintf(stderr, "[BE300] Loop batch %d, PC=0x%08" PRIx64 "\n",
+                m->loop_count, m->cpu->pc);
+    }
+
+    if (!machine_run(gxm)) {
+        wince_boot_note_fatal_stop(m, "machine-no-longer-running");
+        fprintf(stderr, "[BE300] Loop exit: machine no longer running\n");
+        return false;
+    }
+
+    if (m->web_mode)
+        timer_tick_manual();
+
+    if (m->loop_count % 1000 == 0) {
+        fprintf(stderr, "[BE300] Loop batch %d done\n", m->loop_count);
+    }
+
+    if (!m->web_mode && m->throttle_target_ips > 0) {
+        uint64_t now_ns = monotonic_ns();
+        uint64_t instrs  = (uint64_t)m->cpu->ninstrs;
+
+        if (m->throttle_wall_origin == 0) {
+            m->throttle_wall_origin = now_ns;
+            m->throttle_instr_origin = instrs;
+        } else {
+            uint64_t elapsed_instrs = instrs - m->throttle_instr_origin;
+            uint64_t target_ns = (elapsed_instrs * 1000000000ULL)
+                                 / m->throttle_target_ips;
+            uint64_t actual_ns = now_ns - m->throttle_wall_origin;
+
+            if (target_ns > actual_ns) {
+                uint64_t sleep_ns = target_ns - actual_ns;
+                struct timespec ts;
+
+                if (sleep_ns > 50000000ULL)
+                    sleep_ns = 50000000ULL;
+
+                ts.tv_sec = (time_t)(sleep_ns / 1000000000ULL);
+                ts.tv_nsec = (long)(sleep_ns % 1000000000ULL);
+                nanosleep(&ts, NULL);
+            }
+
+            if (elapsed_instrs >= 1000000ULL) {
+                m->throttle_wall_origin = monotonic_ns();
+                m->throttle_instr_origin = instrs;
+            }
+        }
+    }
+
+    console_flush();
+    if (m->use_builtin_ui)
+        ui_update(m);
+
+    if (m->use_builtin_ui && ui_should_quit(m)) {
+        fprintf(stderr, "[BE300] Loop exit: ui_should_quit is true\n");
+        return false;
+    }
+
+    if (m->cpu->ninstrs - m->last_report >= 50000000LL) {
+        fprintf(stderr, "[BE300] Progress: %" PRIi64 "M instrs, PC=0x%08" PRIx64 "\n",
+                m->cpu->ninstrs / 1000000LL, m->cpu->pc);
+        m->last_report = m->cpu->ninstrs;
+    }
+
+    if (m->cpu->is_halted) {
+        if (m->wince.hibernate_redirect_count < 5) {
+            uint32_t norm = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
+            if (norm >= 0x00060000u && norm < 0x00100000u) {
+                uint64_t old_pc = m->cpu->pc;
+                static const uint32_t tlb_h[] = {
+                    0x401B5000, 0x001BD1C2, 0x375A001F,
+                    0x409A1000, 0x275B0040, 0x409B1800,
+                    0x42000006, 0x42000018,
+                };
+
+                wince_boot_install_synthetic_low_vectors(m, tlb_h,
+                    sizeof(tlb_h) / sizeof(tlb_h[0]),
+                    m->cfg.wince_resume_replay
+                        ? "resume-replay"
+                        : "cold-boot-redirect");
+
+                if (m->cfg.wince_resume_replay) {
+                    uint32_t target_pc = 0;
+                    uint32_t target_sp = 0;
+
+                    if (!wince_boot_prepare_resume_replay(m,
+                        (uint32_t)old_pc, &target_pc, &target_sp)) {
+                        wince_boot_note_fatal_stop(m,
+                            "resume-replay-prepare-failed");
+                        fprintf(stderr,
+                            "[BE300] Resume replay prepare failed"
+                            " at halt PC=0x%08" PRIx64 "\n",
+                            old_pc);
+                        return false;
+                    }
+
+                    m->cpu->pc = (uint64_t)(int32_t)target_pc;
+                    if (target_sp != 0)
+                        m->cpu->cd.mips.gpr[MIPS_GPR_SP] = target_sp;
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] =
+                        m->wince.replay_resume_target_pc != 0
+                            ? m->wince.replay_resume_target_pc
+                            : target_pc;
+                    m->cpu->is_halted = false;
+                    m->wince.hibernate_redirect_count++;
+
+                    fprintf(stderr,
+                        "[BE300] Resume replay: PC 0x%08" PRIx64
+                        " -> 0x%08X EPC=0x%08X SP=%s0x%08X\n",
+                        old_pc,
+                        target_pc,
+                        m->wince.replay_resume_target_pc != 0
+                            ? m->wince.replay_resume_target_pc
+                            : target_pc,
+                        target_sp != 0 ? "" : "(keep) ",
+                        target_sp);
+                    wince_boot_note_cold_boot_redirect(
+                        m, "hibernate-to-resume-replay");
+                    return true;
+                }
+
+                m->cpu->pc += 0x9C;
+                m->cpu->is_halted = false;
+                m->wince.hibernate_redirect_count++;
+                m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] = 0x1000FF00u;
+                m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED] = 0;
+
+                fprintf(stderr,
+                    "[BE300] Cold boot: skip hibernate+resume,"
+                    " PC 0x%08" PRIx64 " → 0x%08" PRIx64
+                    " Status=0x%08X\n",
+                    old_pc, m->cpu->pc,
+                    (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
+
+                if (m->cfg.log_wince_stall
+                    && m->wince.hibernate_redirect_count == 1) {
+                    fprintf(stderr, "[COLD_INIT] Dumping 0x80079DF8:\n");
+                    for (int i = 0; i < 128; i++) {
+                        unsigned char buf[4];
+                        uint64_t addr = 0xffffffff80079DF8ULL + i * 4;
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                addr, buf, 4, MEM_READ, CACHE_DATA)) {
+                            uint32_t w = buf[0] | (buf[1]<<8) |
+                                         (buf[2]<<16) | (buf[3]<<24);
+                            fprintf(stderr, "[COLD_INIT] 0x%08" PRIx64
+                                ": %08X\n", addr, w);
+                        }
+                    }
+                }
+
+                {
+                    static const uint32_t cp0_seed[] = {
+                        0x00000000, 0x00000007, 0x00000000, 0x00000000,
+                        0x00000000, 0x00001800, 0x00000000, 0x00000000,
+                        0x00000000, 0x00000000, 0x00000000, 0x00000000,
+                        0x1000FF00, 0x00000000, 0x00000000, 0x00000C80,
+                        0x00000000, 0x00000000, 0x00000000, 0x00000000,
+                    };
+                    uint64_t base = 0xffffffff80002280ULL;
+                    for (unsigned si = 0; si < sizeof(cp0_seed)/4; si++)
+                        store_32bit_word(m->cpu, base + si * 4,
+                            cp0_seed[si]);
+                }
+                wince_boot_apply_resume_seed(m);
+                wince_boot_note_cold_boot_redirect(
+                    m, "hibernate-to-cold-boot");
+            }
+        }
+    }
+
+    if (++m->loop_count % 100 == 0) {
+        /* keep hook point for extremely verbose diagnostics */
+    }
+
+    return true;
+}
+
+int be300_step(machine_t *m, uint32_t max_batches)
+{
+    if (!m)
+        return -1;
+    if (m->boot_mode == BE300_BOOT_NONE) {
+        fprintf(stderr, "[BE300] Cannot run before boot media is loaded\n");
+        return -1;
+    }
+    if (m->runtime_finalized)
+        return 0;
+    if (max_batches == 0)
+        max_batches = 1;
+
+    be300_runtime_start(m);
+
+    for (uint32_t i = 0; i < max_batches; i++) {
+        if (!be300_run_batch(m)) {
+            be300_runtime_finalize(m);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+void be300_run(machine_t *m)
+{
+    while (be300_step(m, 1) > 0) {
+    }
+}
+
+machine_t *be300_create_web(uint32_t sdram_mb, uint32_t target_mhz,
+                            bool sfb_5bit_green)
+{
+    machine_config_t cfg = {
+        .trace = false,
+        .log_mmio = false,
+        .sfb_5bit_green = sfb_5bit_green,
+        .log_nand_legacy = false,
+        .log_wince_stall = false,
+        .wince_hw_seed = false,
+        .wince_resume_replay = false,
+        .wince_resume_replay_full = false,
+        .rom_path = NULL,
+        .kernel_path = NULL,
+        .cmdline = NULL,
+        .ram_path = NULL,
+        .nand_path = NULL,
+        .sdram_size = (sdram_mb ? sdram_mb : 16u) * 1024u * 1024u,
+        .target_mhz = target_mhz,
+    };
+    machine_t *m = be300_create(&cfg);
+    if (!m)
+        return NULL;
+
+    m->web_mode = true;
+    m->use_builtin_ui = false;
+    m->save_exit_screenshot = false;
+    m->mirror_serial_to_stdout = false;
+    return m;
+}
+
+int be300_boot_linux_from_memory(machine_t *m,
+                                 const void *kernel_data,
+                                 size_t kernel_size,
+                                 const char *cmdline)
+{
+    return be300_boot_linux_memory_internal(m, kernel_data, kernel_size, cmdline);
+}
+
+int be300_copy_frame_rgba8888(machine_t *m, uint8_t *dst, size_t dst_len,
+                              uint32_t *width_out, uint32_t *height_out)
+{
+    const uint16_t *src;
+    uint32_t width;
+    uint32_t height;
+
+    if (!m || !dst || !width_out || !height_out)
+        return -1;
+
+    width = m->fb_width ? m->fb_width : 240u;
+    height = m->fb_height ? m->fb_height : 320u;
+    if (dst_len < (size_t)width * height * 4u)
+        return -1;
+
+    if (!m->fb_data) {
+        if (!m->gxe_machine || !m->gxe_machine->fb || !m->gxe_machine->fb->framebuffer)
+            return 0;
+        m->fb_data = m->gxe_machine->fb->framebuffer;
+    }
+
+    src = (const uint16_t *)m->fb_data;
+    for (uint32_t y = 0; y < height; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            uint16_t pixel = src[y * m->fb_stride + x];
+            uint32_t r = (pixel >> 11) & 0x1Fu;
+            uint32_t b = pixel & 0x1Fu;
+            uint32_t g;
+            size_t off = ((size_t)y * width + x) * 4u;
+
+            if (m->cfg.sfb_5bit_green) {
+                g = (pixel >> 5) & 0x1Fu;
+                g = (g << 3) | (g >> 2);
+            } else {
+                g = (pixel >> 5) & 0x3Fu;
+                g = (g << 2) | (g >> 4);
+            }
+
+            r = (r << 3) | (r >> 2);
+            b = (b << 3) | (b >> 2);
+
+            dst[off + 0] = (uint8_t)r;
+            dst[off + 1] = (uint8_t)g;
+            dst[off + 2] = (uint8_t)b;
+            dst[off + 3] = 0xFFu;
+        }
+    }
+
+    *width_out = width;
+    *height_out = height;
+    return 1;
+}
+
+size_t be300_drain_serial(machine_t *m, char *dst, size_t dst_len)
+{
+    size_t count = 0;
+
+    if (!m || !dst || dst_len == 0)
+        return 0;
+
+    while (count < dst_len && m->serial_count > 0) {
+        dst[count++] = m->serial_ring[m->serial_tail];
+        m->serial_tail = (m->serial_tail + 1u) % BE300_SERIAL_RING_CAP;
+        m->serial_count--;
+    }
+
+    return count;
+}
+
+void be300_set_touch(machine_t *m, bool down, uint16_t x, uint16_t y)
+{
+    if (!m)
+        return;
+    m->touch_down = down;
+    m->touch_x = x;
+    m->touch_y = y;
+    __sync_synchronize();
+}
+
+void be300_set_buttons(machine_t *m, uint8_t btn_set1, uint8_t btn_set2)
+{
+    if (!m)
+        return;
+    m->btn_set1 = btn_set1;
+    m->btn_set2 = btn_set2;
+    __sync_synchronize();
+}
+
+void be300_stop(machine_t *m)
+{
+    (void)m;
+    emul_shutdown = true;
+    __sync_synchronize();
 }
 
 
 void be300_destroy(machine_t *m)
 {
     if (!m) return;
+
+    be300_stop(m);
+    be300_runtime_finalize(m);
 
     wince_boot_detach_machine(m);
 

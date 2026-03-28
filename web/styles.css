@@ -1,0 +1,189 @@
+:root {
+  color-scheme: dark;
+  --bg: #111319;
+  --panel: #1b1f2a;
+  --panel-border: #2f3647;
+  --text: #e6e9ef;
+  --muted: #9ca7ba;
+  --accent: #7fc4ff;
+  --accent-strong: #4fa9ff;
+  --danger: #ff7f7f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top, #24314f 0%, transparent 35%),
+    linear-gradient(180deg, #161a23 0%, var(--bg) 60%);
+  color: var(--text);
+  font: 14px/1.4 "SF Mono", "IBM Plex Mono", "Cascadia Code", monospace;
+}
+
+.shell {
+  width: min(1280px, 100%);
+  margin: 0 auto;
+  padding: 24px;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: 320px minmax(340px, 420px) 1fr;
+}
+
+.panel {
+  background: rgba(27, 31, 42, 0.92);
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  padding: 18px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.32);
+}
+
+h1, h2 {
+  margin: 0 0 14px;
+  font-weight: 700;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.field span {
+  color: var(--muted);
+}
+
+input[type="text"],
+input[type="file"] {
+  width: 100%;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: #121621;
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.actions,
+.serial-header,
+.controls-grid,
+.action-buttons,
+.dpad {
+  display: flex;
+  gap: 10px;
+}
+
+.actions {
+  margin-top: 8px;
+}
+
+button {
+  border: 1px solid var(--panel-border);
+  background: #161b27;
+  color: var(--text);
+  border-radius: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+button:not(:disabled):hover {
+  border-color: var(--accent);
+}
+
+.status {
+  margin: 12px 0 0;
+  color: var(--muted);
+  min-height: 2.8em;
+}
+
+.screen-panel {
+  display: grid;
+  gap: 16px;
+  justify-items: center;
+}
+
+.screen-wrap {
+  width: 100%;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.03), rgba(0,0,0,0.14)),
+    #0d111a;
+}
+
+#screen {
+  width: min(100%, 360px);
+  height: auto;
+  aspect-ratio: 3 / 4;
+  image-rendering: pixelated;
+  border: 10px solid #0a0e16;
+  border-radius: 18px;
+  background: #000;
+  touch-action: none;
+}
+
+.controls-grid {
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dpad {
+  display: grid;
+  grid-template-columns: repeat(3, 70px);
+  grid-template-rows: repeat(3, 50px);
+}
+
+.dpad button:nth-child(1) { grid-column: 2; grid-row: 1; }
+.dpad button:nth-child(2) { grid-column: 1; grid-row: 2; }
+.dpad button:nth-child(3) { grid-column: 3; grid-row: 2; }
+.dpad button:nth-child(4) { grid-column: 2; grid-row: 3; }
+
+.action-buttons {
+  flex-direction: column;
+}
+
+.action-buttons button {
+  min-width: 100px;
+}
+
+.serial-panel {
+  min-height: 620px;
+  display: grid;
+  gap: 12px;
+}
+
+.serial-header {
+  justify-content: space-between;
+  align-items: center;
+}
+
+#serial {
+  margin: 0;
+  background: #0d111a;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 14px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 1080px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .controls-grid {
+    flex-direction: column;
+  }
+}

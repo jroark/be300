@@ -216,6 +216,104 @@ static bool find_jiffies_symbol_pa(const uint8_t *data, long fsize,
     return false;
 }
 
+int loader_load_elf_from_memory(machine_t *m, const void *data_ptr, size_t data_len,
+                                uint32_t *entry_va_out,
+                                uint32_t *jiffies_pa_out)
+{
+    const uint8_t *data = (const uint8_t *)data_ptr;
+    long fsize = (long)data_len;
+    const Elf32_Ehdr *eh;
+
+    if (!data || data_len == 0) {
+        fprintf(stderr, "[LOADER] Empty ELF image\n");
+        return -1;
+    }
+
+    /* Validate ELF header */
+    if (fsize < (long)sizeof(Elf32_Ehdr)) {
+        fprintf(stderr, "[LOADER] File too small to be ELF32\n");
+        return -1;
+    }
+    eh = (const Elf32_Ehdr *)data;
+    if (memcmp(eh->e_ident, ELF_MAGIC, 4) != 0) {
+        fprintf(stderr, "[LOADER] Not an ELF file\n");
+        return -1;
+    }
+    if (eh->e_ident[4] != ELFCLASS32) {
+        fprintf(stderr, "[LOADER] Not ELF32 (class=%u)\n", eh->e_ident[4]);
+        return -1;
+    }
+    if (eh->e_ident[5] != ELFDATA2LSB) {
+        fprintf(stderr, "[LOADER] Not little-endian ELF\n");
+        return -1;
+    }
+    if (eh->e_machine != EM_MIPS) {
+        fprintf(stderr, "[LOADER] Not MIPS ELF (machine=%u)\n", eh->e_machine);
+        return -1;
+    }
+
+    fprintf(stderr, "[LOADER] ELF32 MIPS LE  entry=0x%08X  phnum=%u\n",
+            eh->e_entry, eh->e_phnum);
+
+    /* Load PT_LOAD segments */
+    for (int i = 0; i < eh->e_phnum; i++) {
+        const Elf32_Phdr *ph;
+
+        if (eh->e_phoff + (i + 1) * eh->e_phentsize > (uint32_t)fsize) {
+            fprintf(stderr, "[LOADER] Program header %d out of file bounds\n", i);
+            return -1;
+        }
+        ph = (const Elf32_Phdr *)(data + eh->e_phoff + i * eh->e_phentsize);
+        if (ph->p_type != PT_LOAD) continue;
+
+        uint32_t pa     = ph->p_paddr & 0x1FFFFFFFu;
+        uint32_t filesz = ph->p_filesz;
+        uint32_t memsz  = ph->p_memsz;
+
+        fprintf(stderr, "[LOADER]   seg[%d] PA=0x%08X  filesz=0x%X  memsz=0x%X\n",
+                i, pa, filesz, memsz);
+
+        if (pa + memsz > m->cfg.sdram_size) {
+            fprintf(stderr, "[LOADER] Segment %d exceeds SDRAM (PA=0x%X memsz=0x%X sdram=%u)\n",
+                    i, pa, memsz, m->cfg.sdram_size);
+            return -1;
+        }
+
+        if (filesz > 0) {
+            if (ph->p_offset + filesz > (uint32_t)fsize) {
+                fprintf(stderr, "[LOADER] Segment %d data out of file bounds\n", i);
+                return -1;
+            }
+            gxe_mem_write(m->cpu, pa, data + ph->p_offset, filesz);
+        }
+
+        if (memsz > filesz) {
+            uint32_t bss_pa  = pa + filesz;
+            uint32_t bss_len = memsz - filesz;
+            gxe_mem_zero(m->cpu, bss_pa, bss_len);
+            fprintf(stderr, "[LOADER]   zeroed BSS PA=0x%08X len=0x%X\n",
+                    bss_pa, bss_len);
+        }
+    }
+
+    if (entry_va_out)
+        *entry_va_out = eh->e_entry;
+
+    if (jiffies_pa_out) {
+        uint32_t jiffies_pa = 0;
+        if (find_jiffies_symbol_pa(data, fsize, eh, &jiffies_pa)) {
+            *jiffies_pa_out = jiffies_pa;
+            fprintf(stderr, "[LOADER] Symbol jiffies PA=0x%08X\n", jiffies_pa);
+        } else {
+            *jiffies_pa_out = 0;
+            fprintf(stderr, "[LOADER] Symbol jiffies not found in ELF symbols\n");
+        }
+    }
+
+    fprintf(stderr, "[LOADER] ELF loaded, entry VA=0x%08X\n", eh->e_entry);
+    return 0;
+}
+
 int loader_load_elf(machine_t *m, const char *path,
                     uint32_t *entry_va_out,
                     uint32_t *jiffies_pa_out)
@@ -242,89 +340,10 @@ int loader_load_elf(machine_t *m, const char *path,
     }
     fclose(f);
 
-    /* Validate ELF header */
-    if (fsize < (long)sizeof(Elf32_Ehdr)) {
-        fprintf(stderr, "[LOADER] File too small to be ELF32\n");
-        free(data); return -1;
-    }
-    Elf32_Ehdr *eh = (Elf32_Ehdr *)data;
-    if (memcmp(eh->e_ident, ELF_MAGIC, 4) != 0) {
-        fprintf(stderr, "[LOADER] Not an ELF file\n");
-        free(data); return -1;
-    }
-    if (eh->e_ident[4] != ELFCLASS32) {
-        fprintf(stderr, "[LOADER] Not ELF32 (class=%u)\n", eh->e_ident[4]);
-        free(data); return -1;
-    }
-    if (eh->e_ident[5] != ELFDATA2LSB) {
-        fprintf(stderr, "[LOADER] Not little-endian ELF\n");
-        free(data); return -1;
-    }
-    if (eh->e_machine != EM_MIPS) {
-        fprintf(stderr, "[LOADER] Not MIPS ELF (machine=%u)\n", eh->e_machine);
-        free(data); return -1;
-    }
-
-    fprintf(stderr, "[LOADER] ELF32 MIPS LE  entry=0x%08X  phnum=%u\n",
-            eh->e_entry, eh->e_phnum);
-
-    /* Load PT_LOAD segments */
-    for (int i = 0; i < eh->e_phnum; i++) {
-        if (eh->e_phoff + (i + 1) * eh->e_phentsize > (uint32_t)fsize) {
-            fprintf(stderr, "[LOADER] Program header %d out of file bounds\n", i);
-            free(data); return -1;
-        }
-        Elf32_Phdr *ph = (Elf32_Phdr *)(data + eh->e_phoff + i * eh->e_phentsize);
-        if (ph->p_type != PT_LOAD) continue;
-
-        uint32_t pa     = ph->p_paddr & 0x1FFFFFFFu;
-        uint32_t filesz = ph->p_filesz;
-        uint32_t memsz  = ph->p_memsz;
-
-        fprintf(stderr, "[LOADER]   seg[%d] PA=0x%08X  filesz=0x%X  memsz=0x%X\n",
-                i, pa, filesz, memsz);
-
-        if (pa + memsz > m->cfg.sdram_size) {
-            fprintf(stderr, "[LOADER] Segment %d exceeds SDRAM (PA=0x%X memsz=0x%X sdram=%u)\n",
-                    i, pa, memsz, m->cfg.sdram_size);
-            free(data); return -1;
-        }
-
-        if (filesz > 0) {
-            if (ph->p_offset + filesz > (uint32_t)fsize) {
-                fprintf(stderr, "[LOADER] Segment %d data out of file bounds\n", i);
-                free(data); return -1;
-            }
-            gxe_mem_write(m->cpu, pa, data + ph->p_offset, filesz);
-        }
-
-        if (memsz > filesz) {
-            uint32_t bss_pa  = pa + filesz;
-            uint32_t bss_len = memsz - filesz;
-            gxe_mem_zero(m->cpu, bss_pa, bss_len);
-            fprintf(stderr, "[LOADER]   zeroed BSS PA=0x%08X len=0x%X\n",
-                    bss_pa, bss_len);
-        }
-    }
-
-    uint32_t entry_va = eh->e_entry;
-    if (entry_va_out)
-        *entry_va_out = entry_va;
-
-    if (jiffies_pa_out) {
-        uint32_t jiffies_pa = 0;
-        if (find_jiffies_symbol_pa(data, fsize, eh, &jiffies_pa)) {
-            *jiffies_pa_out = jiffies_pa;
-            fprintf(stderr, "[LOADER] Symbol jiffies PA=0x%08X\n", jiffies_pa);
-        } else {
-            *jiffies_pa_out = 0;
-            fprintf(stderr, "[LOADER] Symbol jiffies not found in ELF symbols\n");
-        }
-    }
-
+    int rc = loader_load_elf_from_memory(m, data, (size_t)fsize,
+                                         entry_va_out, jiffies_pa_out);
     free(data);
-    fprintf(stderr, "[LOADER] ELF loaded, entry VA=0x%08X\n", entry_va);
-    return 0;
+    return rc;
 }
 
 /* ------------------------------------------------------------------ */

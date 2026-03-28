@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BE-300 Web</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="panel controls">
+      <h1>BE-300 WebAssembly</h1>
+      <label class="field">
+        <span>Linux kernel (`vmlinux`)</span>
+        <input id="kernelFile" type="file" accept=".elf,.bin,.vmlinux,*/*">
+      </label>
+      <label class="field">
+        <span>Kernel cmdline</span>
+        <input id="cmdline" type="text" spellcheck="false" placeholder="console=tty0 console=ttyS0,9600 root=/dev/ram">
+      </label>
+      <div class="actions">
+        <button id="bootBtn" disabled>Boot</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <button id="resetBtn" disabled>Reset</button>
+      </div>
+      <p id="status" class="status">Waiting for kernel upload and cmdline.</p>
+    </section>
+
+    <section class="panel screen-panel">
+      <div class="screen-wrap">
+        <canvas id="screen" width="240" height="320"></canvas>
+      </div>
+      <div class="controls-grid">
+        <div class="dpad">
+          <button data-set="btn1" data-mask="16">Up</button>
+          <button data-set="btn1" data-mask="128">Left</button>
+          <button data-set="btn1" data-mask="64">Right</button>
+          <button data-set="btn1" data-mask="32">Down</button>
+        </div>
+        <div class="action-buttons">
+          <button data-set="btn1" data-mask="4">OK</button>
+          <button data-set="btn1" data-mask="8">Esc</button>
+          <button data-set="btn2" data-mask="16">Rocket</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel serial-panel">
+      <div class="serial-header">
+        <h2>Serial Output</h2>
+        <button id="clearSerialBtn">Clear</button>
+      </div>
+      <pre id="serial"></pre>
+    </section>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
