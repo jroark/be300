@@ -60,6 +60,7 @@ set(BE300_CORE_SOURCES
     ${BE300_SRC}/be300_devices.c
     ${BE300_SRC}/loader.c
     ${BE300_SRC}/ui.c
+    ${BE300_SRC}/wince_boot.c
 
     # Hardware peripherals
     ${BE300_SRC}/hw/bcu.c
