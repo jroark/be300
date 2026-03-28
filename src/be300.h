@@ -113,8 +113,8 @@ typedef struct be300_state {
     uint8_t      btn_set1;       /* PA 0x0A00A042: bits 0x04=ok 0x08=esc 0x10=up 0x20=down 0x40=right 0x80=left */
     uint8_t      btn_set2;       /* PA 0x0A00A043: bit 0x10=rocket/modifier  0x80=power */
     bool         touch_down;     /* pen-down state */
-    uint16_t     touch_x;        /* screen pixel 0..239 */
-    uint16_t     touch_y;        /* screen pixel 0..319 */
+    uint16_t     touch_x;        /* touch-panel pixel 0..239 */
+    uint16_t     touch_y;        /* touch-panel pixel 0..359; 320..359 drives the icon strip below the display */
 
     /* SDL handles (opaque, cast inside ui.c) */
     void        *sdl_window;
