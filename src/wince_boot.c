@@ -104,6 +104,7 @@ static void log_va_probe(machine_t *m, const char *label, uint32_t va);
 static void maybe_log_replay_region_drift(machine_t *m);
 static void capture_replay_slot_1ac0_baseline(machine_t *m);
 static void log_slot_1ac0_snapshot(machine_t *m, const char *label);
+static void log_slot_1ac0_aliases(machine_t *m, const char *label);
 static void search_slot_1ac0_copies(machine_t *m, const char *label);
 static void maybe_apply_replay_tlb_idx01_even_clone(machine_t *m);
 static void maybe_apply_replay_tlb_b000_helper(machine_t *m);
@@ -252,7 +253,6 @@ static const wince_replay_exec_probe_desc_t wince_replay_exec_probes[] = {
     { UINT32_C(0x8008B268), "exec_8008b268", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B274), "exec_8008b274", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B278), "exec_8008b278", -0x20, 0x80u, 0x60u },
-    { UINT32_C(0x8008B778), "exec_8008b778", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B3F0), "exec_8008b3f0", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B42C), "exec_8008b42c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B478), "exec_8008b478", -0x20, 0x80u, 0x60u },
@@ -1121,6 +1121,82 @@ static void log_slot_1ac0_snapshot(machine_t *m, const char *label)
     }
 }
 
+static void log_slot_1ac0_aliases(machine_t *m, const char *label)
+{
+    static const struct {
+        uint32_t base;
+        uint32_t pages;
+    } ranges[] = {
+        { UINT32_C(0x00000000), 16u },
+        { UINT32_C(0x80000000), 16u },
+        { UINT32_C(0xA0000000), 16u },
+        { UINT32_C(0xFFFF0000), 16u },
+    };
+    const uint32_t target_pa = UINT32_C(0x00001AC0);
+    const uint32_t target_off = target_pa & UINT32_C(0x0FFF);
+    uint32_t sp;
+    uint32_t s0;
+    uint32_t a0;
+    uint32_t a1;
+    size_t alias_count = 0;
+    size_t r;
+
+    if (!m || !m->cpu || !m->wince.log_stall)
+        return;
+
+    sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+    s0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S0];
+    a0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0];
+    a1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1];
+
+    for (r = 0; r < sizeof(ranges) / sizeof(ranges[0]); r++) {
+        uint32_t page;
+
+        for (page = 0; page < ranges[r].pages; page++) {
+            uint32_t va = ranges[r].base + page * UINT32_C(0x1000) + target_off;
+            uint64_t pa = 0;
+            char alias_label[48];
+
+            if (!translate_va(m, va, &pa))
+                continue;
+            if (((uint32_t)pa & UINT32_C(0xFFFFF000))
+                != (target_pa & UINT32_C(0xFFFFF000))) {
+                continue;
+            }
+            if (((uint32_t)pa & UINT32_C(0x0FFF)) != target_off)
+                continue;
+
+            fprintf(stderr,
+                "[WINCE_SLOT_ALIAS] label=%s va=0x%08X pa=0x%08X"
+                " same_page_sp=%d same_page_s0=%d same_page_a1=%d"
+                " same_page_a0=%d\n",
+                label ? label : "-",
+                va,
+                (uint32_t)pa,
+                ((sp & UINT32_C(0xFFFFF000)) == (va & UINT32_C(0xFFFFF000)))
+                    ? 1 : 0,
+                ((s0 & UINT32_C(0xFFFFF000)) == (va & UINT32_C(0xFFFFF000)))
+                    ? 1 : 0,
+                ((a1 & UINT32_C(0xFFFFF000)) == (va & UINT32_C(0xFFFFF000)))
+                    ? 1 : 0,
+                ((a0 & UINT32_C(0xFFFFF000)) == (va & UINT32_C(0xFFFFF000)))
+                    ? 1 : 0);
+
+            snprintf(alias_label, sizeof(alias_label), "slot_alias_%08X", va);
+            dump_tlb_matches(m, alias_label, va);
+            dump_va_window(m, alias_label, va - UINT32_C(0x20), 0x60u);
+            alias_count++;
+        }
+    }
+
+    if (alias_count == 0) {
+        fprintf(stderr,
+            "[WINCE_SLOT_ALIAS] label=%s no-alias-for-pa=0x%08X\n",
+            label ? label : "-",
+            target_pa);
+    }
+}
+
 static void search_slot_1ac0_copies(machine_t *m, const char *label)
 {
     uint32_t limit;
@@ -1269,6 +1345,7 @@ static void maybe_log_replay_region_drift(machine_t *m)
         dump_pa_window(m, "slot_1ac0_drift", UINT32_C(0x00001AC0), 0x40u);
         dump_va_window(m, "slot_1ac0_drift_va", UINT32_C(0xFFFFDAC0), 0x40u);
         log_slot_1ac0_snapshot(m, "slot_1ac0_drift");
+        log_slot_1ac0_aliases(m, "slot_1ac0_drift");
         search_slot_1ac0_copies(m, "slot_1ac0_drift");
         break;
     }
@@ -1278,8 +1355,13 @@ static void maybe_apply_replay_tlb_idx01_even_clone(machine_t *m)
 {
     struct mips_coproc *cp0;
     struct mips_tlb *tlb;
+    unsigned char *src_host;
+    unsigned char *dst_host;
+    uint64_t src_pa;
+    uint64_t new_lo0;
     uint32_t pc;
     uint64_t old_lo0;
+    const uint32_t scratch_pa = UINT32_C(0x00003000);
 
     if (!m || !replay_mode_enabled(m) || !m->wince.cold_boot_redirected
         || !m->cfg.wince_resume_replay_full
@@ -1303,23 +1385,41 @@ static void maybe_apply_replay_tlb_idx01_even_clone(machine_t *m)
     if ((tlb->lo0 & ENTRYLO_V) != 0 || (tlb->lo1 & ENTRYLO_V) == 0)
         return;
 
+    src_pa = (((uint64_t)(tlb->lo1 & ENTRYLO_PFN_MASK)) >> ENTRYLO_PFN_SHIFT)
+        << 12;
+    src_host = memory_paddr_to_hostaddr(m->cpu->mem, src_pa, MEM_READ);
+    dst_host = memory_paddr_to_hostaddr(m->cpu->mem, scratch_pa, MEM_WRITE);
+    if (!src_host || !dst_host)
+        return;
+
+    memcpy(dst_host, src_host, 4096u);
+
     old_lo0 = tlb->lo0;
-    tlb->lo0 = tlb->lo1;
+    new_lo0 = (tlb->lo1 & ~ENTRYLO_PFN_MASK)
+        | ((((uint64_t)scratch_pa >> 12) << ENTRYLO_PFN_SHIFT)
+            & ENTRYLO_PFN_MASK);
+    tlb->lo0 = new_lo0;
     m->wince.replay_tlb_idx01_even_clone_applied = true;
     invalidate_all(m);
 
     if (m->wince.log_stall) {
         pc = (uint32_t)m->cpu->pc;
         fprintf(stderr,
-            "[WINCE_REPLAY_TLB] action=clone_idx01_even pc=0x%08X"
+            "[WINCE_REPLAY_TLB] action=clone_idx01_even_scratch pc=0x%08X"
             " hi=0x%08X mask=0x%08X old_lo0=0x%08X new_lo0=0x%08X"
-            " lo1=0x%08X\n",
+            " lo1=0x%08X src_pa=0x%08X scratch_pa=0x%08X\n",
             pc,
             (uint32_t)tlb->hi,
             (uint32_t)tlb->mask,
             (uint32_t)old_lo0,
             (uint32_t)tlb->lo0,
-            (uint32_t)tlb->lo1);
+            (uint32_t)tlb->lo1,
+            (uint32_t)src_pa,
+            scratch_pa);
+        dump_tlb_matches(m, "helper_cac0", UINT32_C(0xFFFFCAC0));
+        dump_tlb_matches(m, "helper_dac0", UINT32_C(0xFFFFDAC0));
+        dump_pa_window(m, "idx01_even_scratch", scratch_pa + UINT32_C(0x0AC0),
+            0x20u);
     }
 }
 
@@ -1908,7 +2008,6 @@ static bool replay_pc_in_bootctx_loop_corridor(uint32_t pc)
         || pc == UINT32_C(0x8008B264)
         || pc == UINT32_C(0x8008B274)
         || pc == UINT32_C(0x8008B278)
-        || pc == UINT32_C(0x8008B778)
         || pc == UINT32_C(0x8008B3F0);
 }
 
@@ -1922,7 +2021,6 @@ static bool replay_pc_in_late_exception_corridor(uint32_t pc)
         || pc == UINT32_C(0x8008B254)
         || pc == UINT32_C(0x8008B264)
         || pc == UINT32_C(0x8008B274)
-        || pc == UINT32_C(0x8008B778)
         || pc == UINT32_C(0x8008B278)
         || pc == UINT32_C(0x8008B3F0)
         || pc == UINT32_C(0x80094F24)
@@ -2597,9 +2695,14 @@ static void log_replay_exec_probe(machine_t *m,
         || pc == UINT32_C(0x8008B264)
         || pc == UINT32_C(0x8008B268)
         || pc == UINT32_C(0x8008B274)
-        || pc == UINT32_C(0x8008B778)
         || (pc == UINT32_C(0x80000180) && m->wince.replay_etimer_consumed)) {
         log_slot_1ac0_snapshot(m, probe->label);
+        if (pc == UINT32_C(0x8008B4F0)
+            || pc == UINT32_C(0x80094F58)
+            || pc == UINT32_C(0x8008B264)
+            || pc == UINT32_C(0x8008B268)) {
+            log_slot_1ac0_aliases(m, probe->label);
+        }
     }
 }
 
