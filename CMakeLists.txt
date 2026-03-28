@@ -143,6 +143,7 @@ if(BUILD_WEB)
         "-sNO_EXIT_RUNTIME=1"
         "-sFILESYSTEM=0"
         "-sEXPORTED_FUNCTIONS=['_malloc','_free','_be300_create_web','_be300_boot_linux_from_memory','_be300_step','_be300_copy_frame_rgba8888','_be300_drain_serial','_be300_set_touch','_be300_set_buttons','_be300_stop','_be300_destroy']"
+        "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU32']"
     )
 endif()
 
