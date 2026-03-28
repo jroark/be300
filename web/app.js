@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20260328d";
+const ASSET_VERSION = "20260328e";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -62,6 +62,20 @@ function getBootConfig() {
     targetMhz: clampInteger(speedInput.value, 0, 1000, 15),
     sfb5BitGreen: sfb5BitGreenInput.checked,
   };
+}
+
+function withManagedMemoryArg(cmdline, sdramMb) {
+  const tokens = String(cmdline ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.length > 0 && !token.startsWith("mem="));
+  tokens.push(`mem=${sdramMb}M`);
+  return tokens.join(" ");
+}
+
+function syncCmdlineMemoryArg() {
+  const { sdramMb } = getBootConfig();
+  cmdlineInput.value = withManagedMemoryArg(cmdlineInput.value, sdramMb);
 }
 
 function setStatus(text) {
@@ -178,7 +192,10 @@ presetKernelSelect.addEventListener("change", () => {
 
   uploadedKernelFile = null;
   kernelFileInput.value = "";
-  cmdlineInput.value = presetKernels[presetKernelSelect.value].defaultCmdline;
+  cmdlineInput.value = withManagedMemoryArg(
+    presetKernels[presetKernelSelect.value].defaultCmdline,
+    getBootConfig().sdramMb,
+  );
   updateKernelStatus();
   syncButtons();
 });
@@ -197,6 +214,10 @@ cmdlineInput.addEventListener("input", () => {
   syncButtons();
 });
 
+sdramInput.addEventListener("change", () => {
+  syncCmdlineMemoryArg();
+});
+
 bootBtn.addEventListener("click", async () => {
   const activeKernel = getActiveKernel();
 
@@ -210,6 +231,7 @@ bootBtn.addEventListener("click", async () => {
   serialEl.textContent = "";
   setStatus(`Booting ${activeKernel.name}...`);
   syncButtons();
+  syncCmdlineMemoryArg();
   const message = {
     type: "bootLinux",
     kernelName: activeKernel.name,
@@ -360,4 +382,5 @@ worker.addEventListener("message", ({ data }) => {
 syncButtons();
 syncControlButtonStates();
 setSerialCollapsed(false);
+syncCmdlineMemoryArg();
 updateKernelStatus();
