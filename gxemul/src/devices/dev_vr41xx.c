@@ -52,7 +52,10 @@
 #include "thirdparty/vr_rtcreg.h"
 
 #include "hw/rtc.h"
+#include "hw/cmu.h"
+#include "hw/pmu.h"
 #include "cop0.h"
+#include "wince_boot.h"
 
 
 /*  #define debug fatal  */
@@ -77,6 +80,7 @@ struct vr41xx_data {
 
 	/*  Timer:  */
 	int		pending_timer_interrupts;
+	int		replay_etimer_suppressed;
 	struct interrupt timer_irq;
 	struct timer	*timer;
 
@@ -87,11 +91,418 @@ struct vr41xx_data {
 	uint16_t	giumask;
 	uint16_t	sysint2;
 	uint16_t	msysint2;
+	uint16_t	giu_regs[16];
 	struct interrupt giu_irq;
 
 	/*  VR4131 RTC (elapsed time counter with read-assist):  */
 	rtc_state_t	rtc;
+	cmu_state_t	cmu;
+	pmu_state_t	pmu;
+	uint8_t		dmaau_regs[0x20];
+	uint8_t		dcu_regs[0x20];
+	uint8_t		sdramu_regs[0x10];
 };
+
+struct vr41xx_diag_binding {
+	struct machine *machine;
+	struct vr41xx_data *data;
+	struct vr41xx_diag_binding *next;
+};
+
+static struct vr41xx_diag_binding *g_vr41xx_diag_bindings = NULL;
+
+static void vr41xx_diag_register(struct machine *machine,
+	struct vr41xx_data *data)
+{
+	struct vr41xx_diag_binding *binding;
+
+	for (binding = g_vr41xx_diag_bindings; binding != NULL;
+	    binding = binding->next) {
+		if (binding->machine == machine) {
+			binding->data = data;
+			return;
+		}
+	}
+
+	CHECK_ALLOCATION(binding = (struct vr41xx_diag_binding *)malloc(
+	    sizeof(struct vr41xx_diag_binding)));
+	binding->machine = machine;
+	binding->data = data;
+	binding->next = g_vr41xx_diag_bindings;
+	g_vr41xx_diag_bindings = binding;
+}
+
+bool vr41xx_diag_get_state(struct machine *machine,
+	struct vr41xx_diag_state *out)
+{
+	struct vr41xx_diag_binding *binding;
+	struct vr41xx_data *d;
+
+	if (out != NULL)
+		memset(out, 0, sizeof(*out));
+	if (machine == NULL || out == NULL)
+		return false;
+
+	for (binding = g_vr41xx_diag_bindings; binding != NULL;
+	    binding = binding->next) {
+		if (binding->machine == machine)
+			break;
+	}
+	if (binding == NULL || binding->data == NULL)
+		return false;
+
+	d = binding->data;
+	out->sysint1 = d->sysint1;
+	out->msysint1 = d->msysint1;
+	out->giuint = d->giuint;
+	out->giumask = d->giumask;
+	out->giuintenl = d->giu_regs[(0x14c - 0x140) / 2];
+	out->sysint2 = d->sysint2;
+	out->msysint2 = d->msysint2;
+	out->pending_timer_interrupts = (uint32_t)d->pending_timer_interrupts;
+	out->pmucntreg = d->pmu.pmucntreg;
+	return true;
+}
+
+static uint64_t vr41xx_latch_read(const uint8_t *regs, uint32_t off,
+	unsigned len)
+{
+	uint64_t value = 0;
+	unsigned i;
+
+	for (i = 0; i < len; i++)
+		value |= (uint64_t)regs[off + i] << (i * 8);
+
+	return value;
+}
+
+static void vr41xx_latch_write(uint8_t *regs, uint32_t off, unsigned len,
+	uint64_t value)
+{
+	unsigned i;
+
+	for (i = 0; i < len; i++)
+		regs[off + i] = (uint8_t)(value >> (i * 8));
+}
+
+static void vr41xx_seed_latch32(uint8_t *regs, uint32_t off, uint32_t value)
+{
+	regs[off + 0] = (uint8_t)(value & 0xff);
+	regs[off + 1] = (uint8_t)((value >> 8) & 0xff);
+	regs[off + 2] = (uint8_t)((value >> 16) & 0xff);
+	regs[off + 3] = (uint8_t)((value >> 24) & 0xff);
+}
+
+static void log_resume_probe_window(struct cpu *cpu, const char *label,
+	const char *kind, uint32_t center, int start_rel, int stop_rel)
+{
+	int rel;
+
+	for (rel = start_rel; rel <= stop_rel; rel += 4) {
+		unsigned char buf[4];
+		uint32_t va32 = center + (uint32_t) rel;
+		uint64_t va = (uint64_t)(int64_t)(int32_t)va32;
+
+		if (cpu->memory_rw(cpu, cpu->mem, va, buf, sizeof(buf), MEM_READ,
+		    CACHE_DATA | NO_EXCEPTIONS)) {
+			uint32_t w = (uint32_t)buf[0]
+			    | ((uint32_t)buf[1] << 8)
+			    | ((uint32_t)buf[2] << 16)
+			    | ((uint32_t)buf[3] << 24);
+			fprintf(stderr,
+			    "[WINCE_MMIO_PC] %s %s_rel=%+03d va=0x%08x"
+			    " word=%08x\n",
+			    label,
+			    kind,
+			    rel,
+			    va32,
+			    w);
+		} else {
+			fprintf(stderr,
+			    "[WINCE_MMIO_PC] %s %s_rel=%+03d va=0x%08x"
+			    " word=????????\n",
+			    label,
+			    kind,
+			    rel,
+			    va32);
+		}
+	}
+}
+
+static void log_resume_dispatch_state(struct cpu *cpu, const char *label)
+{
+	uint32_t pc = (uint32_t)cpu->pc;
+	uint32_t ra = (uint32_t)cpu->cd.mips.gpr[31];
+	uint32_t sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+	uint32_t gp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_GP];
+	uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+	uint32_t a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+	uint32_t a2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+	uint32_t a3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3];
+	uint32_t v0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0];
+	uint32_t v1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1];
+	uint32_t t0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T0];
+	uint32_t t1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T1];
+	uint32_t t2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T2];
+	uint32_t t3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T3];
+	uint32_t t4 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T4];
+	uint32_t t5 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T5];
+	uint32_t t6 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T6];
+	uint32_t t7 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T7];
+	uint32_t t8 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T8];
+	uint32_t t9 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T9];
+
+	fprintf(stderr,
+	    "[WINCE_MMIO_DISPATCH] label=%s pc=0x%08x ra=0x%08x sp=0x%08x"
+	    " gp=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x"
+	    " v0=0x%08x v1=0x%08x t0=0x%08x t1=0x%08x"
+	    " t2=0x%08x t3=0x%08x t4=0x%08x t5=0x%08x"
+	    " t6=0x%08x t7=0x%08x t8=0x%08x t9=0x%08x\n",
+	    label,
+	    pc,
+	    ra,
+	    sp,
+	    gp,
+	    a0,
+	    a1,
+	    a2,
+	    a3,
+	    v0,
+	    v1,
+	    t0,
+	    t1,
+	    t2,
+	    t3,
+	    t4,
+	    t5,
+	    t6,
+	    t7,
+	    t8,
+	    t9);
+
+	log_resume_probe_window(cpu, label, "slot0_root", 0x800aad2c, -16, 96);
+	log_resume_probe_window(cpu, label, "slot0_wrapper", 0x800aada0, -16, 48);
+	log_resume_probe_window(cpu, label, "slot0_helper", 0x800aae20, -16, 48);
+	log_resume_probe_window(cpu, label, "slot0_follow", 0x800aae48, -16, 64);
+	log_resume_probe_window(cpu, label, "dispatch_ptrs", 0x80660170, 0, 44);
+	log_resume_probe_window(cpu, label, "dispatch_slots", 0x80660310, 0, 124);
+	log_resume_probe_window(cpu, label, "dispatch_slots_hi", 0x80660320, 0, 60);
+	log_resume_probe_window(cpu, label, "callback_page", 0xa0051680, 0, 252);
+	log_resume_probe_window(cpu, label, "callback_page_1740", 0xa0051740, 0, 60);
+	log_resume_probe_window(cpu, label, "dispatch_page_1000", 0xa0051000, 0, 60);
+	log_resume_probe_window(cpu, label, "bootctx_stub", 0xa00063d0, 0, 60);
+	log_resume_probe_window(cpu, label, "obj_table_66bfc0", 0x8066bfc0, 0, 60);
+	if (a0 != 0)
+		log_resume_probe_window(cpu, label, "arg_a0",
+		    a0 & ~0x1fu, 0, 60);
+	if (a1 != 0)
+		log_resume_probe_window(cpu, label, "arg_a1",
+		    a1 & ~0x1fu, 0, 60);
+	if (a2 != 0)
+		log_resume_probe_window(cpu, label, "arg_a2",
+		    a2 & ~0x1fu, 0, 60);
+	if (a3 != 0)
+		log_resume_probe_window(cpu, label, "arg_a3",
+		    a3 & ~0x1fu, 0, 60);
+}
+
+static void maybe_log_resume_mmio_probe(struct cpu *cpu,
+	uint64_t relative_addr, int writeflag, uint64_t value)
+{
+	static const struct {
+		uint32_t pc;
+		const char *label;
+		int code_start_rel;
+		int code_stop_rel;
+	} probes[] = {
+		{ 0x8007826c, "resume_mmio_7826c", -16, 32 },
+		{ 0x8007a114, "resume_mmio_7a114", -16, 32 },
+		{ 0x800a5e94, "resume_mmio_a5e94", -16, 32 },
+		{ 0x80079724, "resume_mmio_79724", -16, 32 },
+		{ 0x800aad2c, "dispatch_mmio_aad2c", -32, 64 },
+		{ 0x800aae20, "dispatch_mmio_aae20", -32, 64 },
+		{ 0x800aae6c, "dispatch_mmio_aae6c", -32, 64 },
+		{ 0x800a7b3c, "resume_poll_7b3c", -32, 64 },
+		{ 0x800a7b64, "resume_poll_7b64", -32, 64 },
+		{ 0x800a7bc4, "resume_poll_7bc4", -32, 64 },
+	};
+	static uint32_t logged_mask = 0;
+	uint32_t pc = (uint32_t)cpu->pc;
+	size_t i;
+
+	for (i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+		uint32_t bit = 1u << i;
+		uint32_t ra = (uint32_t)cpu->cd.mips.gpr[31];
+		uint32_t sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+		int rel;
+
+		if (probes[i].pc != pc)
+			continue;
+		if (logged_mask & bit)
+			return;
+		logged_mask |= bit;
+
+		fprintf(stderr,
+		    "[WINCE_MMIO_PC] label=%s pc=0x%08x off=0x%03" PRIx64
+		    " op=%c value=0x%04" PRIx64
+		    " ra=0x%08x sp=0x%08x s0=0x%08x s1=0x%08x s2=0x%08x\n",
+		    probes[i].label,
+		    pc,
+		    relative_addr,
+		    writeflag == MEM_WRITE ? 'W' : 'R',
+		    value,
+		    ra,
+		    sp,
+		    (uint32_t)cpu->cd.mips.gpr[16],
+		    (uint32_t)cpu->cd.mips.gpr[17],
+		    (uint32_t)cpu->cd.mips.gpr[18]);
+
+		log_resume_probe_window(cpu, probes[i].label, "code", pc,
+		    probes[i].code_start_rel, probes[i].code_stop_rel);
+		if (ra != 0) {
+			uint32_t caller = ra - 8u;
+
+			fprintf(stderr,
+			    "[WINCE_MMIO_PC] %s caller=0x%08x ra=0x%08x\n",
+			    probes[i].label,
+			    caller,
+			    ra);
+			log_resume_probe_window(cpu, probes[i].label, "caller",
+			    caller, -16, 24);
+		}
+		if (sp != 0) {
+			fprintf(stderr,
+			    "[WINCE_MMIO_PC] %s stack_center=0x%08x\n",
+			    probes[i].label,
+			    sp);
+			log_resume_probe_window(cpu, probes[i].label, "stack",
+			    sp, -16, 48);
+		}
+		if (pc == 0x800aad2c || pc == 0x800aae20 || pc == 0x800aae6c)
+			log_resume_dispatch_state(cpu, probes[i].label);
+		return;
+	}
+}
+
+static void maybe_log_resume_setup_state(struct cpu *cpu,
+	struct vr41xx_data *d, uint64_t relative_addr, int writeflag,
+	uint64_t value)
+{
+	static const struct {
+		uint32_t pc;
+		const char *label;
+	} probes[] = {
+		{ 0xa007957c, "pre_replay_sdramu_957c" },
+		{ 0x800a5e94, "resume_setup_5e94" },
+		{ 0x800a5fd0, "resume_setup_5fd0" },
+	};
+	static uint32_t logged_mask = 0;
+	uint32_t pc = (uint32_t)cpu->pc;
+	size_t i;
+
+	for (i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+		uint32_t bit = 1u << i;
+
+		if (probes[i].pc != pc)
+			continue;
+		if (logged_mask & bit)
+			return;
+		logged_mask |= bit;
+
+		fprintf(stderr,
+		    "[WINCE_VR41XX_SETUP] label=%s pc=0x%08x off=0x%03" PRIx64
+		    " op=%c value=0x%04" PRIx64
+		    " dmaau20=0x%08" PRIx64 " dmaau30=0x%08" PRIx64
+		    " dcu40=0x%08" PRIx64 " dcu44=0x%08" PRIx64
+		    " cmu60=0x%04x pmu_c0=0x%04x pmu_c2=0x%04x"
+		    " pmu_c8=0x%04x pmu_cc=0x%04x sdramu400=0x%08" PRIx64
+		    " sdramu404=0x%08" PRIx64 " sdramu408=0x%08" PRIx64 "\n",
+		    probes[i].label,
+		    pc,
+		    relative_addr,
+		    writeflag == MEM_WRITE ? 'W' : 'R',
+		    value,
+		    vr41xx_latch_read(d->dmaau_regs, 0x00, 4),
+		    vr41xx_latch_read(d->dmaau_regs, 0x10, 4),
+		    vr41xx_latch_read(d->dcu_regs, 0x00, 4),
+		    vr41xx_latch_read(d->dcu_regs, 0x04, 4),
+		    d->cmu.clkmsk,
+		    d->pmu.pmuintreg,
+		    d->pmu.pmucntreg,
+		    d->pmu.pmuwaitreg,
+		    d->pmu.pmudivreg,
+		    vr41xx_latch_read(d->sdramu_regs, 0x00, 4),
+		    vr41xx_latch_read(d->sdramu_regs, 0x04, 4),
+		    vr41xx_latch_read(d->sdramu_regs, 0x08, 4));
+		return;
+	}
+}
+
+static void maybe_consume_wince_replay_etimer(struct cpu *cpu,
+	struct vr41xx_data *d, uint64_t relative_addr, int writeflag)
+{
+	if (cpu == NULL || d == NULL || writeflag != MEM_WRITE)
+		return;
+	if (!wince_boot_replay_full_active(cpu->machine))
+		return;
+
+	/*
+	 * The replay-only ETIMER path now reaches the real helper at
+	 * 0x800AAE1C..0x800AAE40, which clears GIUINTENL bit1 and
+	 * PMUCNTREG bit13 before returning. On real hardware this helper
+	 * appears to retire the forwarded timer source; in the emulator,
+	 * the synthetic pending_timer_interrupts queue keeps growing and
+	 * sysint1 bit 3 never drops. Consume the queued ETIMER here once
+	 * to test whether the remaining loop is just our internal latch
+	 * model.
+	 */
+	if ((uint32_t)cpu->pc != 0x800aae3c || relative_addr != 0x0c2)
+		return;
+	if ((d->sysint1 & (1 << VRIP_INTR_ETIMER)) == 0
+	    && d->pending_timer_interrupts == 0)
+		return;
+
+	fprintf(stderr,
+	    "[WINCE_ETIMER] replay-consume pc=0x%08" PRIx64
+	    " pending_before=%d sysint1_before=0x%04x rtcint_before=0x%04x\n",
+	    (uint64_t)cpu->pc,
+	    d->pending_timer_interrupts,
+	    d->sysint1,
+	    d->rtc.rtcint);
+
+	d->pending_timer_interrupts = 0;
+	d->sysint1 &= ~(1 << VRIP_INTR_ETIMER);
+	d->rtc.rtcint &= (uint16_t)~RTCINT_ELAPSEDTIME_INT;
+	d->replay_etimer_suppressed = 1;
+	INTERRUPT_DEASSERT(d->timer_irq);
+	wince_boot_note_replay_etimer_consumed(cpu->machine, cpu);
+}
+
+static void maybe_rearm_wince_replay_etimer(struct cpu *cpu,
+	struct vr41xx_data *d, uint64_t relative_addr, int writeflag)
+{
+	if (cpu == NULL || d == NULL || writeflag != MEM_WRITE)
+		return;
+	if (!d->replay_etimer_suppressed)
+		return;
+	if (!wince_boot_replay_full_active(cpu->machine))
+		return;
+	if (!((relative_addr >= 0x108 && relative_addr <= 0x126)
+	    || relative_addr == 0x0d0
+	    || relative_addr == 0x0d2
+	    || relative_addr == 0x13e)) {
+		return;
+	}
+
+	d->replay_etimer_suppressed = 0;
+	fprintf(stderr,
+	    "[WINCE_ETIMER] replay-rearm pc=0x%08" PRIx64
+	    " off=0x%03" PRIx64 " pending=0x%04x rtcint=0x%04x\n",
+	    (uint64_t)cpu->pc,
+	    relative_addr,
+	    d->pending_timer_interrupts,
+	    d->rtc.rtcint);
+}
 
 
 /*
@@ -399,6 +810,9 @@ static void vr41xx_keytick(struct cpu *cpu, struct vr41xx_data *d)
 static void timer_tick(struct timer *timer, void *extra)
 {
 	struct vr41xx_data *d = (struct vr41xx_data *) extra;
+
+	if (d->replay_etimer_suppressed)
+		return;
 	d->pending_timer_interrupts ++;
 }
 
@@ -406,8 +820,12 @@ static void timer_tick(struct timer *timer, void *extra)
 DEVICE_TICK(vr41xx)
 {
 	struct vr41xx_data *d = (struct vr41xx_data *) extra;
+	int timer_allowed;
 
-	if (d->pending_timer_interrupts > 0) {
+	wince_boot_on_vr41xx_tick(cpu->machine, cpu);
+	timer_allowed = wince_boot_timer_irq_allowed(cpu->machine, cpu) ? 1 : 0;
+
+	if (d->pending_timer_interrupts > 0 && timer_allowed) {
 		INTERRUPT_ASSERT(d->timer_irq);
 		{
 			static int timer_fire_diag = 0;
@@ -445,7 +863,8 @@ DEVICE_TICK(vr41xx)
 	 *  would cause a spurious interrupt storm.
 	 */
 	if (d->timer == NULL &&
-	    (d->rtc.rtcint & RTCINT_ELAPSEDTIME_INT))
+	    (d->rtc.rtcint & RTCINT_ELAPSEDTIME_INT) &&
+	    timer_allowed)
 		INTERRUPT_ASSERT(d->timer_irq);
 
 	/* No wake signal for hibernate — see idle handler */
@@ -531,6 +950,10 @@ DEVICE_ACCESS(vr41xx)
 	if (writeflag == MEM_WRITE)
 		idata = memory_readmax64(cpu, data, len);
 
+	maybe_log_resume_mmio_probe(cpu, relative_addr, writeflag,
+	    writeflag == MEM_WRITE ? idata : 0);
+	maybe_rearm_wince_replay_etimer(cpu, d, relative_addr, writeflag);
+
 	// int regnr = relative_addr / sizeof(uint64_t);
 
 	/*  KIU ("Keyboard Interface Unit") is handled separately.  */
@@ -542,6 +965,38 @@ DEVICE_ACCESS(vr41xx)
 	}
 
 	/*  TODO: Maybe these should be handled separately as well?  */
+	if (d->cpumodel == 4131) {
+		if (relative_addr >= 0x20 && relative_addr < 0x40) {
+			uint32_t off = (uint32_t)(relative_addr - 0x20);
+			if (writeflag == MEM_READ)
+				odata = vr41xx_latch_read(d->dmaau_regs, off,
+				    (unsigned)len);
+			else
+				vr41xx_latch_write(d->dmaau_regs, off,
+				    (unsigned)len, idata);
+			goto log_access;
+		}
+		if (relative_addr >= 0x40 && relative_addr < 0x60) {
+			uint32_t off = (uint32_t)(relative_addr - 0x40);
+			if (writeflag == MEM_READ)
+				odata = vr41xx_latch_read(d->dcu_regs, off,
+				    (unsigned)len);
+			else
+				vr41xx_latch_write(d->dcu_regs, off,
+				    (unsigned)len, idata);
+			goto log_access;
+		}
+		if (relative_addr >= 0x400 && relative_addr < 0x410) {
+			uint32_t off = (uint32_t)(relative_addr - 0x400);
+			if (writeflag == MEM_READ)
+				odata = vr41xx_latch_read(d->sdramu_regs, off,
+				    (unsigned)len);
+			else
+				vr41xx_latch_write(d->sdramu_regs, off,
+				    (unsigned)len, idata);
+			goto log_access;
+		}
+	}
 
 	switch (relative_addr) {
 
@@ -576,6 +1031,18 @@ DEVICE_ACCESS(vr41xx)
 	/*  DCU:  0x40 .. 0x5c  */
 
 	/*  CMU:  0x60 .. 0x7c  */
+	case 0x60:
+	case 0x62:
+		if (d->cpumodel == 4131) {
+			uint32_t cmu_off = (uint32_t)(relative_addr - 0x60);
+			if (writeflag == MEM_READ)
+				odata = cmu_read(&d->cmu, cmu_off, (unsigned)len);
+			else
+				cmu_write(&d->cmu, cmu_off, (unsigned)len,
+				    (uint32_t)idata);
+			break;
+		}
+		goto unhandled;
 
 	/*  ICU:  0x80 .. 0xbc  */
 	case 0x80:	/*  Level 1 system interrupt reg 1...  */
@@ -628,10 +1095,26 @@ DEVICE_ACCESS(vr41xx)
 			d->msysint2 = idata;
 		break;
 
-	/*  RTC:  */
+	/*  VR4131 PMU lives at 0xc0; older VR41xx chips use this as RTC.  */
 	case 0xc0:
 	case 0xc2:
 	case 0xc4:
+	case 0xc6:
+	case 0xc8:
+	case 0xcc:
+		if (d->cpumodel == 4131) {
+			uint32_t pmu_off = (uint32_t)(relative_addr - 0xc0);
+			if (writeflag == MEM_READ)
+				odata = pmu_read(&d->pmu, pmu_off, (unsigned)len);
+			else
+				pmu_write(&d->pmu, pmu_off, (unsigned)len,
+				    (uint32_t)idata);
+			maybe_consume_wince_replay_etimer(cpu, d, relative_addr,
+			    writeflag);
+			break;
+		}
+		if (relative_addr > 0xc4)
+			goto unhandled;
 		{
 			struct timeval tv;
 			gettimeofday(&tv, NULL);
@@ -665,20 +1148,55 @@ DEVICE_ACCESS(vr41xx)
 				d->timer = timer_add(hz, timer_tick, d);
 			else
 				timer_update_frequency(d->timer, hz);
+			wince_boot_note_timer_config(cpu->machine, cpu,
+			    relative_addr, idata);
+		}
+		if (d->cpumodel == 4131 && relative_addr == 0x110) {
+			uint32_t rtc_off = (uint32_t)(relative_addr - 0x100);
+
+			if (writeflag == MEM_READ)
+				odata = rtc_read(&d->rtc, rtc_off,
+				    (unsigned)len);
+			else
+				rtc_write(&d->rtc, rtc_off, (unsigned)len,
+				    (uint32_t)idata);
 		}
 		break;
 	case 0xd2:	/*  RTCL1_H_REG_W (older VR41xx)  */
 	case 0x112:	/*  RTCL1_H_REG_W (VR4131 relocated)  */
+		if (d->cpumodel == 4131 && relative_addr == 0x112) {
+			uint32_t rtc_off = (uint32_t)(relative_addr - 0x100);
+
+			if (writeflag == MEM_READ)
+				odata = rtc_read(&d->rtc, rtc_off,
+				    (unsigned)len);
+			else
+				rtc_write(&d->rtc, rtc_off, (unsigned)len,
+				    (uint32_t)idata);
+		}
 		break;
 
 	/*
-	 *  VR4131 RTC elapsed-time registers (offset 0x100-0x13e).
-	 *  On older VR41xx chips, ETIME lives at 0xc0; on VR4131 it moved
-	 *  to 0x100.  Dispatch to the be300 rtc_state_t read-assist counter.
+	 *  VR4131 RTC block (offset 0x100-0x13e). On older VR41xx chips,
+	 *  only the ETIME/ECMP subset lives elsewhere; on VR4131 the full
+	 *  RTC/RTC2 window is relocated here.
 	 */
 	case 0x100:	/*  VR4131 ETIMELREG  */
 	case 0x102:	/*  VR4131 ETIMEMREG  */
 	case 0x104:	/*  VR4131 ETIMEHREG  */
+	case 0x108:	/*  VR4131 ECMPLREG / older VR41xx GIUINTREG  */
+	case 0x10a:	/*  VR4131 ECMPMREG  */
+	case 0x10c:	/*  VR4131 ECMPHREG  */
+	case 0x114:	/*  VR4131 RTCL1CNTLREG  */
+	case 0x116:	/*  VR4131 RTCL1CNTHREG  */
+	case 0x118:	/*  VR4131 RTCL2LREG  */
+	case 0x11a:	/*  VR4131 RTCL2HREG  */
+	case 0x11c:	/*  VR4131 RTCL2CNTLREG  */
+	case 0x11e:	/*  VR4131 RTCL2CNTHREG  */
+	case 0x120:	/*  VR4131 TCLKLREG  */
+	case 0x122:	/*  VR4131 TCLKHREG  */
+	case 0x124:	/*  VR4131 TCLKCNTLREG  */
+	case 0x126:	/*  VR4131 TCLKCNTHREG  */
 		if (d->cpumodel == 4131) {
 			uint32_t rtc_off = (uint32_t)(relative_addr - 0x100);
 			if (writeflag == MEM_READ)
@@ -688,34 +1206,12 @@ DEVICE_ACCESS(vr41xx)
 				    (uint32_t)idata);
 			break;
 		}
-		goto unhandled;
-
-	case 0x108:
-		if (d->cpumodel == 4131) {
-			/*  VR4131 ECMPLREG  */
-			if (writeflag == MEM_READ)
-				odata = rtc_read(&d->rtc, RTC_ECMPLREG,
-				    (unsigned)len);
-			else
-				rtc_write(&d->rtc, RTC_ECMPLREG, (unsigned)len,
-				    (uint32_t)idata);
-		} else {
+		if (relative_addr == 0x108) {
 			/*  Older VR41xx: GIU interrupt register  */
 			if (writeflag == MEM_READ)
 				odata = d->giuint;
 			else
 				d->giuint &= ~idata;
-		}
-		break;
-	case 0x10a:	/*  VR4131 ECMPMREG  */
-	case 0x10c:	/*  VR4131 ECMPHREG  */
-		if (d->cpumodel == 4131) {
-			uint32_t rtc_off = (uint32_t)(relative_addr - 0x100);
-			if (writeflag == MEM_READ)
-				odata = rtc_read(&d->rtc, rtc_off, (unsigned)len);
-			else
-				rtc_write(&d->rtc, rtc_off, (unsigned)len,
-				    (uint32_t)idata);
 			break;
 		}
 		goto unhandled;
@@ -754,11 +1250,10 @@ DEVICE_ACCESS(vr41xx)
 		{
 			int idx = ((int)relative_addr - 0x140) / 2;
 			if (idx >= 0 && idx < 16) {
-				static uint16_t giu_regs[16];
 				if (writeflag == MEM_WRITE)
-					giu_regs[idx] = (uint16_t)idata;
+					d->giu_regs[idx] = (uint16_t)idata;
 				else
-					odata = giu_regs[idx];
+					odata = d->giu_regs[idx];
 			}
 		}
 		break;
@@ -786,10 +1281,16 @@ DEVICE_ACCESS(vr41xx)
 			    "0x%" PRIx64" ]\n", (uint64_t) relative_addr);
 	}
 
+log_access:
 	/*
 	 *  Log all VR4131 register accesses during emulation so we can
-	 *  trace WinCE's timer/interrupt setup.
+	 *  trace WinCE's timer/interrupt setup. The latch-backed warm-state
+	 *  windows above must flow through here too; otherwise the one-shot
+	 *  resume setup probes never see them.
 	 */
+	maybe_log_resume_setup_state(cpu, d, relative_addr, writeflag,
+	    writeflag == MEM_WRITE ? idata : odata);
+
 	{
 		static int vr41xx_log_count = 0;
 		/* Only log NK.exe accesses (skip SPL at 0x80F0xxxx) */
@@ -883,6 +1384,24 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 
 	/*  VR4131 RTC elapsed-time counter (read-assist for SPL polling):  */
 	rtc_init(&d->rtc);
+	cmu_init(&d->cmu);
+	pmu_init(&d->pmu);
+	/*
+	 * Stable warm-state survey seeds for the otherwise-unimplemented
+	 * DMAAU/DCU windows that WinCE touches during resume setup:
+	 *   0x0f000020: 01fff800 01fff800 01fff800 01fff800
+	 *   0x0f000030: 00003800 00003800 00000000 00000000
+	 *   0x0f000040: 00010000 00000000 00000000 00000000
+	 * The 0x0f000400 SDRAMU window surveys as zero, so leave it zeroed
+	 * but make it stateful so WinCE can observe its own writes.
+	 */
+	vr41xx_seed_latch32(d->dmaau_regs, 0x00, 0x01fff800);
+	vr41xx_seed_latch32(d->dmaau_regs, 0x04, 0x01fff800);
+	vr41xx_seed_latch32(d->dmaau_regs, 0x08, 0x01fff800);
+	vr41xx_seed_latch32(d->dmaau_regs, 0x0c, 0x01fff800);
+	vr41xx_seed_latch32(d->dmaau_regs, 0x10, 0x00003800);
+	vr41xx_seed_latch32(d->dmaau_regs, 0x14, 0x00003800);
+	vr41xx_seed_latch32(d->dcu_regs, 0x00, 0x00010000);
 
 	/*  TODO: VRC4173 has the KIU at offset 0x100?  */
 	d->kiu_offset = 0x180;
@@ -960,6 +1479,7 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 	dev_ram_init(machine, 0x15000000, 0x1000000, DEV_RAM_MIRROR,
 	    0x14000000, NULL);
 
+	vr41xx_diag_register(machine, d);
+
 	return d;
 }
-

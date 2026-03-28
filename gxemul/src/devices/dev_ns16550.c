@@ -49,6 +49,7 @@
 
 #define	TICK_SHIFT		14
 #define	DEV_NS16550_LENGTH	8
+#define	DEV_NS16550_SHADOW_MAX	0x100
 
 struct ns_data {
 	int		addrmult;
@@ -56,10 +57,14 @@ struct ns_data {
 	const char	*name;
 	int		console_handle;
 	int		enable_fifo;
+	size_t		window_length;
+	int		shadow_log_count;
+	int		be300_vr4131_siu;
 
 	struct interrupt irq;
 
 	unsigned char	reg[DEV_NS16550_LENGTH];
+	unsigned char	shadow[DEV_NS16550_SHADOW_MAX];
 	unsigned char	fcr;		/*  FIFO control register  */
 	int		int_asserted;
 	int		dlab;		/*  Divisor Latch Access bit  */
@@ -69,6 +74,67 @@ struct ns_data {
 	char		parity;
 	const char	*stopbits;
 };
+
+
+static uint64_t ns16550_shadow_read(const struct ns_data *d,
+	uint64_t raw_relative_addr, size_t len)
+{
+	uint64_t odata = 0;
+	size_t i;
+
+	for (i = 0; i < len; i++) {
+		size_t off = (size_t)raw_relative_addr + i;
+
+		if (off >= d->window_length || off >= DEV_NS16550_SHADOW_MAX)
+			break;
+		odata |= (uint64_t)d->shadow[off] << (i * 8);
+	}
+
+	return odata;
+}
+
+
+static void ns16550_shadow_write(struct ns_data *d, uint64_t raw_relative_addr,
+	size_t len, uint64_t idata)
+{
+	size_t i;
+
+	for (i = 0; i < len; i++) {
+		size_t off = (size_t)raw_relative_addr + i;
+
+		if (off >= d->window_length || off >= DEV_NS16550_SHADOW_MAX)
+			break;
+		d->shadow[off] = (unsigned char)((idata >> (i * 8)) & 0xff);
+	}
+}
+
+
+static void ns16550_apply_be300_shadow_rules(struct ns_data *d,
+	uint64_t raw_relative_addr, size_t len)
+{
+	/*
+	 *  WinCE warm-resume uses the VR4131 DSIU shadow window at
+	 *  0x0f000820..0x0f000825 as a tiny command/status block:
+	 *   - writes 0x45 to +0x20
+	 *   - writes 0xa3 to +0x23
+	 *   - later polls +0x25 for bit 0x40 before continuing
+	 *
+	 *  Hardware surveys capture this window as zero once the boot has
+	 *  settled, so keep the reset state zeroed, but preserve the runtime
+	 *  writes and synthesize the ready bit once the command bytes have
+	 *  been posted.
+	 */
+	if (!d->be300_vr4131_siu)
+		return;
+
+	if (raw_relative_addr >= 0x20 && raw_relative_addr < 0x26) {
+		size_t end = (size_t)raw_relative_addr + len;
+		if (end > 0x20 && d->shadow[0x20] != 0)
+			d->shadow[0x25] |= 0x40;
+		if (end > 0x23 && d->shadow[0x23] != 0)
+			d->shadow[0x25] |= 0x40;
+	}
+}
 
 
 DEVICE_TICK(ns16550)
@@ -108,6 +174,7 @@ DEVICE_TICK(ns16550)
 DEVICE_ACCESS(ns16550)
 {
 	uint64_t idata = 0, odata=0;
+	uint64_t raw_relative_addr = relative_addr;
 	size_t i;
 	struct ns_data *d = (struct ns_data *) extra;
 
@@ -137,11 +204,49 @@ DEVICE_ACCESS(ns16550)
 
 	relative_addr /= d->addrmult;
 
-	if (relative_addr >= DEV_NS16550_LENGTH) {
+	if (raw_relative_addr >= d->window_length) {
 		fatal("[ ns16550 (%s): outside register space? relative_addr="
-		    "0x%llx. bad addrmult? bad device length? ]\n", d->name,
-		    (long long)relative_addr);
+		    "0x%llx raw=0x%llx. bad addrmult? bad device length? ]\n",
+		    d->name, (long long)relative_addr,
+		    (long long)raw_relative_addr);
 		return 0;
+	}
+
+	if (relative_addr >= DEV_NS16550_LENGTH) {
+		/*
+		 *  VR4131 SIU probing on the BE-300 touches a wider zeroed
+		 *  window than the core 16550 register bank. Real hardware
+		 *  surveys show 0x0F000800..0x0F0008FF reading back as zero
+		 *  once boot has settled. Keep the UART itself at 8 registers,
+		 *  but preserve runtime writes in the extra shadow window so
+		 *  WinCE can observe the transient command/status handshake it
+		 *  performs there during warm resume.
+		 */
+		uint64_t shadow_odata = 0;
+		if (writeflag == MEM_WRITE) {
+			ns16550_shadow_write(d, raw_relative_addr, len, idata);
+			ns16550_apply_be300_shadow_rules(d, raw_relative_addr,
+			    len);
+		} else {
+			shadow_odata = ns16550_shadow_read(d, raw_relative_addr,
+			    len);
+		}
+		if (d->shadow_log_count < 4) {
+			fprintf(stderr,
+			    "[NS16550] shadow %s name=%s off=0x%llx len=%zu"
+			    " val=0x%0*" PRIx64 " pc=0x%08" PRIx64 "\n",
+			    writeflag == MEM_WRITE ? "write" : "read",
+			    d->name,
+			    (long long)raw_relative_addr,
+			    len,
+			    (int)(len * 2),
+			    writeflag == MEM_WRITE ? idata : shadow_odata,
+			    (uint64_t)cpu->pc);
+			d->shadow_log_count++;
+		}
+		if (writeflag == MEM_READ)
+			memory_writemax64(cpu, data, len, shadow_odata);
+		return 1;
 	}
 
 	switch (relative_addr) {
@@ -335,9 +440,16 @@ DEVINIT(ns16550)
 	d->parity	= 'N';
 	d->stopbits	= "1";
 	d->name		= devinit->name2 != NULL? devinit->name2 : "";
+	d->window_length = DEV_NS16550_LENGTH * d->addrmult;
 	d->console_handle =
 	    console_start_slave(devinit->machine, devinit->name2 != NULL?
 	    devinit->name2 : devinit->name, d->in_use);
+
+	if (devinit->name2 != NULL && strcmp(devinit->name2, "siu") == 0
+	    && devinit->addr == 0x0f000800) {
+		d->window_length = 0x100;
+		d->be300_vr4131_siu = 1;
+	}
 
 	INTERRUPT_CONNECT(devinit->interrupt_path, d->irq);
 
@@ -351,7 +463,7 @@ DEVINIT(ns16550)
 		snprintf(name, nlen, "%s", devinit->name);
 
 	memory_device_register(devinit->machine->memory, name, devinit->addr,
-	    DEV_NS16550_LENGTH * d->addrmult, dev_ns16550_access, d,
+	    d->window_length, dev_ns16550_access, d,
 	    DM_DEFAULT, NULL);
 	machine_add_tickfunction(devinit->machine,
 	    dev_ns16550_tick, d, TICK_SHIFT);
@@ -364,4 +476,3 @@ DEVINIT(ns16550)
 
 	return 1;
 }
-

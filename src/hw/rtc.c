@@ -3,8 +3,19 @@
 
 static inline void rtc_update_elapsed_irq(rtc_state_t *s)
 {
-    if (s->etime >= s->ecmp)
-        s->rtcint |= RTCINT_ELAPSEDTIME_INT;
+    if (s->etime < s->ecmp)
+        return;
+    if (s->elapsed_compare_fired)
+        return;
+
+    s->rtcint |= RTCINT_ELAPSEDTIME_INT;
+    s->elapsed_compare_fired = 1;
+}
+
+static inline void rtc_rearm_elapsed_irq(rtc_state_t *s)
+{
+    s->elapsed_compare_fired = 0;
+    rtc_update_elapsed_irq(s);
 }
 
 void rtc_init(rtc_state_t *s)
@@ -24,10 +35,18 @@ void rtc_init(rtc_state_t *s)
      * Linux 2.4 uses RTCL1 instead and never touches ECMP.
      */
     s->ecmp  = s->etime + UINT64_C(0x100000000);
-    s->rtcl1 = 0;
-    s->rtcl2 = 0;
+    /*
+     * Stable low-half warm-state survey values at 0x0F000110:
+     *   RTCL1LREG = 0x0021
+     *   RTCL2LREG = 0xFFFF
+     * The counter halves vary across captures, so leave those derived
+     * from ETIME instead of seeding a fixed value.
+     */
+    s->rtcl1 = 0x00000021u;
+    s->rtcl2 = 0x0000FFFFu;
     s->tclock = 0;
     s->rtcint = 0;
+    s->elapsed_compare_fired = 0;
 }
 
 uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
@@ -112,17 +131,17 @@ void rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case RTC_ECMPLREG:
         s->ecmp = (s->ecmp & ~UINT64_C(0xFFFF))
                 | ((uint64_t)(val & 0xFFFF));
-        rtc_update_elapsed_irq(s);
+        rtc_rearm_elapsed_irq(s);
         break;
     case RTC_ECMPMREG:
         s->ecmp = (s->ecmp & ~UINT64_C(0xFFFF0000))
                 | ((uint64_t)(val & 0xFFFF) << 16);
-        rtc_update_elapsed_irq(s);
+        rtc_rearm_elapsed_irq(s);
         break;
     case RTC_ECMPHREG:
         s->ecmp = (s->ecmp & ~UINT64_C(0xFFFF00000000))
                 | ((uint64_t)(val & 0xFFFF) << 32);
-        rtc_update_elapsed_irq(s);
+        rtc_rearm_elapsed_irq(s);
         break;
     case RTC_RTCL1LREG:
         s->rtcl1 = (s->rtcl1 & 0xFFFF0000) | (val & 0xFFFF);

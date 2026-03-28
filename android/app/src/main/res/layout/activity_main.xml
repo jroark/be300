@@ -33,6 +33,11 @@
             android:scaleType="fitXY"
             android:src="@drawable/be300_frame" />
 
+        <com.jroark.be300android.Be300ControlOverlayView
+            android:id="@+id/controlOverlayView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
     </FrameLayout>
 
     <Spinner

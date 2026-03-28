@@ -10,7 +10,7 @@
  * the CPU; we ignore those bits for functional emulation.
  */
 
-/* Register offsets from PMU base (0x0F000030) */
+/* Register offsets from PMU base (0x0F0000C0 on VR4131) */
 #define PMU_PMUINTREG      0x00u   /* PMU interrupt */
 #define PMU_PMUCNTREG      0x02u   /* PMU control */
 #define PMU_PMUTCLKDIVREG  0x04u   /* Timer clock divider (legacy alias) */

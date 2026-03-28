@@ -20,6 +20,7 @@
 #include "hw/rtc.h"
 #include "hw/gpio.h"
 #include "hw/nand.h"
+#include "wince_boot_types.h"
 
 /* Forward declarations for GXemul types */
 struct cpu;
@@ -56,6 +57,9 @@ typedef struct {
     bool        sfb_5bit_green;
     bool        log_nand_legacy;
     bool        log_wince_stall;
+    bool        wince_hw_seed;
+    bool        wince_resume_replay;
+    bool        wince_resume_replay_full;
 
     const char *rom_path;
     const char *kernel_path;
@@ -65,6 +69,16 @@ typedef struct {
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* target CPU speed in MHz; 0 = unthrottled (default: 166) */
 } machine_config_t;
+
+typedef enum {
+    BE300_BOOT_NONE = 0,
+    BE300_BOOT_LINUX_PATH,
+    BE300_BOOT_LINUX_MEMORY,
+    BE300_BOOT_NAND,
+    BE300_BOOT_ROM,
+} be300_boot_mode_t;
+
+#define BE300_SERIAL_RING_CAP 65536u
 
 /*
  * BE-300 machine state.
@@ -94,6 +108,9 @@ typedef struct be300_state {
     uint8_t     *nand_data;
     size_t       nand_size;
 
+    /* WinCE NAND boot instrumentation/state */
+    wince_boot_state_t wince;
+
     /* Framebuffer host pointer (from GXemul dev_fb) */
     void        *fb_data;
 
@@ -106,13 +123,35 @@ typedef struct be300_state {
     uint8_t      btn_set1;       /* PA 0x0A00A042: bits 0x04=ok 0x08=esc 0x10=up 0x20=down 0x40=right 0x80=left */
     uint8_t      btn_set2;       /* PA 0x0A00A043: bit 0x10=rocket/modifier  0x80=power */
     bool         touch_down;     /* pen-down state */
-    uint16_t     touch_x;        /* screen pixel 0..239 */
-    uint16_t     touch_y;        /* screen pixel 0..319 */
+    uint16_t     touch_x;        /* touch-panel pixel 0..239 */
+    uint16_t     touch_y;        /* touch-panel pixel 0..359; 320..359 drives the icon strip below the display */
 
     /* SDL handles (opaque, cast inside ui.c) */
     void        *sdl_window;
     void        *sdl_renderer;
     void        *sdl_texture;
+
+    /* Boot/runtime host state */
+    be300_boot_mode_t boot_mode;
+    bool         input_registered;
+    bool         runtime_initialized;
+    bool         runtime_stopped;
+    bool         runtime_finalized;
+    bool         web_mode;
+    bool         use_builtin_ui;
+    bool         save_exit_screenshot;
+    bool         mirror_serial_to_stdout;
+    uint64_t     throttle_target_ips;
+    uint64_t     throttle_wall_origin;
+    uint64_t     throttle_instr_origin;
+    int64_t      last_report;
+    int          loop_count;
+
+    /* Serial capture ring for non-terminal hosts */
+    char         serial_ring[BE300_SERIAL_RING_CAP];
+    size_t       serial_head;
+    size_t       serial_tail;
+    size_t       serial_count;
 } be300_state_t;
 
 typedef be300_state_t machine_t;
@@ -121,5 +160,21 @@ typedef be300_state_t machine_t;
  * Main API — called from main.c
  */
 machine_t *be300_create(const machine_config_t *cfg);
+machine_t *be300_create_web(uint32_t sdram_mb, uint32_t target_mhz,
+                            bool sfb_5bit_green);
+int        be300_boot_linux_from_memory(machine_t *m,
+                                        const void *kernel_data,
+                                        size_t kernel_size,
+                                        const char *cmdline);
+int        be300_step(machine_t *m, uint32_t max_batches);
+int        be300_copy_frame_rgba8888(machine_t *m, uint8_t *dst,
+                                     size_t dst_len,
+                                     uint32_t *width_out,
+                                     uint32_t *height_out);
+size_t     be300_drain_serial(machine_t *m, char *dst, size_t dst_len);
+void       be300_set_touch(machine_t *m, bool down, uint16_t x, uint16_t y);
+void       be300_set_buttons(machine_t *m, uint8_t btn_set1, uint8_t btn_set2);
+void       be300_stop(machine_t *m);
 void       be300_run(machine_t *m);
 void       be300_destroy(machine_t *m);
+bool       be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out);

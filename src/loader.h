@@ -18,6 +18,9 @@ int loader_load_ram(machine_t *m, const char *path);
 int loader_load_elf(machine_t *m, const char *path,
                     uint32_t *entry_va_out,
                     uint32_t *jiffies_pa_out);
+int loader_load_elf_from_memory(machine_t *m, const void *data, size_t data_len,
+                                uint32_t *entry_va_out,
+                                uint32_t *jiffies_pa_out);
 
 /*
  * Load a WinCE NAND image (B000FF-format SPL).

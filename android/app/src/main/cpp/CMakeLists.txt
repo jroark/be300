@@ -58,8 +58,10 @@ set(BE300_CORE_SOURCES
     # Machine core
     ${BE300_SRC}/machine_be300.c
     ${BE300_SRC}/be300_devices.c
+    ${BE300_SRC}/host_io.c
     ${BE300_SRC}/loader.c
     ${BE300_SRC}/ui.c
+    ${BE300_SRC}/wince_boot.c
 
     # Hardware peripherals
     ${BE300_SRC}/hw/bcu.c

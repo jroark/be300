@@ -38,6 +38,7 @@
 #include "machine.h"
 #include "memory.h"
 #include "misc.h"
+#include "wince_boot.h"
 
 
 extern int verbose;
@@ -565,6 +566,9 @@ unsigned char *memory_paddr_to_hostaddr(struct memory *mem,
 bool memory_warn_about_unimplemented_addr(struct cpu *cpu, struct memory *mem,
 	int writeflag, uint64_t paddr, size_t len)
 {
+	if (writeflag == MEM_WRITE)
+		wince_boot_note_fb_oob(cpu, paddr, len);
+
 	/*
 	 *  HACK: This allows guest OS kernels to probe memory a few KBs past
 	 *  the end of memory, without giving too many warnings.
@@ -976,4 +980,3 @@ void store_16bit_word_in_host(struct cpu *cpu,
 		int tmp = data[0]; data[0] = data[1]; data[1] = tmp;
 	}
 }
-
