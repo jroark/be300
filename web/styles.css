@@ -56,6 +56,7 @@ h1, h2 {
 }
 
 input[type="text"],
+input[type="number"],
 input[type="file"],
 select {
   width: 100%;
@@ -69,6 +70,33 @@ select {
 .field-hint {
   color: var(--muted);
   font-size: 12px;
+}
+
+.boot-config-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.checkbox-field {
+  grid-column: 1 / -1;
+}
+
+.checkbox-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: #121621;
+  color: var(--text);
+}
+
+.checkbox-row input[type="checkbox"] {
+  margin: 0;
 }
 
 .actions,
@@ -247,6 +275,10 @@ button[aria-pressed="true"]:not(:disabled) {
 
   .controls-grid {
     flex-direction: column;
+  }
+
+  .boot-config-grid {
+    grid-template-columns: 1fr;
   }
 
   .serial-panel {

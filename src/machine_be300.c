@@ -483,10 +483,16 @@ static void be300_runtime_start(machine_t *m)
     if (m->use_builtin_ui)
         ui_init(m);
 
-    if (m->cfg.target_mhz > 0)
-        fprintf(stderr, "[BE300] Throttle: targeting %u MHz\n", m->cfg.target_mhz);
-    else
+    if (m->cfg.target_mhz > 0) {
+        if (m->web_mode)
+            fprintf(stderr, "[BE300] Web pacing target: %u MHz-equivalent\n",
+                    m->cfg.target_mhz);
+        else
+            fprintf(stderr, "[BE300] Throttle: targeting %u MHz\n",
+                    m->cfg.target_mhz);
+    } else {
         fprintf(stderr, "[BE300] Throttle: disabled (unthrottled)\n");
+    }
 
     m->throttle_target_ips = (uint64_t)m->cfg.target_mhz * 1000000ULL;
     m->throttle_wall_origin = 0;

@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BE-300 Web</title>
+  <title>BE-300 Emulator</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <main class="shell">
     <section class="panel controls">
-      <h1>BE-300 WebAssembly</h1>
+      <h1>BE-300 Emulator</h1>
       <label class="field">
-        <span>Bundled kernel</span>
+        <span>Kernel selection</span>
         <select id="presetKernel">
           <option value="vmlinux-pgui-demo">vmlinux-pgui-demo</option>
           <option value="vmlinux-mw">vmlinux-mw</option>
@@ -20,19 +20,36 @@
           <option value="custom-upload">Custom upload</option>
         </select>
       </label>
+      <div class="actions">
+        <button id="bootBtn" disabled>Boot</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <button id="resetBtn" disabled>Reset</button>
+      </div>
       <label class="field">
         <span>Custom kernel (`vmlinux`)</span>
         <input id="kernelFile" type="file">
         <small class="field-hint">Choosing a file switches the selector above to custom upload.</small>
       </label>
       <label class="field">
-        <span>Kernel cmdline</span>
+        <span>Kernel command line</span>
         <input id="cmdline" type="text" spellcheck="false" value="console=tty0 console=ttyS0,9600 root=/dev/ram" placeholder="console=tty0 console=ttyS0,9600 root=/dev/ram">
       </label>
-      <div class="actions">
-        <button id="bootBtn" disabled>Boot</button>
-        <button id="stopBtn" disabled>Stop</button>
-        <button id="resetBtn" disabled>Reset</button>
+      <div class="boot-config-grid">
+        <label class="field">
+          <span>SDRAM (MB)</span>
+          <input id="sdramMb" type="number" min="1" max="64" step="1" value="16">
+        </label>
+        <label class="field">
+          <span>Speed (MHz)</span>
+          <input id="speedMhz" type="number" min="0" step="1" value="15">
+        </label>
+        <label class="field checkbox-field">
+          <span>sfb-5bit-green</span>
+          <span class="checkbox-row">
+            <input id="sfb5BitGreen" type="checkbox">
+            <span>Enable 2.6 framebuffer green expansion</span>
+          </span>
+        </label>
       </div>
       <p id="status" class="status">Ready to boot vmlinux-pgui-demo.</p>
     </section>
