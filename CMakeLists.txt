@@ -4,6 +4,8 @@ project(be300 C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+option(BUILD_WEB "Build the WebAssembly frontend bundle" OFF)
+
 # Auto-detect Apple Silicon even if running in Rosetta
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     execute_process(COMMAND sysctl -n hw.optional.arm64 OUTPUT_VARIABLE IS_ARM64_HW OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -22,17 +24,21 @@ add_compile_options(-Wall -g -O2
 )
 
 # SDL2 (optional, for framebuffer display)
-find_package(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND)
-    pkg_check_modules(SDL2 QUIET sdl2)
-endif()
-find_package(SDL2 QUIET)
-if(SDL2_FOUND OR SDL2_LIBRARIES)
-    include_directories(${SDL2_INCLUDE_DIRS})
-    add_compile_definitions(HAVE_SDL2)
-    message(STATUS "SDL2 found — building with display support")
+if(EMSCRIPTEN)
+    message(STATUS "Emscripten build — forcing headless UI path")
 else()
-    message(STATUS "SDL2 not found — building headless (no display)")
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(SDL2 QUIET sdl2)
+    endif()
+    find_package(SDL2 QUIET)
+    if(SDL2_FOUND OR SDL2_LIBRARIES)
+        include_directories(${SDL2_INCLUDE_DIRS})
+        add_compile_definitions(HAVE_SDL2)
+        message(STATUS "SDL2 found — building with display support")
+    else()
+        message(STATUS "SDL2 not found — building headless (no display)")
+    endif()
 endif()
 
 # Include directories
@@ -90,8 +96,10 @@ set(GXEMUL_SOURCES
 set(BE300_SOURCES
     src/machine_be300.c
     src/be300_devices.c
+    src/host_io.c
     src/loader.c
     src/ui.c
+    src/wince_boot.c
     src/hw/bcu.c
     src/hw/cmu.c
     src/hw/pmu.c
@@ -105,6 +113,45 @@ set(BE300_SOURCES
 # Main executable
 add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES})
 target_link_libraries(be300 m ${SDL2_LIBRARIES})
+
+if(BUILD_WEB)
+    if(NOT EMSCRIPTEN)
+        message(FATAL_ERROR "BUILD_WEB requires an Emscripten toolchain")
+    endif()
+
+    set(WEB_OUTPUT_DIR ${CMAKE_BINARY_DIR}/web)
+    file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR})
+    file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR}/kernels)
+    foreach(asset index.html app.js worker.js styles.css be300_frame.png favicon.svg)
+        configure_file(${CMAKE_SOURCE_DIR}/web/${asset}
+                       ${WEB_OUTPUT_DIR}/${asset}
+                       COPYONLY)
+    endforeach()
+    foreach(kernel_asset vmlinux-pgui-demo vmlinux-mw vmlinux-2.6)
+        configure_file(${CMAKE_SOURCE_DIR}/kernels/${kernel_asset}
+                       ${WEB_OUTPUT_DIR}/kernels/${kernel_asset}
+                       COPYONLY)
+    endforeach()
+
+    add_executable(be300_web ${GXEMUL_SOURCES} ${BE300_SOURCES})
+    set_target_properties(be300_web PROPERTIES
+        OUTPUT_NAME "be300_web"
+        RUNTIME_OUTPUT_DIRECTORY ${WEB_OUTPUT_DIR}
+    )
+    target_link_libraries(be300_web m)
+    target_link_options(be300_web PRIVATE
+        "--no-entry"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sENVIRONMENT=worker"
+        "-sEXPORT_ES6=1"
+        "-sMODULARIZE=1"
+        "-sEXPORT_NAME=createBe300Module"
+        "-sNO_EXIT_RUNTIME=1"
+        "-sFILESYSTEM=0"
+        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_be300_create_web','_be300_boot_linux_from_memory','_be300_step','_be300_copy_frame_rgba8888','_be300_drain_serial','_be300_set_touch','_be300_set_buttons','_be300_stop','_be300_destroy']"
+        "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU32']"
+    )
+endif()
 
 # Tests
 enable_testing()

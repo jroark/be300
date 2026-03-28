@@ -75,7 +75,13 @@ int TRANSLATE_ADDRESS(struct cpu *cpu, uint64_t vaddr,
 	uint64_t xuseg_top = ENTRYHI_VPN2_MASK_R10K | 0x1fffULL;
 #else
 #ifdef V2P_MMU4100
-	const uint64_t vpn2_mask = ENTRYHI_R_MASK | ENTRYHI_VPN2_MASK | 0x1800;
+	/*
+	 * VR41xx CPUs can encode 1KB pages via the low EntryHi bits, but this
+	 * emulator path only supports 4KB and larger pages. For the supported
+	 * page sizes, match VPN2 using the standard mask so 4KB entries such as
+	 * 0xFFFFC000 correctly cover 0xFFFFC800..0xFFFFCFFF.
+	 */
+	const uint64_t vpn2_mask = ENTRYHI_R_MASK | ENTRYHI_VPN2_MASK;
 #else
 	const uint64_t vpn2_mask = ENTRYHI_R_MASK | ENTRYHI_VPN2_MASK;
 #endif
@@ -446,4 +452,3 @@ exception:
 	/*  Return failure:  */
 	return 0;
 }
-

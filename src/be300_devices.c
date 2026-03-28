@@ -19,6 +19,7 @@
 
 #include "be300.h"
 #include "hw/nand.h"
+#include "wince_boot.h"
 
 /*
  *  VRC4173 NAND flash controller device.
@@ -71,6 +72,8 @@ struct be300_vrc4173_latch {
     bool     log_mmio;
 };
 
+static struct be300_vrc4173_latch *g_be300_vrc4173_latch = NULL;
+
 struct be300_vrc4173_segment {
     struct be300_vrc4173_latch *latch;
     uint32_t offset_in_latch;    /* offset of this segment within the latch */
@@ -88,12 +91,23 @@ DEVICE_ACCESS(be300_vrc4173)
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
         memcpy(&d->bytes[off], data, len);
+        wince_boot_note_mmio_access(cpu, VRC4173_LATCH_BASE + off,
+            writeflag, val, len);
         if (d->log_mmio)
             fprintf(stderr, "[VRC4173] W PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
                     (uint32_t)(VRC4173_LATCH_BASE + off), len,
                     (unsigned long long)val, (uint32_t)cpu->pc);
     } else {
+        uint64_t val;
+
         memcpy(data, &d->bytes[off], len);
+        val = memory_readmax64(cpu, data, len);
+        if (wince_boot_override_vrc4173_read(cpu,
+            (uint32_t)(VRC4173_LATCH_BASE + off), len, &val)) {
+            memory_writemax64(cpu, data, len, val);
+        }
+        wince_boot_note_mmio_access(cpu, VRC4173_LATCH_BASE + off,
+            writeflag, memory_readmax64(cpu, data, len), len);
         if (d->log_mmio)
             fprintf(stderr, "[VRC4173] R PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
                     (uint32_t)(VRC4173_LATCH_BASE + off), len,
@@ -102,6 +116,26 @@ DEVICE_ACCESS(be300_vrc4173)
     }
 
     return 1;
+}
+
+bool be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out)
+{
+    uint32_t off;
+
+    if (!out || !g_be300_vrc4173_latch)
+        return false;
+    if (pa < (uint32_t)VRC4173_LATCH_BASE)
+        return false;
+
+    off = pa - (uint32_t)VRC4173_LATCH_BASE;
+    if (off + 4u > VRC4173_LATCH_SIZE)
+        return false;
+
+    *out = (uint32_t)g_be300_vrc4173_latch->bytes[off + 0u]
+         | ((uint32_t)g_be300_vrc4173_latch->bytes[off + 1u] << 8)
+         | ((uint32_t)g_be300_vrc4173_latch->bytes[off + 2u] << 16)
+         | ((uint32_t)g_be300_vrc4173_latch->bytes[off + 3u] << 24);
+    return true;
 }
 
 
@@ -154,6 +188,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
     struct be300_vrc4173_latch *latch;
     CHECK_ALLOCATION(latch = calloc(1, sizeof(struct be300_vrc4173_latch)));
     latch->log_mmio = log_mmio;
+    g_be300_vrc4173_latch = latch;
 
     /* Seed board ID: offset 0x0A0C0 = 0x7100 (BE-300 identifier) */
     uint32_t board_id = 0x00007100;

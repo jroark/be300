@@ -31,6 +31,17 @@ VRAW_RE = re.compile(
     r'size=0x(?P<size>[0-9A-Fa-f]+) data=(?P<data>[0-9A-Fa-f]+)'
 )
 
+LEGACY_SECTION_RE = re.compile(
+    r'^--- (?P<title>.+?) \(PA: 0x(?P<pa>[0-9A-Fa-f]+)'
+    r'(?:, Size: 0x(?P<size>[0-9A-Fa-f]+))?\) ---$'
+)
+
+LEGACY_WORD_RE = re.compile(
+    r'^0x(?P<off>[0-9A-Fa-f]+):\s+(?P<words>[0-9A-Fa-f ]+)$'
+)
+
+LEGACY_OVERRIDE_NAMES = ("ctx_tlb",)
+
 
 def sanitize(name: str) -> str:
     out = []
@@ -43,12 +54,40 @@ def sanitize(name: str) -> str:
 
 
 def parse_boot_log(path: Path):
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    regions, vregions = parse_structured_boot_log(lines)
+
+    if regions or vregions:
+        regions = apply_legacy_region_overrides(regions)
+        return regions, vregions
+
+    legacy_regions, legacy_vregions = parse_legacy_dump(lines)
+    if legacy_regions or legacy_vregions:
+        return legacy_regions, legacy_vregions
+
+    return regions, vregions
+
+
+def latest_snapshot_lines(lines):
+    snapshot_start = None
+
+    for idx, raw_line in enumerate(lines):
+        if raw_line.strip() == "--- SNAPSHOT INIT ---":
+            snapshot_start = idx + 1
+
+    if snapshot_start is None:
+        return lines
+    return lines[snapshot_start:]
+
+
+def parse_structured_boot_log(lines):
+    lines = latest_snapshot_lines(lines)
     regions = {}
     raw_chunks = {}
     vregions = {}
     vraw_chunks = {}
 
-    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for raw_line in lines:
         line = raw_line.strip()
         m = REGION_RE.match(line)
         if m and m.group("phase") == "init" and m.group("status") == "OK":
@@ -112,7 +151,206 @@ def parse_boot_log(path: Path):
     extracted = extract_regions(regions, raw_chunks, "pa", "REGION_RAW")
     v_extracted = extract_regions(vregions, vraw_chunks, "va", "VREGION_RAW")
 
-    return extracted, v_extracted
+    return select_pa_seed_regions(extracted), v_extracted
+
+
+def select_pa_seed_regions(extracted):
+    by_name = {region["name"]: region for region in extracted}
+    selected = []
+
+    for name in ("low_sdram_0000", "ctx_tlb", "resume_ctx"):
+        region = by_name.get(name)
+        if region is not None:
+            selected.append(region)
+
+    for name in ("low_sdram_1880", "low_sdram_1ac0"):
+        region = by_name.get(name)
+        if region is not None:
+            selected.append(region)
+
+    if by_name.get("low_sdram_1880") is None or by_name.get("low_sdram_1ac0") is None:
+        page = by_name.get("low_sdram_1000")
+        if page is None:
+            page = by_name.get("ctx_high_page")
+        if page is not None:
+            if by_name.get("low_sdram_1880") is None:
+                selected.append(slice_region(page, "low_sdram_1880", 0x0880, 0x0080))
+            if by_name.get("low_sdram_1ac0") is None:
+                selected.append(slice_region(page, "low_sdram_1ac0", 0x0AC0, 0x0100))
+
+    region = by_name.get("high_sdram_fd40e0")
+    if region is not None:
+        append_region_if_nonzero(selected, region)
+    else:
+        page = by_name.get("high_sdram_fd4000")
+        if page is not None:
+            append_nonzero_slice(selected, page, "high_sdram_fd40e0",
+                0x00E0, 0x0100)
+
+    return selected
+
+
+def apply_legacy_region_overrides(regions):
+    legacy_path = Path(__file__).resolve().parents[1] / "docs" / "introspection.txt"
+    if not legacy_path.exists():
+        return regions
+
+    legacy_lines = legacy_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    legacy_regions, _ = parse_legacy_dump(legacy_lines)
+    if not legacy_regions:
+        return regions
+
+    legacy_by_name = {region["name"]: region for region in legacy_regions}
+    merged = []
+    seen = set()
+
+    for region in regions:
+        name = region["name"]
+        override = legacy_by_name.get(name)
+        if name in LEGACY_OVERRIDE_NAMES and override is not None:
+            merged.append(override)
+        else:
+            merged.append(region)
+        seen.add(name)
+
+    for name in LEGACY_OVERRIDE_NAMES:
+        if name in seen:
+            continue
+        override = legacy_by_name.get(name)
+        if override is not None:
+            merged.append(override)
+
+    return merged
+
+
+def parse_legacy_dump(lines):
+    sections = []
+    current = None
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        m = LEGACY_SECTION_RE.match(line)
+        if m:
+            if current is not None:
+                sections.append(finalize_legacy_section(current))
+            current = {
+                "title": m.group("title"),
+                "pa": int(m.group("pa"), 16),
+                "size": int(m.group("size") or "0", 16),
+                "chunks": [],
+            }
+            continue
+
+        if current is None:
+            continue
+
+        m = LEGACY_WORD_RE.match(line)
+        if not m:
+            continue
+
+        words = bytes()
+        for word in m.group("words").split():
+            words += int(word, 16).to_bytes(4, byteorder="little")
+
+        current["chunks"].append(
+            {
+                "off": int(m.group("off"), 16),
+                "data": words,
+            }
+        )
+
+    if current is not None:
+        sections.append(finalize_legacy_section(current))
+
+    vectors = next(
+        (
+            section for section in sections
+            if section["pa"] == 0x00000000
+            and "Exception Vectors" in section["title"]
+        ),
+        None,
+    )
+    kdata = next(
+        (
+            section for section in sections
+            if section["pa"] == 0x00002000
+            and "Context/KData" in section["title"]
+        ),
+        None,
+    )
+
+    regions = []
+    if vectors and len(vectors["data"]) >= 0x400:
+        regions.append(
+            make_region("low_sdram_0000", 0x00000000, vectors["data"][:0x400])
+        )
+
+    if kdata and len(kdata["data"]) >= 0x300:
+        regions.append(
+            make_region("ctx_tlb", 0x00002000, kdata["data"][:0x200])
+        )
+        regions.append(
+            make_region("resume_ctx", 0x00002200, kdata["data"][0x200:0x300])
+        )
+
+    return regions, []
+
+
+def finalize_legacy_section(section):
+    size = section["size"]
+    if size == 0:
+        size = max(
+            (chunk["off"] + len(chunk["data"]) for chunk in section["chunks"]),
+            default=0,
+        )
+
+    buf = bytearray(size)
+    for chunk in section["chunks"]:
+        end = chunk["off"] + len(chunk["data"])
+        if end > size:
+            raise SystemExit(
+                f"{section['title']}: legacy chunk overruns declared size"
+            )
+        buf[chunk["off"]:end] = chunk["data"]
+
+    return {
+        "title": section["title"],
+        "pa": section["pa"],
+        "data": bytes(buf),
+    }
+
+
+def make_region(name: str, pa: int, data: bytes):
+    return {
+        "name": name,
+        "ident": sanitize(name),
+        "pa": pa,
+        "size": len(data),
+        "crc32": zlib.crc32(data) & 0xFFFFFFFF,
+        "data": data,
+    }
+
+
+def slice_region(region, name: str, off: int, size: int):
+    end = off + size
+    if end > len(region["data"]):
+        raise SystemExit(
+            f"{region['name']}: slice {name} overruns source region "
+            f"(off=0x{off:X} size=0x{size:X})"
+        )
+
+    return make_region(name, region["pa"] + off, region["data"][off:end])
+
+
+def append_nonzero_slice(selected, region, name: str, off: int, size: int):
+    sliced = slice_region(region, name, off, size)
+    if any(byte != 0 for byte in sliced["data"]):
+        selected.append(sliced)
+
+
+def append_region_if_nonzero(selected, region):
+    if any(byte != 0 for byte in region["data"]):
+        selected.append(region)
 
 
 def extract_regions(regions, raw_chunks, addr_key: str, label: str):

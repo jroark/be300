@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include "host_io.h"
 #include "nand.h"
 
 static uint8_t nand_image_byte(const nand_state_t *s, uint32_t off)
@@ -327,8 +328,11 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             if (known_uart_idx &&
                 known_console_pc &&
                 (byte == 0x0A || byte == 0x0D || (byte >= 0x20 && byte <= 0x7E))) {
-                putchar(byte);
-                fflush(stdout);
+                host_io_emit_serial(byte);
+                if (host_io_stdout_enabled()) {
+                    putchar(byte);
+                    fflush(stdout);
+                }
             }
         }
         if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {

@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "hwseed9"
+#define BEDIAG_BUILD_TAG         "hwseed16"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -75,30 +75,104 @@ static const char *g_phase_names[PHASE_COUNT] = {
 };
 
 static bediag_region_t g_regions[] = {
-    { "ctx_high_page", 0x00001000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "callback_page", 0x00011000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    /* Keep seed-critical narrow captures first so partial logs remain usable. */
+    { "low_sdram_0000", 0x00000000u, 0x0400u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_1880", 0x00001880u, 0x0080u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_1ac0", 0x00001AC0u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "ctx_tlb",       0x00002000u, 0x0200u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "resume_ctx",    0x00002200u, 0x0100u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "caller_frame",  0x00001700u, 0x00C0u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "ctx_stack",     0x00003780u, 0x00A0u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "bootctx",       0x00006000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "bootparam0",    0x0001D000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "bootparam1",    0x0002D000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "cb_tbl",        0x00051680u, 0x0480u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_1000", 0x00001000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_2000", 0x00002000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_3000", 0x00003000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_4000", 0x00004000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_5000", 0x00005000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_6000", 0x00006000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_7000", 0x00007000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_8000", 0x00008000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_9000", 0x00009000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_A000", 0x0000A000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_B000", 0x0000B000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_C000", 0x0000C000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_D000", 0x0000D000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_E000", 0x0000E000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "low_sdram_F000", 0x0000F000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "ctx_high_page", 0x00001000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "callback_page", 0x00011000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "caller_frame",  0x00001700u, 0x00C0u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "ctx_stack",     0x00003780u, 0x00A0u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "bootctx",       0x00006000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "bootparam0",    0x0001D000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "bootparam1",    0x0002D000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "cb_tbl",        0x00051680u, 0x0480u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "objptr",        0x00660000u, 0x0040u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "obj_header",    0x0066BFC0u, 0x0020u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "obj_exec_page", 0x00669000u, 0x1000u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
+    { "obj_exec_page", 0x00669000u, 0x1000u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "postboot_text", 0x00679400u, 0x0200u, TRUE,  { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "vrc4173_cwin",  0x0A000C00u, 0x0050u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
     { "vr4131_safe",   0x0F000000u, 0x0120u, FALSE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
 };
 
 static bediag_vregion_t g_vregions[] = {
-    { "callback_target_page", 0x00016000u, 0x1000u, TRUE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} },
-    { "user_obj_page", 0x0818F000u, 0x1000u, TRUE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
+    { "callback_slot_70e0", 0x000170E0u, 0x0100u, TRUE, { FALSE, FALSE, FALSE }, { 0, 0, 0 }, {{0}, {0}, {0}} }
 };
 
 static const focus_word_t g_focus_words[] = {
+    { 0x00000000u, "low_vec_0000_00" },
+    { 0x00000004u, "low_vec_0000_04" },
+    { 0x00000008u, "low_vec_0000_08" },
+    { 0x0000000Cu, "low_vec_0000_0c" },
+    { 0x00000010u, "low_vec_0000_10" },
+    { 0x00000014u, "low_vec_0000_14" },
+    { 0x00000018u, "low_vec_0000_18" },
+    { 0x0000001Cu, "low_vec_0000_1c" },
+    { 0x00000080u, "low_vec_0080_00" },
+    { 0x00000084u, "low_vec_0080_04" },
+    { 0x00000088u, "low_vec_0080_08" },
+    { 0x0000008Cu, "low_vec_0080_0c" },
+    { 0x00000090u, "low_vec_0080_10" },
+    { 0x00000094u, "low_vec_0080_14" },
+    { 0x00000098u, "low_vec_0080_18" },
+    { 0x0000009Cu, "low_vec_0080_1c" },
+    { 0x00000100u, "low_vec_0100_00" },
+    { 0x00000104u, "low_vec_0100_04" },
+    { 0x00000108u, "low_vec_0100_08" },
+    { 0x0000010Cu, "low_vec_0100_0c" },
+    { 0x00000110u, "low_vec_0100_10" },
+    { 0x00000114u, "low_vec_0100_14" },
+    { 0x00000118u, "low_vec_0100_18" },
+    { 0x0000011Cu, "low_vec_0100_1c" },
+    { 0x00000180u, "low_vec_0180_00" },
+    { 0x00000184u, "low_vec_0180_04" },
+    { 0x00000188u, "low_vec_0180_08" },
+    { 0x0000018Cu, "low_vec_0180_0c" },
+    { 0x00000190u, "low_vec_0180_10" },
+    { 0x00000194u, "low_vec_0180_14" },
+    { 0x00000198u, "low_vec_0180_18" },
+    { 0x0000019Cu, "low_vec_0180_1c" },
+    { 0x1FC00000u, "bev_vec_0000_00" },
+    { 0x1FC00004u, "bev_vec_0000_04" },
+    { 0x1FC00008u, "bev_vec_0000_08" },
+    { 0x1FC0000Cu, "bev_vec_0000_0c" },
+    { 0x1FC00010u, "bev_vec_0000_10" },
+    { 0x1FC00014u, "bev_vec_0000_14" },
+    { 0x1FC00018u, "bev_vec_0000_18" },
+    { 0x1FC0001Cu, "bev_vec_0000_1c" },
+    { 0x1FC00200u, "bev_vec_0200_00" },
+    { 0x1FC00204u, "bev_vec_0200_04" },
+    { 0x1FC00208u, "bev_vec_0200_08" },
+    { 0x1FC0020Cu, "bev_vec_0200_0c" },
+    { 0x1FC00210u, "bev_vec_0200_10" },
+    { 0x1FC00214u, "bev_vec_0200_14" },
+    { 0x1FC00218u, "bev_vec_0200_18" },
+    { 0x1FC0021Cu, "bev_vec_0200_1c" },
+    { 0x1FC00380u, "bev_vec_0380_00" },
+    { 0x1FC00384u, "bev_vec_0380_04" },
+    { 0x1FC00388u, "bev_vec_0380_08" },
+    { 0x1FC0038Cu, "bev_vec_0380_0c" },
+    { 0x1FC00390u, "bev_vec_0380_10" },
+    { 0x1FC00394u, "bev_vec_0380_14" },
+    { 0x1FC00398u, "bev_vec_0380_18" },
+    { 0x1FC0039Cu, "bev_vec_0380_1c" },
     { 0x0A000C30u, "nand_c30" },
     { 0x0A000C34u, "nand_c34" },
     { 0x0A000C38u, "nand_c38" },
@@ -124,6 +198,10 @@ static const focus_word_t g_focus_words[] = {
     { 0x000116BCu, "callback_old_16bc" },
     { 0x000116C0u, "callback_old_16c0" },
     { 0x000116C4u, "callback_old_16c4" },
+    { 0x00FD40E0u, "callback_slot_pa_e0" },
+    { 0x00FD40E4u, "callback_slot_pa_e4" },
+    { 0x00FD40E8u, "callback_slot_pa_e8" },
+    { 0x00FD40ECu, "callback_slot_pa_ec" },
     { 0x00660000u, "objptr_0000" },
     { 0x0066BFC0u, "objhdr_bfc0" },
     { 0x0066BFC4u, "objhdr_bfc4" },
@@ -148,6 +226,10 @@ static const focus_word_t g_virtual_focus_words[] = {
     { 0x000162ACu, "callback_62ac" },
     { 0x000162B0u, "callback_62b0" },
     { 0x000162B4u, "callback_62b4" },
+    { 0x000170E0u, "callback_slot_70e0" },
+    { 0x000170E4u, "callback_slot_70e4" },
+    { 0x000170E8u, "callback_slot_70e8" },
+    { 0x000170ECu, "callback_slot_70ec" },
     { 0x0818FB68u, "userobj_fb68" },
     { 0x0818FC20u, "userobj_fc20" },
     { 0x0818FE20u, "userobj_fe20" },
@@ -159,6 +241,7 @@ static const focus_word_t g_virtual_focus_words[] = {
 
 static const tlb_query_t g_tlb_queries[] = {
     { 0x00016000u, "callback_target_page" },
+    { 0x00017000u, "callback_slot_page" },
     { 0x0818F000u, "user_obj_page" },
     { 0xFFFFD000u, "helper_high_page" }
 };
@@ -171,20 +254,24 @@ static BOOL g_serial_retry_done = FALSE;
 static BOOL g_serial_failure_reported = FALSE;
 static BOOL g_had_error = FALSE;
 static BOOL g_backlog_overflow = FALSE;
+static LONG g_driver_active = 0;
+static LONG g_driver_refcount = 0;
 static char g_backlog[BEDIAG_BACKLOG_SIZE];
 static DWORD g_backlog_used = 0;
 static WCHAR g_file_path[BEDIAG_MAX_PATH_LEN];
-static const WCHAR g_boot_file_path[] = L"\\Windows\\BEDiag_boot.txt";
 static const WCHAR g_breadcrumb_key[] = L"Drivers\\BuiltIn\\BEDiag";
+static const WCHAR *g_primary_file_paths[] = {
+    L"\\Nand Disk\\BEDiag_boot.txt",
+    L"\\Storage Card\\BEDiag_boot.txt"
+};
 
 static const WCHAR *g_file_roots[] = {
     L"\\Nand Disk",
-    L"\\Storage Card",
-    L"\\Temp",
-    L"\\"
+    L"\\Storage Card"
 };
 
 static void Logf(const char *fmt, ...);
+static DWORD WINAPI BEDiagWorkerThread(LPVOID arg);
 
 static void ReadTlbEntryAsm(DWORD index, DWORD *out_words)
 {
@@ -494,6 +581,23 @@ static void EmitLog(const char *text)
     WriteToSink(g_file, text, len);
 }
 
+static void PrimeFileSink(void)
+{
+    DWORD written;
+
+    if (g_file == INVALID_HANDLE_VALUE)
+        return;
+
+    written = 0;
+    if (g_backlog_used != 0)
+        WriteFile(g_file, g_backlog, g_backlog_used, &written, NULL);
+    if (g_backlog_overflow) {
+        const char *overflow = "[BEDIAG] backlog_overflow=1\r\n";
+        WriteFile(g_file, overflow, (DWORD)strlen(overflow), &written, NULL);
+    }
+    FlushFileBuffers(g_file);
+}
+
 static void Logf(const char *fmt, ...)
 {
     char buffer[2048];
@@ -570,28 +674,24 @@ static void SetBreadcrumbString(const WCHAR *name, const WCHAR *value)
 
 static BOOL OpenPrimaryFileLog(void)
 {
-    DWORD written;
+    int i;
 
     if (g_file != INVALID_HANDLE_VALUE)
         return TRUE;
 
-    g_file = CreateFile(g_boot_file_path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (g_file == INVALID_HANDLE_VALUE)
-        return FALSE;
+    for (i = 0; i < (int)(sizeof(g_primary_file_paths) / sizeof(g_primary_file_paths[0])); i++) {
+        g_file = CreateFile(g_primary_file_paths[i], GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (g_file == INVALID_HANDLE_VALUE)
+            continue;
 
-    SetFilePointer(g_file, 0, NULL, FILE_END);
-    CopyWide(g_file_path, BEDIAG_MAX_PATH_LEN, g_boot_file_path);
-
-    written = 0;
-    if (g_backlog_used != 0)
-        WriteFile(g_file, g_backlog, g_backlog_used, &written, NULL);
-    if (g_backlog_overflow) {
-        const char *overflow = "[BEDIAG] backlog_overflow=1\r\n";
-        WriteFile(g_file, overflow, (DWORD)strlen(overflow), &written, NULL);
+        SetFilePointer(g_file, 0, NULL, FILE_END);
+        CopyWide(g_file_path, BEDIAG_MAX_PATH_LEN, g_primary_file_paths[i]);
+        PrimeFileSink();
+        return TRUE;
     }
-    FlushFileBuffers(g_file);
-    return TRUE;
+
+    return FALSE;
 }
 
 static void MaybeRetrySerial(void)
@@ -639,7 +739,6 @@ static void TryOpenSecondaryFile(void)
 
         for (suffix = 0; suffix < 16; suffix++) {
             WCHAR candidate[BEDIAG_MAX_PATH_LEN];
-            DWORD written;
 
             BuildFileCandidate(root, tick, suffix, candidate, BEDIAG_MAX_PATH_LEN);
             g_file = CreateFile(candidate, GENERIC_WRITE, FILE_SHARE_READ, NULL,
@@ -648,14 +747,7 @@ static void TryOpenSecondaryFile(void)
                 continue;
 
             CopyWide(g_file_path, BEDIAG_MAX_PATH_LEN, candidate);
-            written = 0;
-            if (g_backlog_used != 0)
-                WriteFile(g_file, g_backlog, g_backlog_used, &written, NULL);
-            if (g_backlog_overflow) {
-                const char *overflow = "[BEDIAG] backlog_overflow=1\r\n";
-                WriteFile(g_file, overflow, (DWORD)strlen(overflow), &written, NULL);
-            }
-            FlushFileBuffers(g_file);
+            PrimeFileSink();
             return;
         }
     }
@@ -857,6 +949,18 @@ static const char *ChangeLabel(snapshot_phase_t phase, BOOL cur_ok, BOOL prev_ok
     return "YES";
 }
 
+static void LogCaptureBegin(const char *kind, snapshot_phase_t phase,
+                            const char *name, DWORD base, DWORD size)
+{
+    Logf("[CAPTURE_BEGIN] phase=%s kind=%s name=%s addr=0x%08X size=0x%04X\r\n",
+         g_phase_names[phase],
+         kind,
+         name,
+         base,
+         size);
+    FlushSinks();
+}
+
 static void CapturePhase(snapshot_phase_t phase)
 {
     int i;
@@ -865,6 +969,7 @@ static void CapturePhase(snapshot_phase_t phase)
         const char *changed;
 
         region = &g_regions[i];
+        LogCaptureBegin("PA", phase, region->name, region->base, region->size);
         region->ok[phase] = SafeReadPhysicalBytes(region->base, region->data[phase], region->size);
         region->crc[phase] = Crc32(region->data[phase], region->size);
         changed = ChangeLabel(phase,
@@ -912,6 +1017,7 @@ static void CaptureVirtualPhase(snapshot_phase_t phase)
         const char *changed;
 
         region = &g_vregions[i];
+        LogCaptureBegin("VA", phase, region->name, region->base, region->size);
         region->ok[phase] = SafeReadVirtualBytes(region->base, region->data[phase], region->size,
                                                  &region->valid_prefix[phase]);
         region->crc[phase] = Crc32(region->data[phase], region->size);
@@ -1246,6 +1352,78 @@ static void CopyContextPath(DWORD dwContext, WCHAR *dst, DWORD dst_cch)
     }
 }
 
+static void UpdateDriverContext(bediag_driver_t *driver, DWORD dwContext)
+{
+    if (!driver || dwContext == 0)
+        return;
+
+    driver->init_context = dwContext;
+    CopyContextPath(dwContext, driver->active_key,
+                    sizeof(driver->active_key) / sizeof(driver->active_key[0]));
+}
+
+static void LogDuplicateInit(DWORD dwContext)
+{
+    WCHAR incoming_key[256];
+    char incoming_key_a[256];
+    char active_key_a[256];
+
+    CopyContextPath(dwContext, incoming_key,
+                    sizeof(incoming_key) / sizeof(incoming_key[0]));
+    WideToAnsi(incoming_key, incoming_key_a, sizeof(incoming_key_a));
+    WideToAnsi(g_driver.active_key, active_key_a, sizeof(active_key_a));
+
+    Logf("[BEDIAG_DUPINIT] tick_ms=%lu new_context=0x%08lX refs=%ld worker_started=%u incoming_key=\"%s\" active_key=\"%s\"\r\n",
+         GetTickCount(),
+         dwContext,
+         g_driver_refcount,
+         g_driver.worker_started ? 1u : 0u,
+         incoming_key_a[0] ? incoming_key_a : "<unavailable>",
+         active_key_a[0] ? active_key_a : "<unavailable>");
+    FlushSinks();
+}
+
+static void LogDormantInit(DWORD dwContext)
+{
+    WCHAR incoming_key[256];
+    char incoming_key_a[256];
+
+    CopyContextPath(dwContext, incoming_key,
+                    sizeof(incoming_key) / sizeof(incoming_key[0]));
+    WideToAnsi(incoming_key, incoming_key_a, sizeof(incoming_key_a));
+
+    Logf("[BEDIAG_DORMANT_INIT] tick_ms=%lu context=0x%08lX incoming_key=\"%s\"\r\n",
+         GetTickCount(),
+         dwContext,
+         incoming_key_a[0] ? incoming_key_a : "<unavailable>");
+    FlushSinks();
+}
+
+static BOOL StartBEDiagWorker(void)
+{
+    g_driver.worker_thread = CreateThread(NULL, 0, BEDiagWorkerThread, &g_driver, 0,
+                                          &g_driver.worker_thread_id);
+    if (!g_driver.worker_thread) {
+        TryOpenSecondaryFile();
+        MaybeReportSerialFailure();
+        BeginSection("BEDIAG INIT");
+        Logf("tick_ms=%lu\r\n", GetTickCount());
+        Logf("worker_start_failed err=%lu\r\n", GetLastError());
+        BeginSection("BEDIAG DONE");
+        Logf("status=FAILED\r\n");
+        SetBreadcrumbString(L"BEDiagLastStatus", L"FAILED");
+        LogStage("done", "FAILED");
+        FlushSinks();
+        g_had_error = TRUE;
+        InterlockedExchange(&g_driver_refcount, 0);
+        InterlockedExchange(&g_driver_active, 0);
+        return FALSE;
+    }
+
+    LogStage("worker_created", NULL);
+    return TRUE;
+}
+
 static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 {
     bediag_driver_t *driver;
@@ -1272,8 +1450,8 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 
     BeginSection("SNAPSHOT INIT");
     Logf("tick_ms=%lu phase=%s\r\n", GetTickCount(), g_phase_names[PHASE_INIT]);
-    CapturePhase(PHASE_INIT);
     CaptureVirtualPhase(PHASE_INIT);
+    CapturePhase(PHASE_INIT);
     DumpTlbPhase(PHASE_INIT);
     EmitFocusWords(PHASE_INIT);
     EmitVirtualFocusWords(PHASE_INIT);
@@ -1353,6 +1531,24 @@ extern "C" BOOL WINAPI DllMain(HANDLE hInst, DWORD reason, LPVOID reserved)
 
 extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
 {
+    if (InterlockedCompareExchange(&g_driver_active, 1, 0) != 0) {
+        InterlockedIncrement(&g_driver_refcount);
+        UpdateDriverContext(&g_driver, dwContext);
+        OpenPrimaryFileLog();
+        TryOpenSecondaryFile();
+        MaybeReportSerialFailure();
+        if (dwContext != 0 && !g_driver.worker_thread && !g_driver.worker_started) {
+            g_driver.init_tick = GetTickCount();
+            SetBreadcrumbDWORD(L"BEDiagInitTick", g_driver.init_tick);
+            LogStage("init_enter", "PROMOTED_FROM_STUB");
+            if (!StartBEDiagWorker())
+                return 0;
+            return (DWORD)&g_driver;
+        }
+        LogDuplicateInit(dwContext);
+        return (DWORD)&g_driver;
+    }
+
     memset(&g_driver, 0, sizeof(g_driver));
     memset(g_file_path, 0, sizeof(g_file_path));
     memset(g_backlog, 0, sizeof(g_backlog));
@@ -1363,42 +1559,46 @@ extern "C" DWORD WINAPI BDG_Init(DWORD dwContext)
     g_serial_retry_done = FALSE;
     g_serial_failure_reported = FALSE;
     g_driver.init_tick = GetTickCount();
-    g_driver.init_context = dwContext;
-    CopyContextPath(dwContext, g_driver.active_key, sizeof(g_driver.active_key) / sizeof(g_driver.active_key[0]));
+    UpdateDriverContext(&g_driver, dwContext);
+    InterlockedExchange(&g_driver_refcount, 1);
 
     OpenPrimaryFileLog();
     SetBreadcrumbDWORD(L"BEDiagLoaded", 1);
     SetBreadcrumbDWORD(L"BEDiagInitTick", g_driver.init_tick);
     SetBreadcrumbDWORD(L"BEDiagWorkerStarted", 0);
+    if (dwContext == 0) {
+        LogStage("init_stub", "NULL_CONTEXT");
+        LogDormantInit(dwContext);
+        return (DWORD)&g_driver;
+    }
     LogStage("init_enter", NULL);
 
-    g_driver.worker_thread = CreateThread(NULL, 0, BEDiagWorkerThread, &g_driver, 0, &g_driver.worker_thread_id);
-    if (!g_driver.worker_thread) {
-        TryOpenSecondaryFile();
-        MaybeReportSerialFailure();
-        BeginSection("BEDIAG INIT");
-        Logf("tick_ms=%lu\r\n", GetTickCount());
-        Logf("worker_start_failed err=%lu\r\n", GetLastError());
-        BeginSection("BEDIAG DONE");
-        Logf("status=FAILED\r\n");
-        SetBreadcrumbString(L"BEDiagLastStatus", L"FAILED");
-        LogStage("done", "FAILED");
-        FlushSinks();
-        g_had_error = TRUE;
+    if (!StartBEDiagWorker())
         return 0;
-    }
-
-    LogStage("worker_created", NULL);
     return (DWORD)&g_driver;
 }
 
 extern "C" BOOL WINAPI BDG_Deinit(DWORD hDeviceContext)
 {
     bediag_driver_t *driver;
+    LONG refs_left;
 
     driver = (bediag_driver_t *)hDeviceContext;
     if (driver != &g_driver)
         return FALSE;
+
+    refs_left = InterlockedDecrement(&g_driver_refcount);
+    if (refs_left > 0) {
+        Logf("[BEDIAG_DEINIT] tick_ms=%lu refs_left=%ld status=DEFERRED\r\n",
+             GetTickCount(),
+             refs_left);
+        FlushSinks();
+        return TRUE;
+    }
+    if (refs_left < 0) {
+        InterlockedExchange(&g_driver_refcount, 0);
+        refs_left = 0;
+    }
 
     InterlockedExchange(&driver->stop_requested, 1);
     if (driver->worker_thread) {
@@ -1408,6 +1608,7 @@ extern "C" BOOL WINAPI BDG_Deinit(DWORD hDeviceContext)
     }
 
     CloseLogs();
+    InterlockedExchange(&g_driver_active, 0);
     return TRUE;
 }
 

@@ -50,6 +50,7 @@
 #include "opcodes_mips.h"
 #include "settings.h"
 #include "symbol.h"
+#include "wince_boot.h"
 
 
 static const char *exception_names[] = EXCEPTION_NAMES;
@@ -1812,27 +1813,29 @@ void mips_cpu_exception(struct cpu *cpu, int exccode, int tlb, uint64_t vaddr,
 	}
 
 	if (tlb && vaddr < 0x1000) {
-		uint64_t offset;
-		char *symbol = get_symbol_name(&cpu->machine->symbol_context,
-		    cpu->pc, &offset);
+		if (!wince_boot_note_low_reference_fault(cpu, vaddr, exccode)) {
+			uint64_t offset;
+			char *symbol = get_symbol_name(&cpu->machine->symbol_context,
+			    cpu->pc, &offset);
 
-		// TODO: debugmsg SUBSYS_CPU, or better: SUBSYS_EXCEPTION
-		// VERBOSITY_WARNING since this is a relatively sure sign of a bug.
+			// TODO: debugmsg SUBSYS_CPU, or better: SUBSYS_EXCEPTION
+			// VERBOSITY_WARNING since this is a relatively sure sign of a bug.
 
-		fatal("[ ");
-		if (cpu->machine->ncpus > 1)
-			fatal("cpu%i: ", cpu->cpu_id);
-		fatal("warning: LOW reference: vaddr=");
-		if (cpu->is_32bit)
-			fatal("0x%08" PRIx32, (uint32_t) vaddr);
-		else
-			fatal("0x%016" PRIx64, (uint64_t) vaddr);
-		fatal(", exception %s, pc=", exception_names[exccode]);
-		if (cpu->is_32bit)
-			fatal("0x%08" PRIx32, (uint32_t) cpu->pc);
-		else
-			fatal("0x%016" PRIx64, (uint64_t)cpu->pc);
-		fatal(" <%s> ]\n", symbol? symbol : "(no symbol)");
+			fatal("[ ");
+			if (cpu->machine->ncpus > 1)
+				fatal("cpu%i: ", cpu->cpu_id);
+			fatal("warning: LOW reference: vaddr=");
+			if (cpu->is_32bit)
+				fatal("0x%08" PRIx32, (uint32_t) vaddr);
+			else
+				fatal("0x%016" PRIx64, (uint64_t) vaddr);
+			fatal(", exception %s, pc=", exception_names[exccode]);
+			if (cpu->is_32bit)
+				fatal("0x%08" PRIx32, (uint32_t) cpu->pc);
+			else
+				fatal("0x%016" PRIx64, (uint64_t)cpu->pc);
+			fatal(" <%s> ]\n", symbol? symbol : "(no symbol)");
+		}
 	}
 
 	/*  Clear the exception code bits of the cause register...  */
@@ -2020,5 +2023,6 @@ void mips_cpu_exception(struct cpu *cpu, int exccode, int tlb, uint64_t vaddr,
 #include "memory_mips.c"
 
 
+#define DYNTRANS_EXEC_HOOK(cpu) wince_boot_note_exec_entry(cpu)
 #include "tmp_mips_tail.c"
-
+#undef DYNTRANS_EXEC_HOOK

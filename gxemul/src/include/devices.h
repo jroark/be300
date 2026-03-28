@@ -1,6 +1,9 @@
 #ifndef	DEVICES_H
 #define	DEVICES_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 /*
  *  Copyright (C) 2003-2021  Anders Gavare.  All rights reserved.
  *
@@ -496,8 +499,21 @@ void dev_vga_init(struct machine *machine, struct memory *mem,
 	uint64_t videomem_base, uint64_t control_base, const char *name);
 
 /*  dev_vr41xx.c:  */
+struct vr41xx_diag_state {
+	uint32_t	sysint1;
+	uint32_t	msysint1;
+	uint32_t	giuint;
+	uint32_t	giumask;
+	uint32_t	giuintenl;
+	uint32_t	sysint2;
+	uint32_t	msysint2;
+	uint32_t	pending_timer_interrupts;
+	uint32_t	pmucntreg;
+};
 struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 	struct memory *mem, int cpumodel);
+bool vr41xx_diag_get_state(struct machine *machine,
+	struct vr41xx_diag_state *out);
 
 /*  lk201.c:  */
 struct lk201_data {
@@ -524,4 +540,3 @@ void lk201_init(struct lk201_data *d, int use_fb,
 
 
 #endif	/*  DEVICES_H  */
-
