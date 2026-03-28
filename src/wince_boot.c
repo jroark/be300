@@ -103,6 +103,8 @@ static void log_dispatch_callback_state(machine_t *m, const char *label);
 static void log_va_probe(machine_t *m, const char *label, uint32_t va);
 static void maybe_log_replay_region_drift(machine_t *m);
 static void capture_replay_slot_1ac0_baseline(machine_t *m);
+static void capture_observed_low_vectors(machine_t *m);
+static void maybe_track_low_vector_runtime_changes(machine_t *m);
 static void log_slot_1ac0_snapshot(machine_t *m, const char *label);
 static void log_slot_1ac0_aliases(machine_t *m, const char *label);
 static void search_slot_1ac0_copies(machine_t *m, const char *label);
@@ -114,6 +116,10 @@ static bool replay_pc_in_late_exception_corridor(uint32_t pc);
 static bool probable_low_va_target(uint32_t value);
 static bool range_overlaps(uint64_t base_a, uint64_t size_a, uint64_t base_b,
     uint64_t size_b);
+static bool block_matches(const uint32_t *a, const uint32_t *b, size_t words);
+static void read_block(machine_t *m, uint32_t pa, uint32_t *out, size_t words);
+static void maybe_log_checkpoint(machine_t *m, const char *tag,
+    const char *detail);
 static void synthesize_word_after_write(machine_t *m, uint32_t word_pa,
     uint64_t write_pa, const unsigned char *new_data, size_t len,
     uint32_t *before_out, uint32_t *after_out);
@@ -986,6 +992,17 @@ static bool find_first_replay_region_mismatch(machine_t *m,
     return false;
 }
 
+static void capture_observed_low_vectors(machine_t *m)
+{
+    if (!m)
+        return;
+
+    read_block(m, 0x00000000u, m->wince.observed_low_tlb, WINCE_VECTOR_WORDS);
+    read_block(m, 0x00000180u, m->wince.observed_low_general,
+        WINCE_VECTOR_WORDS);
+    m->wince.low_vector_observed_valid = true;
+}
+
 static void capture_replay_slot_1ac0_baseline(machine_t *m)
 {
     uint32_t i;
@@ -1248,6 +1265,93 @@ static void search_slot_1ac0_copies(machine_t *m, const char *label)
             "[WINCE_SLOT_SCAN] label=%s no-other-copies\n",
             label ? label : "-");
     }
+}
+
+static void maybe_track_low_vector_runtime_changes(machine_t *m)
+{
+    uint32_t current_tlb[WINCE_VECTOR_WORDS];
+    uint32_t current_general[WINCE_VECTOR_WORDS];
+    bool tlb_changed;
+    bool general_changed;
+
+    if (!m || !m->wince.active || !m->wince.cold_boot_redirected
+        || !m->wince.vectors_ready) {
+        return;
+    }
+
+    read_block(m, 0x00000000u, current_tlb, WINCE_VECTOR_WORDS);
+    read_block(m, 0x00000180u, current_general, WINCE_VECTOR_WORDS);
+
+    if (!m->wince.low_vector_observed_valid) {
+        capture_observed_low_vectors(m);
+        return;
+    }
+
+    tlb_changed = !block_matches(current_tlb, m->wince.observed_low_tlb,
+        WINCE_VECTOR_WORDS);
+    general_changed = !block_matches(current_general,
+        m->wince.observed_low_general, WINCE_VECTOR_WORDS);
+    if (!tlb_changed && !general_changed)
+        return;
+
+    invalidate_all(m);
+    if (m->wince.vector_owner != WINCE_VECTOR_GUEST)
+        m->wince.vector_owner = WINCE_VECTOR_GUEST;
+
+    if (m->wince.log_stall && !m->wince.low_vector_runtime_drift_logged) {
+        uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+        uint32_t pc = (uint32_t)m->cpu->pc;
+
+        m->wince.low_vector_runtime_drift_logged = true;
+        fprintf(stderr,
+            "[WINCE_VECTOR_DRIFT] pc=0x%08X ra=0x%08X sp=0x%08X"
+            " epc=0x%08X badva=0x%08X status=0x%08X cause=0x%08X"
+            " entryhi=0x%08X tlb_changed=%d general_changed=%d\n",
+            pc,
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI],
+            tlb_changed ? 1 : 0,
+            general_changed ? 1 : 0);
+        fprintf(stderr,
+            "[WINCE_VECTOR_DRIFT] old_low_0000=%08X/%08X/%08X/%08X"
+            " new_low_0000=%08X/%08X/%08X/%08X\n",
+            m->wince.observed_low_tlb[0],
+            m->wince.observed_low_tlb[1],
+            m->wince.observed_low_tlb[2],
+            m->wince.observed_low_tlb[3],
+            current_tlb[0],
+            current_tlb[1],
+            current_tlb[2],
+            current_tlb[3]);
+        fprintf(stderr,
+            "[WINCE_VECTOR_DRIFT] old_low_0180=%08X/%08X/%08X/%08X"
+            " new_low_0180=%08X/%08X/%08X/%08X\n",
+            m->wince.observed_low_general[0],
+            m->wince.observed_low_general[1],
+            m->wince.observed_low_general[2],
+            m->wince.observed_low_general[3],
+            current_general[0],
+            current_general[1],
+            current_general[2],
+            current_general[3]);
+        dump_gpr_window(m);
+        dump_code_window(m, pc, 4u, 12u);
+        if (sp != 0)
+            dump_va_window(m, "low_vector_drift_stack", sp - 0x40u, 0x80u);
+        dump_pa_window(m, "low_vector_drift_0000", 0x00000000u, 0x40u);
+        dump_pa_window(m, "low_vector_drift_0180", 0x00000180u, 0x40u);
+        maybe_log_checkpoint(m, "low_vector_drift", "runtime-change");
+    }
+
+    memcpy(m->wince.observed_low_tlb, current_tlb,
+        sizeof(m->wince.observed_low_tlb));
+    memcpy(m->wince.observed_low_general, current_general,
+        sizeof(m->wince.observed_low_general));
 }
 
 static void maybe_log_replay_region_drift(machine_t *m)
@@ -3193,8 +3297,10 @@ static void write_block(machine_t *m, uint32_t pa, const uint32_t *words,
 {
     size_t i;
 
-    if (pa < 0x00000400u)
+    if (pa < 0x00000400u) {
         set_vector_write_observer(m, false);
+        m->wince.low_vector_observed_valid = false;
+    }
     for (i = 0; i < word_count; i++)
         store_32bit_word(m->cpu, pa_to_kseg0(pa + (uint32_t)(i * 4u)), words[i]);
     if (pa < 0x00000400u)
@@ -3355,6 +3461,7 @@ static void scan_low_vectors(machine_t *m)
         if (!tlb_matches || !general_matches) {
             m->wince.vector_owner = WINCE_VECTOR_GUEST;
             m->wince.vectors_ready = ready;
+            m->wince.low_vector_observed_valid = false;
             invalidate_all(m);
             if (m->wince.log_stall && !m->wince.low_vector_guest_write_logged) {
                 fprintf(stderr,
@@ -3960,6 +4067,7 @@ void wince_boot_apply_initial_seed(machine_t *m)
     applied_pa = apply_pa_seed_regions(m, false);
     applied_va = apply_va_seed_regions(m, false);
     m->wince.initial_seed_applied = true;
+    m->wince.low_vector_observed_valid = false;
 
     if (m->wince.log_stall) {
         fprintf(stderr,
@@ -3983,6 +4091,7 @@ void wince_boot_apply_resume_seed(machine_t *m)
     applied_pa = apply_pa_seed_regions(m, true);
     applied_va = apply_va_seed_regions(m, true);
     m->wince.resume_seed_applied = true;
+    m->wince.low_vector_observed_valid = false;
 
     if (m->wince.log_stall) {
         fprintf(stderr, "[WINCE_SEED] resume applied_pa=%d applied_va=%d\n",
@@ -4014,6 +4123,7 @@ bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t halt_pc,
 
     restore_replay_cp0_fields(m);
     install_replay_helper_tlb(m);
+    m->wince.low_vector_observed_valid = false;
     capture_replay_slot_1ac0_baseline(m);
 
     if (!m->wince.replay_snapshot_logged) {
@@ -4055,6 +4165,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
         return;
 
     scan_low_vectors(m);
+    maybe_track_low_vector_runtime_changes(m);
     maybe_note_first_exception(m);
     maybe_log_fault_site(m);
     maybe_apply_replay_tlb_idx01_even_clone(m);
@@ -4351,6 +4462,7 @@ void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
         return;
 
     invalidate_all(m);
+    m->wince.low_vector_observed_valid = false;
     if (m->wince.vector_owner != WINCE_VECTOR_GUEST) {
         m->wince.vector_owner = WINCE_VECTOR_GUEST;
         m->wince.vectors_ready = false;
