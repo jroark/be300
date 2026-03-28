@@ -204,6 +204,7 @@ static const wince_fault_site_desc_t wince_fault_sites[] = {
 };
 
 static const wince_replay_write_watch_desc_t wince_replay_write_watches[] = {
+    { "low_vector_0180", UINT32_C(0x00000180), UINT32_C(0x0040) },
     { "stack_frame_1770", UINT32_C(0x00001770), UINT32_C(0x0090) },
     { "slot_1ac0", UINT32_C(0x00001AC0), UINT32_C(0x0040) },
     { "resume_context_22a0", UINT32_C(0x000022A0), UINT32_C(0x0040) },
@@ -249,6 +250,12 @@ static const wince_replay_exec_probe_desc_t wince_replay_exec_probes[] = {
     { UINT32_C(0x80000184), "exec_80000184", -0x10, 0x40u, 0x60u },
     { UINT32_C(0x80000188), "exec_80000188", -0x10, 0x40u, 0x60u },
     { UINT32_C(0x8000018C), "exec_8000018c", -0x10, 0x40u, 0x60u },
+    { UINT32_C(0x8007B670), "exec_8007b670", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x8007B82C), "exec_8007b82c", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x8007B8EC), "exec_8007b8ec", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x8007B918), "exec_8007b918", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x8007B930), "exec_8007b930", -0x20, 0x80u, 0x80u },
+    { UINT32_C(0x8007B920), "exec_8007b920", -0x20, 0x80u, 0x80u },
     { UINT32_C(0x800AADA0), "exec_800aada0", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800AAE20), "exec_800aae20", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800AAE48), "exec_800aae48", -0x20, 0x80u, 0x60u },
