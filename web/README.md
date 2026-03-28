@@ -2,18 +2,48 @@
 
 This repo can build a browser-only BE-300 frontend into `build-web/web/`.
 
-## Verified Homebrew Emscripten Build
+## One-command build
 
-The Homebrew `emscripten` package on this machine needed explicit environment
-overrides for:
+Use the helper script from the repo root:
 
+```bash
+./tools/build_web.sh
+```
+
+The script:
+
+- creates `build-web/` if needed
+- picks a Python 3.10+ interpreter for Emscripten, preferring the Homebrew
+  Python used on this machine
+- generates `build-web/.emscripten` on first run
+- applies the Homebrew Emscripten environment overrides that were required on
+  this repo
+- configures `BUILD_WEB=ON`
+- builds the `be300_web` target
+
+## Optional overrides
+
+The script respects these environment variables if you want to override the
+defaults:
+
+- `BUILD_DIR`
+- `JOBS`
 - `EMSDK_PYTHON`
 - `EM_CONFIG`
 - `EM_LLVM_ROOT`
 - `EM_BINARYEN_ROOT`
 - `EM_CACHE`
 
-The commands below were verified on this repo:
+Example:
+
+```bash
+JOBS=8 ./tools/build_web.sh
+```
+
+## Verified manual fallback
+
+If you want to run the commands yourself instead of the script, this is the
+manual flow that was verified on this repo:
 
 ```bash
 mkdir -p build-web
@@ -47,7 +77,7 @@ The generated browser bundle is written to:
 - `build-web/web/be300_web.js`
 - `build-web/web/be300_web.wasm`
 
-## Local Run
+## Local run
 
 Serve the built directory with any static file server. Example:
 
