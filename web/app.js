@@ -12,6 +12,7 @@ const serialEl = document.querySelector("#serial");
 const serialPanelEl = document.querySelector(".serial-panel");
 const screenEl = document.querySelector("#screen");
 const screenCtx = screenEl.getContext("2d", { alpha: false });
+const controlButtons = Array.from(document.querySelectorAll("[data-set][data-mask]"));
 
 let kernelFile = null;
 let running = false;
@@ -45,6 +46,38 @@ function sendButtons() {
     btnSet1,
     btnSet2,
   });
+}
+
+function isMaskActive(targetSet, mask) {
+  return targetSet === "btn1" ? (btnSet1 & mask) !== 0 : (btnSet2 & mask) !== 0;
+}
+
+function syncControlButtonStates() {
+  for (const button of controlButtons) {
+    const targetSet = button.dataset.set;
+    const mask = Number(button.dataset.mask);
+    const active = isMaskActive(targetSet, mask);
+    button.classList.toggle("control-active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+}
+
+function setButtonMask(targetSet, mask, enabled) {
+  if (targetSet === "btn1") {
+    btnSet1 = enabled ? (btnSet1 | mask) : (btnSet1 & ~mask);
+  } else {
+    btnSet2 = enabled ? (btnSet2 | mask) : (btnSet2 & ~mask);
+  }
+
+  syncControlButtonStates();
+  sendButtons();
+}
+
+function clearGuestButtons() {
+  btnSet1 = 0;
+  btnSet2 = 0;
+  syncControlButtonStates();
+  sendButtons();
 }
 
 function mapPointerToGuest(event) {
@@ -89,6 +122,7 @@ bootBtn.addEventListener("click", () => {
   }
   bootInFlight = true;
   running = false;
+  clearGuestButtons();
   serialEl.textContent = "";
   setStatus(`Booting ${kernelFile.name}...`);
   syncButtons();
@@ -100,11 +134,13 @@ bootBtn.addEventListener("click", () => {
 });
 
 stopBtn.addEventListener("click", () => {
+  clearGuestButtons();
   worker.postMessage({ type: "stop" });
   setStatus("Stopping emulator...");
 });
 
 resetBtn.addEventListener("click", () => {
+  clearGuestButtons();
   worker.postMessage({ type: "reset" });
   setStatus("Resetting emulator...");
 });
@@ -145,19 +181,23 @@ function releaseTouch(event) {
 screenEl.addEventListener("pointerup", releaseTouch);
 screenEl.addEventListener("pointercancel", releaseTouch);
 
-for (const button of document.querySelectorAll("[data-set][data-mask]")) {
+for (const button of controlButtons) {
   const targetSet = button.dataset.set;
   const mask = Number(button.dataset.mask);
+  const isToggle = button.dataset.toggle === "true";
+
+  if (isToggle) {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      setButtonMask(targetSet, mask, !isMaskActive(targetSet, mask));
+    });
+    continue;
+  }
 
   const press = (event) => {
     event.preventDefault();
     button.setPointerCapture(event.pointerId);
-    if (targetSet === "btn1") {
-      btnSet1 |= mask;
-    } else {
-      btnSet2 |= mask;
-    }
-    sendButtons();
+    setButtonMask(targetSet, mask, true);
   };
 
   const release = (event) => {
@@ -165,12 +205,7 @@ for (const button of document.querySelectorAll("[data-set][data-mask]")) {
     if (button.hasPointerCapture(event.pointerId)) {
       button.releasePointerCapture(event.pointerId);
     }
-    if (targetSet === "btn1") {
-      btnSet1 &= ~mask;
-    } else {
-      btnSet2 &= ~mask;
-    }
-    sendButtons();
+    setButtonMask(targetSet, mask, false);
   };
 
   button.addEventListener("pointerdown", press);
@@ -206,6 +241,7 @@ worker.addEventListener("message", ({ data }) => {
     case "fatal":
       running = false;
       bootInFlight = false;
+      clearGuestButtons();
       setStatus(data.message);
       appendSerial(`\n[FATAL] ${data.message}\n`);
       syncButtons();
@@ -216,4 +252,5 @@ worker.addEventListener("message", ({ data }) => {
 });
 
 syncButtons();
+syncControlButtonStates();
 setSerialCollapsed(false);
