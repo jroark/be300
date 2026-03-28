@@ -1,21 +1,21 @@
 # be300-framebuffer
 
-Casio BE-300 (NEC VR4131 MIPS little-endian) emulator based on the Unicorn engine.
+Casio BE-300 (NEC VR4131 MIPS little-endian) emulator based on the GXemul engine.
 
 ## Screenshots
 
 ### Kernel 2.6
-![Kernel 2.6](screenshot_20260315_183059.bmp)
+![Kernel 2.6](vmlinux-2.6.png)
 
-### Kernel 2.4
-![Kernel 2.4](screenshot_20260315_182832.bmp)
+### Kernel 2.4 vmlinux-pgui-demo
+![Kernel 2.4](vmlinux-pgui-demo.png)
 
 ### WinCE 3.0
-![WinCE 3.0](screenshot_20260315_182519.bmp)
+![WinCE 3.0](All_nand_300.png)
 
 ## Project Overview
 
-This project is an emulator for the Casio BE-300, a MIPS-based PDA. It uses the Unicorn engine for CPU emulation and provides support for various hardware peripherals and kernels.
+This project is an emulator for the Casio BE-300, a MIPS-based PDA. It uses the GXemul engine for CPU emulation and provides support for various hardware peripherals and kernels.
 
 ### Supported Kernels
 - **Linux 2.6.8.1**: Booted to userspace.
@@ -34,9 +34,14 @@ cmake ..
 make
 ```
 
+### Running Linux 2.4
+```bash
+./be300 --kernel ../kernels/vmlinux-pgui-demo --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram"
+```
+
 ### Running Linux 2.6
 ```bash
-./be300 --kernel ../kernels/vmlinux-2.6
+./be300 --kernel ../kernels/vmlinux-2.6 --sfb-5bit-green
 ```
 
 ### Running Windows CE
