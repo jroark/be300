@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20260328c";
+const ASSET_VERSION = "20260328d";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -6,6 +6,9 @@ const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.
 const presetKernelSelect = document.querySelector("#presetKernel");
 const kernelFileInput = document.querySelector("#kernelFile");
 const cmdlineInput = document.querySelector("#cmdline");
+const sdramInput = document.querySelector("#sdramMb");
+const speedInput = document.querySelector("#speedMhz");
+const sfb5BitGreenInput = document.querySelector("#sfb5BitGreen");
 const bootBtn = document.querySelector("#bootBtn");
 const stopBtn = document.querySelector("#stopBtn");
 const resetBtn = document.querySelector("#resetBtn");
@@ -45,6 +48,22 @@ let imageData = screenCtx.createImageData(screenEl.width, screenEl.height);
 let btnSet1 = 0;
 let btnSet2 = 0;
 
+function clampInteger(value, min, max, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function getBootConfig() {
+  return {
+    sdramMb: clampInteger(sdramInput.value, 1, 64, 16),
+    targetMhz: clampInteger(speedInput.value, 0, 1000, 15),
+    sfb5BitGreen: sfb5BitGreenInput.checked,
+  };
+}
+
 function setStatus(text) {
   statusEl.textContent = text;
 }
@@ -68,7 +87,7 @@ function updateKernelStatus() {
   const activeKernel = getActiveKernel();
 
   if (!activeKernel) {
-    setStatus("Select a bundled kernel or upload a custom kernel.");
+    setStatus("Select a kernel or upload a custom kernel.");
     return;
   }
 
@@ -195,6 +214,7 @@ bootBtn.addEventListener("click", async () => {
     type: "bootLinux",
     kernelName: activeKernel.name,
     cmdline: cmdlineInput.value,
+    ...getBootConfig(),
   };
 
   try {

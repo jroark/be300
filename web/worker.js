@@ -1,10 +1,11 @@
-import createBe300Module from "./be300_web.js?v=20260328c";
+import createBe300Module from "./be300_web.js?v=20260328d";
 
 const FRAME_WIDTH = 240;
 const FRAME_HEIGHT = 320;
 const FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 4;
 const SERIAL_BYTES = 16384;
-const BATCHES_PER_TICK = 15;
+const DEFAULT_BATCHES_PER_TICK = 15;
+const UNTHROTTLED_BATCHES_PER_TICK = 64;
 const FRAME_INTERVAL_MS = 33;
 
 const textEncoder = new TextEncoder();
@@ -21,7 +22,24 @@ let widthPtr = 0;
 let heightPtr = 0;
 let cachedKernel = null;
 let cachedCmdline = null;
+let cachedBootConfig = null;
 let lastFrameAt = 0;
+let batchesPerTick = DEFAULT_BATCHES_PER_TICK;
+
+function normalizeBootConfig(config = {}) {
+  const parsedSdram = Number.parseInt(config.sdramMb, 10);
+  const parsedSpeed = Number.parseInt(config.targetMhz, 10);
+
+  return {
+    sdramMb: Number.isFinite(parsedSdram) ? Math.min(64, Math.max(1, parsedSdram)) : 16,
+    targetMhz: Number.isFinite(parsedSpeed) ? Math.min(1000, Math.max(0, parsedSpeed)) : 15,
+    sfb5BitGreen: Boolean(config.sfb5BitGreen),
+  };
+}
+
+function getBatchesPerTick(targetMhz) {
+  return targetMhz > 0 ? Math.max(1, targetMhz) : UNTHROTTLED_BATCHES_PER_TICK;
+}
 
 function postStatus(message, extra = {}) {
   postMessage({
@@ -127,7 +145,7 @@ function runTick() {
     return;
   }
 
-  const rc = moduleInstance._be300_step(machineHandle, BATCHES_PER_TICK);
+  const rc = moduleInstance._be300_step(machineHandle, batchesPerTick);
   drainSerial(moduleInstance);
   drainFrame(moduleInstance);
 
@@ -140,12 +158,17 @@ function runTick() {
   postStatus("Emulator stopped.");
 }
 
-async function bootKernel(kernelBytes, cmdline) {
+async function bootKernel(kernelBytes, cmdline, bootConfig) {
   const module = await ensureModule();
+  const config = normalizeBootConfig(bootConfig);
   destroyMachine();
   ensureScratch(module);
 
-  machineHandle = module._be300_create_web(16, 0, 0);
+  machineHandle = module._be300_create_web(
+    config.sdramMb,
+    config.targetMhz,
+    config.sfb5BitGreen ? 1 : 0,
+  );
   if (!machineHandle) {
     postMessage({ type: "fatal", message: "Failed to create BE-300 machine." });
     return;
@@ -170,6 +193,8 @@ async function bootKernel(kernelBytes, cmdline) {
 
   cachedKernel = kernelBytes;
   cachedCmdline = cmdline;
+  cachedBootConfig = config;
+  batchesPerTick = getBatchesPerTick(config.targetMhz);
   running = true;
   lastFrameAt = 0;
   postStatus("Kernel loaded. Starting emulation...", { bootInFlight: false });
@@ -205,7 +230,7 @@ self.addEventListener("message", async ({ data }) => {
       try {
         postStatus("Loading kernel image...", { bootInFlight: true });
         const kernelBytes = await loadKernelBytes(data);
-        await bootKernel(kernelBytes, data.cmdline);
+        await bootKernel(kernelBytes, data.cmdline, data);
       } catch (error) {
         destroyMachine();
         postMessage({
@@ -216,9 +241,9 @@ self.addEventListener("message", async ({ data }) => {
       break;
     }
     case "reset":
-      if (cachedKernel && cachedCmdline !== null) {
+      if (cachedKernel && cachedCmdline !== null && cachedBootConfig) {
         postStatus("Resetting emulator...", { bootInFlight: true });
-        await bootKernel(cachedKernel, cachedCmdline);
+        await bootKernel(cachedKernel, cachedCmdline, cachedBootConfig);
       }
       break;
     case "stop":
