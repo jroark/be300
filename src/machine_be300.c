@@ -690,15 +690,119 @@ static bool be300_run_batch(machine_t *m)
             uint32_t wait_pc = (uint32_t)m->cpu->pc;
             uint32_t norm = wait_pc & 0x1FFFFFFFu;
 
-            m->cpu->is_halted = false;
-            m->cpu->pc += 4;  /* skip past WAIT */
-
             if (!m->wince.cold_boot_wait_logged) {
+                /* First WAIT: skip past it to start OAL init */
+                m->cpu->is_halted = false;
+                m->cpu->pc += 4;
                 m->wince.cold_boot_wait_logged = true;
                 fprintf(stderr,
                     "[COLD_BOOT] WAIT at PC=0x%08X (PA=0x%08X),"
                     " skipping to 0x%08" PRIx64 "\n",
                     wait_pc, norm, m->cpu->pc);
+
+                /*
+                 * Save the current CPU state into the resume context
+                 * table at PA 0x2200.  The OAL init path after WAIT
+                 * does a full GPR/CP0 restore from this table.  On real
+                 * hardware, this table is pre-populated by the factory
+                 * hibernate process.  We fill it with the live state so
+                 * the restore puts back what was there before WAIT.
+                 *
+                 * Table layout (from disassembly of 0x79764-0x797E4):
+                 *   0x00-0x68: GPR 1-28 (skipping $t0 = reg 8)
+                 *   0x6C: SP, 0x70: FP, 0x74: RA
+                 *   0x78: HI, 0x7C: LO
+                 *   0x80+: CP0 registers (Index, Random, ...)
+                 *
+                 * The epilogue at 0x797DC does LW $t0, 0($sp) then
+                 * JR $ra — so SP must point to valid stack with a
+                 * saved $t0, and RA must be a valid return address.
+                 */
+                {
+                    uint64_t base = 0xffffffffa0002200ULL;
+                    /* GPR 1-7 (at, v0, v1, a0-a3) at offsets 0x00-0x18 */
+                    for (int r = 1; r <= 7; r++)
+                        store_32bit_word(m->cpu, base + (r-1)*4,
+                            (uint32_t)m->cpu->cd.mips.gpr[r]);
+                    /* GPR 9-28 (t1-t9, s0-s7, t8, t9, k0, k1, gp)
+                       at offsets 0x1C-0x68 */
+                    for (int r = 9; r <= 28; r++)
+                        store_32bit_word(m->cpu, base + 0x1C + (r-9)*4,
+                            (uint32_t)m->cpu->cd.mips.gpr[r]);
+                    /* SP, FP, RA */
+                    store_32bit_word(m->cpu, base + 0x6C,
+                        (uint32_t)m->cpu->cd.mips.gpr[29]);
+                    store_32bit_word(m->cpu, base + 0x70,
+                        (uint32_t)m->cpu->cd.mips.gpr[30]);
+                    store_32bit_word(m->cpu, base + 0x74,
+                        (uint32_t)m->cpu->cd.mips.gpr[31]);
+                    /* HI, LO */
+                    store_32bit_word(m->cpu, base + 0x78,
+                        (uint32_t)m->cpu->cd.mips.hi);
+                    store_32bit_word(m->cpu, base + 0x7C,
+                        (uint32_t)m->cpu->cd.mips.lo);
+                    /* CP0: Status at offset 0xB0 (reg 12),
+                       EPC at 0xB8 (reg 14), PRId at 0xBC (reg 15).
+                       Set IE=1 and IM[7]=1 in Status so the timer
+                       interrupt can wake the CPU from subsequent WAITs.
+                       The OAL init configures the 992 Hz RTCL1 timer
+                       and ICU, but the GPR/CP0 restore overwrites
+                       Status — we need IE enabled for interrupt wake. */
+                    {
+                        uint32_t status =
+                            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
+                        status |= 0x8001u; /* IE=1, IM[7]=1 (hw int 5) */
+                        store_32bit_word(m->cpu, base + 0x80 + 12*4,
+                            status);
+                    }
+                    store_32bit_word(m->cpu, base + 0x80 + 14*4,
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC]);
+                    store_32bit_word(m->cpu, base + 0x80 + 15*4,
+                        VR4131_PRID);
+                    /* Push current $t0 onto stack so LW $t0,0($sp)
+                       at 0x797DC reads it back correctly */
+                    {
+                        uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[29];
+                        if (sp >= 4)
+                            store_32bit_word(m->cpu,
+                                0xffffffff80000000ULL | (sp - 4),
+                                (uint32_t)m->cpu->cd.mips.gpr[8]);
+                        /* Adjust saved SP to account for the pop */
+                        store_32bit_word(m->cpu, base + 0x6C, sp - 4);
+                    }
+                    fprintf(stderr, "[COLD_BOOT] Saved live CPU state"
+                        " to resume_ctx at PA 0x2200"
+                        " (SP=0x%08X RA=0x%08X Status=0x%08X)\n",
+                        (uint32_t)m->cpu->cd.mips.gpr[29],
+                        (uint32_t)m->cpu->cd.mips.gpr[31],
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
+                }
+
+                /* Dump decompressed NK.exe binary for analysis */
+                {
+                    const uint32_t nk_pa = 0x00060000u;
+                    const uint32_t nk_size = 0x005F6AC8u;
+                    FILE *nk_fp = fopen("nk_decompressed.bin", "wb");
+                    if (nk_fp) {
+                        uint8_t page[4096];
+                        uint32_t off = 0;
+                        while (off < nk_size) {
+                            uint32_t chunk = nk_size - off;
+                            if (chunk > sizeof(page)) chunk = sizeof(page);
+                            uint64_t va = 0xffffffff80000000ULL | (nk_pa + off);
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    va, page, chunk, MEM_READ, CACHE_DATA))
+                                fwrite(page, 1, chunk, nk_fp);
+                            else
+                                break;
+                            off += chunk;
+                        }
+                        fclose(nk_fp);
+                        fprintf(stderr,
+                            "[COLD_BOOT] Dumped NK.exe (%u bytes)"
+                            " to nk_decompressed.bin\n", off);
+                    }
+                }
 
                 /* Dump instructions around WAIT for disassembly */
                 fprintf(stderr, "[COLD_BOOT] Code around WAIT:\n");
@@ -850,14 +954,35 @@ static bool be300_run_batch(machine_t *m)
                     }
                 }
             } else {
+                /*
+                 * Subsequent WAITs: the OAL init restored Status
+                 * with IE=0 (from the zeroed resume_ctx table), so
+                 * the timer can't wake the CPU.  Fix Status to
+                 * enable interrupts, then leave halted.  The pending
+                 * timer interrupt (Cause IP[7] already set) will
+                 * immediately fire and wake the CPU via GXemul's
+                 * interrupt mechanism.
+                 */
                 m->wince.cold_boot_wait_count++;
-                if (m->wince.cold_boot_wait_count <= 20
-                    || (m->wince.cold_boot_wait_count % 1000) == 0) {
+                {
+                    uint32_t status =
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
+                    if (!(status & 0x1u)) {
+                        /* IE not set — enable it plus IM[7] for timer */
+                        status |= 0x8001u;
+                        m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
+                            status;
+                    }
+                }
+                if (m->wince.cold_boot_wait_count <= 5) {
                     fprintf(stderr,
                         "[COLD_BOOT] WAIT #%u at PC=0x%08" PRIx64
-                        ", skipping\n",
+                        ", halted with IE=1"
+                        " (Status=0x%08X Cause=0x%08X)\n",
                         m->wince.cold_boot_wait_count + 1,
-                        m->cpu->pc - 4);
+                        m->cpu->pc,
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE]);
                 }
             }
         } else if (m->wince.hibernate_redirect_count < 5) {
