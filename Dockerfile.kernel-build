@@ -1,24 +1,30 @@
-FROM debian:bullseye
+FROM --platform=linux/386 i386/debian:buster
 
-# Debian Bullseye has GCC 10.2 - much more compatible with 2.4 kernels
-# than GCC 12+, while still being readily available
+# Use i386 Debian Buster to run the original linux4be GCC 3.2.1 cross-compiler.
+# The toolchain binaries are 32-bit x86 ELF from ALT Linux circa 2003.
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    gcc-mipsel-linux-gnu \
-    g++-mipsel-linux-gnu \
-    binutils-mipsel-linux-gnu \
-    libc6-dev-mipsel-cross \
+# Buster is EOL - use archive repos
+RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list && \
+    sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list && \
+    sed -i '/buster-updates/d' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y \
+    make \
     bc \
     bison \
     flex \
     libncurses-dev \
-    wget \
     file \
-    python3 \
     && rm -rf /var/lib/apt/lists/*
+
+# The original mipsel-linux cross-compiler (GCC 3.2.1) is mounted from
+# the linux4be backup at /toolchain. Set up symlinks so mipsel-linux-gcc
+# can find cc1 and as/ld (the toolchain ships with mipsel-alt-linux prefix).
+RUN mkdir -p /usr/lib/gcc-lib/mipsel-linux && \
+    mkdir -p /usr/mipsel-linux
+
+ENV PATH="/toolchain/usr/bin:${PATH}"
 
 WORKDIR /work
 CMD ["/bin/bash"]

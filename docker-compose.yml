@@ -14,8 +14,10 @@ services:
       context: .
       dockerfile: Dockerfile.kernel-build
     image: mips-kernel-build
+    platform: linux/386
     volumes:
       - .:/work
+      - /Users/jroark/src/linux4be/backup_linux4be/~mouse/linux4be-alt:/toolchain:ro
     working_dir: /work
     command: /bin/bash
     stdin_open: true
