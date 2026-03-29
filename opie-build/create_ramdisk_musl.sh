@@ -130,7 +130,6 @@ mount -t proc none /proc
 mount -t sysfs none /sys 2>/dev/null
 
 echo "BE-300 Qt/Embedded Demo"
-echo "Starting Qt/Embedded on /dev/fb0..."
 
 export QTDIR=/opt/QtPalmtop
 export HOME=/root
@@ -140,7 +139,23 @@ export QWS_KEYBOARD=none
 export QWS_DISPLAY=LinuxFb:/dev/fb0
 export QWS_SIZE=240x320
 
-/opt/QtPalmtop/bin/hello -qws &
+# Debug: check if libraries load
+echo "Checking libs..."
+ls -l /opt/QtPalmtop/lib/fonts/
+ls -l /lib/ld-musl* /lib/libc.so /lib/libstdc++* /lib/libgcc_s*
+
+echo "Starting hello -qws..."
+/opt/QtPalmtop/bin/hello -qws 2>&1 &
+HELLO_PID=$!
+echo "hello PID=$HELLO_PID"
+
+# Give it a moment then check if still alive
+sleep 2
+if kill -0 $HELLO_PID 2>/dev/null; then
+    echo "hello is running"
+else
+    echo "hello CRASHED (exit=$?)"
+fi
 RCS
 chmod +x $ROOTFS/etc/init.d/rcS
 

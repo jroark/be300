@@ -203,7 +203,7 @@ echo ""
 echo "=== Phase 3: Build hello app against musl ==="
 cd $BUILDDIR
 
-mipsel-linux-g++ -march=mips2 -o hello_musl \
+mipsel-linux-g++ -march=mips2 -no-pie -o hello_musl \
     -I$QTDIR/include -L$QTDIR/lib \
     -Wl,-rpath,/opt/QtPalmtop/lib \
     -DQWS hello.cpp -lqte -lm
