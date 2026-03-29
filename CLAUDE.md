@@ -6,6 +6,10 @@ I also have another VM with Platform Builder 3.0.
 - docs/Vr4131-um_200203.pdf - NEC vr4131 SOC Users Manual
 - docs/U14579EJ2V0UM00.pdf - NEC vrc4173 Companion Chip Users Manual
 - docs/hardware.txt - notes from Linux4be project developers
+- `hardware_survey/` - real hardware memory/register dumps from BEDiag tool
+- `hardware_survey/BE300BootROM_v1.txt` - full 16KB ROM dump (PA 0x1FC00000, CRC32=0xFA3B5582)
+- `hardware_survey/be300_boot_rom.bin` - extracted ROM binary loaded by emulator
+- `ce/bediag/` - BEDiag diagnostic tool source and output
 
 ## Source Code Layout
 
@@ -93,12 +97,24 @@ Push with: `git push -u origin <current branch>`
 **WinCE restore images**
 - Should be full NAND images including NK.exe
 - RESTORE_IMAGES.md, contains details of the NAND images
-- `ce/restore_images/All_nand_300.bin` - WinCE 3.0 image
-- `ce/restore_images/CE_Net.bin` - WinCE 4.0 image
+- `ce/restore_images/All_nand_300.bin` - WinCE 3.0 image (SPL v0.52)
+- `ce/restore_images/org_CE_30.bin` - WinCE 3.0 image (SPL v0.60)
+- `ce/restore_images/BE500.bin` - BE-500 model variant (SPL v0.62)
+- `ce/restore_images/CE_Net.bin` - WinCE 4.0 image (SPL v0.62)
+
+**Boot ROM**
+- 16KB masked ROM at PA 0x1FC00000 (VA 0xBFC00000 kseg1, 0x9FC00000 kseg0)
+- Dumped from real hardware: `hardware_survey/be300_boot_rom.bin`
+- Reset vector: NOP → LUI/ORI/JR to 0xBFC002F0 (main boot code)
+- ROM does: CP0 init, SDRAM timing, clock setup, NAND read, SPL load
+- BEV TLB refill vector (+0x200) is all 0xFF (no handler — ROM uses kseg0/kseg1)
+- BEV general exception (+0x380) overlaps with boot code, not a real handler
+- ROM has callable subroutines (NAND read at 0x9FC00C85, etc.) that NK.exe may use
 
 **Things to note**
 - originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
 - None of the test kernels had full hw support
+- The BE-300 is never truly cold-booted in normal use — factory process pre-hibernates the device with valid state at PA 0x2200 (resume_ctx) and PA 0x2524 (hibernate signature 0x3210xxxx)
 
 ---
 
@@ -173,19 +189,20 @@ Push with: `git push -u origin <current branch>`
 cd /work && mkdir -p build-host && cd build-host
 cmake .. && make -j$(nproc)
 
-# WinCE NAND boot test (60s timeout)
+# WinCE cold boot (SPL decompresses NK.exe, no hibernate redirect)
+# Requires be300_boot_rom.bin in the working directory
+gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
+  --wince-cold-boot --log-mmio \
+  > cold_stdout.log 2> cold_stderr.log
+
+# WinCE NAND boot with warm-resume replay (legacy approach)
 timeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
+  --wince-hw-seed --wince-resume-replay --log-wince-stall \
   > wince_stdout.log 2> wince_stderr.log
-cat wince_stdout.log                         # serial output
-grep -E "Unhandled|STOP|error" wince_stderr.log | sort -u | head -30
 
 # WinCE NAND boot with MMIO logging
 timeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin --log-mmio \
   > wince_mmio_stdout.log 2> wince_mmio_stderr.log
-
-# WinCE NAND boot with instruction trace (very verbose, short timeout)
-timeout 10s ./be300 --nand ../ce/restore_images/All_nand_300.bin --trace \
-  > wince_trace_stdout.log 2> wince_trace_stderr.log
 
 # Linux kernel regression tests (They all boot to userspace)
 # NOTE: These kernels never terminate on their own — they run until timeout
@@ -207,12 +224,51 @@ grep -E "lui.*0x(0a|aa|af|bf)" spl_disasm.txt
 grep -E "mtc0|mfc0" spl_disasm.txt
 ```
 
+### WinCE Cold Boot (--wince-cold-boot)
+
+The `--wince-cold-boot` flag lets the SPL run its natural cold boot path. The SPL
+decompresses NK.exe (~6.2MB) from NAND into RAM at PA 0x60000 and jumps to
+the kernel entry at VA 0xA0060004.
+
+**NK.exe Cold Boot Flow:**
+- Entry: VA 0x80076B50 → CP0 init → JR to 0xA0076BA0 (kseg1)
+- Sets SP=0xA0003800, enables CMU clock, calls ROM HW init
+- BCU revision check → main HW init path at 0x76C60
+- Version check at PA 0x2400 for 0x03020100, hibernate signature at PA 0x2524 for 0x3210xxxx
+- VRC4173 init, NAND controller, cache init, switch SP to kseg0
+- Jump to 0xA00772CC → more init → WAIT at VA 0xA0079598
+
+**Post-WAIT OAL Init (always taken on both cold and warm boot):**
+- NOP sled → kseg0 switch → check1 (buttons) → check2 (VRC4173)
+- check1 reads PA 0x0A00A042 (button register), masks 0x9E00
+- The BNE after check2 tests $t0 (clobbered by check1), so the branch to 0x79634 is always taken
+- 0x79634: JAL 0x78BC0 (OAL vtable init) → VR41xx HW setup → timer → ICU
+- 0x79668: Full GPR/CP0 restore from resume_ctx table at PA 0x2200
+- 0x797DC: LW $t0, 0($sp); JR $ra — function epilogue
+
+**Key SDRAM Data Structures:**
+- PA 0x2200-0x22FF: resume_ctx — GPR/CP0 save area (offsets: 0x00-0x74 GPR, 0x78 HI, 0x7C LO, 0x80+ CP0)
+- PA 0x2400: version marker (0x03020100 expected)
+- PA 0x2524: hibernate signature (upper 16 bits == 0x3210 means valid hibernate state)
+- PA 0x254C: hibernate flags (bits 0x03 must be non-zero for hibernate path)
+
+**NK.exe Analysis Tools:**
+- Emulator dumps decompressed NK.exe to `nk_decompressed.bin` on first WAIT (6.2MB)
+- NK.exe loaded at PA 0x60000: file offset = VA - 0x80060000
+- `tools/scan_nk_producers.py` — scan for store instructions to specific VAs
+- `tools/disasm_nk_ctx.py` — disassemble NK code regions
+- Docker: `mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL nk_decompressed.bin`
+
 ### Key Files for WinCE Boot
-- `src/main.c` — `--nand` CLI flag
-- `src/be300.h` — `nand_path`, `nand_data`, `nand_size` fields in config/state
-- `src/machine_be300.c` — WinCE boot path in `be300_create()`, NAND flash init
+- `src/main.c` — `--nand`, `--wince-cold-boot` CLI flags
+- `src/be300.h` — `nand_path`, `nand_data`, `nand_size`, `wince_cold_boot` fields
+- `src/machine_be300.c` — WinCE boot path in `be300_create()`, NAND flash init, cold boot WAIT handling, ROM loading
 - `src/loader.c` — `loader_load_nand()` B000FF parser
-- `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU, timer, GPIO (GXemul native)
+- `src/wince_boot.c` — WinCE diagnostic probes, replay logic, write watches (4500+ lines)
+- `src/wince_boot_types.h` — WinCE boot state machine flags
+- `src/wince_hw_seed_data.h` — captured initial memory/register state for warm resume
+- `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU, timer, GPIO, interrupt assert/deassert
 - `gxemul/src/devices/dev_ns16550.c` — VRC4173 SIU UART (GXemul native at 0x0A008680)
-- `src/hw/rtc.c` — Auto-advance etime on read (fixes SPL polling loops)
+- `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, RTCINTREG write-one-to-clear
+- `src/hw/nand.c` — NAND flash controller with SPL transfer engine and OOB synthesis
 - `src/hw/bcu.c` — Silenced unhandled register reads (SPL probes many)
