@@ -1,0 +1,23 @@
+# Buildroot defconfig for MIPS-II little-endian musl toolchain
+# Target: Casio BE-300 (NEC VR4131, MIPS-II)
+
+# Target options
+BR2_mipsel=y
+# BR2_mips_32 is the lowest Buildroot offers; we override to mips2 via TARGET_OPTIMIZATION
+BR2_mips_32=y
+
+# Toolchain
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+BR2_TOOLCHAIN_BUILDROOT_WCHAR=y
+
+# Force MIPS-II code generation (overrides -march=mips32 from BR2_GCC_TARGET_ARCH)
+BR2_TARGET_OPTIMIZATION="-march=mips2"
+
+# Build options
+BR2_JLEVEL=0
+
+# Disable everything we don't need
+BR2_INIT_NONE=y
+# BR2_PACKAGE_BUSYBOX is not set
+# BR2_TARGET_ROOTFS_TAR is not set
