@@ -55,10 +55,15 @@ sed -i '/"multu/,/);/{
   s/"multu\\t%2,%3"/"multu\\t%2,%3\\n\\tmfhi\\t%0\\n\\tmflo\\t%1"/
 }' include/asm-mips/delay.h
 
-# Fix =h/=l in div64.h
-sed -i '/: "Jr" (__high), "Jr" (base)/,/: "hi", "lo");/{
-  s/: "hi", "lo");/);/
+# Fix =h/=l in div64.h (impossible constraints with modern GCC)
+# Replace the entire divu asm block with mfhi/mflo approach
+sed -i '/^	if (__high)/,/Jr.*base.*);/{
+  s/"=h" (__upper), "=l" (__high)/"=r" (__upper), "=r" (__high)/
+  s/"divu\t\$0,%z2,%z3"/"divu\\t\$0,%z2,%z3\\n\\tmfhi\\t%0\\n\\tmflo\\t%1"/
+  s/: "Jr" (__high), "Jr" (base));/: "Jr" (__high), "Jr" (base));/
 }' include/asm-mips/div64.h
+# Also remove hi/lo clobbers if present
+sed -i 's/: "hi", "lo");//' include/asm-mips/div64.h
 
 # Fix =h/=l in time.c
 sed -i '/"multu  %2,%3"/,/: "r" (count), "r" (quotient));/{
@@ -66,21 +71,25 @@ sed -i '/"multu  %2,%3"/,/: "r" (count), "r" (quotient));/{
   s/"multu  %2,%3"/"multu  %2,%3\\n\\tmflo\\t%0\\n\\tmfhi\\t%1"/
 }' arch/mips/kernel/time.c
 
-# Fix const-lvalue in uaccess.h get_user macros
-sed -i 's/__get_user_nocheck((__typeof__(*(ptr)))(x)/__get_user_nocheck((x)/' include/asm-mips/uaccess.h
-sed -i 's/__get_user_check((__typeof__(*(ptr)))(x)/__get_user_check((x)/' include/asm-mips/uaccess.h
+# Fix const-lvalue in uaccess.h get_user macros (comprehensive GCC 12 fix)
+# Replace ALL cast-on-lvalue patterns in __get_user_{nocheck,check}
+# Pattern 1: remove cast of x in macro invocation
+sed -i 's/(__typeof__(\*(ptr)))(x)/(x)/g' include/asm-mips/uaccess.h
+# Pattern 2: fix result assignment - replace all "} x = ..." and "} } x = ..."
+sed -i 's/} x = (__typeof__(\*(ptr))) __gu_val;/} (x) = (unsigned long) __gu_val;/' include/asm-mips/uaccess.h
+sed -i 's/} } x = (__typeof__(\*(ptr))) __gu_val;/} } (x) = (unsigned long) __gu_val;/' include/asm-mips/uaccess.h
 # Use unsigned long for __gu_val to avoid const issues
-sed -i 's/^__typeof__(*(ptr)) __gu_val;/unsigned long __gu_val;/' include/asm-mips/uaccess.h
-sed -i 's/^__typeof(*(ptr)) __gu_val;/unsigned long __gu_val;/' include/asm-mips/uaccess.h
+sed -i 's/__typeof__(\*(ptr)) __gu_val;/unsigned long __gu_val;/g' include/asm-mips/uaccess.h
+sed -i 's/__typeof(\*(ptr)) __gu_val;/unsigned long __gu_val;/g' include/asm-mips/uaccess.h
 # Remove empty asm initializers
 sed -i '/__asm__("":"=r" (__gu_val));/d' include/asm-mips/uaccess.h
 sed -i '/__asm__("":"=r" (__gu_err));/d' include/asm-mips/uaccess.h
-# Initialize vars directly
-sed -i 's/^long __gu_err;/long __gu_err = 0;/' include/asm-mips/uaccess.h
+# Initialize vars directly (match with leading whitespace)
+sed -i 's/long __gu_err;/long __gu_err = 0;/g' include/asm-mips/uaccess.h
 
-# Fix const-lvalue in unaligned.h
-sed -i 's/__typeof__(*(ptr)) __val;/unsigned long long __val;/' include/asm-mips/unaligned.h
-sed -i 's/^\t__val;/\t(__typeof__(*(ptr)))__val;/' include/asm-mips/unaligned.h
+# Fix const-lvalue in unaligned.h (match with any leading whitespace)
+sed -i 's/__typeof__(\*(ptr)) __val;/unsigned long long __val;/g' include/asm-mips/unaligned.h
+sed -i 's/^\t__val;/\t(unsigned long long)__val;/' include/asm-mips/unaligned.h
 
 # Fix cast-on-lvalue in readdir.c
 sed -i 's/((char \*) dirent) += reclen;/dirent = (void *)((char *) dirent + reclen);/g' fs/readdir.c
