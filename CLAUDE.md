@@ -143,8 +143,9 @@ Push with: `git push -u origin <current branch>`
 
 4. **Logs & artifacts:**
    - Always capture both stdout and stderr from emulator runs (`*.log`) and screenshot.
-   - For live console debugging, use a PTY-backed / interactive terminal run. Non-PTY capture can miss incremental GXemul serial output even when the guest is printing normally.
-   - If automation output disagrees with a direct terminal run, trust the PTY-backed run for live console behavior and use redirected stdout/stderr logs for post-run analysis.
+   - Serial output goes to stdout; emulator diagnostics go to stderr.
+   - The emulator opens an SDL window on macOS regardless of DISPLAY. **Do not run the emulator from automated/non-interactive contexts** (e.g., CI, Bash tool) — it will hang on SDL init. Always ask the user to run emulator tests from their terminal.
+   - When redirecting stdout to a file, `console_putchar()` flushes immediately so output survives timeout kills.
 
 ---
 
