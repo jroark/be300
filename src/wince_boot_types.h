@@ -106,6 +106,8 @@ typedef struct {
     bool low_vector_runtime_drift_logged;
     bool replay_slot_1ac0_baseline_valid;
     bool replay_slot_1ac0_drift_logged;
+    bool cold_boot_wait_logged;
+    uint32_t cold_boot_wait_count;
 
     uint32_t fault_site_logged_mask;
     uint32_t replay_region_drift_logged_mask;

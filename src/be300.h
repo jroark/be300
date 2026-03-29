@@ -60,6 +60,7 @@ typedef struct {
     bool        wince_hw_seed;
     bool        wince_resume_replay;
     bool        wince_resume_replay_full;
+    bool        wince_cold_boot;
 
     const char *rom_path;
     const char *kernel_path;
