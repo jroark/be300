@@ -69,7 +69,7 @@ Push with: `git push -u origin <current branch>`
 
 **Target:** Casio BE-300 (NEC VR4131 MIPS little-endian) emulator using GXemul 0.7.0 MIPS CPU core.
 
-**CPU Engine:** GXemul 0.7.0 (copied into gxemul/ subdirectory, MIPS-only build). Provides native CP0, TLB, exception handling, dyntrans JIT, and kseg0/kseg1 address translation. Replaces Unicorn (removed).
+**CPU Engine:** GXemul 0.7.0 (copied into gxemul/ subdirectory, MIPS-only build). Provides native CP0, TLB, exception handling, dyntrans JIT, and kseg0/kseg1 address translation. Replaces Unicorn (removed). **Does not support MIPS16** — the VR4131 supports MIPS16 (16-bit compressed instruction mode, selected by setting bit 0 of a JALR target), but GXemul cannot decode MIPS16 instructions.
 
 **Kernels**
 - All kernels have been booted to userspace on real hardware
@@ -110,6 +110,7 @@ Push with: `git push -u origin <current branch>`
 - BEV TLB refill vector (+0x200) is all 0xFF (no handler — ROM uses kseg0/kseg1)
 - BEV general exception (+0x380) overlaps with boot code, not a real handler
 - ROM has callable subroutines (NAND read at 0x9FC00C85, etc.) that NK.exe may use
+- **ROM uses MIPS16 code**: BEV exception handler at +0x380 does JALR to 0x9FC00C85 (bit 0 = MIPS16 mode switch). VR4131 supports MIPS16, GXemul does not. Must use BEV=0 with synthetic handlers instead of ROM BEV vectors.
 
 **Things to note**
 - originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
@@ -247,10 +248,35 @@ the kernel entry at VA 0xA0060004.
 - 0x797DC: LW $t0, 0($sp); JR $ra — function epilogue
 
 **Key SDRAM Data Structures:**
-- PA 0x2200-0x22FF: resume_ctx — GPR/CP0 save area (offsets: 0x00-0x74 GPR, 0x78 HI, 0x7C LO, 0x80+ CP0)
-- PA 0x2400: version marker (0x03020100 expected)
+- PA 0x2200-0x22FF: resume_ctx — GPR/CP0 save area
+- PA 0x2400: version marker (0x03020100 expected by check at 0x76CBC; mismatch clears PA 0x254C)
 - PA 0x2524: hibernate signature (upper 16 bits == 0x3210 means valid hibernate state)
 - PA 0x254C: hibernate flags (bits 0x03 must be non-zero for hibernate path)
+
+**resume_ctx Table Layout (PA 0x2200, from disassembly of 0x79668-0x797E4):**
+- GPR section (offsets 0x00-0x74): packed, skips $t0 (reg 8)
+  - 0x00-0x18: $at(1)-$a3(7), 0x1C-0x68: $t1(9)-$gp(28)
+  - 0x6C: $sp, 0x70: $fp, 0x74: $ra, 0x78: HI, 0x7C: LO
+- CP0 section (offsets 0x80-0xD0): packed, skips regs 7,8,15,19,21-25,27,31
+  - 0x80:Index 0x84:Random 0x88:EntryLo0 0x8C:EntryLo1
+  - 0x90:Context 0x94:PageMask 0x98:Wired 0x9C:Count
+  - 0xA0:EntryHi 0xA4:Compare **0xA8:Status** 0xAC:Cause
+  - **0xB0:EPC** 0xB4:Config 0xB8:LLAddr 0xBC:WatchLo
+  - 0xC0:XContext 0xC4:ECC 0xC8:TagLo 0xCC:TagHi 0xD0:ErrorEPC
+- Status is loaded LAST (at 0x79714) for atomicity
+- ICU registers follow at offsets 0xD4-0xE4
+- Epilogue: LW $t0, 0($sp); JR $ra; ADDIU $sp, 4
+
+**Hibernate State-Save Gating (0x76E68-0x76FB4):**
+The state-save function that populates PA 0x2200 and installs exception handlers
+is gated by four checks. ALL must pass for the save to run:
+1. PA 0x2524 upper 16 bits == 0x3210 (hibernate signature)
+2. VR4131 PMU register 0xC0 bit 4 == 0
+3. PA 0x2404 != 0x31
+4. PA 0x254C bits 0x03 != 0 (hibernate flags)
+Note: the version check at 0x76CBC clears PA 0x254C if PA 0x2400 != 0x03020100,
+which prevents check 4 from passing even if PA 0x254C was previously set.
+This function is NOT called from the main NK.exe pre-WAIT init path.
 
 **NK.exe Analysis Tools:**
 - Emulator dumps decompressed NK.exe to `nk_decompressed.bin` on first WAIT (6.2MB)
@@ -267,7 +293,7 @@ the kernel entry at VA 0xA0060004.
 - `src/wince_boot.c` — WinCE diagnostic probes, replay logic, write watches (4500+ lines)
 - `src/wince_boot_types.h` — WinCE boot state machine flags
 - `src/wince_hw_seed_data.h` — captured initial memory/register state for warm resume
-- `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU, timer, GPIO, interrupt assert/deassert
+- `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU, timer, GPIO, interrupt assert/deassert; `timer_tick()` increments `pending_timer_interrupts`, `DEVICE_TICK(vr41xx)` asserts interrupt line; timer interrupt is deasserted on RTCINTREG write (offset 0x13E)
 - `gxemul/src/devices/dev_ns16550.c` — VRC4173 SIU UART (GXemul native at 0x0A008680)
 - `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, RTCINTREG write-one-to-clear
 - `src/hw/nand.c` — NAND flash controller with SPL transfer engine and OOB synthesis
