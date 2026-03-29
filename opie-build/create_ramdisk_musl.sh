@@ -52,6 +52,8 @@ done
 # Create symlinks for the dynamic linker and libc
 ln -sf ld-uClibc-0.9.15.so "$ROOTFS/lib/ld-uClibc.so.0"
 ln -sf libuClibc-0.9.15.so "$ROOTFS/lib/libc.so.0"
+# Dynamic linkers must be executable
+chmod +x "$ROOTFS/lib/ld-uClibc-0.9.15.so" "$ROOTFS/lib/libuClibc-0.9.15.so" 2>/dev/null || true
 echo "uClibc libs:"
 ls -lh $ROOTFS/lib/*uClibc* $ROOTFS/lib/ld-uClibc* $ROOTFS/lib/libc.so.0 2>/dev/null || true
 
