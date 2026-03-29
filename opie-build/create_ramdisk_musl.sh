@@ -98,6 +98,20 @@ cd $ROOTFS/opt/QtPalmtop/lib
 ln -sf libqte.so.2.3.10 libqte.so.2
 ln -sf libqte.so.2.3.10 libqte.so
 
+# --- Step 5b: Install Qt/E fonts ---
+echo "--- Installing Qt/E fonts ---"
+mkdir -p $ROOTFS/opt/QtPalmtop/lib/fonts
+# Install pre-rendered QPF fonts (helvetica + fixed, normal weight, key sizes)
+for f in helvetica_100_50.qpf helvetica_120_50.qpf helvetica_140_50.qpf \
+         helvetica_180_50.qpf helvetica_240_50.qpf helvetica_80_50.qpf \
+         fixed_120_50.qpf fixed_70_50.qpf; do
+    cp "$QTDIR/lib/fonts/$f" "$ROOTFS/opt/QtPalmtop/lib/fonts/" 2>/dev/null || true
+done
+# Install fontdir (Qt/E needs this to discover fonts)
+cp "$QTDIR/lib/fonts/fontdir" "$ROOTFS/opt/QtPalmtop/lib/fonts/"
+echo "Fonts installed:"
+ls -lh $ROOTFS/opt/QtPalmtop/lib/fonts/
+
 # --- Step 6: Install hello demo ---
 echo "--- Installing hello demo ---"
 cp "$BUILDDIR/hello_musl" $ROOTFS/opt/QtPalmtop/bin/hello
