@@ -342,37 +342,59 @@ machine_t *be300_create(const machine_config_t *cfg)
         dev_ram_init(gxm, 0x1FC00000, 0x4000, DEV_RAM_RAM, 0, NULL);
 
         /*
-         * Pre-fill BEV exception vectors with ERET (0x42000018) so
-         * early exceptions during NK.exe init return cleanly instead
-         * of executing NOPs into unmapped memory.
+         * Load the real BE-300 boot ROM into PA 0x1FC00000.
+         * This 16KB masked ROM contains the reset vector, BEV
+         * exception handlers, and utility routines that NK.exe
+         * may call during initialization.  Captured from real
+         * hardware via BEDiag (CRC32=0xFA3B5582).
          *
-         * BEV=1 vectors (R4000):
-         *   0x000: TLB Refill (kseg0/1)
-         *   0x100: Cache Error
-         *   0x180: General Exception
-         *   0x200: TLB Refill (64-bit, also used on 32-bit VR4131)
-         *   0x280: XTLB Refill
-         *   0x300: Cache Error (secondary)
-         *   0x380: General Exception (alternate)
+         * Falls back to ERET stubs if the ROM file is not found.
          */
         {
-            /* ERET = 0x42000018 (COP0 | CO | func=ERET) */
-            uint32_t eret = 0x42000018u;
-            static const uint32_t vec_offsets[] = {
-                0x000, 0x080, 0x100, 0x180,
-                0x200, 0x280, 0x300, 0x380
+            const char *rom_paths[] = {
+                "be300_boot_rom.bin",
+                "../hardware_survey/be300_boot_rom.bin",
+                NULL
             };
-            for (unsigned i = 0; i < sizeof(vec_offsets)/sizeof(vec_offsets[0]); i++) {
-                /* BEV=1 vectors at 0xBFC00000 only */
-                uint64_t va = 0xffffffff80000000ULL |
-                              (0x1FC00000ULL + vec_offsets[i]);
-                store_32bit_word(m->cpu, va, eret);
-                /* Normal vectors at 0x80000000 left as zeros —
-                   init functions will install proper handlers */
+            FILE *rom_fp = NULL;
+            for (int pi = 0; rom_paths[pi] && !rom_fp; pi++)
+                rom_fp = fopen(rom_paths[pi], "rb");
+
+            if (rom_fp) {
+                uint8_t rom_buf[0x4000];
+                size_t rom_read = fread(rom_buf, 1, sizeof(rom_buf), rom_fp);
+                fclose(rom_fp);
+                if (rom_read == sizeof(rom_buf)) {
+                    uint64_t base_va = 0xffffffffBFC00000ULL;
+                    for (size_t i = 0; i < sizeof(rom_buf); i += 4) {
+                        uint32_t w = rom_buf[i] | (rom_buf[i+1] << 8) |
+                                     (rom_buf[i+2] << 16) | (rom_buf[i+3] << 24);
+                        store_32bit_word(m->cpu, base_va + i, w);
+                    }
+                    fprintf(stderr, "[BE300] Loaded real boot ROM"
+                        " (%zu bytes) at PA 0x1FC00000\n", rom_read);
+                } else {
+                    fprintf(stderr, "[BE300] ROM file truncated"
+                        " (%zu bytes), using ERET stubs\n", rom_read);
+                    goto eret_stubs;
+                }
+            } else {
+eret_stubs:
+                ;
+                uint32_t eret = 0x42000018u;
+                static const uint32_t vec_offsets[] = {
+                    0x000, 0x080, 0x100, 0x180,
+                    0x200, 0x280, 0x300, 0x380
+                };
+                for (unsigned i = 0; i < sizeof(vec_offsets)/sizeof(vec_offsets[0]); i++) {
+                    uint64_t va = 0xffffffff80000000ULL |
+                                  (0x1FC00000ULL + vec_offsets[i]);
+                    store_32bit_word(m->cpu, va, eret);
+                }
+                fprintf(stderr, "[BE300] Boot ROM not found,"
+                    " using ERET stubs at PA 0x1FC00000\n");
             }
         }
-
-        fprintf(stderr, "[BE300] Mapped 16K RAM at PA 0x1FC00000 with ERET stubs for BEV vectors\n");
 
         /*
          * Pre-load TLB with identity-mapped entries covering the
