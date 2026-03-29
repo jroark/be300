@@ -550,6 +550,16 @@ static bool be300_run_batch(machine_t *m)
                 m->loop_count, m->cpu->pc);
     }
 
+    /* Detect user-mode execution (PC in kuseg: 0x00000000-0x7FFFFFFF) */
+    {
+        static int usermode_logged = 0;
+        uint64_t pc = m->cpu->pc;
+        if (!usermode_logged && pc < 0x80000000ULL && pc > 0x1000ULL) {
+            fprintf(stderr, "[BE300] *** USER MODE DETECTED: PC=0x%08" PRIx64 " ***\n", pc);
+            usermode_logged = 1;
+        }
+    }
+
     if (!machine_run(gxm)) {
         wince_boot_note_fatal_stop(m, "machine-no-longer-running");
         fprintf(stderr, "[BE300] Loop exit: machine no longer running\n");
