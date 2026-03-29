@@ -1,49 +1,102 @@
 /* Minimal framebuffer test for BE-300 (240x320 16bpp RGB565) */
-/* No libc - direct syscalls only, MIPS-II compatible */
+/* No libc - direct MIPS-II asm syscalls */
 
-#define O_RDWR 2
-#define SYS_exit  4001
-#define SYS_write 4004
-#define SYS_open  4005
-
-static long _syscall3(long nr, long a0, long a1, long a2) {
-    register long v0 __asm__("v0") = nr;
-    register long a0r __asm__("a0") = a0;
-    register long a1r __asm__("a1") = a1;
-    register long a2r __asm__("a2") = a2;
-    __asm__ volatile("syscall" : "+r"(v0) : "r"(a0r), "r"(a1r), "r"(a2r) : "a3", "memory");
-    return v0;
-}
-
-static void puts(const char *s) {
-    int len = 0;
-    while (s[len]) len++;
-    _syscall3(SYS_write, 1, (long)s, len);
-}
+void _start(void) __attribute__((section(".text")));
 
 void _start(void) {
-    int fd, x, y;
-    unsigned short line[240];
+    /* Inline asm to write "X\n" to stdout (fd 1) as the simplest possible test */
+    /* write(1, buf, 2) = syscall 4004(1, buf, 2) */
+    __asm__ volatile(
+        ".set noreorder\n"
+        /* First: write 'X\n' to serial (fd 1) */
+        "li   $v0, 4004\n"      /* SYS_write */
+        "li   $a0, 1\n"         /* fd = stdout */
+        "la   $a1, msg\n"       /* buf */
+        "li   $a2, 25\n"        /* count */
+        "syscall\n"
+        "nop\n"
 
-    puts("fbtest: opening /dev/fb0\n");
-    fd = _syscall3(SYS_open, (long)"/dev/fb0", O_RDWR, 0);
-    if (fd < 0) {
-        puts("fbtest: cannot open /dev/fb0\n");
-        _syscall3(SYS_exit, 1, 0, 0);
-    }
-    puts("fbtest: drawing color bars\n");
+        /* open /dev/fb0 */
+        "li   $v0, 4005\n"      /* SYS_open */
+        "la   $a0, devfb\n"     /* path */
+        "li   $a1, 2\n"         /* O_RDWR */
+        "li   $a2, 0\n"
+        "syscall\n"
+        "nop\n"
 
-    /* 240x320 at 16bpp RGB565 */
-    for (y = 0; y < 320; y++) {
-        unsigned short color;
-        if (y < 80)       color = 0xF800; /* red */
-        else if (y < 160) color = 0x07E0; /* green */
-        else if (y < 240) color = 0x001F; /* blue */
-        else              color = 0xFFFF; /* white */
-        for (x = 0; x < 240; x++) line[x] = color;
-        _syscall3(SYS_write, fd, (long)line, 480);
-    }
+        /* Check result - if a3 != 0, open failed */
+        "bnez $a3, fail\n"
+        "move $s0, $v0\n"       /* s0 = fd (delay slot) */
 
-    puts("fbtest: done\n");
-    for(;;) ;
+        /* Write "fb ok\n" */
+        "li   $v0, 4004\n"
+        "li   $a0, 1\n"
+        "la   $a1, msg2\n"
+        "li   $a2, 6\n"
+        "syscall\n"
+        "nop\n"
+
+        /* Fill framebuffer: write 240*2=480 bytes per row, 320 rows */
+        /* Use red (0xF800) for all pixels */
+        "li   $s1, 0\n"         /* y counter */
+        "li   $s2, 320\n"       /* max rows */
+
+        "rowloop:\n"
+        /* Fill line buffer on stack with red pixels */
+        "addiu $sp, $sp, -480\n"
+        "move  $t0, $sp\n"
+        "li    $t1, 240\n"      /* pixel count */
+        "li    $t2, 0x00F8\n"   /* 0xF800 as bytes: little-endian = 0x00, 0xF8 */
+        "pixloop:\n"
+        "sh    $t2, 0($t0)\n"   /* store halfword - but 0x00F8 not 0xF800 */
+        "addiu $t0, $t0, 2\n"
+        "addiu $t1, $t1, -1\n"
+        "bnez  $t1, pixloop\n"
+        "nop\n"
+
+        /* write(fd, sp, 480) */
+        "li   $v0, 4004\n"
+        "move $a0, $s0\n"       /* fd */
+        "move $a1, $sp\n"       /* buf */
+        "li   $a2, 480\n"       /* count */
+        "syscall\n"
+        "nop\n"
+
+        "addiu $sp, $sp, 480\n" /* restore stack */
+        "addiu $s1, $s1, 1\n"
+        "bne  $s1, $s2, rowloop\n"
+        "nop\n"
+
+        /* Write "done\n" */
+        "li   $v0, 4004\n"
+        "li   $a0, 1\n"
+        "la   $a1, msg3\n"
+        "li   $a2, 13\n"
+        "syscall\n"
+        "nop\n"
+
+        /* infinite loop */
+        "loop: b loop\n"
+        "nop\n"
+
+        "fail:\n"
+        "li   $v0, 4004\n"
+        "li   $a0, 1\n"
+        "la   $a1, msg4\n"
+        "li   $a2, 15\n"
+        "syscall\n"
+        "nop\n"
+        "b    loop\n"
+        "nop\n"
+
+        /* String data */
+        ".data\n"
+        "msg:  .asciiz \"fbtest: hello serial!\\n\\0\\0\\0\"\n"
+        "devfb: .asciiz \"/dev/fb0\"\n"
+        "msg2: .asciiz \"fb ok\\n\"\n"
+        "msg3: .asciiz \"fbtest: done\\n\"\n"
+        "msg4: .asciiz \"fb open fail\\n\\0\"\n"
+        ".text\n"
+        ".set reorder\n"
+    );
 }
