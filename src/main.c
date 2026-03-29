@@ -21,6 +21,7 @@ static void usage(const char *prog)
         "  --wince-resume-replay Replay WinCE warm-resume context after hibernate\n"
         "  --wince-resume-replay-full\n"
         "                        Replay WinCE warm-resume context using full captured windows\n"
+        "  --wince-cold-boot     Let SPL run its natural cold boot path (no hibernate redirect)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --speed <mhz>         Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
         "  -h, --help            Show this help\n"
@@ -44,6 +45,7 @@ int main(int argc, char *argv[])
         .wince_hw_seed  = false,
         .wince_resume_replay = false,
         .wince_resume_replay_full = false,
+        .wince_cold_boot = false,
         .rom_path       = NULL,
         .kernel_path    = NULL,
         .cmdline        = NULL,
@@ -75,6 +77,8 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[i], "--wince-resume-replay-full") == 0) {
             cfg.wince_resume_replay = true;
             cfg.wince_resume_replay_full = true;
+        } else if (strcmp(argv[i], "--wince-cold-boot") == 0) {
+            cfg.wince_cold_boot = true;
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
             cfg.ram_path = argv[++i];
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
@@ -130,6 +134,15 @@ int main(int argc, char *argv[])
     if (cfg.wince_resume_replay_full && !cfg.wince_resume_replay) {
         fprintf(stderr,
             "Error: --wince-resume-replay-full requires --wince-resume-replay\n");
+        return 1;
+    }
+    if (cfg.wince_cold_boot && !cfg.nand_path) {
+        fprintf(stderr, "Error: --wince-cold-boot requires --nand\n");
+        return 1;
+    }
+    if (cfg.wince_cold_boot && cfg.wince_resume_replay) {
+        fprintf(stderr,
+            "Error: --wince-cold-boot and --wince-resume-replay are mutually exclusive\n");
         return 1;
     }
 

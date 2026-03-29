@@ -402,7 +402,7 @@ machine_t *be300_create(const machine_config_t *cfg)
          *   tlbwr                # write TLB
          *   eret                 # return
          */
-        {
+        if (!cfg->wince_cold_boot) {
             static const uint32_t tlb_handler[] = {
                 0x401B5000,  /* mfc0 $k1, EntryHi    */
                 0x001BD1C2,  /* srl  $k0, $k1, 7     */
@@ -418,9 +418,16 @@ machine_t *be300_create(const machine_config_t *cfg)
                 "nand-setup");
             fprintf(stderr, "[BE300] Installed TLB refill handler"
                 " at 0x80000000 + 0x80000180 (identity map)\n");
+        } else {
+            fprintf(stderr, "[BE300] Cold boot: skipping synthetic"
+                " TLB handler (kernel installs its own)\n");
         }
 
-        wince_boot_apply_initial_seed(m);
+        if (!cfg->wince_cold_boot)
+            wince_boot_apply_initial_seed(m);
+        else
+            fprintf(stderr, "[BE300] Cold boot: skipping initial"
+                " HW seed data\n");
 
         /* Register VRC4173 latch (catch-all); pre-split to leave gaps for input device */
         extern void be300_register_vrc4173_latch(struct machine *, bool);
@@ -563,6 +570,64 @@ static bool be300_run_batch(machine_t *m)
     if (!machine_run(gxm)) {
         wince_boot_note_fatal_stop(m, "machine-no-longer-running");
         fprintf(stderr, "[BE300] Loop exit: machine no longer running\n");
+
+        /* Dump full CPU state at crash point */
+        if (m->cfg.wince_cold_boot) {
+            uint32_t pc = (uint32_t)m->cpu->pc;
+            fprintf(stderr, "[COLD_CRASH] PC=0x%08X\n", pc);
+            fprintf(stderr, "[COLD_CRASH] CP0: Status=0x%08X"
+                " Cause=0x%08X EPC=0x%08X BadVA=0x%08X\n",
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR]);
+            fprintf(stderr, "[COLD_CRASH] GPR:"
+                " at=%08X v0=%08X v1=%08X a0=%08X\n",
+                (uint32_t)m->cpu->cd.mips.gpr[1],
+                (uint32_t)m->cpu->cd.mips.gpr[2],
+                (uint32_t)m->cpu->cd.mips.gpr[3],
+                (uint32_t)m->cpu->cd.mips.gpr[4]);
+            fprintf(stderr, "[COLD_CRASH] GPR:"
+                " t0=%08X t1=%08X t2=%08X t3=%08X\n",
+                (uint32_t)m->cpu->cd.mips.gpr[8],
+                (uint32_t)m->cpu->cd.mips.gpr[9],
+                (uint32_t)m->cpu->cd.mips.gpr[10],
+                (uint32_t)m->cpu->cd.mips.gpr[11]);
+            fprintf(stderr, "[COLD_CRASH] GPR:"
+                " sp=%08X fp=%08X ra=%08X gp=%08X\n",
+                (uint32_t)m->cpu->cd.mips.gpr[29],
+                (uint32_t)m->cpu->cd.mips.gpr[30],
+                (uint32_t)m->cpu->cd.mips.gpr[31],
+                (uint32_t)m->cpu->cd.mips.gpr[28]);
+            fprintf(stderr, "[COLD_CRASH] GPR:"
+                " s0=%08X s1=%08X s2=%08X s3=%08X"
+                " s4=%08X s5=%08X s6=%08X s7=%08X\n",
+                (uint32_t)m->cpu->cd.mips.gpr[16],
+                (uint32_t)m->cpu->cd.mips.gpr[17],
+                (uint32_t)m->cpu->cd.mips.gpr[18],
+                (uint32_t)m->cpu->cd.mips.gpr[19],
+                (uint32_t)m->cpu->cd.mips.gpr[20],
+                (uint32_t)m->cpu->cd.mips.gpr[21],
+                (uint32_t)m->cpu->cd.mips.gpr[22],
+                (uint32_t)m->cpu->cd.mips.gpr[23]);
+
+            /* Dump instructions around crash PC */
+            fprintf(stderr, "[COLD_CRASH] Code around PC:\n");
+            for (int i = -4; i < 8; i++) {
+                unsigned char buf[4];
+                uint64_t va = (uint64_t)(int32_t)pc + i * 4;
+                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                        va, buf, 4, MEM_READ, CACHE_DATA)) {
+                    uint32_t w = buf[0] | (buf[1]<<8) |
+                                 (buf[2]<<16) | (buf[3]<<24);
+                    fprintf(stderr, "[COLD_CRASH]   0x%08" PRIx64
+                        ": %08X%s\n", va, w,
+                        (int64_t)va == (int64_t)(int32_t)pc
+                            ? "  <-- PC" : "");
+                }
+            }
+        }
+
         return false;
     }
 
@@ -621,7 +686,181 @@ static bool be300_run_batch(machine_t *m)
     }
 
     if (m->cpu->is_halted) {
-        if (m->wince.hibernate_redirect_count < 5) {
+        if (m->cfg.wince_cold_boot) {
+            uint32_t wait_pc = (uint32_t)m->cpu->pc;
+            uint32_t norm = wait_pc & 0x1FFFFFFFu;
+
+            m->cpu->is_halted = false;
+            m->cpu->pc += 4;  /* skip past WAIT */
+
+            if (!m->wince.cold_boot_wait_logged) {
+                m->wince.cold_boot_wait_logged = true;
+                fprintf(stderr,
+                    "[COLD_BOOT] WAIT at PC=0x%08X (PA=0x%08X),"
+                    " skipping to 0x%08" PRIx64 "\n",
+                    wait_pc, norm, m->cpu->pc);
+
+                /* Dump instructions around WAIT for disassembly */
+                fprintf(stderr, "[COLD_BOOT] Code around WAIT:\n");
+                for (int i = -8; i <= 40; i++) {
+                    unsigned char buf[4];
+                    uint64_t va = (uint64_t)(int32_t)wait_pc + i * 4;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            va, buf, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        fprintf(stderr, "[COLD_BOOT]   0x%08" PRIx64
+                            ": %08X%s\n", va, w,
+                            (int64_t)va == (int64_t)(int32_t)wait_pc
+                                ? "  <-- WAIT" : "");
+                    }
+                }
+
+                /* Dump CP0 table at PA 0x2200 (resume_ctx) */
+                fprintf(stderr, "[COLD_BOOT] resume_ctx at PA 0x2200:\n");
+                for (int i = 0; i < 64; i++) {
+                    unsigned char buf[4];
+                    uint64_t va = 0xffffffffa0002200ULL + i * 4;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            va, buf, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        if (w != 0)
+                            fprintf(stderr, "[COLD_BOOT]   PA 0x%04X"
+                                ": %08X\n", 0x2200 + i * 4, w);
+                    }
+                }
+
+                /* Dump exception vectors at PA 0x0000 */
+                fprintf(stderr, "[COLD_BOOT] Low vectors (PA 0x0000):\n");
+                for (int i = 0; i < 16; i++) {
+                    unsigned char buf[4];
+                    uint64_t va = 0xffffffff80000000ULL + i * 4;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            va, buf, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        if (w != 0)
+                            fprintf(stderr, "[COLD_BOOT]   PA 0x%04X"
+                                ": %08X\n", i * 4, w);
+                    }
+                }
+
+                /* Dump CP0 state */
+                fprintf(stderr, "[COLD_BOOT] CP0: Status=0x%08X"
+                    " Cause=0x%08X EPC=0x%08X\n",
+                    (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+                    (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
+                    (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC]);
+                fprintf(stderr, "[COLD_BOOT] GPR: SP=0x%08X"
+                    " RA=0x%08X S0=0x%08X\n",
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    (uint32_t)m->cpu->cd.mips.gpr[16]);
+
+                /* Dump memory the three check functions will read */
+                fprintf(stderr, "[COLD_BOOT] Check data:\n");
+                /* PA 0x250C (check 3 arg) */
+                {
+                    unsigned char buf[4];
+                    uint64_t va = 0xffffffffa000250cULL;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            va, buf, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        fprintf(stderr, "[COLD_BOOT]   PA 0x250C"
+                            " (check3 arg target): %08X\n", w);
+                    }
+                }
+                /* Dump PA 0x2500-0x2520 for context */
+                for (int i = 0; i < 8; i++) {
+                    unsigned char buf[4];
+                    uint64_t va = 0xffffffffa0002500ULL + i * 4;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            va, buf, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        if (w != 0)
+                            fprintf(stderr, "[COLD_BOOT]   PA 0x%04X"
+                                ": %08X\n", 0x2500 + i * 4, w);
+                    }
+                }
+
+                /*
+                 * Arm PC-based probes for the three check return points.
+                 * We'll log when we hit the BNE/BEQ after each check.
+                 */
+                /* Dump the three check function prologues */
+                fprintf(stderr, "[COLD_BOOT] check1 @ 0x80079AC4:\n");
+                for (int i = 0; i < 24; i++) {
+                    unsigned char buf[4];
+                    uint64_t va = 0xffffffff80079AC4ULL + i * 4;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            va, buf, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        fprintf(stderr, "[COLD_BOOT]   0x%08" PRIx64
+                            ": %08X\n", va, w);
+                    }
+                }
+                fprintf(stderr, "[COLD_BOOT] check2 @ 0x8007AFA8:\n");
+                for (int i = 0; i < 24; i++) {
+                    unsigned char buf[4];
+                    uint64_t va = 0xffffffff8007AFA8ULL + i * 4;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            va, buf, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        fprintf(stderr, "[COLD_BOOT]   0x%08" PRIx64
+                            ": %08X\n", va, w);
+                    }
+                }
+
+                /*
+                 * Dump code at the last known good PC range before
+                 * the crash (0x80079750+) to trace control flow.
+                 */
+                fprintf(stderr, "[COLD_BOOT] Code at 0x80079750"
+                    " (post-ICU, before crash):\n");
+                for (int i = 0; i < 32; i++) {
+                    unsigned char buf[4];
+                    uint64_t va = 0xffffffff80079750ULL + i * 4;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            va, buf, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        fprintf(stderr, "[COLD_BOOT]   0x%08" PRIx64
+                            ": %08X\n", va, w);
+                    }
+                }
+
+                /* Also dump what's at/around PA 0x2400 (crash site) */
+                fprintf(stderr, "[COLD_BOOT] Code/data at crash"
+                    " site 0x80002400:\n");
+                for (int i = -4; i < 8; i++) {
+                    unsigned char buf[4];
+                    uint64_t va = 0xffffffff80002400ULL + i * 4;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            va, buf, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        fprintf(stderr, "[COLD_BOOT]   PA 0x%04X"
+                            ": %08X\n",
+                            0x2400 + i * 4, w);
+                    }
+                }
+            } else {
+                m->wince.cold_boot_wait_count++;
+                if (m->wince.cold_boot_wait_count <= 20
+                    || (m->wince.cold_boot_wait_count % 1000) == 0) {
+                    fprintf(stderr,
+                        "[COLD_BOOT] WAIT #%u at PC=0x%08" PRIx64
+                        ", skipping\n",
+                        m->wince.cold_boot_wait_count + 1,
+                        m->cpu->pc - 4);
+                }
+            }
+        } else if (m->wince.hibernate_redirect_count < 5) {
             uint32_t norm = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
             if (norm >= 0x00060000u && norm < 0x00100000u) {
                 uint64_t old_pc = m->cpu->pc;
