@@ -1,0 +1,24 @@
+FROM debian:bullseye
+
+# Debian Bullseye has GCC 10.2 - much more compatible with 2.4 kernels
+# than GCC 12+, while still being readily available
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc-mipsel-linux-gnu \
+    g++-mipsel-linux-gnu \
+    binutils-mipsel-linux-gnu \
+    libc6-dev-mipsel-cross \
+    bc \
+    bison \
+    flex \
+    libncurses-dev \
+    wget \
+    file \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+CMD ["/bin/bash"]

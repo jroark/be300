@@ -8,3 +8,15 @@ services:
     command: /bin/bash
     stdin_open: true
     tty: true
+
+  kernel-build:
+    build:
+      context: .
+      dockerfile: Dockerfile.kernel-build
+    image: mips-kernel-build
+    volumes:
+      - .:/work
+    working_dir: /work
+    command: /bin/bash
+    stdin_open: true
+    tty: true
