@@ -445,11 +445,38 @@ eret_stubs:
                 " TLB handler (kernel installs its own)\n");
         }
 
-        if (!cfg->wince_cold_boot)
+        if (!cfg->wince_cold_boot) {
             wince_boot_apply_initial_seed(m);
-        else
-            fprintf(stderr, "[BE300] Cold boot: skipping initial"
-                " HW seed data\n");
+        } else {
+            /*
+             * Seed the hibernate signature and flags so NK.exe's
+             * pre-WAIT init takes the state-save path.  Without
+             * these, the hibernate check at 0x76E68 fails and
+             * NK.exe skips installing exception handlers, saving
+             * CPU state, and setting up page tables.
+             *
+             * On a real BE-300, the factory process pre-hibernates
+             * with these values set.  A true virgin cold boot never
+             * happens in normal use.
+             */
+            /*
+             * PA 0x2400: NK.exe version marker.  The init code at
+             * 0x76CBC checks PA 0x2400 against 0x03020100.  If it
+             * doesn't match, it clears PA 0x254C (hibernate flags).
+             * NK.exe writes its own version (0x03020101) later, but
+             * the check runs first, so we need the expected value.
+             */
+            store_32bit_word(m->cpu, 0xffffffffa0002400ULL,
+                UINT32_C(0x03020100));
+            store_32bit_word(m->cpu, 0xffffffffa0002524ULL,
+                UINT32_C(0x32100000));
+            store_32bit_word(m->cpu, 0xffffffffa000254cULL,
+                UINT32_C(0x00000003));
+            fprintf(stderr, "[BE300] Cold boot: seeded hibernate"
+                " state (PA 0x2400=0x03020100,"
+                " PA 0x2524=0x32100000,"
+                " PA 0x254C=0x00000003)\n");
+        }
 
         /* Register VRC4173 latch (catch-all); pre-split to leave gaps for input device */
         extern void be300_register_vrc4173_latch(struct machine *, bool);
@@ -723,31 +750,27 @@ static bool be300_run_batch(machine_t *m)
                     wait_pc, norm, m->cpu->pc);
 
                 /*
-                 * Save the current CPU state into the resume context
-                 * table at PA 0x2200.  The OAL init path after WAIT
-                 * does a full GPR/CP0 restore from this table.  On real
-                 * hardware, this table is pre-populated by the factory
-                 * hibernate process.  We fill it with the live state so
-                 * the restore puts back what was there before WAIT.
+                 * Save live CPU state to the resume_ctx table at
+                 * PA 0x2200 so the OAL GPR/CP0 restore at 0x79668
+                 * gets valid values instead of zeros.
                  *
-                 * Table layout (from disassembly of 0x79764-0x797E4):
-                 *   0x00-0x68: GPR 1-28 (skipping $t0 = reg 8)
-                 *   0x6C: SP, 0x70: FP, 0x74: RA
-                 *   0x78: HI, 0x7C: LO
-                 *   0x80+: CP0 registers (Index, Random, ...)
+                 * CP0 offset mapping (from disassembly of 0x79670-0x79714):
+                 *   0x80:Index 0x84:Random 0x88:EntryLo0 0x8C:EntryLo1
+                 *   0x90:Context 0x94:PageMask 0x98:Wired 0x9C:Count
+                 *   0xA0:EntryHi 0xA4:Compare 0xA8:STATUS 0xAC:Cause
+                 *   0xB0:EPC 0xB4:Config 0xB8:LLAddr ...
+                 * Status is loaded LAST (at 0x19714) for atomicity.
                  *
-                 * The epilogue at 0x797DC does LW $t0, 0($sp) then
-                 * JR $ra — so SP must point to valid stack with a
-                 * saved $t0, and RA must be a valid return address.
+                 * GPR mapping: 0x00-0x18:$at-$a3, 0x1C-0x68:$t1-$gp
+                 * (skips $t0), 0x6C:SP, 0x70:FP, 0x74:RA, 0x78:HI, 0x7C:LO
                  */
                 {
                     uint64_t base = 0xffffffffa0002200ULL;
-                    /* GPR 1-7 (at, v0, v1, a0-a3) at offsets 0x00-0x18 */
+                    /* GPR 1-7 (at through a3) */
                     for (int r = 1; r <= 7; r++)
                         store_32bit_word(m->cpu, base + (r-1)*4,
                             (uint32_t)m->cpu->cd.mips.gpr[r]);
-                    /* GPR 9-28 (t1-t9, s0-s7, t8, t9, k0, k1, gp)
-                       at offsets 0x1C-0x68 */
+                    /* GPR 9-28 (t1 through gp, skipping t0) */
                     for (int r = 9; r <= 28; r++)
                         store_32bit_word(m->cpu, base + 0x1C + (r-9)*4,
                             (uint32_t)m->cpu->cd.mips.gpr[r]);
@@ -763,38 +786,56 @@ static bool be300_run_batch(machine_t *m)
                         (uint32_t)m->cpu->cd.mips.hi);
                     store_32bit_word(m->cpu, base + 0x7C,
                         (uint32_t)m->cpu->cd.mips.lo);
-                    /* CP0: Status at offset 0xB0 (reg 12),
-                       EPC at 0xB8 (reg 14), PRId at 0xBC (reg 15).
-                       Set IE=1 and IM[7]=1 in Status so the timer
-                       interrupt can wake the CPU from subsequent WAITs.
-                       The OAL init configures the 992 Hz RTCL1 timer
-                       and ICU, but the GPR/CP0 restore overwrites
-                       Status — we need IE enabled for interrupt wake. */
+                    /* CP0 Status at offset 0xA8.
+                       - Clear BEV (bit 22) so exceptions go to PA 0x0000
+                         (our synthetic handler) instead of the boot ROM's
+                         MIPS16 handlers that GXemul can't execute
+                       - Set IE=1 and IM[7]=1 so timer interrupt can wake
+                         the CPU from subsequent WAITs */
                     {
                         uint32_t status =
                             (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
-                        status |= 0x8001u; /* IE=1, IM[7]=1 (hw int 5) */
-                        store_32bit_word(m->cpu, base + 0x80 + 12*4,
-                            status);
+                        status &= ~(1u << 22);  /* clear BEV */
+                        status |= 0x8001u;       /* IE=1, IM[7]=1 */
+                        store_32bit_word(m->cpu, base + 0xA8, status);
                     }
-                    store_32bit_word(m->cpu, base + 0x80 + 14*4,
+                    /* CP0 EPC at offset 0xB0 */
+                    store_32bit_word(m->cpu, base + 0xB0,
                         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC]);
-                    store_32bit_word(m->cpu, base + 0x80 + 15*4,
-                        VR4131_PRID);
-                    /* Push current $t0 onto stack so LW $t0,0($sp)
-                       at 0x797DC reads it back correctly */
+                    /* CP0 Config at offset 0xB4 */
+                    store_32bit_word(m->cpu, base + 0xB4,
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CONFIG]);
+                    /* Push $t0 onto stack for the LW $t0,0($sp) epilogue */
                     {
                         uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[29];
-                        if (sp >= 4)
+                        if (sp >= 4) {
                             store_32bit_word(m->cpu,
                                 0xffffffff80000000ULL | (sp - 4),
                                 (uint32_t)m->cpu->cd.mips.gpr[8]);
-                        /* Adjust saved SP to account for the pop */
-                        store_32bit_word(m->cpu, base + 0x6C, sp - 4);
+                            store_32bit_word(m->cpu, base + 0x6C, sp - 4);
+                        }
                     }
-                    fprintf(stderr, "[COLD_BOOT] Saved live CPU state"
-                        " to resume_ctx at PA 0x2200"
-                        " (SP=0x%08X RA=0x%08X Status=0x%08X)\n",
+
+                    /* Install synthetic TLB handler at PA 0x0000 and
+                       0x0180 — the OAL restore sets BEV=0, so TLB
+                       misses go here, not to the boot ROM. */
+                    {
+                        static const uint32_t tlb_h[] = {
+                            0x401B5000, 0x001BD1C2, 0x375A001F,
+                            0x409A1000, 0x275B0040, 0x409B1800,
+                            0x42000006, 0x42000018,
+                        };
+                        for (unsigned j = 0; j < 8; j++) {
+                            store_32bit_word(m->cpu,
+                                0xffffffff80000000ULL + j*4, tlb_h[j]);
+                            store_32bit_word(m->cpu,
+                                0xffffffff80000180ULL + j*4, tlb_h[j]);
+                        }
+                    }
+
+                    fprintf(stderr, "[COLD_BOOT] Saved live state"
+                        " + TLB handler (SP=0x%08X RA=0x%08X"
+                        " Status=0x%08X)\n",
                         (uint32_t)m->cpu->cd.mips.gpr[29],
                         (uint32_t)m->cpu->cd.mips.gpr[31],
                         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
@@ -1000,11 +1041,63 @@ static bool be300_run_batch(machine_t *m)
                     fprintf(stderr,
                         "[COLD_BOOT] WAIT #%u at PC=0x%08" PRIx64
                         ", halted with IE=1"
-                        " (Status=0x%08X Cause=0x%08X)\n",
+                        " (Status=0x%08X Cause=0x%08X"
+                        " EPC=0x%08X BadVA=0x%08X)\n",
                         m->wince.cold_boot_wait_count + 1,
                         m->cpu->pc,
                         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
-                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE]);
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR]);
+                }
+                /* On first subsequent WAIT, dump the exception handlers
+                   that OAL init installed at PA 0x0000 */
+                if (m->wince.cold_boot_wait_count == 1) {
+                    fprintf(stderr,
+                        "[COLD_BOOT] Exception handlers after"
+                        " OAL init:\n");
+                    fprintf(stderr, "[COLD_BOOT] TLB Refill"
+                        " (PA 0x0000):\n");
+                    for (int i = 0; i < 32; i++) {
+                        unsigned char buf[4];
+                        uint64_t va = 0xffffffff80000000ULL + i*4;
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                va, buf, 4, MEM_READ, CACHE_DATA)) {
+                            uint32_t w = buf[0] | (buf[1]<<8) |
+                                         (buf[2]<<16) | (buf[3]<<24);
+                            fprintf(stderr, "[COLD_BOOT]   0x%04X"
+                                ": %08X\n", i * 4, w);
+                        }
+                    }
+                    fprintf(stderr, "[COLD_BOOT] General Exception"
+                        " (PA 0x0180):\n");
+                    for (int i = 0; i < 32; i++) {
+                        unsigned char buf[4];
+                        uint64_t va = 0xffffffff80000180ULL + i*4;
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                va, buf, 4, MEM_READ, CACHE_DATA)) {
+                            uint32_t w = buf[0] | (buf[1]<<8) |
+                                         (buf[2]<<16) | (buf[3]<<24);
+                            fprintf(stderr, "[COLD_BOOT]   0x%04X"
+                                ": %08X\n", 0x180 + i * 4, w);
+                        }
+                    }
+                    /* Dump resume_ctx to see what OAL wrote */
+                    fprintf(stderr, "[COLD_BOOT] resume_ctx"
+                        " after OAL init:\n");
+                    for (int i = 0; i < 64; i++) {
+                        unsigned char buf[4];
+                        uint64_t va = 0xffffffffa0002200ULL + i*4;
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                va, buf, 4, MEM_READ, CACHE_DATA)) {
+                            uint32_t w = buf[0] | (buf[1]<<8) |
+                                         (buf[2]<<16) | (buf[3]<<24);
+                            if (w != 0)
+                                fprintf(stderr,
+                                    "[COLD_BOOT]   PA 0x%04X"
+                                    ": %08X\n", 0x2200 + i*4, w);
+                        }
+                    }
                 }
             }
         } else if (m->wince.hibernate_redirect_count < 5) {
