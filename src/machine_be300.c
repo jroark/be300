@@ -17,6 +17,7 @@
 #include "loader.h"
 #include "ui.h"
 #include "wince_boot.h"
+#include "wince_resume_replay_data.h"
 
 /* GXemul headers */
 #include "interrupt.h"
@@ -1242,6 +1243,39 @@ static bool be300_run_batch(machine_t *m)
                         (uint32_t)m->cpu->cd.mips.gpr[29],
                         (uint32_t)m->cpu->cd.mips.gpr[31],
                         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
+                }
+
+                /*
+                 * Inject ROM boot dispatcher data (step 6 replacement).
+                 * The ROM's MIPS16 dispatcher at 0x9FC00C21 populates
+                 * these structures before NK.exe runs.  Since GXemul
+                 * can't execute MIPS16, inject the captured warm-boot
+                 * values directly: callback table at PA 0x51680,
+                 * bootctx stub at PA 0x63D0, dispatch tables at
+                 * PA 0x660080/660170/660310, etc.
+                 */
+                {
+                    const size_t nregions = sizeof(wince_resume_replay_regions)
+                        / sizeof(wince_resume_replay_regions[0]);
+                    for (size_t ri = 0; ri < nregions; ri++) {
+                        const wince_resume_region_t *reg =
+                            &wince_resume_replay_regions[ri];
+                        uint32_t words_written = 0;
+                        for (uint32_t wi = 0; wi < reg->word_count; wi++) {
+                            if (reg->valid_words[wi]) {
+                                uint64_t va = 0xffffffff80000000ULL
+                                    | (reg->pa + wi * 4);
+                                store_32bit_word(m->cpu, va,
+                                    reg->words[wi]);
+                                words_written++;
+                            }
+                        }
+                        fprintf(stderr,
+                            "[COLD_BOOT] Injected %s: PA 0x%06X,"
+                            " %u/%u words\n",
+                            reg->name, reg->pa,
+                            words_written, reg->word_count);
+                    }
                 }
 
                 /* Dump decompressed NK.exe binary for analysis */
