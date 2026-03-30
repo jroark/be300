@@ -67,6 +67,13 @@ select {
   padding: 10px 12px;
 }
 
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  height: 6px;
+  cursor: pointer;
+}
+
 .field-hint {
   color: var(--muted);
   font-size: 12px;

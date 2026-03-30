@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20260328e";
+const ASSET_VERSION = "20260329a";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -7,7 +7,8 @@ const presetKernelSelect = document.querySelector("#presetKernel");
 const kernelFileInput = document.querySelector("#kernelFile");
 const cmdlineInput = document.querySelector("#cmdline");
 const sdramInput = document.querySelector("#sdramMb");
-const speedInput = document.querySelector("#speedMhz");
+const speedSlider = document.querySelector("#speedSlider");
+const speedValue = document.querySelector("#speedValue");
 const sfb5BitGreenInput = document.querySelector("#sfb5BitGreen");
 const bootBtn = document.querySelector("#bootBtn");
 const stopBtn = document.querySelector("#stopBtn");
@@ -38,6 +39,11 @@ const presetKernels = {
     url: "./kernels/vmlinux-2.6",
     defaultCmdline: "",
   },
+  "vmlinux-4.2.9": {
+    name: "vmlinux-4.2.9",
+    url: "./kernels/vmlinux-4.2.9",
+    defaultCmdline: "console=tty0 console=ttyS0,9600 earlyprintk keep_bootcon root=/dev/ram",
+  },
 };
 
 let uploadedKernelFile = null;
@@ -56,10 +62,16 @@ function clampInteger(value, min, max, fallback) {
   return Math.min(max, Math.max(min, parsed));
 }
 
+function sliderToSpeed(sliderVal) {
+  const v = clampInteger(sliderVal, 1, 100, 10);
+  if (v >= 100) return 166;
+  return Math.round(1 + (v - 1) * (165 / 99));
+}
+
 function getBootConfig() {
   return {
     sdramMb: clampInteger(sdramInput.value, 1, 64, 16),
-    targetMhz: clampInteger(speedInput.value, 0, 1000, 15),
+    targetMhz: sliderToSpeed(speedSlider.value),
     sfb5BitGreen: sfb5BitGreenInput.checked,
   };
 }
@@ -69,7 +81,9 @@ function withManagedMemoryArg(cmdline, sdramMb) {
     .trim()
     .split(/\s+/)
     .filter((token) => token.length > 0 && !token.startsWith("mem="));
-  tokens.push(`mem=${sdramMb}M`);
+  if (sdramMb !== 16) {
+    tokens.push(`mem=${sdramMb}M`);
+  }
   return tokens.join(" ");
 }
 
@@ -216,6 +230,10 @@ cmdlineInput.addEventListener("input", () => {
 
 sdramInput.addEventListener("change", () => {
   syncCmdlineMemoryArg();
+});
+
+speedSlider.addEventListener("input", () => {
+  speedValue.textContent = speedSlider.value;
 });
 
 bootBtn.addEventListener("click", async () => {
@@ -382,5 +400,5 @@ worker.addEventListener("message", ({ data }) => {
 syncButtons();
 syncControlButtonStates();
 setSerialCollapsed(false);
-syncCmdlineMemoryArg();
+speedValue.textContent = speedSlider.value;
 updateKernelStatus();
