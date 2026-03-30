@@ -1161,21 +1161,37 @@ static bool be300_run_batch(machine_t *m)
                     store_32bit_word(m->cpu, base + 0x70,
                         (uint32_t)m->cpu->cd.mips.gpr[30]);
                     /*
-                     * RA: set to 0x80079624 — the JAL 0x79DF8
-                     * instruction followed by J 0x794C8.
-                     *
-                     * 0x79DF8 is the cold boot init function that
-                     * the post-WAIT check code can never reach due
-                     * to a $t0 clobber bug (check1 sets $t0 to the
-                     * button register base address 0xAA00A000, and
-                     * the BNE $t0,$zero after check2 is always taken).
-                     * On real hardware, the ROM dispatcher must set
-                     * resume_ctx RA so this function gets called.
-                     * After 0x79DF8 returns, J 0x794C8 runs the
-                     * cold boot continuation (OEMInit callbacks etc).
+                     * RA: check if NK.exe's pre-WAIT state-save
+                     * at 0x76E68 already wrote a valid RA to
+                     * resume_ctx.  If so, use it — it's the correct
+                     * cold-boot continuation address.  If the
+                     * state-save didn't run (RA still 0), fall back
+                     * to 0x800794C8 (cold boot continuation).
                      */
-                    store_32bit_word(m->cpu, base + 0x74,
-                        UINT32_C(0x80079624));
+                    {
+                        unsigned char ra_buf[4];
+                        uint32_t existing_ra = 0;
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffffa0002274ULL, ra_buf, 4,
+                                MEM_READ, CACHE_DATA))
+                            existing_ra = ra_buf[0] | (ra_buf[1]<<8) |
+                                (ra_buf[2]<<16) | (ra_buf[3]<<24);
+                        if (existing_ra != 0 &&
+                            existing_ra != UINT32_C(0x800794C8)) {
+                            fprintf(stderr,
+                                "[COLD_BOOT] Using state-save RA:"
+                                " 0x%08X (from pre-WAIT init)\n",
+                                existing_ra);
+                        } else {
+                            existing_ra = UINT32_C(0x800794C8);
+                            fprintf(stderr,
+                                "[COLD_BOOT] Using fallback RA:"
+                                " 0x%08X (cold boot continuation)\n",
+                                existing_ra);
+                        }
+                        store_32bit_word(m->cpu, base + 0x74,
+                            existing_ra);
+                    }
                     /* HI, LO */
                     store_32bit_word(m->cpu, base + 0x78,
                         (uint32_t)m->cpu->cd.mips.hi);
