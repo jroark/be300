@@ -1338,8 +1338,12 @@ static bool be300_run_batch(machine_t *m)
                     m->cpu->cd.mips.hi = (int32_t)CTX32(0x78);
                     m->cpu->cd.mips.lo = (int32_t)CTX32(0x7C);
                     /* CP0 Status, EPC, Config */
+                    /* Restore Status from resume_ctx, then set IE=1.
+                     * The warm-boot capture had IE=0 (atomicity at
+                     * hibernate time).  The kernel expects interrupts
+                     * enabled — the scheduler needs timer ticks. */
                     m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
-                        CTX32(0xA8);
+                        CTX32(0xA8) | 0x1u;  /* IE=1 */
                     m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] =
                         CTX32(0xB0);
                     m->cpu->cd.mips.coproc[0]->reg[COP0_CONFIG] =
