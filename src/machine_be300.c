@@ -1253,22 +1253,37 @@ static bool be300_run_batch(machine_t *m)
                 }
 
                 /*
-                 * Inject ROM boot dispatcher data (step 6 replacement).
-                 * The ROM's MIPS16 dispatcher at 0x9FC00C21 populates
-                 * these structures before NK.exe runs.  Since GXemul
-                 * can't execute MIPS16, inject the captured values
-                 * directly.  Only inject ROM-dispatcher regions (callback
-                 * table, bootctx stub, dispatch tables), NOT warm-resume
-                 * regions (resume_context, stack_frame) which would
-                 * corrupt cold-boot state.
+                 * Inject ALL warm-boot seed state at the first WAIT.
+                 * Skip the cold-boot callback pass entirely — the
+                 * warm-boot state has fully initialized hardware from
+                 * a running system.  This avoids the interrupt state
+                 * conflicts that occur when mixing cold-boot callbacks
+                 * with warm-boot resume.
+                 *
+                 * Regions: exception vectors (PA 0x0000), TLB page
+                 * tables (PA 0x2000), resume_ctx (PA 0x2200), etc.
                  */
+                for (uint32_t si = 0;
+                     si < wince_hw_seed_region_count; si++) {
+                    const wince_pa_seed_region_t *sr =
+                        &wince_hw_seed_regions[si];
+                    store_buf(m->cpu,
+                        0xffffffff80000000ULL | sr->pa,
+                        (const char *)sr->data, sr->size);
+                    fprintf(stderr,
+                        "[COLD_BOOT] Injected warm seed %s:"
+                        " PA 0x%06X, %u bytes\n",
+                        sr->name, sr->pa, sr->size);
+                }
+
+                /* Also inject ROM dispatcher data (callback table,
+                 * bootctx stub, dispatch tables) */
                 {
                     const size_t nregions = sizeof(wince_resume_replay_regions)
                         / sizeof(wince_resume_replay_regions[0]);
                     for (size_t ri = 0; ri < nregions; ri++) {
                         const wince_resume_region_t *reg =
                             &wince_resume_replay_regions[ri];
-                        /* Skip warm-resume-specific regions */
                         if (strstr(reg->name, "resume_context") ||
                             strstr(reg->name, "stack_frame"))
                             continue;
@@ -1289,6 +1304,20 @@ static bool be300_run_batch(machine_t *m)
                             words_written, reg->word_count);
                     }
                 }
+
+                /*
+                 * Disable interrupts and skip past WAIT directly.
+                 * The warm-boot resume_ctx has Status=0x00008400
+                 * (IE=0), so the OAL restore will keep interrupts
+                 * disabled until the kernel is ready.
+                 */
+                m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &=
+                    ~(uint64_t)0x1u;  /* clear IE */
+                m->cpu->is_halted = false;
+                m->cpu->pc += 4;
+                fprintf(stderr,
+                    "[COLD_BOOT] Warm seed applied at first WAIT,"
+                    " skipping (IE=0)\n");
 
                 /* Dump decompressed NK.exe binary for analysis */
                 {
@@ -1522,58 +1551,11 @@ static bool be300_run_batch(machine_t *m)
                  * This bridges from cold-boot HW init to a kernel
                  * state that can enter the WinCE scheduler.
                  */
-                if (m->wince.cold_boot_wait_count == 1) {
-                    for (uint32_t si = 0;
-                         si < wince_hw_seed_region_count; si++) {
-                        const wince_pa_seed_region_t *sr =
-                            &wince_hw_seed_regions[si];
-                        store_buf(m->cpu,
-                            0xffffffff80000000ULL | sr->pa,
-                            (const char *)sr->data, sr->size);
-                        fprintf(stderr,
-                            "[COLD_BOOT] Injected warm seed %s:"
-                            " PA 0x%06X, %u bytes\n",
-                            sr->name, sr->pa, sr->size);
-                    }
-                    /*
-                     * Clear the software interrupt pending flag at
-                     * PA 0x66BFF0 (VA 0x8066BFF0).  This flag was
-                     * set by timer ISR entries during the first
-                     * cold-boot pass through 0x794C8.  The warm-boot
-                     * interrupt dispatch loop at 0x800A78EC reads
-                     * this flag and loops if non-zero.
-                     *
-                     * Also disable interrupts (clear IE in Status)
-                     * so the timer can't re-set the flag before the
-                     * OAL restore replaces Status with the warm-boot
-                     * value (0x00008400, IE=0).
-                     */
-                    store_32bit_word(m->cpu,
-                        0xffffffff8066BFF0ULL, 0);
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &=
-                        ~(uint64_t)0x1u;  /* clear IE */
-
-                    /*
-                     * After warm-boot seed injection, skip past WAIT
-                     * directly WITHOUT enabling timer interrupts.
-                     * The post-WAIT OAL code will restore Status from
-                     * the warm-boot resume_ctx (which has IE=0), so
-                     * the kernel controls when interrupts start.
-                     * If we enable IM[7]+IE here, timer interrupts
-                     * flood the exception handler during the OAL
-                     * restore window, setting software flags that
-                     * the interrupt dispatch loop can never drain.
-                     */
-                    m->cpu->is_halted = false;
-                    m->cpu->pc += 4;  /* skip past WAIT */
-                    fprintf(stderr,
-                        "[COLD_BOOT] Warm seed applied, skipping"
-                        " WAIT (no timer IRQ)\n");
-                } else {
-                    /* Normal subsequent WAITs: enable timer to wake */
+                {
                     uint32_t status =
                         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
                     if (!(status & 0x1u)) {
+                        /* IE not set — enable it plus IM[7] for timer */
                         status |= 0x8001u;
                         m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
                             status;
