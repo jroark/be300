@@ -107,6 +107,7 @@ typedef struct {
     bool replay_slot_1ac0_baseline_valid;
     bool replay_slot_1ac0_drift_logged;
     bool cold_boot_wait_logged;
+    bool cold_boot_copy_done;
     uint32_t cold_boot_wait_count;
 
     uint32_t fault_site_logged_mask;

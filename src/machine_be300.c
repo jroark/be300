@@ -817,6 +817,90 @@ static bool be300_run_batch(machine_t *m)
         }
     }
 
+    /*
+     * Detect NK.exe entry and process ROMHDR COPYentry BEFORE the
+     * kernel's startup code runs.  The SPL decompresses NK.exe to
+     * PA 0x60000 and jumps to 0xA0060004 which redirects to
+     * 0x80076B50.  The COPYentry copies the initialized data section
+     * to PA 0x660000.  Without this, the kernel startup runs with
+     * zeroed globals and silently fails to register OEMInit callbacks.
+     */
+    if (m->cfg.wince_cold_boot && !m->wince.cold_boot_copy_done) {
+        uint32_t pc = (uint32_t)m->cpu->pc;
+        uint32_t pa = pc & 0x1FFFFFFFu;
+        /* Detect NK.exe executing: PC in PA 0x60000-0x100000 range.
+         * SPL runs at PA 0xF00000+, so this catches the transition. */
+        if (pa >= 0x60000u && pa < 0x100000u) {
+            unsigned char buf[4];
+            uint32_t ptoc = 0;
+
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                    0xffffffff80060044ULL, buf, 4,
+                    MEM_READ, CACHE_DATA)) {
+                ptoc = buf[0] | (buf[1]<<8) |
+                       (buf[2]<<16) | (buf[3]<<24);
+            }
+
+            if (ptoc != 0) {
+                uint64_t ptoc_va = 0xffffffff00000000ULL |
+                                   (uint64_t)(int32_t)ptoc;
+                uint32_t copy_entries, copy_offset;
+
+                m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                    ptoc_va + 32, buf, 4, MEM_READ, CACHE_DATA);
+                copy_entries = buf[0] | (buf[1]<<8) |
+                               (buf[2]<<16) | (buf[3]<<24);
+                m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                    ptoc_va + 36, buf, 4, MEM_READ, CACHE_DATA);
+                copy_offset = buf[0] | (buf[1]<<8) |
+                              (buf[2]<<16) | (buf[3]<<24);
+
+                for (uint32_t ci = 0; ci < copy_entries && ci < 64;
+                     ci++) {
+                    uint64_t entry_va =
+                        0xffffffff00000000ULL |
+                        (uint64_t)(int32_t)(copy_offset + ci * 16);
+                    uint32_t fields[4];
+                    for (int fi = 0; fi < 4; fi++) {
+                        m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            entry_va + fi * 4, buf, 4,
+                            MEM_READ, CACHE_DATA);
+                        fields[fi] = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                    }
+                    uint32_t src = fields[0], dst = fields[1];
+                    uint32_t cpylen = fields[2], dstlen = fields[3];
+                    uint64_t src_va = 0xffffffff00000000ULL |
+                                      (uint64_t)(int32_t)src;
+                    uint64_t dst_va = 0xffffffff00000000ULL |
+                                      (uint64_t)(int32_t)dst;
+
+                    for (uint32_t off = 0; off < cpylen; off += 4) {
+                        uint8_t tmp[4] = {0};
+                        uint32_t chunk = cpylen - off;
+                        if (chunk > 4) chunk = 4;
+                        m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            src_va + off, tmp, chunk,
+                            MEM_READ, CACHE_DATA);
+                        uint32_t w = tmp[0] | (tmp[1]<<8) |
+                                     (tmp[2]<<16) | (tmp[3]<<24);
+                        store_32bit_word(m->cpu, dst_va + off, w);
+                    }
+                    for (uint32_t off = cpylen; off < dstlen;
+                         off += 4)
+                        store_32bit_word(m->cpu, dst_va + off, 0);
+
+                    fprintf(stderr,
+                        "[COLD_BOOT] Early COPYentry[%u]:"
+                        " src=0x%08X dst=0x%08X"
+                        " copy=%u total=%u\n",
+                        ci, src, dst, cpylen, dstlen);
+                }
+                m->wince.cold_boot_copy_done = true;
+            }
+        }
+    }
+
     if (!machine_run(gxm)) {
         wince_boot_note_fatal_stop(m, "machine-no-longer-running");
         fprintf(stderr, "[BE300] Loop exit: machine no longer running\n");
