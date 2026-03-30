@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "ramdump7"
+#define BEDIAG_BUILD_TAG         "ramdump8"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -1493,11 +1493,19 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 
         if (hRam != INVALID_HANDLE_VALUE) {
             /*
-             * Direct memory read via kseg1 (uncached, VA 0xA0000000+).
-             * This bypasses VirtualCopy entirely — kseg1 is always
-             * mapped to physical memory on MIPS without TLB.
-             * Much faster and no hanging.
+             * Direct memory read via kseg0 (cached, VA 0x80000000+).
+             * kseg0/kseg1 map directly to physical memory on MIPS
+             * without TLB.  Use kseg0 (cached) because kseg1 (uncached)
+             * bus accesses hang on certain pages.  The cached read
+             * hits the CPU data cache first and avoids bus stalls.
+             *
+             * Ensure kernel mode is active in this thread.
              */
+            extern "C" BOOL SetKMode(BOOL);
+            extern "C" DWORD SetProcPermissions(DWORD);
+            SetKMode(TRUE);
+            SetProcPermissions(0xFFFFFFFFu);
+
             DWORD pa;
             DWORD pages_ok = 0, pages_fail = 0;
             DWORD start_tick = GetTickCount();
@@ -1509,7 +1517,7 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
             for (pa = 0; pa < 0x01000000u; pa += 0x1000u) {
                 DWORD written;
                 BOOL page_ok = FALSE;
-                volatile BYTE *src = (volatile BYTE *)(0xA0000000u + pa);
+                volatile BYTE *src = (volatile BYTE *)(0x80000000u + pa);
 
                 __try {
                     DWORD i;
