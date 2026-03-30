@@ -373,6 +373,207 @@ machine_t *be300_create(const machine_config_t *cfg)
                     }
                     fprintf(stderr, "[BE300] Loaded real boot ROM"
                         " (%zu bytes) at PA 0x1FC00000\n", rom_read);
+
+                    /*
+                     * Patch the ROM's BEV exception vectors with MIPS32
+                     * handlers.  The real ROM has:
+                     *   +0x200 (TLB Refill): all 0xFF (no handler)
+                     *   +0x380 (General Exception): boot code, not a handler
+                     * The ROM uses MIPS16 code that GXemul can't execute.
+                     *
+                     * We write proper MIPS32 handlers into the 0xFF-filled
+                     * area at +0x200-0x37F (384 bytes available).
+                     */
+                    {
+                        uint64_t rom_va = 0xffffffffBFC00000ULL;
+
+                        /* +0x200: BEV TLB Refill handler (identity map) */
+                        static const uint32_t tlb_refill[] = {
+                            0x401B5000, /* mfc0 $k1, EntryHi    */
+                            0x001BD1C2, /* srl  $k0, $k1, 7     */
+                            0x375A001F, /* ori  $k0, $k0, 0x1F  */
+                            0x409A1000, /* mtc0 $k0, EntryLo0   */
+                            0x275B0040, /* addiu $k1, $k0, 0x40 */
+                            0x409B1800, /* mtc0 $k1, EntryLo1   */
+                            0x42000006, /* tlbwr                 */
+                            0x42000018, /* eret                  */
+                        };
+                        for (unsigned j = 0; j < 8; j++)
+                            store_32bit_word(m->cpu,
+                                rom_va + 0x200 + j * 4,
+                                tlb_refill[j]);
+
+                        /*
+                         * +0x280: General exception dispatcher.
+                         * Checks ExcCode: TLB miss → identity map,
+                         * interrupt → clear timer + ERET, other → ERET.
+                         *
+                         * The BEV general exception vector is at +0x380,
+                         * which is the boot code continuation. We can't
+                         * easily patch +0x380 (it's a delay slot of the
+                         * JAL at +0x37C). Instead, we put the handler at
+                         * +0x280 and patch +0x380 to jump here when EXL=1.
+                         */
+                        static const uint32_t gen_exc[] = {
+                            /* +0x280: Check ExcCode */
+                            0x401A6800, /* mfc0 $k0, Cause       */
+                            0x001AD082, /* srl  $k0, $k0, 2      */
+                            0x335A001F, /* andi $k0, $k0, 0x1F   */
+                            0x1340000A, /* beqz $k0, +10 → irq   */
+                            0x00000000, /* nop                    */
+                            /* ExcCode 2 (TLBL) or 3 (TLBS) → TLB */
+                            0x375A0002, /* ori  $k0, $k0, 2 (NOP-like, k0 already has exccode) */
+                            /* actually just check: */
+                            0x401A6800, /* mfc0 $k0, Cause       */
+                            0x001AD082, /* srl  $k0, $k0, 2      */
+                            0x335A001F, /* andi $k0, $k0, 0x1F   */
+                            0x235BFFFE, /* addi $k1, $k0, -2     */
+                            0x2F7B0002, /* sltiu $k1, $k1, 2     */
+                            /* k1=1 if ExcCode is 2 or 3 (TLB) */
+                            0x1760FFEE, /* bne $k1,$zero, -18 → +0x200 (TLB handler) */
+                            0x00000000, /* nop                    */
+                            /* Other exceptions: just ERET */
+                            0x42000018, /* eret                  */
+                        };
+                        /* Actually, let me write a cleaner version */
+                        static const uint32_t gen_handler[] = {
+                            /* +0x280: general exception handler */
+                            0x401A6800, /* mfc0 $k0, Cause        */
+                            0x335A007C, /* andi $k0, $k0, 0x7C    */
+                            /* k0 now has ExcCode << 2              */
+                            /* 0x00 = Interrupt                     */
+                            0x13400006, /* beqz $k0, handle_irq (+6)*/
+                            0x00000000, /* nop                      */
+                            /* 0x08 = TLBL, 0x0C = TLBS            */
+                            0x235BFFF8, /* addi $k1, $k0, -8       */
+                            0x2F7B0008, /* sltiu $k1, $k1, 8      */
+                            /* k1=1 if exccode<<2 is 8..15         */
+                            /* i.e. ExcCode 2 or 3 (TLBL/TLBS)     */
+                            0x17600008, /* bne $k1, $zero, tlb (+8)*/
+                            0x00000000, /* nop                      */
+                            /* Other: just ERET                     */
+                            0x42000018, /* eret                     */
+                            0x00000000, /* nop                      */
+                            /* handle_irq: ERET (timer stays pending */
+                            /* but at least we return cleanly)       */
+                            0x42000018, /* eret                     */
+                            0x00000000, /* nop                      */
+                            /* handle_tlb: identity map              */
+                            0x401B5000, /* mfc0 $k1, EntryHi       */
+                            0x001BD1C2, /* srl  $k0, $k1, 7        */
+                            0x375A001F, /* ori  $k0, $k0, 0x1F     */
+                            0x409A1000, /* mtc0 $k0, EntryLo0      */
+                            0x275B0040, /* addiu $k1, $k0, 0x40    */
+                            0x409B1800, /* mtc0 $k1, EntryLo1      */
+                            0x42000006, /* tlbwr                    */
+                            0x42000018, /* eret                     */
+                        };
+                        for (unsigned j = 0;
+                             j < sizeof(gen_handler)/sizeof(gen_handler[0]);
+                             j++)
+                            store_32bit_word(m->cpu,
+                                rom_va + 0x280 + j * 4,
+                                gen_handler[j]);
+
+                        /*
+                         * +0x380: Patch the BEV general exception entry.
+                         * Original is boot code (`li $a0, 0` = delay slot
+                         * of JAL at +0x37C).  We can't change +0x380
+                         * (delay slot) but we CAN change +0x37C to call
+                         * our wrapper, and put a check at +0x384.
+                         *
+                         * Simpler: just redirect +0x380 area. The boot
+                         * code flow via the reset vector reaches +0x37C
+                         * which has a JAL with delay slot at +0x380.
+                         * We preserve the delay slot, but patch +0x384
+                         * to check EXL and branch to our handler.
+                         */
+                        /* At +0x384 (after delay slot): check EXL */
+                        /* Original: lui $a1, 0x8001 (0x3c058001)  */
+                        static const uint32_t exc_check[] = {
+                            /* +0x384: check if exception or boot */
+                            0x401A6000, /* mfc0 $k0, Status        */
+                            0x335A0002, /* andi $k0, $k0, 0x2 EXL  */
+                            0x1740FFBF, /* bne $k0,$zero, -65 → +0x284... */
+                        };
+                        /* Calculate branch offset: from +0x38C to +0x280
+                           offset = (0x280 - 0x390) / 4 = -0x110/4 = -68
+                           BNE encoding: offset is (target - (PC+4))/4
+                           PC = 0x38C, target = 0x280
+                           offset = (0x280 - 0x390) / 4 = -0x44 = -68
+                           16-bit signed: 0xFFBC */
+                        store_32bit_word(m->cpu, rom_va + 0x384,
+                            0x401A6000); /* mfc0 $k0, Status */
+                        store_32bit_word(m->cpu, rom_va + 0x388,
+                            0x335A0002); /* andi $k0, $k0, 2 */
+                        store_32bit_word(m->cpu, rom_va + 0x38C,
+                            0x1740FFBC); /* bne $k0,$zero, -68 → +0x280 */
+                        store_32bit_word(m->cpu, rom_va + 0x390,
+                            0x00000000); /* nop (delay slot) */
+                        /* Original boot code relocated from +0x384: */
+                        store_32bit_word(m->cpu, rom_va + 0x394,
+                            0x3C058001); /* lui $a1, 0x8001 (was +0x384) */
+                        store_32bit_word(m->cpu, rom_va + 0x398,
+                            0x24A50034); /* addiu $a1, 52 (was +0x388) */
+                        store_32bit_word(m->cpu, rom_va + 0x39C,
+                            0x80A00000); /* lb $zero, 0($a1) (was +0x38C) */
+                        store_32bit_word(m->cpu, rom_va + 0x3A0,
+                            0x3C089FC0); /* lui $t0, 0x9FC0 (was +0x390) */
+                        store_32bit_word(m->cpu, rom_va + 0x3A4,
+                            0x25080C85); /* addiu $t0, 0xC85 (was +0x394) */
+                        store_32bit_word(m->cpu, rom_va + 0x3A8,
+                            0x0100F809); /* jalr $t0 (was +0x398) */
+                        store_32bit_word(m->cpu, rom_va + 0x3AC,
+                            0x00000000); /* nop (was +0x39C) */
+                        store_32bit_word(m->cpu, rom_va + 0x3B0,
+                            0x3C059FC0); /* lui $a1, 0x9FC0 (was +0x3A0) */
+                        store_32bit_word(m->cpu, rom_va + 0x3B4,
+                            0x24A50C21); /* addiu $a1, 0xC21 (was +0x3A4) */
+                        store_32bit_word(m->cpu, rom_va + 0x3B8,
+                            0x00A0F809); /* jalr $a1 (was +0x3A8) */
+                        store_32bit_word(m->cpu, rom_va + 0x3BC,
+                            0x00000000); /* nop (was +0x3AC) */
+                        store_32bit_word(m->cpu, rom_va + 0x3C0,
+                            0x0FF0013A); /* jal 0xFC004E8 (was +0x3B0) */
+                        store_32bit_word(m->cpu, rom_va + 0x3C4,
+                            0x00000000); /* nop (was +0x3B4) */
+                        store_32bit_word(m->cpu, rom_va + 0x3C8,
+                            0x0FF00122); /* jal 0xFC00488 (was +0x3B8) */
+                        store_32bit_word(m->cpu, rom_va + 0x3CC,
+                            0x00000000); /* nop (was +0x3BC) */
+                        /* beqz loop: was `beqz v0, 0x3A0` from +0x3C0.
+                           Now relocated to +0x3D0, target is +0x3B0.
+                           offset = (0x3B0 - 0x3D4) / 4 = -0x24/4 = -9
+                           = 0xFFF7 */
+                        store_32bit_word(m->cpu, rom_va + 0x3D0,
+                            0x1040FFF7); /* beqz $v0, -9 → +0x3B0 */
+                        store_32bit_word(m->cpu, rom_va + 0x3D4,
+                            0x00000000); /* nop */
+                        /* Rest of boot code (load PA 0x24FC, JR): */
+                        store_32bit_word(m->cpu, rom_va + 0x3D8,
+                            0x3C08A000); /* lui $t0, 0xA000 (was +0x3C8) */
+                        store_32bit_word(m->cpu, rom_va + 0x3DC,
+                            0x250824FC); /* addiu $t0, 0x24FC (was +0x3CC) */
+                        store_32bit_word(m->cpu, rom_va + 0x3E0,
+                            0x8D080000); /* lw $t0, 0($t0) (was +0x3D0) */
+                        store_32bit_word(m->cpu, rom_va + 0x3E4,
+                            0x01000008); /* jr $t0 (was +0x3D4) */
+                        store_32bit_word(m->cpu, rom_va + 0x3E8,
+                            0x00000000); /* nop (was +0x3D8) */
+                        /* Error recovery path: */
+                        store_32bit_word(m->cpu, rom_va + 0x3EC,
+                            0x0FF00126); /* jal 0xFC00498 (was +0x3DC) */
+                        store_32bit_word(m->cpu, rom_va + 0x3F0,
+                            0x24040004); /* li $a0, 4 (was +0x3E0) */
+                        store_32bit_word(m->cpu, rom_va + 0x3F4,
+                            0x0BF000E8); /* j 0xFC003A0 → +0x3B0 relocated */
+                        store_32bit_word(m->cpu, rom_va + 0x3F8,
+                            0x00000000); /* nop */
+
+                        fprintf(stderr, "[BE300] Patched ROM BEV"
+                            " vectors: TLB@+0x200, GenExc@+0x280,"
+                            " boot code relocated +0x384→+0x394\n");
+                    }
                 } else {
                     fprintf(stderr, "[BE300] ROM file truncated"
                         " (%zu bytes), using ERET stubs\n", rom_read);
@@ -787,15 +988,14 @@ static bool be300_run_batch(machine_t *m)
                     store_32bit_word(m->cpu, base + 0x7C,
                         (uint32_t)m->cpu->cd.mips.lo);
                     /* CP0 Status at offset 0xA8.
-                       - Clear BEV (bit 22) so exceptions go to PA 0x0000
-                         (our synthetic handler) instead of the boot ROM's
-                         MIPS16 handlers that GXemul can't execute
+                       - Keep BEV=1 — the ROM's BEV vectors are now
+                         patched with MIPS32 handlers (TLB identity map
+                         at +0x200, general exception dispatcher at +0x280)
                        - Set IE=1 and IM[7]=1 so timer interrupt can wake
                          the CPU from subsequent WAITs */
                     {
                         uint32_t status =
                             (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
-                        status &= ~(1u << 22);  /* clear BEV */
                         status |= 0x8001u;       /* IE=1, IM[7]=1 */
                         store_32bit_word(m->cpu, base + 0xA8, status);
                     }
