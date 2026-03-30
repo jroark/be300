@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "ramdump1"
+#define BEDIAG_BUILD_TAG         "ramdump2"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -1495,9 +1495,9 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 
     /* Full 16MB SDRAM dump to storage card (raw binary) */
     if (!driver->stop_requested) {
+        /* Storage Card only — 16MB won't fit on Nand Disk (~12MB FAT16) */
         static const WCHAR *ram_dump_paths[] = {
             L"\\Storage Card\\be300_ram.bin",
-            L"\\Nand Disk\\be300_ram.bin"
         };
         HANDLE hRam;
         int ri;
@@ -1506,7 +1506,7 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
         Logf("tick_ms=%lu\r\n", GetTickCount());
 
         hRam = INVALID_HANDLE_VALUE;
-        for (ri = 0; ri < 2 && hRam == INVALID_HANDLE_VALUE; ri++) {
+        for (ri = 0; ri < (int)(sizeof(ram_dump_paths)/sizeof(ram_dump_paths[0])) && hRam == INVALID_HANDLE_VALUE; ri++) {
             hRam = CreateFile(ram_dump_paths[ri],
                               GENERIC_WRITE, 0, NULL,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -1557,13 +1557,12 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
         {
             static const WCHAR *state_paths[] = {
                 L"\\Storage Card\\be300_state.txt",
-                L"\\Nand Disk\\be300_state.txt"
             };
             HANDLE hState;
             int si;
 
             hState = INVALID_HANDLE_VALUE;
-            for (si = 0; si < 2 && hState == INVALID_HANDLE_VALUE; si++) {
+            for (si = 0; si < (int)(sizeof(state_paths)/sizeof(state_paths[0])) && hState == INVALID_HANDLE_VALUE; si++) {
                 hState = CreateFile(state_paths[si],
                                     GENERIC_WRITE, 0, NULL,
                                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
