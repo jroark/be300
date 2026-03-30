@@ -1542,9 +1542,16 @@ static bool be300_run_batch(machine_t *m)
                      * cold-boot pass through 0x794C8.  The warm-boot
                      * interrupt dispatch loop at 0x800A78EC reads
                      * this flag and loops if non-zero.
+                     *
+                     * Also disable interrupts (clear IE in Status)
+                     * so the timer can't re-set the flag before the
+                     * OAL restore replaces Status with the warm-boot
+                     * value (0x00008400, IE=0).
                      */
                     store_32bit_word(m->cpu,
                         0xffffffff8066BFF0ULL, 0);
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &=
+                        ~(uint64_t)0x1u;  /* clear IE */
 
                     /*
                      * After warm-boot seed injection, skip past WAIT
