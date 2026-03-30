@@ -496,6 +496,10 @@ class MainActivity : AppCompatActivity() {
                 cmdline = "console=tty0 root=/dev/ram init=/linuxrc",
                 sfb5bitGreen = false
             )
+            "vmlinux-4.2.9" -> KernelBootOptions(
+                cmdline = "console=tty0 console=ttyS0,9600 earlyprintk keep_bootcon root=/dev/ram",
+                sfb5bitGreen = false
+            )
             else -> KernelBootOptions(
                 cmdline = DEFAULT_CMDLINE,
                 sfb5bitGreen = false
@@ -904,6 +908,12 @@ class MainActivity : AppCompatActivity() {
                 label = "kernels/vmlinux-pgui-test1",
                 assetPath = "kernels/vmlinux-pgui-test1",
                 outputName = "vmlinux-pgui-test1"
+            ),
+            KernelBundle(
+                id = "vmlinux-4.2.9",
+                label = "kernels/vmlinux-4.2.9",
+                assetPath = "kernels/vmlinux-4.2.9",
+                outputName = "vmlinux-4.2.9"
             )
         )
 
