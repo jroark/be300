@@ -264,6 +264,15 @@ the kernel entry at VA 0xA0060004.
 - VRC4173 init, NAND controller, cache init, switch SP to kseg0
 - Jump to 0xA00772CC → more init → WAIT at VA 0xA0079598
 
+**Cold Boot Continuation (0x800794C8):**
+- Referenced by J instruction at 0x8007962C (after the unreachable cold boot init at 0x79DF8)
+- Calls 6 init functions: 0x79ADC (VRC4173 interrupt init), 0x79B94, 0x79B9C, 0x79BA4, 0x79BAC, 0x7AB38 (OEMInit callback dispatcher)
+- Flushes data cache (loop at 0x79500 using cache instruction)
+- Calls 3 more init functions: 0x79BB4, 0x79B5C, 0x79C88
+- Falls through to 0x79560 → PMU/DCU/SDRAMU → WAIT
+- Function 0x7AB38 is an OEMInit callback dispatcher: walks 32 entries (20 bytes each) at PA 0xA0051680, calls function pointers via JALR. These callbacks do real WinCE kernel initialization.
+- Running 0x794C8 populates the resume_ctx at PA 0x2200 with real values (SP, GPRs, CP0 Config, etc.)
+
 **Post-WAIT OAL Init (always taken on both cold and warm boot):**
 - NOP sled → kseg0 switch → check1 (buttons) → check2 (VRC4173)
 - check1 reads PA 0x0A00A042 (button register), masks 0x9E00
