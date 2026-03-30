@@ -1535,12 +1535,27 @@ static bool be300_run_batch(machine_t *m)
                             " PA 0x%06X, %u bytes\n",
                             sr->name, sr->pa, sr->size);
                     }
-                }
-                {
+                    /*
+                     * After warm-boot seed injection, skip past WAIT
+                     * directly WITHOUT enabling timer interrupts.
+                     * The post-WAIT OAL code will restore Status from
+                     * the warm-boot resume_ctx (which has IE=0), so
+                     * the kernel controls when interrupts start.
+                     * If we enable IM[7]+IE here, timer interrupts
+                     * flood the exception handler during the OAL
+                     * restore window, setting software flags that
+                     * the interrupt dispatch loop can never drain.
+                     */
+                    m->cpu->is_halted = false;
+                    m->cpu->pc += 4;  /* skip past WAIT */
+                    fprintf(stderr,
+                        "[COLD_BOOT] Warm seed applied, skipping"
+                        " WAIT (no timer IRQ)\n");
+                } else {
+                    /* Normal subsequent WAITs: enable timer to wake */
                     uint32_t status =
                         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
                     if (!(status & 0x1u)) {
-                        /* IE not set — enable it plus IM[7] for timer */
                         status |= 0x8001u;
                         m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
                             status;
