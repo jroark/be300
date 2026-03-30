@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "ramdump9"
+#define BEDIAG_BUILD_TAG         "ramdumpA"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -1512,30 +1512,40 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
             BYTE page_buf[0x1000];
 
             Logf("path=\\Storage Card\\be300_ram.bin size=16777216\r\n");
+            Logf("[RAMDUMP] disabling interrupts for dump\r\n");
             FlushSinks();
+
+            /*
+             * Disable interrupts via CP0 Status IE bit to prevent
+             * interrupt handlers / DMA from causing bus contention.
+             * This freezes the system during the dump but prevents
+             * the bus hang.
+             */
+            {
+                DWORD old_status;
+                __asm {
+                    mfc0 $8, $12      /* read Status */
+                    sw $8, old_status
+                    lui $9, 0xFFFF
+                    ori $9, $9, 0xFFFE /* mask = ~1 (clear IE) */
+                    and $8, $8, $9
+                    mtc0 $8, $12      /* write Status with IE=0 */
+                    nop
+                    nop
+                }
+            }
 
             for (pa = 0; pa < 0x01000000u; pa += 0x1000u) {
                 DWORD written;
                 BOOL page_ok = FALSE;
 
-                /* Log every page and flush BEFORE the read, so if
-                   the CPU hangs we know which page caused it */
-                if (pa < 0x30000u || (pa & 0xFFFFFu) == 0) {
-                    Logf("[RAMDUMP] reading PA 0x%08lX\r\n", pa);
-                    FlushSinks();
-                }
-
                 {
                     volatile DWORD *src = (volatile DWORD *)(0x80000000u + pa);
-                    __try {
-                        DWORD i;
-                        DWORD *dst = (DWORD *)page_buf;
-                        for (i = 0; i < 0x400u; i++)
-                            dst[i] = src[i];
-                        page_ok = TRUE;
-                    } __except (EXCEPTION_EXECUTE_HANDLER) {
-                        page_ok = FALSE;
-                    }
+                    DWORD i;
+                    DWORD *dst = (DWORD *)page_buf;
+                    for (i = 0; i < 0x400u; i++)
+                        dst[i] = src[i];
+                    page_ok = TRUE;
                 }
 
                 if (page_ok) {
@@ -1545,6 +1555,19 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
                     pages_fail++;
                 }
                 WriteFile(hRam, page_buf, 0x1000u, &written, NULL);
+            }
+
+            /* Re-enable interrupts */
+            {
+                DWORD status;
+                __asm {
+                    mfc0 $8, $12
+                    sw $8, status
+                    ori $8, $8, 1     /* set IE */
+                    mtc0 $8, $12
+                    nop
+                    nop
+                }
             }
 
             CloseHandle(hRam);
