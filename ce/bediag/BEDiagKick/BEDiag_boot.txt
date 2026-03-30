@@ -1,16 +1,22 @@
-[BEDIAG_STAGE] build=ramdump3 stage=init_stub tick_ms=12604 context=0x00000000 active_key="<unavailable>" status=NULL_CONTEXT serial_open_failed=0 retried=0
-[BEDIAG_DORMANT_INIT] tick_ms=12725 context=0x00000000 incoming_key="<unavailable>"
-[BEDIAG_STAGE] build=ramdump3 stage=init_enter tick_ms=13308 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
-[BEDIAG_STAGE] build=ramdump3 stage=worker_created tick_ms=13357 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
+[BEDIAG_STAGE] build=ramdump4 stage=init_stub tick_ms=88346 context=0x00000000 active_key="<unavailable>" status=NULL_CONTEXT serial_open_failed=0 retried=0
+[BEDIAG_DORMANT_INIT] tick_ms=88466 context=0x00000000 incoming_key="<unavailable>"
+[BEDIAG_STAGE] build=ramdump4 stage=init_enter tick_ms=89055 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
+[BEDIAG_STAGE] build=ramdump4 stage=worker_created tick_ms=89104 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
 [BEDIAG] serial_open_failed err=0 retried=0
 
 --- BEDIAG INIT ---
-tick_ms=13479
+tick_ms=89227
 context=0x000150B8
 active_key="Drivers\BuiltIn\BEDiag"
 
+--- RAM DUMP ---
+tick_ms=89322
+path=\Storage Card\be300_ram.bin size=16777216
+[RAMDUMP] done: ok=4 fail=0 elapsed=379 ms
+[BEDIAG_STAGE] build=ramdump4 stage=ram_dump_done tick_ms=89820 context=0x000150B8 active_key="Drivers\BuiltIn\BEDiag" serial_open_failed=0 retried=0
+
 --- SNAPSHOT INIT ---
-tick_ms=13574 phase=init
+tick_ms=89915 phase=init
 [CAPTURE_BEGIN] phase=init kind=VA name=callback_slot_70e0 addr=0x000170E0 size=0x0100
 [VREGION] phase=init name=callback_slot_70e0 VA=0x000170E0 size=0x0100 status=OK valid_prefix=0x0100 crc32=0x29F59B29 changed_vs_prev=INITIAL
 [VREGION_RAW] phase=init name=callback_slot_70e0 VA=0x000170E0 off=0x0000 size=0x20 data=481B01000000000000000000DC1A0100481B0100C01B01000000000000000000
@@ -56,18 +62,18 @@ tick_ms=13574 phase=init
 [REGION_RAW] phase=init name=low_sdram_0000 PA=0x00000000 off=0x03C0 size=0x20 data=0000000000000000000000000000000000000000000000000000000000000000
 [REGION_RAW] phase=init name=low_sdram_0000 PA=0x00000000 off=0x03E0 size=0x20 data=0000000000000000000000000000000000000000000000000000000000000000
 [CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_1880 addr=0x00001880 size=0x0080
-[REGION] phase=init name=low_sdram_1880 PA=0x00001880 size=0x0080 status=OK crc32=0xAE276EE8 changed_vs_prev=INITIAL
-[REGION_RAW] phase=init name=low_sdram_1880 PA=0x00001880 off=0x0000 size=0x20 data=0000000000010000018400000000000000840000843600000500000081000000
+[REGION] phase=init name=low_sdram_1880 PA=0x00001880 size=0x0080 status=OK crc32=0x1D53536C changed_vs_prev=INITIAL
+[REGION_RAW] phase=init name=low_sdram_1880 PA=0x00001880 off=0x0000 size=0x20 data=0000000000010000018400000000000000840000CF6001001500000001040000
 [REGION_RAW] phase=init name=low_sdram_1880 PA=0x00001880 off=0x0020 size=0x20 data=00000000E4B80880C07A0A80B0B80880B0B80880B0B80880B0B80880E4780A80
 [REGION_RAW] phase=init name=low_sdram_1880 PA=0x00001880 off=0x0040 size=0x20 data=0070FD80C08C66800080FF800040EE800070FD800000E08000F0E6800040E280
-[REGION_RAW] phase=init name=low_sdram_1880 PA=0x00001880 off=0x0060 size=0x20 data=0010D5800070D88018BC088018BC088018BC088018BC088018BC088018BC0880
+[REGION_RAW] phase=init name=low_sdram_1880 PA=0x00001880 off=0x0060 size=0x20 data=0030D8800060D8800040D6800050C68018BC088018BC088018BC088018BC0880
 [CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_1ac0 addr=0x00001AC0 size=0x0100
-[REGION] phase=init name=low_sdram_1ac0 PA=0x00001AC0 size=0x0100 status=OK crc32=0xE664CE77 changed_vs_prev=INITIAL
-[REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x0000 size=0x20 data=0084D580B09D6680000000804CB8088000000000000000000000000000000000
+[REGION] phase=init name=low_sdram_1ac0 PA=0x00001AC0 size=0x0100 status=OK crc32=0xCA273961 changed_vs_prev=INITIAL
+[REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x0000 size=0x20 data=ECFCFA80C09F6680000000804CB8088000000000000000000000000000000000
 [REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x0020 size=0x20 data=0000000000000000000000000000000000000000000000000000000000000000
-[REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x0040 size=0x20 data=E09866800010000004000000C0FFFF3F7403000048000000B8006680C0D8FFFF
-[REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x0060 size=0x20 data=40956680D485D58000005E013A070000504C658000D8FFFF000000002C010000
-[REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x0080 size=0x20 data=00000000000000000000FB80B5010000E4040000090400007803000000000000
+[REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x0040 size=0x20 data=E09866800010000004000000C0FFFF3F4103000052000000B8006680C0D8FFFF
+[REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x0060 size=0x20 data=4095668078DEC58000005E013A070000504C658000D8FFFF000000002C010000
+[REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x0080 size=0x20 data=00000000000000000000FB80B5010000E4040000090400005004000000000000
 [REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x00A0 size=0x20 data=208C668000000000000000000000000000000000000000000000000000000000
 [REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x00C0 size=0x20 data=0000000000000000000000000000000000000000000000000000000000000000
 [REGION_RAW] phase=init name=low_sdram_1ac0 PA=0x00001AC0 off=0x00E0 size=0x20 data=0000000000000000000000000000000003840000000000000000000000000000
@@ -100,9 +106,9 @@ tick_ms=13574 phase=init
 [REGION_RAW] phase=init name=resume_ctx PA=0x00002200 off=0x00C0 size=0x20 data=300C0000F7000000000000000000000078A107800703000000004000830E0000
 [REGION_RAW] phase=init name=resume_ctx PA=0x00002200 off=0x00E0 size=0x20 data=0000000000000000000000000000000000000040000000000000000000004000
 [CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_1000 addr=0x00001000 size=0x1000
-[REGION] phase=init name=low_sdram_1000 PA=0x00001000 size=0x1000 status=OK crc32=0x5548D3D8 changed_vs_prev=INITIAL
+[REGION] phase=init name=low_sdram_1000 PA=0x00001000 size=0x1000 status=OK crc32=0xA17FDA5D changed_vs_prev=INITIAL
 [CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_2000 addr=0x00002000 size=0x1000
-[REGION] phase=init name=low_sdram_2000 PA=0x00002000 size=0x1000 status=OK crc32=0xF14492D3 changed_vs_prev=INITIAL
+[REGION] phase=init name=low_sdram_2000 PA=0x00002000 size=0x1000 status=OK crc32=0x50CFDBCC changed_vs_prev=INITIAL
 [CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_3000 addr=0x00003000 size=0x1000
 [REGION] phase=init name=low_sdram_3000 PA=0x00003000 size=0x1000 status=OK crc32=0x98BD67E5 changed_vs_prev=INITIAL
 [CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_4000 addr=0x00004000 size=0x1000
@@ -112,23 +118,5 @@ tick_ms=13574 phase=init
 [CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_6000 addr=0x00006000 size=0x1000
 [REGION] phase=init name=low_sdram_6000 PA=0x00006000 size=0x1000 status=OK crc32=0xC3C5B55A changed_vs_prev=INITIAL
 [CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_7000 addr=0x00007000 size=0x1000
-[REGION] phase=init name=low_sdram_7000 PA=0x00007000 size=0x1000 status=OK crc32=0x5547AFF1 changed_vs_prev=INITIAL
+[REGION] phase=init name=low_sdram_7000 PA=0x00007000 size=0x1000 status=OK crc32=0x404717B9 changed_vs_prev=INITIAL
 [CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_8000 addr=0x00008000 size=0x1000
-[REGION] phase=init name=low_sdram_8000 PA=0x00008000 size=0x1000 status=OK crc32=0x7BAA6CDB changed_vs_prev=INITIAL
-[CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_9000 addr=0x00009000 size=0x1000
-[REGION] phase=init name=low_sdram_9000 PA=0x00009000 size=0x1000 status=OK crc32=0x8A3A8DBD changed_vs_prev=INITIAL
-[CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_A000 addr=0x0000A000 size=0x1000
-[REGION] phase=init name=low_sdram_A000 PA=0x0000A000 size=0x1000 status=OK crc32=0x17320DAC changed_vs_prev=INITIAL
-[CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_B000 addr=0x0000B000 size=0x1000
-[REGION] phase=init name=low_sdram_B000 PA=0x0000B000 size=0x1000 status=OK crc32=0x0642D1C0 changed_vs_prev=INITIAL
-[CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_C000 addr=0x0000C000 size=0x1000
-[REGION] phase=init name=low_sdram_C000 PA=0x0000C000 size=0x1000 status=OK crc32=0x1A4BEF35 changed_vs_prev=INITIAL
-[CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_D000 addr=0x0000D000 size=0x1000
-[REGION] phase=init name=low_sdram_D000 PA=0x0000D000 size=0x1000 status=OK crc32=0x7227E019 changed_vs_prev=INITIAL
-[CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_E000 addr=0x0000E000 size=0x1000
-[REGION] phase=init name=low_sdram_E000 PA=0x0000E000 size=0x1000 status=OK crc32=0x8CB03A47 changed_vs_prev=INITIAL
-[CAPTURE_BEGIN] phase=init kind=PA name=low_sdram_F000 addr=0x0000F000 size=0x1000
-[REGION] phase=init name=low_sdram_F000 PA=0x0000F000 size=0x1000 status=OK crc32=0x59AA10B9 changed_vs_prev=INITIAL
-[CAPTURE_BEGIN] phase=init kind=PA name=ctx_high_page addr=0x00001000 size=0x1000
-[REGION] phase=init name=ctx_high_page PA=0x00001000 size=0x1000 status=OK crc32=0xB5773AF6 changed_vs_prev=INITIAL
-[CAPTURE_BEGIN] phase=init kind=PA name=callback_page addr=0x00011000 size=0x1000
