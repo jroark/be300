@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "ramdump4"
+#define BEDIAG_BUILD_TAG         "ramdump5"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -1486,14 +1486,12 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
                          pa >> 20, pages_ok, pages_fail);
                     FlushSinks();
                 }
-
-                if (driver->stop_requested)
-                    break;
+                /* Do NOT check stop_requested — complete the dump */
             }
 
             CloseHandle(hRam);
-            Logf("[RAMDUMP] done: ok=%u fail=%u elapsed=%lu ms\r\n",
-                 pages_ok, pages_fail,
+            Logf("[RAMDUMP] done: ok=%u fail=%u last_pa=0x%08lX elapsed=%lu ms\r\n",
+                 pages_ok, pages_fail, pa,
                  GetTickCount() - start_tick);
             FlushSinks();
         } else {
