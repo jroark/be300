@@ -1306,18 +1306,57 @@ static bool be300_run_batch(machine_t *m)
                 }
 
                 /*
-                 * Disable interrupts and skip past WAIT directly.
-                 * The warm-boot resume_ctx has Status=0x00008400
-                 * (IE=0), so the OAL restore will keep interrupts
-                 * disabled until the kernel is ready.
+                 * Restore all GPRs and CP0 directly from the
+                 * warm-boot resume_ctx, then jump to RA.
+                 * This bypasses the post-WAIT OAL code entirely
+                 * (vtable init, HW setup, check1/check2) which
+                 * causes interrupt state side effects.
                  */
-                m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &=
-                    ~(uint64_t)0x1u;  /* clear IE */
-                m->cpu->is_halted = false;
-                m->cpu->pc += 4;
-                fprintf(stderr,
-                    "[COLD_BOOT] Warm seed applied at first WAIT,"
-                    " skipping (IE=0)\n");
+                {
+                    const uint8_t *ctx =
+                        wince_hw_seed_resume_ctx_data;
+#define CTX32(off) ((uint32_t)ctx[off] | \
+    ((uint32_t)ctx[(off)+1]<<8) | \
+    ((uint32_t)ctx[(off)+2]<<16) | \
+    ((uint32_t)ctx[(off)+3]<<24))
+                    /* GPR 1-7 */
+                    for (int r = 1; r <= 7; r++)
+                        m->cpu->cd.mips.gpr[r] =
+                            (int32_t)CTX32((r-1)*4);
+                    /* GPR 9-28 (skip t0=8) */
+                    for (int r = 9; r <= 28; r++)
+                        m->cpu->cd.mips.gpr[r] =
+                            (int32_t)CTX32(0x1C + (r-9)*4);
+                    /* SP, FP, RA */
+                    m->cpu->cd.mips.gpr[29] =
+                        (int32_t)CTX32(0x6C);
+                    m->cpu->cd.mips.gpr[30] =
+                        (int32_t)CTX32(0x70);
+                    m->cpu->cd.mips.gpr[31] =
+                        (int32_t)CTX32(0x74);
+                    /* HI, LO */
+                    m->cpu->cd.mips.hi = (int32_t)CTX32(0x78);
+                    m->cpu->cd.mips.lo = (int32_t)CTX32(0x7C);
+                    /* CP0 Status, EPC, Config */
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
+                        CTX32(0xA8);
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] =
+                        CTX32(0xB0);
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_CONFIG] =
+                        CTX32(0xB4);
+                    /* Jump to RA */
+                    uint32_t ra = CTX32(0x74);
+                    m->cpu->pc = (int32_t)ra;
+                    m->cpu->is_halted = false;
+                    fprintf(stderr,
+                        "[COLD_BOOT] Direct warm resume:"
+                        " PC=0x%08X SP=0x%08X"
+                        " Status=0x%08X\n",
+                        ra,
+                        (uint32_t)m->cpu->cd.mips.gpr[29],
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
+#undef CTX32
+                }
 
                 /* Dump decompressed NK.exe binary for analysis */
                 {
