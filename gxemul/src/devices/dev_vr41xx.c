@@ -1065,12 +1065,15 @@ DEVICE_ACCESS(vr41xx)
 			odata = d->msysint1;
 		else {
 			/*
-			 *  Keep ETIMER (bit 3) always unmasked so the
-			 *  ETIME/ECMP compare interrupt can reach the CPU.
-			 *  Linux 2.4 only enables GIU/SIU bits here; without
-			 *  this, the 2.6 ETIME timer never fires.
+			 *  Let the kernel control MSYSINT1 fully.
+			 *  Previously ETIMER (bit 3) was force-enabled
+			 *  for Linux 2.6, but this prevents WinCE from
+			 *  managing its own timer mask — the WinCE
+			 *  interrupt dispatch loop checks SYSINT1 &
+			 *  MSYSINT1 and loops forever if ETIMER is
+			 *  stuck enabled while the timer fires.
 			 */
-			d->msysint1 = idata | (1 << VRIP_INTR_ETIMER);
+			d->msysint1 = idata;
 		}
 		break;
 	case 0x94:
