@@ -272,6 +272,27 @@ the kernel entry at VA 0xA0060004.
 - Falls through to 0x79560 → PMU/DCU/SDRAMU → WAIT
 - Function 0x7AB38 is an OEMInit callback dispatcher: walks 32 entries (20 bytes each) at PA 0xA0051680, calls function pointers via JALR. These callbacks do real WinCE kernel initialization.
 - Running 0x794C8 populates the resume_ctx at PA 0x2200 with real values (SP, GPRs, CP0 Config, etc.)
+- OEMInit callback table at PA 0x51680 remains empty — callbacks are registered by WinCE kernel runtime code, not by the OAL or section copier. Registration likely depends on the ROM boot dispatcher (0x9FC00C21, MIPS16) which we haven't replicated.
+
+**ROMHDR / COPYentry (WinCE image section copier):**
+- NK.exe has "ECEC" signature at offset 0x40, pTOC pointer at offset 0x44 (= 0x80655C54)
+- ROMHDR at pTOC: physfirst=0x80060000, physlast=0x80656AC8, nummods=95, ulRAMStart=0x80660000
+- 1 COPYentry: src=0x800BBA70 dst=0x80660000 copy=1029 total=52852 (kernel .data + .bss)
+- Emulator processes COPYentry at NK.exe entry detection time (PC in PA 0x60000-0x100000 range)
+- On real hardware, the ROM's MIPS16 section copier (0x9FC00C85) does this before NK.exe starts
+- The COPYentry alone does not enable callback registration — additional boot context is needed
+
+**ROM Boot Sequence (steps the emulator skips):**
+The ROM at 0xBFC002F0 runs these steps before entering NK.exe:
+1. CP0 init, HW init (JALR 0x9FC006F0)
+2. Check functions (cold/warm detection)
+3. Cold boot: clear PA 0x2400/24FC, init (JAL 0xFC00734)
+4. Set SP=0x80003800, serial init (JAL 0xFC00498)
+5. BINFS section copier (JALR 0x9FC00C85, MIPS16) — **we replicate this**
+6. Boot dispatcher (JALR 0x9FC00C21, MIPS16) — **NOT replicated** (registers callbacks, NAND driver init)
+7. SIU poke + BCU read loop (JAL 0xFC004E8/0xFC00488)
+8. Load PA 0x24FC, JR to NK.exe entry
+Steps 1-4 are handled by the SPL. Step 5 is our COPYentry code. Step 6 is the missing piece.
 
 **Post-WAIT OAL Init (always taken on both cold and warm boot):**
 - NOP sled → kseg0 switch → check1 (buttons) → check2 (VRC4173)
