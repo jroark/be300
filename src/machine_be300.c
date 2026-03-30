@@ -18,6 +18,7 @@
 #include "ui.h"
 #include "wince_boot.h"
 #include "wince_resume_replay_data.h"
+#include "wince_hw_seed_data.h"
 
 /* GXemul headers */
 #include "interrupt.h"
@@ -1513,25 +1514,27 @@ static bool be300_run_batch(machine_t *m)
                 m->wince.cold_boot_wait_count++;
 
                 /*
-                 * Monitor resume_ctx RA to see if 0x794C8's init
-                 * functions update it.  On real hardware the ROM's
-                 * MIPS16 dispatcher pre-populates resume_ctx RA,
-                 * but since we can't run MIPS16, we need to detect
-                 * when the init loop has done enough work.
+                 * After the first pass through 0x794C8 (OEMInit
+                 * callbacks have run, HW is initialized), inject
+                 * warm-boot seed state: TLB page tables (ctx_tlb
+                 * at PA 0x2000), exception vectors (PA 0x0000),
+                 * and resume_ctx (PA 0x2200 with kernel RA/SP).
+                 * This bridges from cold-boot HW init to a kernel
+                 * state that can enter the WinCE scheduler.
                  */
-                {
-                    unsigned char rabuf[4];
-                    uint32_t cur_ra = 0;
-                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                            0xffffffffa0002274ULL, rabuf, 4,
-                            MEM_READ, CACHE_DATA))
-                        cur_ra = rabuf[0] | (rabuf[1]<<8) |
-                                 (rabuf[2]<<16) | (rabuf[3]<<24);
-                    if (m->wince.cold_boot_wait_count <= 5)
+                if (m->wince.cold_boot_wait_count == 1) {
+                    for (uint32_t si = 0;
+                         si < wince_hw_seed_region_count; si++) {
+                        const wince_pa_seed_region_t *sr =
+                            &wince_hw_seed_regions[si];
+                        store_buf(m->cpu,
+                            0xffffffff80000000ULL | sr->pa,
+                            (const char *)sr->data, sr->size);
                         fprintf(stderr,
-                            "[COLD_BOOT] resume_ctx RA = 0x%08X"
-                            " (cycle %u)\n",
-                            cur_ra, m->wince.cold_boot_wait_count);
+                            "[COLD_BOOT] Injected warm seed %s:"
+                            " PA 0x%06X, %u bytes\n",
+                            sr->name, sr->pa, sr->size);
+                    }
                 }
                 {
                     uint32_t status =
