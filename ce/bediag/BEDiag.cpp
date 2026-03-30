@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "ramdump2"
+#define BEDIAG_BUILD_TAG         "ramdump3"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -261,13 +261,13 @@ static DWORD g_backlog_used = 0;
 static WCHAR g_file_path[BEDIAG_MAX_PATH_LEN];
 static const WCHAR g_breadcrumb_key[] = L"Drivers\\BuiltIn\\BEDiag";
 static const WCHAR *g_primary_file_paths[] = {
-    L"\\Nand Disk\\BEDiag_boot.txt",
-    L"\\Storage Card\\BEDiag_boot.txt"
+    L"\\Storage Card\\BEDiag_boot.txt",
+    L"\\Nand Disk\\BEDiag_boot.txt"
 };
 
 static const WCHAR *g_file_roots[] = {
-    L"\\Nand Disk",
-    L"\\Storage Card"
+    L"\\Storage Card",
+    L"\\Nand Disk"
 };
 
 static void Logf(const char *fmt, ...);
