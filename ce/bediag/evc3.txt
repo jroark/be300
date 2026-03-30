@@ -1,0 +1,45 @@
+Compiling...
+BEDiag.cpp
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1504) : error C2598: linkage specification must be at global scope
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1505) : error C2598: linkage specification must be at global scope
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1526) : error C2143: syntax error : missing ';' before '{'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1526) : warning C4551: function call missing argument list
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1527) : error C2065: 'mfc0' : undeclared identifier
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1527) : error C2146: syntax error : missing ';' before identifier '$8'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1527) : error C2065: '$8' : undeclared identifier
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1528) : error C2065: '$12' : undeclared identifier
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1528) : error C2146: syntax error : missing ';' before identifier 'sw'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1528) : error C2065: 'sw' : undeclared identifier
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1528) : error C2146: syntax error : missing ';' before identifier '$8'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1529) : error C2146: syntax error : missing ';' before identifier 'lui'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1529) : error C2065: 'lui' : undeclared identifier
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1529) : error C2146: syntax error : missing ';' before identifier '$9'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1529) : error C2065: '$9' : undeclared identifier
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1530) : error C2146: syntax error : missing ';' before identifier 'ori'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1530) : error C2065: 'ori' : undeclared identifier
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1530) : error C2146: syntax error : missing ';' before identifier '$9'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1531) : error C2146: syntax error : missing ';' before identifier 'and'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1531) : error C2065: 'and' : undeclared identifier
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1531) : error C2146: syntax error : missing ';' before identifier '$8'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1532) : error C2146: syntax error : missing ';' before identifier 'mtc0'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1532) : error C2065: 'mtc0' : undeclared identifier
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1532) : error C2146: syntax error : missing ';' before identifier '$8'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1534) : error C2146: syntax error : missing ';' before identifier 'nop'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1535) : error C2065: 'nop' : undeclared identifier
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1535) : error C2146: syntax error : missing ';' before identifier 'nop'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1535) : error C2143: syntax error : missing ';' before '}'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1563) : error C2143: syntax error : missing ';' before '{'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1563) : warning C4551: function call missing argument list
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1564) : error C2146: syntax error : missing ';' before identifier '$8'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1565) : error C2146: syntax error : missing ';' before identifier 'sw'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1565) : error C2146: syntax error : missing ';' before identifier '$8'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1566) : error C2146: syntax error : missing ';' before identifier 'ori'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1566) : error C2146: syntax error : missing ';' before identifier '$8'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1567) : error C2146: syntax error : missing ';' before identifier 'mtc0'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1567) : error C2146: syntax error : missing ';' before identifier '$8'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1569) : error C2146: syntax error : missing ';' before identifier 'nop'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1570) : error C2146: syntax error : missing ';' before identifier 'nop'
+C:\Documents and Settings\Administrator\Desktop\bediag\BEDiag.cpp(1570) : error C2143: syntax error : missing ';' before '}'
+Error executing clmips.exe.
+
+bediag.dll - 38 error(s), 2 warning(s)
