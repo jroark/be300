@@ -652,21 +652,10 @@ eret_stubs:
         } else {
             /*
              * Seed the hibernate signature and flags so NK.exe's
-             * pre-WAIT init takes the state-save path.  Without
-             * these, the hibernate check at 0x76E68 fails and
-             * NK.exe skips installing exception handlers, saving
-             * CPU state, and setting up page tables.
-             *
-             * On a real BE-300, the factory process pre-hibernates
-             * with these values set.  A true virgin cold boot never
-             * happens in normal use.
-             */
-            /*
-             * PA 0x2400: NK.exe version marker.  The init code at
-             * 0x76CBC checks PA 0x2400 against 0x03020100.  If it
-             * doesn't match, it clears PA 0x254C (hibernate flags).
-             * NK.exe writes its own version (0x03020101) later, but
-             * the check runs first, so we need the expected value.
+             * pre-WAIT init takes the state-save path.  On real
+             * hardware the ROM dispatcher populates these before
+             * NK.exe runs; without them resume_ctx stays zeroed
+             * and post-WAIT JR $ra crashes at address 0.
              */
             store_32bit_word(m->cpu, 0xffffffffa0002400ULL,
                 UINT32_C(0x03020100));
@@ -1172,20 +1161,21 @@ static bool be300_run_batch(machine_t *m)
                     store_32bit_word(m->cpu, base + 0x70,
                         (uint32_t)m->cpu->cd.mips.gpr[30]);
                     /*
-                     * RA: set to 0x800794C8 (cold boot continuation)
-                     * instead of the live RA (0xA0079560 = suspend path).
+                     * RA: set to 0x80079624 — the JAL 0x79DF8
+                     * instruction followed by J 0x794C8.
                      *
-                     * 0x794C8 is the code that runs after cold boot init
-                     * at 0x79DF8.  It calls 6+ init functions, flushes
-                     * the data cache, sets up more hardware, then falls
-                     * through to the suspend/WAIT sequence.  These init
-                     * functions may populate the resume_ctx table with
-                     * proper post-init state, so the SECOND OAL restore
-                     * after WAIT will have the right context to enter
-                     * the WinCE kernel.
+                     * 0x79DF8 is the cold boot init function that
+                     * the post-WAIT check code can never reach due
+                     * to a $t0 clobber bug (check1 sets $t0 to the
+                     * button register base address 0xAA00A000, and
+                     * the BNE $t0,$zero after check2 is always taken).
+                     * On real hardware, the ROM dispatcher must set
+                     * resume_ctx RA so this function gets called.
+                     * After 0x79DF8 returns, J 0x794C8 runs the
+                     * cold boot continuation (OEMInit callbacks etc).
                      */
                     store_32bit_word(m->cpu, base + 0x74,
-                        UINT32_C(0x800794C8));
+                        UINT32_C(0x80079624));
                     /* HI, LO */
                     store_32bit_word(m->cpu, base + 0x78,
                         (uint32_t)m->cpu->cd.mips.hi);
