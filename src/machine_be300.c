@@ -1249,10 +1249,11 @@ static bool be300_run_batch(machine_t *m)
                  * Inject ROM boot dispatcher data (step 6 replacement).
                  * The ROM's MIPS16 dispatcher at 0x9FC00C21 populates
                  * these structures before NK.exe runs.  Since GXemul
-                 * can't execute MIPS16, inject the captured warm-boot
-                 * values directly: callback table at PA 0x51680,
-                 * bootctx stub at PA 0x63D0, dispatch tables at
-                 * PA 0x660080/660170/660310, etc.
+                 * can't execute MIPS16, inject the captured values
+                 * directly.  Only inject ROM-dispatcher regions (callback
+                 * table, bootctx stub, dispatch tables), NOT warm-resume
+                 * regions (resume_context, stack_frame) which would
+                 * corrupt cold-boot state.
                  */
                 {
                     const size_t nregions = sizeof(wince_resume_replay_regions)
@@ -1260,6 +1261,10 @@ static bool be300_run_batch(machine_t *m)
                     for (size_t ri = 0; ri < nregions; ri++) {
                         const wince_resume_region_t *reg =
                             &wince_resume_replay_regions[ri];
+                        /* Skip warm-resume-specific regions */
+                        if (strstr(reg->name, "resume_context") ||
+                            strstr(reg->name, "stack_frame"))
+                            continue;
                         uint32_t words_written = 0;
                         for (uint32_t wi = 0; wi < reg->word_count; wi++) {
                             if (reg->valid_words[wi]) {
@@ -1500,6 +1505,34 @@ static bool be300_run_batch(machine_t *m)
                  * interrupt mechanism.
                  */
                 m->wince.cold_boot_wait_count++;
+
+                /*
+                 * After the first pass through 0x794C8 (cold boot
+                 * continuation), the OEMInit callbacks have run.
+                 * Update resume_ctx RA to the warm-resume kernel
+                 * entry (from the replay snapshot's synthetic_ra)
+                 * so the next OAL restore enters the kernel proper
+                 * instead of looping back through 0x794C8.
+                 *
+                 * On real hardware, the ROM's MIPS16 dispatcher
+                 * populates resume_ctx with the proper RA before
+                 * NK.exe starts.  Since the post-WAIT check1/check2
+                 * always branches to 0x79634 (warm path) due to a
+                 * $t0 clobber bug, 0x79DF8 is dead code — the device
+                 * relies on resume_ctx being pre-populated.
+                 */
+                if (m->wince.cold_boot_wait_count == 1) {
+                    uint32_t kernel_ra =
+                        wince_resume_replay_snapshot.synthetic_ra;
+                    if (kernel_ra != 0) {
+                        store_32bit_word(m->cpu,
+                            0xffffffffa0002274ULL, kernel_ra);
+                        fprintf(stderr,
+                            "[COLD_BOOT] Updated resume_ctx RA:"
+                            " 0x800794C8 → 0x%08X (kernel entry)\n",
+                            kernel_ra);
+                    }
+                }
                 {
                     uint32_t status =
                         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
