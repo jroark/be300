@@ -951,6 +951,112 @@ static bool be300_run_batch(machine_t *m)
                     wait_pc, norm, m->cpu->pc);
 
                 /*
+                 * Process WinCE ROMHDR COPYentry table.
+                 *
+                 * The decompressed NK.exe has an "ECEC" signature at
+                 * offset 0x40 followed by a pTOC pointer.  The ROMHDR
+                 * at pTOC contains ulCopyEntries/ulCopyOffset that
+                 * describe data sections to copy from within the image
+                 * to their runtime addresses.  On real hardware, the
+                 * ROM's MIPS16 function at 0x9FC00C85 does this copy.
+                 * We skip the ROM boot code, so we do it here.
+                 *
+                 * Without this copy, the kernel's initialized data
+                 * section (globals, vtables) at PA 0x660000 is all
+                 * zeros, causing the kernel startup to silently fail.
+                 */
+                {
+                    unsigned char buf[4];
+                    uint64_t ptoc_va;
+                    uint32_t ptoc, copy_entries, copy_offset;
+
+                    /* Read pTOC from NK.exe offset 0x44 */
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            0xffffffff80060044ULL, buf, 4,
+                            MEM_READ, CACHE_DATA)) {
+                        ptoc = buf[0] | (buf[1]<<8) |
+                               (buf[2]<<16) | (buf[3]<<24);
+                    } else {
+                        ptoc = 0;
+                    }
+
+                    if (ptoc != 0) {
+                        ptoc_va = 0xffffffff00000000ULL |
+                                  (uint64_t)(int32_t)ptoc;
+
+                        /* Read ulCopyEntries (offset 32) and
+                           ulCopyOffset (offset 36) from ROMHDR */
+                        m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            ptoc_va + 32, buf, 4,
+                            MEM_READ, CACHE_DATA);
+                        copy_entries = buf[0] | (buf[1]<<8) |
+                                       (buf[2]<<16) | (buf[3]<<24);
+
+                        m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            ptoc_va + 36, buf, 4,
+                            MEM_READ, CACHE_DATA);
+                        copy_offset = buf[0] | (buf[1]<<8) |
+                                      (buf[2]<<16) | (buf[3]<<24);
+
+                        fprintf(stderr, "[COLD_BOOT] ROMHDR pTOC"
+                            "=0x%08X copyEntries=%u copyOffset"
+                            "=0x%08X\n",
+                            ptoc, copy_entries, copy_offset);
+
+                        /* Process each COPYentry (16 bytes each) */
+                        for (uint32_t ci = 0; ci < copy_entries && ci < 64;
+                             ci++) {
+                            uint64_t entry_va =
+                                0xffffffff00000000ULL |
+                                (uint64_t)(int32_t)(copy_offset + ci * 16);
+                            uint32_t fields[4];
+                            for (int fi = 0; fi < 4; fi++) {
+                                m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    entry_va + fi * 4, buf, 4,
+                                    MEM_READ, CACHE_DATA);
+                                fields[fi] = buf[0] | (buf[1]<<8) |
+                                             (buf[2]<<16) | (buf[3]<<24);
+                            }
+                            uint32_t src = fields[0];
+                            uint32_t dst = fields[1];
+                            uint32_t cpylen = fields[2];
+                            uint32_t dstlen = fields[3];
+
+                            fprintf(stderr,
+                                "[COLD_BOOT] COPYentry[%u]:"
+                                " src=0x%08X dst=0x%08X"
+                                " copy=%u total=%u\n",
+                                ci, src, dst, cpylen, dstlen);
+
+                            /* Copy data from src to dst */
+                            uint64_t src_va = 0xffffffff00000000ULL |
+                                              (uint64_t)(int32_t)src;
+                            uint64_t dst_va = 0xffffffff00000000ULL |
+                                              (uint64_t)(int32_t)dst;
+                            for (uint32_t off = 0; off < cpylen;
+                                 off += 4) {
+                                uint32_t chunk = cpylen - off;
+                                if (chunk > 4) chunk = 4;
+                                uint8_t tmp[4] = {0};
+                                m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    src_va + off, tmp, chunk,
+                                    MEM_READ, CACHE_DATA);
+                                uint32_t w = tmp[0] | (tmp[1]<<8) |
+                                             (tmp[2]<<16) | (tmp[3]<<24);
+                                store_32bit_word(m->cpu,
+                                    dst_va + off, w);
+                            }
+                            /* Zero-fill remainder */
+                            for (uint32_t off = cpylen; off < dstlen;
+                                 off += 4) {
+                                store_32bit_word(m->cpu,
+                                    dst_va + off, 0);
+                            }
+                        }
+                    }
+                }
+
+                /*
                  * Save live CPU state to the resume_ctx table at
                  * PA 0x2200 so the OAL GPR/CP0 restore at 0x79668
                  * gets valid values instead of zeros.
@@ -1077,6 +1183,42 @@ static bool be300_run_batch(machine_t *m)
                         fprintf(stderr,
                             "[COLD_BOOT] Dumped NK.exe (%u bytes)"
                             " to nk_decompressed.bin\n", off);
+                    }
+                }
+
+                /* Dump OEMInit callback table at PA 0x51680 */
+                fprintf(stderr, "[COLD_BOOT] OEMInit callback table"
+                    " (PA 0x51680, 32 entries × 20 bytes):\n");
+                for (int i = 0; i < 32; i++) {
+                    unsigned char buf[20];
+                    uint64_t va = 0xffffffffa0051680ULL + i * 20;
+                    int ok = 1;
+                    for (int b = 0; b < 20 && ok; b += 4)
+                        if (!m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                va + b, buf + b, 4, MEM_READ, CACHE_DATA))
+                            ok = 0;
+                    if (!ok) continue;
+                    uint32_t w[5];
+                    for (int j = 0; j < 5; j++)
+                        w[j] = buf[j*4] | (buf[j*4+1]<<8) |
+                                (buf[j*4+2]<<16) | (buf[j*4+3]<<24);
+                    /* Entry format: offset 4 = function pointer */
+                    if (w[1] != 0)
+                        fprintf(stderr, "[COLD_BOOT]   [%2d]"
+                            " %08X %08X %08X %08X %08X\n",
+                            i, w[0], w[1], w[2], w[3], w[4]);
+                }
+
+                /* Dump PA 0x24FC (kernel jump target used by ROM) */
+                {
+                    unsigned char buf[4];
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            0xffffffffa00024fcULL, buf, 4,
+                            MEM_READ, CACHE_DATA)) {
+                        uint32_t w = buf[0] | (buf[1]<<8) |
+                                     (buf[2]<<16) | (buf[3]<<24);
+                        fprintf(stderr, "[COLD_BOOT] PA 0x24FC"
+                            " (ROM kernel jump target): %08X\n", w);
                     }
                 }
 
