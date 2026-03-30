@@ -1493,6 +1493,110 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
         LogStage("snapshot_5s_done", NULL);
     }
 
+    /* Full 16MB SDRAM dump to storage card (raw binary) */
+    if (!driver->stop_requested) {
+        static const WCHAR *ram_dump_paths[] = {
+            L"\\Storage Card\\be300_ram.bin",
+            L"\\Nand Disk\\be300_ram.bin"
+        };
+        HANDLE hRam;
+        int ri;
+
+        BeginSection("RAM DUMP");
+        Logf("tick_ms=%lu\r\n", GetTickCount());
+
+        hRam = INVALID_HANDLE_VALUE;
+        for (ri = 0; ri < 2 && hRam == INVALID_HANDLE_VALUE; ri++) {
+            hRam = CreateFile(ram_dump_paths[ri],
+                              GENERIC_WRITE, 0, NULL,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        }
+
+        if (hRam != INVALID_HANDLE_VALUE) {
+            DWORD pa;
+            DWORD pages_ok = 0, pages_fail = 0;
+            DWORD start_tick = GetTickCount();
+            DWORD ram_size = 16u * 1024u * 1024u;
+            BYTE page_buf[0x1000];
+
+            Logf("path=%S size=%lu\r\n",
+                 ram_dump_paths[ri - 1], ram_size);
+
+            for (pa = 0; pa < ram_size; pa += 0x1000u) {
+                DWORD written;
+                BOOL page_ok;
+
+                page_ok = ReadPhysicalBytes(pa, page_buf, 0x1000u);
+                if (page_ok)
+                    pages_ok++;
+                else {
+                    memset(page_buf, 0xFF, 0x1000u);
+                    pages_fail++;
+                }
+                WriteFile(hRam, page_buf, 0x1000u, &written, NULL);
+
+                if ((pa & 0xFFFFFu) == 0 && pa != 0) {
+                    Logf("[RAMDUMP] %u MB / %u MB  ok=%u fail=%u\r\n",
+                         pa >> 20, ram_size >> 20,
+                         pages_ok, pages_fail);
+                }
+
+                if (driver->stop_requested)
+                    break;
+            }
+
+            CloseHandle(hRam);
+            Logf("[RAMDUMP] done: ok=%u fail=%u elapsed=%lu ms\r\n",
+                 pages_ok, pages_fail,
+                 GetTickCount() - start_tick);
+        } else {
+            Logf("[RAMDUMP] ERROR: cannot create output file\r\n");
+        }
+
+        /* Also dump TLB + CP0 to a separate text file */
+        {
+            static const WCHAR *state_paths[] = {
+                L"\\Storage Card\\be300_state.txt",
+                L"\\Nand Disk\\be300_state.txt"
+            };
+            HANDLE hState;
+            int si;
+
+            hState = INVALID_HANDLE_VALUE;
+            for (si = 0; si < 2 && hState == INVALID_HANDLE_VALUE; si++) {
+                hState = CreateFile(state_paths[si],
+                                    GENERIC_WRITE, 0, NULL,
+                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            }
+
+            if (hState != INVALID_HANDLE_VALUE) {
+                char sbuf[256];
+                DWORD sn, sw;
+
+                sn = (DWORD)_snprintf(sbuf, sizeof(sbuf),
+                    "BE-300 State Dump tick_ms=%lu\r\n\r\n",
+                    GetTickCount());
+                WriteFile(hState, sbuf, sn, &sw, NULL);
+
+                /* Dump 32 TLB entries using ReadPhysicalBytes on the
+                   already-captured TLB data from PHASE_INIT, or just
+                   emit the snapshot we already have in the text log.
+                   For simplicity, note that the full TLB was already
+                   emitted during the SNAPSHOT INIT phase above. */
+                sn = (DWORD)_snprintf(sbuf, sizeof(sbuf),
+                    "TLB and CP0 state captured in main log file.\r\n"
+                    "RAM dump: %S\r\n",
+                    ram_dump_paths[ri > 0 ? ri - 1 : 0]);
+                WriteFile(hState, sbuf, sn, &sw, NULL);
+                CloseHandle(hState);
+                Logf("[STATEDUMP] done: %S\r\n",
+                     state_paths[si > 0 ? si - 1 : 0]);
+            }
+        }
+
+        LogStage("ram_dump_done", NULL);
+    }
+
     BeginSection("DRIVER STATE");
     LogDriverState();
 
