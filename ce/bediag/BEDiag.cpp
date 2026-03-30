@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "ramdump8"
+#define BEDIAG_BUILD_TAG         "ramdump9"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -1517,15 +1517,25 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
             for (pa = 0; pa < 0x01000000u; pa += 0x1000u) {
                 DWORD written;
                 BOOL page_ok = FALSE;
-                volatile BYTE *src = (volatile BYTE *)(0x80000000u + pa);
 
-                __try {
-                    DWORD i;
-                    for (i = 0; i < 0x1000u; i++)
-                        page_buf[i] = src[i];
-                    page_ok = TRUE;
-                } __except (EXCEPTION_EXECUTE_HANDLER) {
-                    page_ok = FALSE;
+                /* Log every page and flush BEFORE the read, so if
+                   the CPU hangs we know which page caused it */
+                if (pa < 0x30000u || (pa & 0xFFFFFu) == 0) {
+                    Logf("[RAMDUMP] reading PA 0x%08lX\r\n", pa);
+                    FlushSinks();
+                }
+
+                {
+                    volatile DWORD *src = (volatile DWORD *)(0x80000000u + pa);
+                    __try {
+                        DWORD i;
+                        DWORD *dst = (DWORD *)page_buf;
+                        for (i = 0; i < 0x400u; i++)
+                            dst[i] = src[i];
+                        page_ok = TRUE;
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        page_ok = FALSE;
+                    }
                 }
 
                 if (page_ok) {
@@ -1535,12 +1545,6 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
                     pages_fail++;
                 }
                 WriteFile(hRam, page_buf, 0x1000u, &written, NULL);
-
-                if ((pa & 0xFFFFFu) == 0 && pa != 0) {
-                    Logf("[RAMDUMP] %u MB / 16 MB  ok=%u fail=%u\r\n",
-                         pa >> 20, pages_ok, pages_fail);
-                    FlushSinks();
-                }
             }
 
             CloseHandle(hRam);
