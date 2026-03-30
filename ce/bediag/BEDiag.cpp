@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "ramdump5"
+#define BEDIAG_BUILD_TAG         "ramdump6"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -1424,6 +1424,38 @@ static BOOL StartBEDiagWorker(void)
     return TRUE;
 }
 
+/* --- RAM dump helper: reads one 4KB page with timeout --- */
+
+typedef struct {
+    DWORD pa;
+    BYTE *buf;
+    BOOL ok;
+} ramdump_page_ctx_t;
+
+static DWORD WINAPI RamDumpPageThread(LPVOID arg)
+{
+    ramdump_page_ctx_t *ctx = (ramdump_page_ctx_t *)arg;
+    BYTE *vptr;
+
+    ctx->ok = FALSE;
+    vptr = (BYTE *)VirtualAlloc(0, 0x1000, MEM_RESERVE, PAGE_NOACCESS);
+    if (!vptr)
+        return 1;
+    if (!VirtualCopy(vptr, (LPVOID)(ctx->pa >> 8), 0x1000,
+                     PAGE_READONLY | PAGE_NOCACHE | PAGE_PHYSICAL)) {
+        VirtualFree(vptr, 0, MEM_RELEASE);
+        return 1;
+    }
+    __try {
+        memcpy(ctx->buf, vptr, 0x1000u);
+        ctx->ok = TRUE;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        ctx->ok = FALSE;
+    }
+    VirtualFree(vptr, 0, MEM_RELEASE);
+    return 0;
+}
+
 static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 {
     bediag_driver_t *driver;
@@ -1461,7 +1493,7 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 
         if (hRam != INVALID_HANDLE_VALUE) {
             DWORD pa;
-            DWORD pages_ok = 0, pages_fail = 0;
+            DWORD pages_ok = 0, pages_fail = 0, pages_timeout = 0;
             DWORD start_tick = GetTickCount();
             BYTE page_buf[0x1000];
 
@@ -1470,28 +1502,44 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 
             for (pa = 0; pa < 0x01000000u; pa += 0x1000u) {
                 DWORD written;
-                BOOL page_ok;
+                ramdump_page_ctx_t ctx;
+                HANDLE hThread;
+                DWORD wait_result;
 
-                page_ok = ReadPhysicalBytes(pa, page_buf, 0x1000u);
-                if (page_ok)
+                ctx.pa = pa;
+                ctx.buf = page_buf;
+                ctx.ok = FALSE;
+
+                hThread = CreateThread(NULL, 0, RamDumpPageThread,
+                                       &ctx, 0, NULL);
+                if (hThread) {
+                    wait_result = WaitForSingleObject(hThread, 500);
+                    if (wait_result == WAIT_TIMEOUT) {
+                        TerminateThread(hThread, 1);
+                        ctx.ok = FALSE;
+                        pages_timeout++;
+                    }
+                    CloseHandle(hThread);
+                }
+
+                if (ctx.ok) {
                     pages_ok++;
-                else {
+                } else {
                     memset(page_buf, 0xFF, 0x1000u);
                     pages_fail++;
                 }
                 WriteFile(hRam, page_buf, 0x1000u, &written, NULL);
 
                 if ((pa & 0xFFFFFu) == 0 && pa != 0) {
-                    Logf("[RAMDUMP] %u MB / 16 MB  ok=%u fail=%u\r\n",
-                         pa >> 20, pages_ok, pages_fail);
+                    Logf("[RAMDUMP] %u MB / 16 MB  ok=%u fail=%u timeout=%u\r\n",
+                         pa >> 20, pages_ok, pages_fail, pages_timeout);
                     FlushSinks();
                 }
-                /* Do NOT check stop_requested — complete the dump */
             }
 
             CloseHandle(hRam);
-            Logf("[RAMDUMP] done: ok=%u fail=%u last_pa=0x%08lX elapsed=%lu ms\r\n",
-                 pages_ok, pages_fail, pa,
+            Logf("[RAMDUMP] done: ok=%u fail=%u timeout=%u last_pa=0x%08lX elapsed=%lu ms\r\n",
+                 pages_ok, pages_fail, pages_timeout, pa,
                  GetTickCount() - start_tick);
             FlushSinks();
         } else {
