@@ -84,12 +84,10 @@ void icu_write(icu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case ICU_BCUINTREG:   s->bcuint   &= (uint16_t)~val; break;
     /* Mask registers: write directly */
     case ICU_MSYSINT1REG:
-        /*
-         * Keep ETIME (bit3) unmasked to guarantee RTC elapsed-time ticks
-         * reach the CPU across kernel variants (2.4 trees often program
-         * only GIU/SIU bits here and otherwise stall in early boot loops).
-         */
-        s->msysint1 = (uint16_t)(val | ICU_SRC1_ETIME);
+        /* Let the kernel control MSYSINT1 fully.  The forced ETIME
+         * bit prevented WinCE from masking the timer interrupt,
+         * causing its interrupt dispatch loop to spin forever. */
+        s->msysint1 = (uint16_t)val;
         break;
     case ICU_MPIUINTREG:  s->mpiuint  = (uint16_t)val; break;
     case ICU_MKIUINTREG:  s->mkiuint  = (uint16_t)val; break;
