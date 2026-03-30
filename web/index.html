@@ -17,6 +17,7 @@
           <option value="vmlinux-pgui-demo">vmlinux-pgui-demo</option>
           <option value="vmlinux-mw">vmlinux-mw</option>
           <option value="vmlinux-2.6">vmlinux-2.6</option>
+          <option value="vmlinux-4.2.9">vmlinux-4.2.9</option>
           <option value="custom-upload">Custom upload</option>
         </select>
       </label>
@@ -40,8 +41,8 @@
           <input id="sdramMb" type="number" min="1" max="64" step="1" value="16">
         </label>
         <label class="field">
-          <span>Speed (MHz)</span>
-          <input id="speedMhz" type="number" min="0" step="1" value="15">
+          <span>Speed <output id="speedValue">10</output></span>
+          <input id="speedSlider" type="range" min="1" max="100" step="1" value="10">
         </label>
         <label class="field checkbox-field">
           <span>sfb-5bit-green</span>
@@ -90,6 +91,6 @@
     </section>
   </main>
 
-  <script type="module" src="./app.js?v=20260328e"></script>
+  <script type="module" src="./app.js?v=20260329a"></script>
 </body>
 </html>
