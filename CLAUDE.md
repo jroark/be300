@@ -109,8 +109,29 @@ Push with: `git push -u origin <current branch>`
 - ROM does: CP0 init, SDRAM timing, clock setup, NAND read, SPL load
 - BEV TLB refill vector (+0x200) is all 0xFF (no handler — ROM uses kseg0/kseg1)
 - BEV general exception (+0x380) overlaps with boot code, not a real handler
-- ROM has callable subroutines (NAND read at 0x9FC00C85, etc.) that NK.exe may use
-- **ROM uses MIPS16 code**: BEV exception handler at +0x380 does JALR to 0x9FC00C85 (bit 0 = MIPS16 mode switch). VR4131 supports MIPS16, GXemul does not. Must use BEV=0 with synthetic handlers instead of ROM BEV vectors.
+- **ROM uses MIPS16 code** — ~5.5KB of MIPS16 at offsets 0xC20-0x219B (34 functions)
+- BEV exception handler at +0x380 does JALR to 0x9FC00C85 (bit 0 = MIPS16 mode switch)
+- MIPS16 functions use JALX (jump-and-link-exchange) to call back into MIPS32 ROM helpers, creating a cross-mode call graph
+- NK.exe is 100% MIPS32 — no MIPS16 anywhere in the 6.2MB kernel
+- Full MIPS16 disassembly saved in `build-host/rom_mips16_disasm.txt` (use `-m mips:16` flag with objdump)
+
+**Boot ROM Layout:**
+```
+0x0000-0x00FF: Reset vector, exception stubs (256 B, MIPS32)
+0x0100-0x0C1F: Initialization/setup code (~2.8 KB, MIPS32)
+0x0C20-0x219B: MIPS16 function library (~5.5 KB, 34 functions)
+0x219C-0x224F: Function metadata + address table (34 entries at 0x21C0)
+0x2250-0x3FFF: Unused padding (~7.6 KB, 0xFF fill — available for MIPS32 rewrites)
+```
+
+**MIPS32 ROM helpers called from MIPS16 via JALX:**
+- 0x9FC00464: unknown helper
+- 0x9FC00834: memcpy-like
+- 0x9FC00888: memset-like
+- 0x9FC00980: context save
+- 0x9FC009BC: context helper
+- 0x9FC00BC0: another helper
+- 0x9FC00C04: trampoline (MIPS32 at 0xC00-0xC1C pops s0,s1,a0 from stack, JR a0)
 
 **Things to note**
 - originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
