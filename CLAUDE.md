@@ -107,8 +107,9 @@ Push with: `git push -u origin <current branch>`
 - Dumped from real hardware: `hardware_survey/be300_boot_rom.bin`
 - Reset vector: NOP → LUI/ORI/JR to 0xBFC002F0 (main boot code)
 - ROM does: CP0 init, SDRAM timing, clock setup, NAND read, SPL load
-- BEV TLB refill vector (+0x200) is all 0xFF (no handler — ROM uses kseg0/kseg1)
-- BEV general exception (+0x380) overlaps with boot code, not a real handler
+- BEV TLB refill vector (+0x200) is all 0xFF in the original ROM (no handler)
+- BEV general exception (+0x380) is boot code continuation (section copier + dispatcher), NOT a real exception handler — it just happens to overlap the BEV vector address
+- **Emulator patches ROM at load time** with MIPS32 BEV handlers: TLB refill at +0x200, general exception dispatcher at +0x280 (checks ExcCode), EXL check at +0x384 to distinguish exception vs boot flow, boot code relocated to +0x394
 - **ROM uses MIPS16 code** — ~5.5KB of MIPS16 at offsets 0xC20-0x219B (34 functions)
 - BEV exception handler at +0x380 does JALR to 0x9FC00C85 (bit 0 = MIPS16 mode switch)
 - MIPS16 functions use JALX (jump-and-link-exchange) to call back into MIPS32 ROM helpers, creating a cross-mode call graph
@@ -132,6 +133,9 @@ Push with: `git push -u origin <current branch>`
 - 0x9FC009BC: context helper
 - 0x9FC00BC0: another helper
 - 0x9FC00C04: trampoline (MIPS32 at 0xC00-0xC1C pops s0,s1,a0 from stack, JR a0)
+
+**MIPS16 workaround approach:**
+Rather than adding MIPS16 support to GXemul (would require ~3K LOC of architectural changes to the dyntrans JIT — fixed 4-byte IC entries, no ISA mode tracking, no PC bit 0 handling) or translating all 34 MIPS16 functions, the emulator patches the ROM's BEV vectors at load time with purpose-built MIPS32 exception handlers. The MIPS16 function library in the ROM is never executed. objdump flag for MIPS16 disassembly: `-m mips:16` (not `-m mips:isa16`)
 
 **Things to note**
 - originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
