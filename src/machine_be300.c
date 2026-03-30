@@ -1536,6 +1536,17 @@ static bool be300_run_batch(machine_t *m)
                             sr->name, sr->pa, sr->size);
                     }
                     /*
+                     * Clear the software interrupt pending flag at
+                     * PA 0x66BFF0 (VA 0x8066BFF0).  This flag was
+                     * set by timer ISR entries during the first
+                     * cold-boot pass through 0x794C8.  The warm-boot
+                     * interrupt dispatch loop at 0x800A78EC reads
+                     * this flag and loops if non-zero.
+                     */
+                    store_32bit_word(m->cpu,
+                        0xffffffff8066BFF0ULL, 0);
+
+                    /*
                      * After warm-boot seed injection, skip past WAIT
                      * directly WITHOUT enabling timer interrupts.
                      * The post-WAIT OAL code will restore Status from
