@@ -14,7 +14,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "ramdump6"
+#define BEDIAG_BUILD_TAG         "ramdump7"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -1492,8 +1492,14 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
         if (hRam != INVALID_HANDLE_VALUE) {
+            /*
+             * Direct memory read via kseg1 (uncached, VA 0xA0000000+).
+             * This bypasses VirtualCopy entirely — kseg1 is always
+             * mapped to physical memory on MIPS without TLB.
+             * Much faster and no hanging.
+             */
             DWORD pa;
-            DWORD pages_ok = 0, pages_fail = 0, pages_timeout = 0;
+            DWORD pages_ok = 0, pages_fail = 0;
             DWORD start_tick = GetTickCount();
             BYTE page_buf[0x1000];
 
@@ -1502,27 +1508,19 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
 
             for (pa = 0; pa < 0x01000000u; pa += 0x1000u) {
                 DWORD written;
-                ramdump_page_ctx_t ctx;
-                HANDLE hThread;
-                DWORD wait_result;
+                BOOL page_ok = FALSE;
+                volatile BYTE *src = (volatile BYTE *)(0xA0000000u + pa);
 
-                ctx.pa = pa;
-                ctx.buf = page_buf;
-                ctx.ok = FALSE;
-
-                hThread = CreateThread(NULL, 0, RamDumpPageThread,
-                                       &ctx, 0, NULL);
-                if (hThread) {
-                    wait_result = WaitForSingleObject(hThread, 500);
-                    if (wait_result == WAIT_TIMEOUT) {
-                        TerminateThread(hThread, 1);
-                        ctx.ok = FALSE;
-                        pages_timeout++;
-                    }
-                    CloseHandle(hThread);
+                __try {
+                    DWORD i;
+                    for (i = 0; i < 0x1000u; i++)
+                        page_buf[i] = src[i];
+                    page_ok = TRUE;
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    page_ok = FALSE;
                 }
 
-                if (ctx.ok) {
+                if (page_ok) {
                     pages_ok++;
                 } else {
                     memset(page_buf, 0xFF, 0x1000u);
@@ -1531,15 +1529,15 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
                 WriteFile(hRam, page_buf, 0x1000u, &written, NULL);
 
                 if ((pa & 0xFFFFFu) == 0 && pa != 0) {
-                    Logf("[RAMDUMP] %u MB / 16 MB  ok=%u fail=%u timeout=%u\r\n",
-                         pa >> 20, pages_ok, pages_fail, pages_timeout);
+                    Logf("[RAMDUMP] %u MB / 16 MB  ok=%u fail=%u\r\n",
+                         pa >> 20, pages_ok, pages_fail);
                     FlushSinks();
                 }
             }
 
             CloseHandle(hRam);
-            Logf("[RAMDUMP] done: ok=%u fail=%u timeout=%u last_pa=0x%08lX elapsed=%lu ms\r\n",
-                 pages_ok, pages_fail, pages_timeout, pa,
+            Logf("[RAMDUMP] done: ok=%u fail=%u last_pa=0x%08lX elapsed=%lu ms\r\n",
+                 pages_ok, pages_fail, pa,
                  GetTickCount() - start_tick);
             FlushSinks();
         } else {
