@@ -90,7 +90,32 @@ DEVICE_ACCESS(be300_vrc4173)
 
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
-        memcpy(&d->bytes[off], data, len);
+
+        /*
+         * VRC4173 interrupt status registers use write-1-to-clear:
+         * writing a 1-bit clears that bit.  Without this, the WinCE
+         * interrupt dispatch loop writes 1 to clear interrupt sources
+         * but the latch keeps returning 1 on subsequent reads.
+         *
+         * W1C registers (offsets from VRC4173 base 0x0A000000):
+         *   0x060  SYSINT1REG — aggregate interrupt status (R on real HW,
+         *          but W1C here lets software explicitly clear bits)
+         *   0x062-0x06A  Level-2 status registers (PIU, AIU, KIU, GIU)
+         *   0x1120 GIU interrupt status / clear
+         *   0x112C GIU interrupt status / clear
+         *   0x1B00 INTSTAT1 (primary interrupt status)
+         *   0x1B10 INTSTAT1 secondary read
+         *   0x1B20 INTMASK1 / interrupt acknowledge
+         */
+        if ((off >= 0x060 && off < 0x078) ||
+            (off >= 0x1100 && off < 0x1140) ||
+            (off >= 0x1B00 && off < 0x1B30)) {
+            /* W1C: clear bits that are written as 1 */
+            for (size_t i = 0; i < len && (off + i) < VRC4173_LATCH_SIZE; i++)
+                d->bytes[off + i] &= ~data[i];
+        } else {
+            memcpy(&d->bytes[off], data, len);
+        }
         wince_boot_note_mmio_access(cpu, VRC4173_LATCH_BASE + off,
             writeflag, val, len);
         if (d->log_mmio)
