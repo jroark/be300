@@ -1507,31 +1507,25 @@ static bool be300_run_batch(machine_t *m)
                 m->wince.cold_boot_wait_count++;
 
                 /*
-                 * After the first pass through 0x794C8 (cold boot
-                 * continuation), the OEMInit callbacks have run.
-                 * Update resume_ctx RA to the warm-resume kernel
-                 * entry (from the replay snapshot's synthetic_ra)
-                 * so the next OAL restore enters the kernel proper
-                 * instead of looping back through 0x794C8.
-                 *
-                 * On real hardware, the ROM's MIPS16 dispatcher
-                 * populates resume_ctx with the proper RA before
-                 * NK.exe starts.  Since the post-WAIT check1/check2
-                 * always branches to 0x79634 (warm path) due to a
-                 * $t0 clobber bug, 0x79DF8 is dead code — the device
-                 * relies on resume_ctx being pre-populated.
+                 * Monitor resume_ctx RA to see if 0x794C8's init
+                 * functions update it.  On real hardware the ROM's
+                 * MIPS16 dispatcher pre-populates resume_ctx RA,
+                 * but since we can't run MIPS16, we need to detect
+                 * when the init loop has done enough work.
                  */
-                if (m->wince.cold_boot_wait_count == 1) {
-                    uint32_t kernel_ra =
-                        wince_resume_replay_snapshot.synthetic_ra;
-                    if (kernel_ra != 0) {
-                        store_32bit_word(m->cpu,
-                            0xffffffffa0002274ULL, kernel_ra);
+                {
+                    unsigned char rabuf[4];
+                    uint32_t cur_ra = 0;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            0xffffffffa0002274ULL, rabuf, 4,
+                            MEM_READ, CACHE_DATA))
+                        cur_ra = rabuf[0] | (rabuf[1]<<8) |
+                                 (rabuf[2]<<16) | (rabuf[3]<<24);
+                    if (m->wince.cold_boot_wait_count <= 5)
                         fprintf(stderr,
-                            "[COLD_BOOT] Updated resume_ctx RA:"
-                            " 0x800794C8 → 0x%08X (kernel entry)\n",
-                            kernel_ra);
-                    }
+                            "[COLD_BOOT] resume_ctx RA = 0x%08X"
+                            " (cycle %u)\n",
+                            cur_ra, m->wince.cold_boot_wait_count);
                 }
                 {
                     uint32_t status =
