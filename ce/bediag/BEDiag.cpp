@@ -5,6 +5,8 @@
 //#include <wchar.h>
 
 extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
+extern "C" BOOL SetKMode(BOOL);
+extern "C" DWORD SetProcPermissions(DWORD);
 
 #ifndef PAGE_PHYSICAL
 #define PAGE_PHYSICAL 0x40000000
@@ -14,7 +16,7 @@ extern "C" BOOL VirtualCopy(LPVOID, LPVOID, DWORD, DWORD);
 #define PAGE_NOCACHE 0x0200
 #endif
 
-#define BEDIAG_BUILD_TAG         "ramdumpA"
+#define BEDIAG_BUILD_TAG         "ramdumpB"
 #define BEDIAG_MAX_REGION_SIZE   0x1000
 #define BEDIAG_MAX_PATH_LEN      260
 #define BEDIAG_BACKLOG_SIZE      0x80000
@@ -1501,72 +1503,66 @@ static DWORD WINAPI BEDiagWorkerThread(LPVOID arg)
              *
              * Ensure kernel mode is active in this thread.
              */
-            extern "C" BOOL SetKMode(BOOL);
-            extern "C" DWORD SetProcPermissions(DWORD);
             SetKMode(TRUE);
             SetProcPermissions(0xFFFFFFFFu);
 
             DWORD pa;
             DWORD pages_ok = 0, pages_fail = 0;
             DWORD start_tick = GetTickCount();
-            BYTE page_buf[0x1000];
 
             Logf("path=\\Storage Card\\be300_ram.bin size=16777216\r\n");
-            Logf("[RAMDUMP] disabling interrupts for dump\r\n");
             FlushSinks();
 
             /*
-             * Disable interrupts via CP0 Status IE bit to prevent
-             * interrupt handlers / DMA from causing bus contention.
-             * This freezes the system during the dump but prevents
-             * the bus hang.
+             * Read all 16MB into a VirtualAlloc'd buffer first,
+             * then write to CF card.  The bus hang seems to be
+             * caused by interleaving RAM reads with CF card I/O.
+             * Reading all RAM in a tight loop avoids this.
              */
             {
-                DWORD old_status;
-                __asm {
-                    mfc0 $8, $12      /* read Status */
-                    sw $8, old_status
-                    lui $9, 0xFFFF
-                    ori $9, $9, 0xFFFE /* mask = ~1 (clear IE) */
-                    and $8, $8, $9
-                    mtc0 $8, $12      /* write Status with IE=0 */
-                    nop
-                    nop
-                }
-            }
+                BYTE *ram_buf;
+                ram_buf = (BYTE *)VirtualAlloc(NULL, 0x01000000u,
+                    MEM_COMMIT, PAGE_READWRITE);
 
-            for (pa = 0; pa < 0x01000000u; pa += 0x1000u) {
-                DWORD written;
-                BOOL page_ok = FALSE;
-
-                {
-                    volatile DWORD *src = (volatile DWORD *)(0x80000000u + pa);
+                if (ram_buf) {
+                    volatile DWORD *src;
+                    DWORD *dst;
                     DWORD i;
-                    DWORD *dst = (DWORD *)page_buf;
-                    for (i = 0; i < 0x400u; i++)
+
+                    Logf("[RAMDUMP] allocated 16MB buffer, reading...\r\n");
+                    FlushSinks();
+
+                    /* Tight copy loop — no I/O between reads */
+                    src = (volatile DWORD *)0x80000000u;
+                    dst = (DWORD *)ram_buf;
+                    for (i = 0; i < (0x01000000u / 4u); i++)
                         dst[i] = src[i];
-                    page_ok = TRUE;
-                }
+                    pages_ok = 4096;
 
-                if (page_ok) {
-                    pages_ok++;
+                    Logf("[RAMDUMP] read complete, writing to card...\r\n");
+                    FlushSinks();
+
+                    /* Write entire buffer to file */
+                    {
+                        DWORD total_written = 0;
+                        while (total_written < 0x01000000u) {
+                            DWORD written = 0;
+                            DWORD chunk = 0x01000000u - total_written;
+                            if (chunk > 0x10000u)
+                                chunk = 0x10000u; /* 64KB writes */
+                            WriteFile(hRam, ram_buf + total_written,
+                                      chunk, &written, NULL);
+                            total_written += written;
+                            if (written == 0)
+                                break;
+                        }
+                    }
+
+                    VirtualFree(ram_buf, 0, MEM_RELEASE);
                 } else {
-                    memset(page_buf, 0xFF, 0x1000u);
-                    pages_fail++;
-                }
-                WriteFile(hRam, page_buf, 0x1000u, &written, NULL);
-            }
-
-            /* Re-enable interrupts */
-            {
-                DWORD status;
-                __asm {
-                    mfc0 $8, $12
-                    sw $8, status
-                    ori $8, $8, 1     /* set IE */
-                    mtc0 $8, $12
-                    nop
-                    nop
+                    Logf("[RAMDUMP] ERROR: cannot alloc 16MB buffer"
+                         " err=%lu\r\n", GetLastError());
+                    FlushSinks();
                 }
             }
 
