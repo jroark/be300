@@ -113,6 +113,18 @@ DEVICE_ACCESS(be300_vrc4173)
             /* W1C: clear bits that are written as 1 */
             for (size_t i = 0; i < len && (off + i) < VRC4173_LATCH_SIZE; i++)
                 d->bytes[off + i] &= ~data[i];
+            /*
+             * After clearing peripheral interrupt registers, also
+             * zero SYSINT1REG (0x060) to reflect "no pending VRC4173
+             * interrupts".  On real hardware SYSINT1REG is auto-
+             * updated from peripheral lines; in our latch it holds
+             * stale seed data that causes the ISR to keep setting
+             * software interrupt flags.
+             */
+            if (off != 0x060) {
+                d->bytes[0x060] = 0;
+                d->bytes[0x061] = 0;
+            }
         } else {
             memcpy(&d->bytes[off], data, len);
         }
