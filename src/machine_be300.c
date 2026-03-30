@@ -980,8 +980,21 @@ static bool be300_run_batch(machine_t *m)
                         (uint32_t)m->cpu->cd.mips.gpr[29]);
                     store_32bit_word(m->cpu, base + 0x70,
                         (uint32_t)m->cpu->cd.mips.gpr[30]);
+                    /*
+                     * RA: set to 0x800794C8 (cold boot continuation)
+                     * instead of the live RA (0xA0079560 = suspend path).
+                     *
+                     * 0x794C8 is the code that runs after cold boot init
+                     * at 0x79DF8.  It calls 6+ init functions, flushes
+                     * the data cache, sets up more hardware, then falls
+                     * through to the suspend/WAIT sequence.  These init
+                     * functions may populate the resume_ctx table with
+                     * proper post-init state, so the SECOND OAL restore
+                     * after WAIT will have the right context to enter
+                     * the WinCE kernel.
+                     */
                     store_32bit_word(m->cpu, base + 0x74,
-                        (uint32_t)m->cpu->cd.mips.gpr[31]);
+                        UINT32_C(0x800794C8));
                     /* HI, LO */
                     store_32bit_word(m->cpu, base + 0x78,
                         (uint32_t)m->cpu->cd.mips.hi);
