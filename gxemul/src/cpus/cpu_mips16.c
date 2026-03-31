@@ -212,11 +212,12 @@ int mips_cpu_disassemble_instr_mips16(struct cpu *cpu, unsigned char *ib,
 				break;
 			case M16_I8_MOV32R:
 				{
-					int r32 = ((iw >> 3) & 0x1f);
-					int rz16 = (iw & 0x7);
+					int rz5 = iw & 0x1f;
+					int r32 = ((rz5 & 0x7) << 2) |
+					    (rz5 >> 3);
 					debug("mov32r\t$%s, $%s\n",
 					    regnames[r32],
-					    regnames[mips16_reg_map[rz16]]);
+					    regnames[mips16_reg_map[ry]]);
 				}
 				break;
 			case M16_I8_MOVR32:
@@ -1027,15 +1028,16 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 				{
 					/*
 					 *  MOV32R: move MIPS16 reg to
-					 *  MIPS32 reg.
-					 *  r32 = bits [7:5,2:0] = rz | ry
-					 *  Actually: r32 = bits 4:0
-					 *  combined from different fields.
+					 *  any MIPS32 register.
+					 *  [7:5] = MIPS16 source reg (ry)
+					 *  [4:0] = MIPS32 dest reg, bits
+					 *          REARRANGED: {[2:0],[4:3]}
 					 */
-					int r32 = ((iw >> 3) & 0x1f);
-					int rz16 = iw & 0x7;
+					int rz5 = iw & 0x1f;
+					int r32 = ((rz5 & 0x7) << 2) |
+					    (rz5 >> 3);
 					cpu->cd.mips.gpr[r32] =
-					    M16REG(rz16);
+					    M16REG(ry);
 				}
 				break;
 			case M16_I8_MOVR32:
@@ -1059,8 +1061,12 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 		{
 			int imm8 = iw & 0xff;
 			if (extended) {
+				/*  Register-immediate encoding:
+				 *  imm = extend[4:0]<<11 | extend[10:5]<<5 | iw[4:0]
+				 *  (NOT branch encoding which uses iw[10:0])  */
 				imm8 = ((extend_word & 0x1f) << 11) |
-				    (iw & 0x7ff);
+				    ((extend_word >> 5) & 0x3f) << 5 |
+				    (iw & 0x1f);
 				imm8 = SIGN_EXTEND(imm8, 16);
 			}
 			M16REG(rx) = (int32_t)imm8;
@@ -1072,7 +1078,8 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			int imm8 = iw & 0xff;
 			if (extended) {
 				imm8 = ((extend_word & 0x1f) << 11) |
-				    (iw & 0x7ff);
+				    ((extend_word >> 5) & 0x3f) << 5 |
+				    (iw & 0x1f);
 				imm8 = SIGN_EXTEND(imm8, 16);
 			}
 			cpu->cd.mips.gpr[MIPS_GPR_T8] =
