@@ -189,7 +189,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                     s->stream_cursor = 0;
                     s->stream_active = true;
                 }
-                memset(s->xfer_buffer, 0xFF, sizeof(s->xfer_buffer));
+                memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
                 if (s->stream_active) {
                     /* Fill buffer from current stream position but do NOT
                      * advance stream_cursor — the SPL reads the trailing
@@ -225,18 +225,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 }
             }
             s->ready = true;
-        } else if (offset == NAND_REG_XFER_MISC) {
-            /* WinCE writes 0x03FF repeatedly after mode/address setup.
-             * Pre-fill buffer registers from stream if active. */
-            if (s->stream_active && !s->xfer_buffer_valid) {
-                memset(s->xfer_buffer, 0xFF, sizeof(s->xfer_buffer));
-                for (int i = 0; i < 16; i++) {
-                    int b = nand_stream_byte(s, s->stream_cursor + i);
-                    if (b >= 0)
-                        s->xfer_buffer[i] = (uint8_t)b;
-                }
-                s->xfer_buffer_valid = true;
-            }
         }
         return;
     }
