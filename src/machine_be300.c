@@ -482,12 +482,24 @@ machine_t *be300_create(const machine_config_t *cfg)
                             0x42000006, /* tlbwr                    */
                             0x42000018, /* eret                     */
                         };
+                        /*
+                         * The handler body goes at +0x2300 (unused ROM
+                         * padding area, 0x2250-0x3FFF) to avoid
+                         * overwriting the ROM's dispatch table at +0x2A0
+                         * which the MIPS16 boot dispatcher reads.
+                         * A jump stub at +0x280 redirects to +0x2300.
+                         */
                         for (unsigned j = 0;
                              j < sizeof(gen_handler)/sizeof(gen_handler[0]);
                              j++)
                             store_32bit_word(m->cpu,
-                                rom_va + 0x280 + j * 4,
+                                rom_va + 0x2300 + j * 4,
                                 gen_handler[j]);
+                        /* +0x280: J 0xBFC02300 (jump to relocated handler) */
+                        store_32bit_word(m->cpu, rom_va + 0x280,
+                            0x0BF008C0);  /* j 0xBFC02300 */
+                        store_32bit_word(m->cpu, rom_va + 0x284,
+                            0x00000000);  /* nop (delay slot) */
 
                         /*
                          * +0x380: Patch the BEV general exception entry.
