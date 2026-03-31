@@ -1173,7 +1173,7 @@ static bool be300_run_batch(machine_t *m)
 
                     /* TLB 1: VA 0xF2000000 → PA 0x0A000000 (VRC4173)
                      * Use 256KB pages to cover 0xF2000000-0xF207FFFF */
-                    cp0[COP0_PAGEMASK] = 0x0007E000; /* 256KB pages */
+                    cp0[COP0_PAGEMASK] = 0x0007F800; /* 256KB pages (VR4131: shift=11) */
                     cp0[COP0_ENTRYHI]  = 0xF2000000ULL;
                     cp0[COP0_ENTRYLO0] = (0x0A000000u >> 12) << 6 | 0x17;
                     cp0[COP0_ENTRYLO1] = (0x0A040000u >> 12) << 6 | 0x17;
