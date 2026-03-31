@@ -1015,8 +1015,11 @@ static bool be300_run_batch(machine_t *m)
             uint32_t wait_pc = (uint32_t)m->cpu->pc;
             uint32_t norm = wait_pc & 0x1FFFFFFFu;
 
-            if (!m->wince.cold_boot_wait_logged) {
-                /* First WAIT: skip past it to start OAL init */
+            if (!m->wince.cold_boot_wait_logged &&
+                norm >= 0x00060000u && norm < 0x00100000u) {
+                /* NK.exe WAIT (PA in 0x60000-0x100000 range).
+                 * Ignore SPL WAITs (PA 0xF00000+) — let the
+                 * timer wake the SPL normally. */
                 m->cpu->is_halted = false;
                 m->cpu->pc += 4;
                 m->wince.cold_boot_wait_logged = true;

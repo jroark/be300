@@ -176,32 +176,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
              *   0x04 = 8-byte OOB/trailer into buffer regs
              *   0x05 = 520-byte stream burst via 0xB000
              */
-            if (data_byte == 0x04u) {
-                /* Mode 4: read 8 bytes into buffer registers.
-                 * Activate stream from address if not already active. */
-                if (!s->stream_active && s->xfer_addr_count >= 3) {
-                    uint32_t row = (uint32_t)s->xfer_addr_bytes[1]
-                                 | ((uint32_t)s->xfer_addr_bytes[2] << 8);
-                    uint32_t col = (uint32_t)s->xfer_addr_bytes[0];
-                    s->stream_page = row;
-                    s->stream_col = col;
-                    s->stream_base = row * NAND_PAGE_DATA + col;
-                    s->stream_cursor = 0;
-                    s->stream_active = true;
-                }
-                memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
-                if (s->stream_active) {
-                    /* Fill buffer from current stream position but do NOT
-                     * advance stream_cursor — the SPL reads the trailing
-                     * bytes via 0xB000 stream, not the buffer registers. */
-                    for (int i = 0; i < 8; i++) {
-                        int b = nand_stream_byte(s, s->stream_cursor + i);
-                        if (b >= 0)
-                            s->xfer_buffer[i] = (uint8_t)b;
-                    }
-                }
-                s->xfer_buffer_valid = true;
-            } else if (data_byte == 0x05u) {
+            if (data_byte == 0x05u) {
                 uint32_t row = (uint32_t)s->xfer_addr_bytes[1]
                              | ((uint32_t)s->xfer_addr_bytes[2] << 8);
                 uint32_t col = (uint32_t)s->xfer_addr_bytes[0];
