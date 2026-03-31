@@ -425,7 +425,7 @@
 #define	    MMI_PSLLW			    0x3c
 #define	    MMI_PSRLW			    0x3e
 #define	    MMI_PSRAW			    0x3f
-/*	JALX (TODO)			0x1d	    011101  */
+#define	HI6_JALX			0x1d	/*  011101  */	/*  MIPS16 jump-and-link-exchange  */
 #define	HI6_LQ_MDMX			0x1e	/*  011110  */	/*  lq on R5900, MDMX on others?  */
 /*  TODO: MDMX opcodes  */
 #define	HI6_SQ_SPECIAL3			0x1f	/*  011111  */	/*  sq on R5900, SPECIAL3 on MIPS32/64 rev 2  */

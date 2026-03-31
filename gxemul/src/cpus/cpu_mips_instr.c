@@ -996,6 +996,8 @@ X(jr)
 			cpu->pc = rs & ~(MODE_int_t)1;
 			cpu->delay_slot = NOT_DELAYED;
 			cpu->cd.mips.next_ic = &nothing_call;
+			cpu->n_translated_instrs =
+			    N_SAFE_DYNTRANS_LIMIT;
 		} else {
 			cpu->pc = rs;
 			cpu->delay_slot = NOT_DELAYED;
@@ -1016,6 +1018,8 @@ X(jr_ra)
 			cpu->pc = rs & ~(MODE_int_t)1;
 			cpu->delay_slot = NOT_DELAYED;
 			cpu->cd.mips.next_ic = &nothing_call;
+			cpu->n_translated_instrs =
+			    N_SAFE_DYNTRANS_LIMIT;
 		} else {
 			cpu->pc = rs;
 			cpu->delay_slot = NOT_DELAYED;
@@ -1034,6 +1038,8 @@ X(jr_ra_addiu)
 		cpu->cd.mips.mips16 = 1;
 		cpu->pc = rs & ~(MODE_int_t)1;
 		cpu->cd.mips.next_ic = &nothing_call;
+			cpu->n_translated_instrs =
+			    N_SAFE_DYNTRANS_LIMIT;
 	} else {
 		cpu->pc = rs;
 		quick_pc_to_pointers(cpu);
@@ -1047,14 +1053,17 @@ X(jr_ra_trace)
 	ic[1].f(cpu, ic+1);
 	cpu->n_translated_instrs ++;
 	if (likely(!(cpu->delay_slot & EXCEPTION_IN_DELAY_SLOT))) {
-		cpu_functioncall_trace_return(cpu);
 		if (rs & 1) {
 			cpu->cd.mips.mips16 = 1;
 			cpu->pc = rs & ~(MODE_int_t)1;
+			cpu_functioncall_trace_return(cpu);
 			cpu->delay_slot = NOT_DELAYED;
 			cpu->cd.mips.next_ic = &nothing_call;
+			cpu->n_translated_instrs =
+			    N_SAFE_DYNTRANS_LIMIT;
 		} else {
 			cpu->pc = rs;
+			cpu_functioncall_trace_return(cpu);
 			cpu->delay_slot = NOT_DELAYED;
 			quick_pc_to_pointers(cpu);
 		}
@@ -1072,10 +1081,18 @@ X(jalr)
 	ic[1].f(cpu, ic+1);
 	cpu->n_translated_instrs ++;
 	if (likely(!(cpu->delay_slot & EXCEPTION_IN_DELAY_SLOT))) {
-		cpu->pc = rs;
-		/*  Note: Must be non-delayed when jumping to the new pc:  */
-		cpu->delay_slot = NOT_DELAYED;
-		quick_pc_to_pointers(cpu);
+		if (rs & 1) {
+			cpu->cd.mips.mips16 = 1;
+			cpu->pc = rs & ~(MODE_int_t)1;
+			cpu->delay_slot = NOT_DELAYED;
+			cpu->cd.mips.next_ic = &nothing_call;
+			cpu->n_translated_instrs =
+			    N_SAFE_DYNTRANS_LIMIT;
+		} else {
+			cpu->pc = rs;
+			cpu->delay_slot = NOT_DELAYED;
+			quick_pc_to_pointers(cpu);
+		}
 	} else
 		cpu->delay_slot = NOT_DELAYED;
 }
@@ -1090,11 +1107,20 @@ X(jalr_trace)
 	ic[1].f(cpu, ic+1);
 	cpu->n_translated_instrs ++;
 	if (likely(!(cpu->delay_slot & EXCEPTION_IN_DELAY_SLOT))) {
-		cpu->pc = rs;
-		cpu_functioncall_trace(cpu, cpu->pc);
-		/*  Note: Must be non-delayed when jumping to the new pc:  */
-		cpu->delay_slot = NOT_DELAYED;
-		quick_pc_to_pointers(cpu);
+		if (rs & 1) {
+			cpu->cd.mips.mips16 = 1;
+			cpu->pc = rs & ~(MODE_int_t)1;
+			cpu_functioncall_trace(cpu, cpu->pc);
+			cpu->delay_slot = NOT_DELAYED;
+			cpu->cd.mips.next_ic = &nothing_call;
+			cpu->n_translated_instrs =
+			    N_SAFE_DYNTRANS_LIMIT;
+		} else {
+			cpu->pc = rs;
+			cpu_functioncall_trace(cpu, cpu->pc);
+			cpu->delay_slot = NOT_DELAYED;
+			quick_pc_to_pointers(cpu);
+		}
 	} else
 		cpu->delay_slot = NOT_DELAYED;
 }
@@ -1153,6 +1179,36 @@ X(jal_trace)
 		cpu->pc = old_pc | (int32_t)ic->arg[0];
 		cpu_functioncall_trace(cpu, cpu->pc);
 		quick_pc_to_pointers(cpu);
+	} else
+		cpu->delay_slot = NOT_DELAYED;
+}
+
+
+/*
+ *  jalx:  Jump and Link Exchange (enter MIPS16 mode from MIPS32).
+ *
+ *  arg[0] = lowest 28 bits of new pc.
+ *  arg[1] = offset from start of page to the jalx instruction + 8
+ */
+X(jalx)
+{
+	MODE_int_t old_pc = cpu->pc;
+	cpu->delay_slot = TO_BE_DELAYED;
+	cpu->pc &= ~((MIPS_IC_ENTRIES_PER_PAGE-1)<<MIPS_INSTR_ALIGNMENT_SHIFT);
+	cpu->cd.mips.gpr[31] = (MODE_int_t)cpu->pc + (int32_t)ic->arg[1];
+	ic[1].f(cpu, ic+1);
+	cpu->n_translated_instrs ++;
+	if (likely(!(cpu->delay_slot & EXCEPTION_IN_DELAY_SLOT))) {
+		/*  Note: Must be non-delayed when jumping to the new pc:  */
+		cpu->delay_slot = NOT_DELAYED;
+		old_pc &= ~0x03ffffff;
+		cpu->pc = old_pc | (int32_t)ic->arg[0];
+		cpu->cd.mips.mips16 = 1;
+		if (cpu->machine->show_trace_tree)
+			cpu_functioncall_trace(cpu, cpu->pc);
+		cpu->cd.mips.next_ic = &nothing_call;
+			cpu->n_translated_instrs =
+			    N_SAFE_DYNTRANS_LIMIT;
 	} else
 		cpu->delay_slot = NOT_DELAYED;
 }
@@ -2140,7 +2196,7 @@ X(reboot)
 		return;
 
 	cpu->running = false;
-	cpu->cd.mips.next_ic = &nothing_call;
+	quick_pc_to_pointers(cpu);
 }
 
 
@@ -2289,15 +2345,11 @@ X(eret)
 		cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &= ~STATUS_EXL;
 	}
 
-	/*  Restore MIPS16 mode from EPC/ErrorEPC bit 0:  */
+	/*  Restore MIPS16 mode from EPC/ErrorEPC bit 0  */
 	cpu->cd.mips.mips16 = (cpu->pc & 1) ? 1 : 0;
 	cpu->pc &= ~(uint64_t)1;
 
-	if (!cpu->cd.mips.mips16) {
-		quick_pc_to_pointers(cpu);
-	} else {
-		cpu->cd.mips.next_ic = &nothing_call;
-	}
+	quick_pc_to_pointers(cpu);
 
 	cpu->cd.mips.rmw = 0;   /*  the "LL bit"  */
 }
@@ -2364,7 +2416,7 @@ X(idle)
 
 	cpu->wants_to_idle = true;
 	cpu->n_translated_instrs += N_DYNTRANS_IDLE_BREAK;
-	cpu->cd.mips.next_ic = &nothing_call;
+	quick_pc_to_pointers(cpu);
 }
 
 
@@ -3169,6 +3221,15 @@ X(b_samepage_daddiu)
 
 X(end_of_page)
 {
+	/*
+	 *  MIPS16 mode: The PC was already set by the mode-switching
+	 *  instruction.  Break out of the IC loop without modifying PC.
+	 */
+	if (cpu->cd.mips.mips16) {
+		cpu->n_translated_instrs --;
+		return;
+	}
+
 	/*  Update the PC:  (offset 0, but on the next page)  */
 	cpu->pc &= ~((MIPS_IC_ENTRIES_PER_PAGE-1) <<
 	    MIPS_INSTR_ALIGNMENT_SHIFT);
@@ -3650,6 +3711,18 @@ X(to_be_translated)
 	int in_crosspage_delayslot = 0;
 	void (*samepage_function)(struct cpu *, struct mips_instr_call *);
 	int store, signedness, size;
+
+	/*
+	 *  MIPS16 mode: Don't translate — force the IC loop to break
+	 *  so control returns to the top of DYNTRANS_RUN_INSTR_DEF,
+	 *  which will call the MIPS16 slow interpreter.
+	 */
+	if (cpu->cd.mips.mips16) {
+		cpu->cd.mips.next_ic = &nothing_call;
+			cpu->n_translated_instrs =
+			    N_SAFE_DYNTRANS_LIMIT;
+		return;
+	}
 
 	/*  Figure out the (virtual) address of the instruction:  */
 	low_pc = ((size_t)ic - (size_t)cpu->cd.mips.cur_ic_page)
@@ -4177,6 +4250,7 @@ X(to_be_translated)
 
 	case HI6_J:
 	case HI6_JAL:
+	case HI6_JALX:
 		switch (main_opcode) {
 		case HI6_J:
 			ic->f = instr(j);
@@ -4188,6 +4262,9 @@ X(to_be_translated)
 				ic->f = instr(jal_trace);
 			else
 				ic->f = instr(jal);
+			break;
+		case HI6_JALX:
+			ic->f = instr(jalx);
 			break;
 		}
 		ic->arg[0] = (iword & 0x03ffffff) << 2;
@@ -4261,25 +4338,8 @@ X(to_be_translated)
 				}
 				break;
 			case COP0_HIBERNATE:
-				/*  VR41xx hibernate: deepest sleep, wakes
-				    only on cold reset.  Treat as wait so
-				    execution halts until an interrupt
-				    arrives or a machine-level hook
-				    redirects PC.  */
-				ic->f = instr(wait);
-				if (cpu->cd.mips.cpu_type.rev != MIPS_R4100) {
-					static int warned = 0;
-					ic->f = instr(reserved);
-					if (!warned &&
-					    !cpu->translation_readahead) {
-						fatal("{ WARNING: Attempt to "
-						    "execute a R41xx instruct"
-					            "ion, but the emulated CPU "
-						    "doesn't support it! }\n");
-						warned = 1;
-					}
-				}
-				break;
+				/*  TODO  */
+				goto bad;
 			case COP0_SUSPEND:
 				/*  Used by NetBSD on HPCmips (VR41xx) to
 				    halt the machine.  */
