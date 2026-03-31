@@ -673,26 +673,6 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 
 	cpu->ninstrs ++;
 
-	/* Debug trace for ROM MIPS16 dispatcher key PCs */
-	{
-		uint32_t pc32 = (uint32_t)cpu->pc;
-		if (pc32 >= 0x9FC00C20 && pc32 <= 0x9FC00D20) {
-			uint32_t s0 = (uint32_t)cpu->cd.mips.gpr[16];
-			uint32_t s1 = (uint32_t)cpu->cd.mips.gpr[17];
-			uint32_t v0 = (uint32_t)cpu->cd.mips.gpr[2];
-			uint32_t v1 = (uint32_t)cpu->cd.mips.gpr[3];
-			uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[4];
-			uint32_t sp = (uint32_t)cpu->cd.mips.gpr[29];
-			uint32_t ra = (uint32_t)cpu->cd.mips.gpr[31];
-			fprintf(stderr,
-			    "[M16] PC=%08X iw=%04X%s"
-			    " v0=%08X v1=%08X a0=%08X s0=%08X s1=%08X"
-			    " sp=%08X ra=%08X\n",
-			    pc32, iw, extended ? " EXT" : "",
-			    v0, v1, a0, s0, s1, sp, ra);
-		}
-	}
-
 	rx = (iw >> 8) & 0x7;
 	ry = (iw >> 5) & 0x7;
 	rz = (iw >> 2) & 0x7;
