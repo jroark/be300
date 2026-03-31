@@ -1152,6 +1152,29 @@ static bool be300_run_batch(machine_t *m)
                  *
                  * Set SP to 0x80003800 (same as ROM boot uses).
                  */
+                /*
+                 * The MIPS16 dispatcher accesses stack at kseg3
+                 * (0xFF10xxxx) which needs TLB.  Add a wired TLB
+                 * entry mapping 0xFF100000 → PA 0x00F00000 (SPL
+                 * area, safe to reuse after NK.exe is loaded).
+                 */
+                {
+                    uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
+                    cp0[COP0_PAGEMASK] = 0x0000;  /* 4KB pages */
+                    cp0[COP0_ENTRYHI]  = 0xFF100000ULL;
+                    cp0[COP0_ENTRYLO0] = (0x00F00000 >> 12) << 6
+                        | 0x1F;  /* V=1,D=1,C=cached,G=1 */
+                    cp0[COP0_ENTRYLO1] = (0x00F01000 >> 12) << 6
+                        | 0x1F;  /* next 4KB page */
+                    cp0[COP0_INDEX]    = 0;
+                    /* TLBWI equivalent — write TLB entry */
+                    coproc_tlbwri(m->cpu, 0);
+                    cp0[COP0_WIRED]    = 1;
+                    fprintf(stderr,
+                        "[COLD_BOOT] TLB entry 0: VA 0xFF100000"
+                        " → PA 0x00F00000 (dispatcher stack)\n");
+                }
+
                 m->cpu->pc = (int64_t)(int32_t)UINT32_C(0x9FC00C20);
                 m->cpu->cd.mips.mips16 = 1;
                 m->cpu->cd.mips.gpr[MIPS_GPR_RA] =
