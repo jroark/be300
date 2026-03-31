@@ -1152,6 +1152,42 @@ static bool be300_run_batch(machine_t *m)
                 }
 
                 /*
+                 * Set up TLB entries that the ROM's MIPS32 init
+                 * normally creates before calling the MIPS16
+                 * dispatcher.  The dispatcher accesses kseg3
+                 * virtual addresses that need TLB mappings:
+                 *
+                 *   VA 0xF2000000 → PA 0x0A000000 (VRC4173 I/O)
+                 *   VA 0xFF100000 → PA 0x09100000 (on-chip SRAM)
+                 */
+                {
+                    uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
+
+                    /* TLB 0: VA 0xFF100000 → PA 0x09100000 (stack) */
+                    cp0[COP0_PAGEMASK] = 0x0000;  /* 4KB pages */
+                    cp0[COP0_ENTRYHI]  = 0xFF100000ULL;
+                    cp0[COP0_ENTRYLO0] = (0x09100000u >> 12) << 6 | 0x17;
+                    cp0[COP0_ENTRYLO1] = (0x09101000u >> 12) << 6 | 0x17;
+                    cp0[COP0_INDEX]    = 0;
+                    coproc_tlbwri(m->cpu, 0);
+
+                    /* TLB 1: VA 0xF2000000 → PA 0x0A000000 (VRC4173)
+                     * Use 256KB pages to cover 0xF2000000-0xF207FFFF */
+                    cp0[COP0_PAGEMASK] = 0x0007E000; /* 256KB pages */
+                    cp0[COP0_ENTRYHI]  = 0xF2000000ULL;
+                    cp0[COP0_ENTRYLO0] = (0x0A000000u >> 12) << 6 | 0x17;
+                    cp0[COP0_ENTRYLO1] = (0x0A040000u >> 12) << 6 | 0x17;
+                    cp0[COP0_INDEX]    = 1;
+                    coproc_tlbwri(m->cpu, 0);
+
+                    cp0[COP0_WIRED]    = 2;
+                    cp0[COP0_PAGEMASK] = 0;  /* reset */
+                    fprintf(stderr,
+                        "[COLD_BOOT] TLB: 0xFF100000→PA 0x09100000,"
+                        " 0xF2000000→PA 0x0A000000\n");
+                }
+
+                /*
                  * Call the ROM's MIPS16 boot dispatcher at 0x9FC00C20.
                  * On real hardware, the ROM calls JALR 0x9FC00C21
                  * (bit 0 = MIPS16 mode) after the section copier.
