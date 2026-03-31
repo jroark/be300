@@ -101,6 +101,7 @@ typedef struct {
     bool     legacy_status7_ff_armed;      /* one-shot 0xFF escape has been emitted */
     uint8_t  xfer_buffer[16];              /* WinCE mode-4 data buffer (0xA4A0-0xA4AC) */
     bool     xfer_buffer_valid;            /* true after mode-4/MISC populates buffer */
+    bool     wince_mode;                   /* true after NK.exe loads (enables STATUS2/buffer) */
 } nand_state_t;
 
 void     nand_init(nand_state_t *s, const uint8_t *image, size_t size);

@@ -1023,6 +1023,7 @@ static bool be300_run_batch(machine_t *m)
                 m->cpu->is_halted = false;
                 m->cpu->pc += 4;
                 m->wince.cold_boot_wait_logged = true;
+                m->nand.wince_mode = true;
                 fprintf(stderr,
                     "[COLD_BOOT] WAIT at PC=0x%08X (PA=0x%08X),"
                     " skipping to 0x%08" PRIx64 "\n",
