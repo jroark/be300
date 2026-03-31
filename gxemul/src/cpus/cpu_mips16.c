@@ -673,6 +673,22 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 
 	cpu->ninstrs ++;
 
+	/* Trace ROM MIPS16 region to find stack corruption */
+	{
+		uint32_t pc32 = (uint32_t)cpu->pc;
+		if (pc32 >= 0x9FC00C20 && pc32 < 0x9FC02200) {
+			fprintf(stderr,
+			    "[M16] %08X %04X%s sp=%08X ra=%08X a0=%08X"
+			    " v0=%08X s0=%08X\n",
+			    pc32, iw, extended ? "+" : " ",
+			    (uint32_t)cpu->cd.mips.gpr[29],
+			    (uint32_t)cpu->cd.mips.gpr[31],
+			    (uint32_t)cpu->cd.mips.gpr[4],
+			    (uint32_t)cpu->cd.mips.gpr[2],
+			    (uint32_t)cpu->cd.mips.gpr[16]);
+		}
+	}
+
 	rx = (iw >> 8) & 0x7;
 	ry = (iw >> 5) & 0x7;
 	rz = (iw >> 2) & 0x7;
@@ -1338,21 +1354,38 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 		case M16_RR_JR:
 			{
 				uint64_t target;
+				/*
+				 *  MIPS16 JR/JALR share func=0.
+				 *  The ry field [7:5] distinguishes them:
+				 *    ry=000: JR rx (no link)
+				 *    ry=010: JALR rx (link RA)
+				 *  When rx=0: JR $ra (regardless of ry)
+				 */
+				int is_jalr = (ry == 2 && rx != 0);
 				if (rx == 0) {
 					/*  JR $ra  */
 					target = cpu->cd.mips.gpr[MIPS_GPR_RA];
 				} else {
 					target = M16REG(rx);
 				}
-				/*  JR has a one-instruction delay slot.
-				 *  Save target and advance PC to delay slot.  */
+				if (is_jalr) {
+					/*  JALR: link RA = PC + 4
+					 *  (PC+2 for insn + 2 for delay slot)  */
+					cpu->cd.mips.gpr[MIPS_GPR_RA] =
+					    (cpu->pc + 4) | 1;
+				}
+				/*  Both JR and JALR have a delay slot.  */
 				cpu->cd.mips.m16_delay_target = target;
-				cpu->cd.mips.m16_delay_jalx = 2;  /* JR/JALR: use bit 0 */
+				cpu->cd.mips.m16_delay_jalx = 2;  /* use bit 0 */
 				cpu->pc += 2;  /*  advance to delay slot  */
 				cpu->delay_slot = TO_BE_DELAYED;
-				if (rx == 0 &&
+				if (!is_jalr && rx == 0 &&
 				    cpu->machine->show_trace_tree)
 					cpu_functioncall_trace_return(cpu);
+				else if (is_jalr &&
+				    cpu->machine->show_trace_tree)
+					cpu_functioncall_trace(cpu,
+					    target & ~(uint64_t)1);
 				return 1;
 			}
 		case M16_RR_JALR:
