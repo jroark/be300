@@ -397,7 +397,7 @@ machine_t *be300_create(const machine_config_t *cfg)
                         static const uint32_t tlb_refill[] = {
                             0x401B5000, /* mfc0 $k1, EntryHi    */
                             0x001BD1C2, /* srl  $k0, $k1, 7     */
-                            0x3C1B1FFF, /* lui  $k1, 0x1FFF     */
+                            0x3C1B0003, /* lui  $k1, 0x0003     */
                             0x377BFFFF, /* ori  $k1, 0xFFFF     */
                             0x035BD024, /* and  $k0, $k0, $k1   */
                             0x375A001F, /* ori  $k0, $k0, 0x1F  */
