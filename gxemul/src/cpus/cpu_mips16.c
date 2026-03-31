@@ -571,11 +571,21 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 	 *  PC to the saved branch target now.
 	 */
 	if (cpu->delay_slot == DELAYED) {
-		cpu->pc = cpu->cd.mips.m16_delay_target;
+		uint64_t target = cpu->cd.mips.m16_delay_target;
 		cpu->delay_slot = NOT_DELAYED;
 		if (cpu->cd.mips.m16_delay_jalx) {
+			/*  Switching to MIPS32 mode  */
 			cpu->cd.mips.mips16 = 0;
 			cpu->cd.mips.m16_delay_jalx = 0;
+			cpu->pc = target & ~(uint64_t)1;
+		} else if (target & 1) {
+			/*  Staying in MIPS16 mode (JR/JALR return)  */
+			cpu->pc = target & ~(uint64_t)1;
+		} else {
+			/*  MIPS32 target without JALX (shouldn't happen
+			 *  in normal code, but handle it)  */
+			cpu->cd.mips.mips16 = 0;
+			cpu->pc = target;
 		}
 		return 1;
 	}
@@ -1325,14 +1335,12 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 				} else {
 					target = M16REG(rx);
 				}
-				if (target & 1) {
-					/*  Stay in MIPS16 mode  */
-					cpu->pc = target & ~(uint64_t)1;
-				} else {
-					/*  Switch to MIPS32 mode  */
-					cpu->cd.mips.mips16 = 0;
-					cpu->pc = target;
-				}
+				/*  JR has a one-instruction delay slot.
+				 *  Save target and advance PC to delay slot.  */
+				cpu->cd.mips.m16_delay_target = target;
+				cpu->cd.mips.m16_delay_jalx = !(target & 1);
+				cpu->pc += 2;  /*  advance to delay slot  */
+				cpu->delay_slot = TO_BE_DELAYED;
 				if (rx == 0 &&
 				    cpu->machine->show_trace_tree)
 					cpu_functioncall_trace_return(cpu);
@@ -1341,15 +1349,15 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 		case M16_RR_JALR:
 			{
 				uint64_t target = M16REG(rx);
-				/*  Link: RA = PC + 2, with MIPS16 bit  */
+				/*  Link: RA = PC + 4, with MIPS16 bit
+				 *  (PC+2 for JR insn + 2 for delay slot)  */
 				cpu->cd.mips.gpr[MIPS_GPR_RA] =
-				    (cpu->pc + 2) | 1;
-				if (target & 1) {
-					cpu->pc = target & ~(uint64_t)1;
-				} else {
-					cpu->cd.mips.mips16 = 0;
-					cpu->pc = target;
-				}
+				    (cpu->pc + 4) | 1;
+				/*  JALR has a one-instruction delay slot.  */
+				cpu->cd.mips.m16_delay_target = target;
+				cpu->cd.mips.m16_delay_jalx = !(target & 1);
+				cpu->pc += 2;  /*  advance to delay slot  */
+				cpu->delay_slot = TO_BE_DELAYED;
 				if (cpu->machine->show_trace_tree)
 					cpu_functioncall_trace(cpu, cpu->pc);
 				return 1;
