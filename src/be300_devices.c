@@ -137,8 +137,22 @@ DEVICE_ACCESS(be300_vrc4173)
     } else {
         uint64_t val;
 
-        memcpy(data, &d->bytes[off], len);
-        val = memory_readmax64(cpu, data, len);
+        /*
+         * ScCmcu registers (Casio-specific, PA 0x0A007800-0x0A00783F):
+         * The ROM MIPS16 boot dispatcher at 0x9FC00C20 writes a command
+         * byte (e.g. 0x35) to 0x7834, then polls it until the value
+         * drops below 3 (command complete).  On real hardware the
+         * companion MCU processes the command and clears the register.
+         * Simulate this by returning 0 on reads (instant completion).
+         * Register 0x7800 gets the same treatment (command 0x5C).
+         */
+        if (off >= 0x7800 && off < 0x7840) {
+            memset(data, 0, len);
+            val = 0;
+        } else {
+            memcpy(data, &d->bytes[off], len);
+            val = memory_readmax64(cpu, data, len);
+        }
         if (wince_boot_override_vrc4173_read(cpu,
             (uint32_t)(VRC4173_LATCH_BASE + off), len, &val)) {
             memory_writemax64(cpu, data, len, val);
