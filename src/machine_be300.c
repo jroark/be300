@@ -1292,6 +1292,21 @@ static bool be300_run_batch(machine_t *m)
                     }
                 }
 
+                /*
+                 * The cold-start at 0x8007B398 ends with JR to
+                 * 0x8008B57C which is a context restore function.
+                 * It loads RA from PA 0x00D8 (= s0+0xD8 where
+                 * s0=0xA0000000).  On real HW, the ROM dispatcher
+                 * populates PA 0x00D8 with the address of the code
+                 * after the JR (0x8007B57C) which sets SP to the
+                 * kseg3 stack and calls kernel_init(pTOC).
+                 *
+                 * Without this, RA=0 → JR to address 0 → executes
+                 * the TLB refill handler as normal code → crash.
+                 */
+                store_32bit_word(m->cpu,
+                    0xffffffffa00000d8ULL, 0x8007B57Cu);
+
                 m->cpu->pc =
                     (int64_t)(int32_t)UINT32_C(0x8007B398);
                 m->cpu->cd.mips.mips16 = 0;
@@ -1303,7 +1318,8 @@ static bool be300_run_batch(machine_t *m)
                 fprintf(stderr,
                     "[COLD_BOOT] Skipping MIPS16 dispatcher,"
                     " jumping to kernel cold-start at"
-                    " 0x8007B398\n");
+                    " 0x8007B398 (RA seed at PA 0xD8"
+                    " = 0x8007B57C)\n");
 
                 /* Dump decompressed NK.exe binary for analysis */
                 {
