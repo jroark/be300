@@ -1034,8 +1034,17 @@ static bool be300_run_batch(machine_t *m)
     }
 
     if (m->cpu->ninstrs - m->last_report >= 50000000LL) {
-        fprintf(stderr, "[BE300] Progress: %" PRIi64 "M instrs, PC=0x%08" PRIx64 "\n",
-                m->cpu->ninstrs / 1000000LL, m->cpu->pc);
+        uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
+        fprintf(stderr, "[BE300] Progress: %" PRIi64 "M instrs,"
+            " PC=0x%08" PRIx64
+            " Status=0x%08X Cause=0x%08X EPC=0x%08X"
+            " BadVA=0x%08X SP=0x%08X\n",
+            m->cpu->ninstrs / 1000000LL, m->cpu->pc,
+            (uint32_t)cp0[COP0_STATUS],
+            (uint32_t)cp0[COP0_CAUSE],
+            (uint32_t)cp0[COP0_EPC],
+            (uint32_t)cp0[COP0_BADVADDR],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]);
         m->last_report = m->cpu->ninstrs;
     }
 
@@ -1224,6 +1233,13 @@ static bool be300_run_batch(machine_t *m)
                  * Do NOT overwrite TLB 0 here — earlier code at lines
                  * 1163-1188 already has the correct mapping.
                  */
+
+                /* Ensure PA 0x24FC has the NK.exe entry point.
+                 * The ROM code after the dispatcher reads this and
+                 * JR to NK.exe.  On real HW, the MIPS16 dispatcher
+                 * populates it.  Ensure it's set for our path too. */
+                store_32bit_word(m->cpu,
+                    0xffffffffa00024fcULL, 0xA0060004u);
 
                 m->cpu->pc = (int64_t)(int32_t)UINT32_C(0x9FC00C20);
                 m->cpu->cd.mips.mips16 = 1;
