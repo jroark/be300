@@ -241,9 +241,56 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
     latch->log_mmio = log_mmio;
     g_be300_vrc4173_latch = latch;
 
-    /* Seed board ID: offset 0x0A0C0 = 0x7100 (BE-300 identifier) */
-    uint32_t board_id = 0x00007100;
-    memcpy(&latch->bytes[0x0A0C0], &board_id, 4);
+    /*
+     * Pre-populate latch with real hardware register values from
+     * hardware_survey/HardwareDump.txt and HardwareDump6.txt.
+     * The OEMInit callbacks read these registers to initialize
+     * display, touch, keyboard, audio, power, etc.
+     */
+    {
+        /* VRC4173 Core (PA 0x0A000000, offset 0x0000, 64 words) */
+        static const uint32_t core_regs[] = {
+            0x00000000, 0x00000000, 0x00000001, 0x00000000,
+            0x0000003C, 0x0000000C, 0x0000000C, 0x00000000,
+            0x0000000C, 0x00000000, 0x0000000C, 0x0000000C,
+            0x0000000C, 0x0000003C, 0x00000000, 0x00000000,
+            0x0000000C, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000001, 0x00000000,
+            0x0000000C, 0x0000000C, 0x0000000C, 0x00000000,
+            0x0000000C, 0x00000000, 0x0000000C, 0x0000000C,
+            0x0000000C, 0x0000003C, 0x00000000, 0x00000000,
+            0x0000000C, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        };
+        for (unsigned i = 0; i < sizeof(core_regs)/4; i++) {
+            uint32_t v = core_regs[i];
+            memcpy(&latch->bytes[i * 4], &v, 4);
+        }
+
+        /* SIU/AIU area (PA 0x0A008000, offset 0x8000) */
+        static const struct { uint16_t off; uint32_t val; } siu_regs[] = {
+            { 0x8000, 0x0000200C },  /* master control */
+            { 0x8004, 0x00001100 },  /* status */
+            { 0x8010, 0x0000000C },  /* configuration */
+            { 0x8014, 0x00000002 },  /* mode */
+            { 0x8040, 0x0000000A },  /* interrupt mask */
+        };
+        for (unsigned i = 0; i < sizeof(siu_regs)/sizeof(siu_regs[0]); i++) {
+            uint32_t v = siu_regs[i].val;
+            memcpy(&latch->bytes[siu_regs[i].off], &v, 4);
+        }
+
+        /* Board ID: offset 0x0A0C0 = 0x7100 (BE-300 identifier) */
+        {
+            uint32_t v = 0x00007100;
+            memcpy(&latch->bytes[0x0A0C0], &v, 4);
+        }
+    }
 
     /*
      * Register latch segments that don't overlap with:
