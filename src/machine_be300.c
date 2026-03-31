@@ -578,17 +578,22 @@ machine_t *be300_create(const machine_config_t *cfg)
                             0x00000000); /* nop (was beqz loop) */
                         store_32bit_word(m->cpu, rom_va + 0x3D4,
                             0x00000000); /* nop */
-                        /* Rest of boot code (load PA 0x24FC, JR): */
+                        /* Jump to NK.exe entry point directly.
+                         * Original code loaded PA 0x24FC and JR'd to it,
+                         * but the LW at +0x3E0 gets hit via the BEV
+                         * exception vector path (0x380→0x394→...→0x3E0)
+                         * with $t0 corrupted, causing an AdEL loop.
+                         * Replace with a direct J to the NK.exe entry. */
                         store_32bit_word(m->cpu, rom_va + 0x3D8,
-                            0x3C08A000); /* lui $t0, 0xA000 (was +0x3C8) */
+                            0x3C08A006); /* lui $t0, 0xA006 */
                         store_32bit_word(m->cpu, rom_va + 0x3DC,
-                            0x250824FC); /* addiu $t0, 0x24FC (was +0x3CC) */
+                            0x25080004); /* addiu $t0, 0x0004 */
                         store_32bit_word(m->cpu, rom_va + 0x3E0,
-                            0x8D080000); /* lw $t0, 0($t0) (was +0x3D0) */
+                            0x01000008); /* jr $t0 (→ 0xA0060004) */
                         store_32bit_word(m->cpu, rom_va + 0x3E4,
-                            0x01000008); /* jr $t0 (was +0x3D4) */
+                            0x00000000); /* nop */
                         store_32bit_word(m->cpu, rom_va + 0x3E8,
-                            0x00000000); /* nop (was +0x3D8) */
+                            0x00000000); /* nop */
                         /* Error recovery path: */
                         store_32bit_word(m->cpu, rom_va + 0x3EC,
                             0x0FF00126); /* jal 0xFC00498 (was +0x3DC) */
