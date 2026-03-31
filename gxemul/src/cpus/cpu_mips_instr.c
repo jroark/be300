@@ -991,10 +991,16 @@ X(jr)
 	ic[1].f(cpu, ic+1);
 	cpu->n_translated_instrs ++;
 	if (likely(!(cpu->delay_slot & EXCEPTION_IN_DELAY_SLOT))) {
-		cpu->pc = rs;
-		/*  Note: Must be non-delayed when jumping to the new pc:  */
-		cpu->delay_slot = NOT_DELAYED;
-		quick_pc_to_pointers(cpu);
+		if (rs & 1) {
+			cpu->cd.mips.mips16 = 1;
+			cpu->pc = rs & ~(MODE_int_t)1;
+			cpu->delay_slot = NOT_DELAYED;
+			cpu->cd.mips.next_ic = &nothing_call;
+		} else {
+			cpu->pc = rs;
+			cpu->delay_slot = NOT_DELAYED;
+			quick_pc_to_pointers(cpu);
+		}
 	} else
 		cpu->delay_slot = NOT_DELAYED;
 }
@@ -1005,10 +1011,16 @@ X(jr_ra)
 	ic[1].f(cpu, ic+1);
 	cpu->n_translated_instrs ++;
 	if (likely(!(cpu->delay_slot & EXCEPTION_IN_DELAY_SLOT))) {
-		cpu->pc = rs;
-		/*  Note: Must be non-delayed when jumping to the new pc:  */
-		cpu->delay_slot = NOT_DELAYED;
-		quick_pc_to_pointers(cpu);
+		if (rs & 1) {
+			cpu->cd.mips.mips16 = 1;
+			cpu->pc = rs & ~(MODE_int_t)1;
+			cpu->delay_slot = NOT_DELAYED;
+			cpu->cd.mips.next_ic = &nothing_call;
+		} else {
+			cpu->pc = rs;
+			cpu->delay_slot = NOT_DELAYED;
+			quick_pc_to_pointers(cpu);
+		}
 	} else
 		cpu->delay_slot = NOT_DELAYED;
 }
@@ -1018,8 +1030,14 @@ X(jr_ra_addiu)
 	MODE_int_t rs = cpu->cd.mips.gpr[MIPS_GPR_RA];
 	reg(ic[1].arg[1]) = (int32_t)
 	    ((int32_t)reg(ic[1].arg[0]) + (int32_t)ic[1].arg[2]);
-	cpu->pc = rs;
-	quick_pc_to_pointers(cpu);
+	if (rs & 1) {
+		cpu->cd.mips.mips16 = 1;
+		cpu->pc = rs & ~(MODE_int_t)1;
+		cpu->cd.mips.next_ic = &nothing_call;
+	} else {
+		cpu->pc = rs;
+		quick_pc_to_pointers(cpu);
+	}
 	cpu->n_translated_instrs ++;
 }
 X(jr_ra_trace)
@@ -1029,11 +1047,17 @@ X(jr_ra_trace)
 	ic[1].f(cpu, ic+1);
 	cpu->n_translated_instrs ++;
 	if (likely(!(cpu->delay_slot & EXCEPTION_IN_DELAY_SLOT))) {
-		cpu->pc = rs;
 		cpu_functioncall_trace_return(cpu);
-		/*  Note: Must be non-delayed when jumping to the new pc:  */
-		cpu->delay_slot = NOT_DELAYED;
-		quick_pc_to_pointers(cpu);
+		if (rs & 1) {
+			cpu->cd.mips.mips16 = 1;
+			cpu->pc = rs & ~(MODE_int_t)1;
+			cpu->delay_slot = NOT_DELAYED;
+			cpu->cd.mips.next_ic = &nothing_call;
+		} else {
+			cpu->pc = rs;
+			cpu->delay_slot = NOT_DELAYED;
+			quick_pc_to_pointers(cpu);
+		}
 	} else
 		cpu->delay_slot = NOT_DELAYED;
 }
@@ -2261,11 +2285,19 @@ X(eret)
 		cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &= ~STATUS_ERL;
 	} else {
 		cpu->pc = cpu->cd.mips.coproc[0]->reg[COP0_EPC];
-		cpu->delay_slot = 0;             
+		cpu->delay_slot = 0;
 		cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &= ~STATUS_EXL;
 	}
 
-	quick_pc_to_pointers(cpu);
+	/*  Restore MIPS16 mode from EPC/ErrorEPC bit 0:  */
+	cpu->cd.mips.mips16 = (cpu->pc & 1) ? 1 : 0;
+	cpu->pc &= ~(uint64_t)1;
+
+	if (!cpu->cd.mips.mips16) {
+		quick_pc_to_pointers(cpu);
+	} else {
+		cpu->cd.mips.next_ic = &nothing_call;
+	}
 
 	cpu->cd.mips.rmw = 0;   /*  the "LL bit"  */
 }

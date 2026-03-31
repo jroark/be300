@@ -57,6 +57,7 @@ set(GXEMUL_SOURCES
     # tmp_mips_loadstore_multi.c, and memory_mips_v2p.c as templates.
     gxemul/src/cpus/cpu.c
     gxemul/src/cpus/cpu_mips.c
+    gxemul/src/cpus/cpu_mips16.c
     gxemul/src/cpus/cpu_mips_coproc.c
     gxemul/src/cpus/cpu_mips_instr_unaligned.c
 
