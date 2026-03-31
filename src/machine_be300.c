@@ -1136,128 +1136,13 @@ static bool be300_run_batch(machine_t *m)
                 }
 
                 /*
-                 * Save live CPU state to the resume_ctx table at
-                 * PA 0x2200 so the OAL GPR/CP0 restore at 0x79668
-                 * gets valid values instead of zeros.
-                 *
-                 * CP0 offset mapping (from disassembly of 0x79670-0x79714):
-                 *   0x80:Index 0x84:Random 0x88:EntryLo0 0x8C:EntryLo1
-                 *   0x90:Context 0x94:PageMask 0x98:Wired 0x9C:Count
-                 *   0xA0:EntryHi 0xA4:Compare 0xA8:STATUS 0xAC:Cause
-                 *   0xB0:EPC 0xB4:Config 0xB8:LLAddr ...
-                 * Status is loaded LAST (at 0x19714) for atomicity.
-                 *
-                 * GPR mapping: 0x00-0x18:$at-$a3, 0x1C-0x68:$t1-$gp
-                 * (skips $t0), 0x6C:SP, 0x70:FP, 0x74:RA, 0x78:HI, 0x7C:LO
-                 */
-                {
-                    uint64_t base = 0xffffffffa0002200ULL;
-                    /* GPR 1-7 (at through a3) */
-                    for (int r = 1; r <= 7; r++)
-                        store_32bit_word(m->cpu, base + (r-1)*4,
-                            (uint32_t)m->cpu->cd.mips.gpr[r]);
-                    /* GPR 9-28 (t1 through gp, skipping t0) */
-                    for (int r = 9; r <= 28; r++)
-                        store_32bit_word(m->cpu, base + 0x1C + (r-9)*4,
-                            (uint32_t)m->cpu->cd.mips.gpr[r]);
-                    /* SP, FP, RA */
-                    store_32bit_word(m->cpu, base + 0x6C,
-                        (uint32_t)m->cpu->cd.mips.gpr[29]);
-                    store_32bit_word(m->cpu, base + 0x70,
-                        (uint32_t)m->cpu->cd.mips.gpr[30]);
-                    /*
-                     * RA: check if NK.exe's pre-WAIT state-save
-                     * at 0x76E68 already wrote a valid RA to
-                     * resume_ctx.  If so, use it — it's the correct
-                     * cold-boot continuation address.  If the
-                     * state-save didn't run (RA still 0), fall back
-                     * to 0x800794C8 (cold boot continuation).
-                     */
-                    {
-                        unsigned char ra_buf[4];
-                        uint32_t existing_ra = 0;
-                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                                0xffffffffa0002274ULL, ra_buf, 4,
-                                MEM_READ, CACHE_DATA))
-                            existing_ra = ra_buf[0] | (ra_buf[1]<<8) |
-                                (ra_buf[2]<<16) | (ra_buf[3]<<24);
-                        if (existing_ra != 0 &&
-                            existing_ra != UINT32_C(0x800794C8)) {
-                            fprintf(stderr,
-                                "[COLD_BOOT] Using state-save RA:"
-                                " 0x%08X (from pre-WAIT init)\n",
-                                existing_ra);
-                        } else {
-                            existing_ra = UINT32_C(0x800794C8);
-                            fprintf(stderr,
-                                "[COLD_BOOT] Using fallback RA:"
-                                " 0x%08X (cold boot continuation)\n",
-                                existing_ra);
-                        }
-                        store_32bit_word(m->cpu, base + 0x74,
-                            existing_ra);
-                    }
-                    /* HI, LO */
-                    store_32bit_word(m->cpu, base + 0x78,
-                        (uint32_t)m->cpu->cd.mips.hi);
-                    store_32bit_word(m->cpu, base + 0x7C,
-                        (uint32_t)m->cpu->cd.mips.lo);
-                    /* CP0 Status at offset 0xA8.
-                       - Keep BEV=1 — the ROM's BEV vectors are now
-                         patched with MIPS32 handlers (TLB identity map
-                         at +0x200, general exception dispatcher at +0x280)
-                       - Set IE=1 and IM[7]=1 so timer interrupt can wake
-                         the CPU from subsequent WAITs */
-                    {
-                        uint32_t status =
-                            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
-                        status |= 0x8001u;       /* IE=1, IM[7]=1 */
-                        store_32bit_word(m->cpu, base + 0xA8, status);
-                    }
-                    /* CP0 EPC at offset 0xB0 */
-                    store_32bit_word(m->cpu, base + 0xB0,
-                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC]);
-                    /* CP0 Config at offset 0xB4 */
-                    store_32bit_word(m->cpu, base + 0xB4,
-                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CONFIG]);
-                    /* Push $t0 onto stack for the LW $t0,0($sp) epilogue */
-                    {
-                        uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[29];
-                        if (sp >= 4) {
-                            store_32bit_word(m->cpu,
-                                0xffffffff80000000ULL | (sp - 4),
-                                (uint32_t)m->cpu->cd.mips.gpr[8]);
-                            store_32bit_word(m->cpu, base + 0x6C, sp - 4);
-                        }
-                    }
-
-                    /* Install synthetic TLB handler at PA 0x0000 and
-                       0x0180 — the OAL restore sets BEV=0, so TLB
-                       misses go here, not to the boot ROM. */
-                    {
-                        static const uint32_t tlb_h[] = {
-                            0x401B5000, 0x001BD1C2, 0x375A001F,
-                            0x409A1000, 0x275B0040, 0x409B1800,
-                            0x42000006, 0x42000018,
-                        };
-                        for (unsigned j = 0; j < 8; j++) {
-                            store_32bit_word(m->cpu,
-                                0xffffffff80000000ULL + j*4, tlb_h[j]);
-                            store_32bit_word(m->cpu,
-                                0xffffffff80000180ULL + j*4, tlb_h[j]);
-                        }
-                    }
-
-                    fprintf(stderr, "[COLD_BOOT] Saved live state"
-                        " + TLB handler (SP=0x%08X RA=0x%08X"
-                        " Status=0x%08X)\n",
-                        (uint32_t)m->cpu->cd.mips.gpr[29],
-                        (uint32_t)m->cpu->cd.mips.gpr[31],
-                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
-                }
-
-                /*
                  * Jump to the kernel cold-start entry at 0x8007B398.
+                 *
+                 * Do NOT save live state to resume_ctx or install
+                 * synthetic TLB handlers — the cold-start code builds
+                 * everything from scratch (page tables, TLB, exception
+                 * handlers, section table, stack).  Polluting resume_ctx
+                 * with RA=0x794C8 caused the post-init WAIT loop.
                  * This function initializes the kernel from scratch:
                  *   - Clears CP0 (Cause, Context, EntryLo, PageMask)
                  *   - Zeros page table at PA 0x1000 (4KB)
