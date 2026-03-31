@@ -1135,6 +1135,36 @@ static bool be300_run_batch(machine_t *m)
                     }
                 }
 
+                /* Inject ROM dispatcher data (callback table,
+                 * bootctx stub, dispatch tables) — needed by the
+                 * OEMInit dispatcher at 0x7AB38. */
+                {
+                    const size_t nregions = sizeof(wince_resume_replay_regions)
+                        / sizeof(wince_resume_replay_regions[0]);
+                    for (size_t ri = 0; ri < nregions; ri++) {
+                        const wince_resume_region_t *reg =
+                            &wince_resume_replay_regions[ri];
+                        if (strstr(reg->name, "resume_context") ||
+                            strstr(reg->name, "stack_frame"))
+                            continue;
+                        uint32_t words_written = 0;
+                        for (uint32_t wi = 0; wi < reg->word_count; wi++) {
+                            if (reg->valid_words[wi]) {
+                                uint64_t va = 0xffffffff80000000ULL
+                                    | (reg->pa + wi * 4);
+                                store_32bit_word(m->cpu, va,
+                                    reg->words[wi]);
+                                words_written++;
+                            }
+                        }
+                        fprintf(stderr,
+                            "[COLD_BOOT] Injected %s: PA 0x%06X,"
+                            " %u/%u words\n",
+                            reg->name, reg->pa,
+                            words_written, reg->word_count);
+                    }
+                }
+
                 /*
                  * Jump to the kernel cold-start entry at 0x8007B398.
                  *
