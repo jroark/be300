@@ -1264,25 +1264,32 @@ static bool be300_run_batch(machine_t *m)
                 store_32bit_word(m->cpu,
                     0xffffffffa00024fcULL, 0xA0060004u);
 
-                /* Inject OEMInit callback table from warm-boot
-                 * captures.  The kernel_init at 0x800947C8 walks
-                 * this table (32 entries × 20 bytes at PA 0x51680)
-                 * to call OEM hardware init functions. */
+                /* Inject ALL warm-boot replay regions.  The kernel
+                 * needs not just the OEMInit callback table but also
+                 * dispatch tables, bootctx stub, and stack frame data
+                 * to fully initialize.  The cold-start at 0x8007B398
+                 * zeros page tables and installs handlers first, then
+                 * kernel_init uses these data structures. */
                 {
-                    const uint32_t *w =
-                        wince_resume_callback_table_a0051680_words;
-                    const uint8_t *v =
-                        wince_resume_callback_table_a0051680_valid;
-                    for (unsigned i = 0; i < 128; i++) {
-                        if (v[i]) {
-                            store_32bit_word(m->cpu,
-                                0xffffffffa0051680ULL + i * 4,
-                                w[i]);
+                    const wince_resume_region_t *regions =
+                        wince_resume_replay_regions;
+                    unsigned nregions = sizeof(wince_resume_replay_regions)
+                        / sizeof(wince_resume_replay_regions[0]);
+                    for (unsigned r = 0; r < nregions; r++) {
+                        const wince_resume_region_t *reg = &regions[r];
+                        for (unsigned i = 0; i < reg->word_count; i++) {
+                            if (reg->valid_words[i]) {
+                                uint64_t va = 0xffffffff80000000ULL
+                                    | reg->pa + i * 4;
+                                store_32bit_word(m->cpu, va,
+                                    reg->words[i]);
+                            }
                         }
+                        fprintf(stderr,
+                            "[COLD_BOOT] Injected %s at PA 0x%06X"
+                            " (%u words)\n",
+                            reg->name, reg->pa, reg->word_count);
                     }
-                    fprintf(stderr,
-                        "[COLD_BOOT] Injected OEMInit callback"
-                        " table at PA 0x51680 (128 words)\n");
                 }
 
                 m->cpu->pc =
