@@ -563,9 +563,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 	uint16_t extend_word = 0;
 
 	if (!cpu->cd.mips.mips16) {
-		fatal("mips_cpu_interpret_mips16_SLOW called when not in "
-		    "MIPS16 mode?\n");
-		cpu->running = 0;
+		/* This is normal after an exception clears mips16 mode */
 		return 0;
 	}
 
@@ -573,6 +571,9 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 	/*  Fetch the instruction  */
 	iw = m16_fetch(cpu, addr, &ok);
 	if (!ok) {
+		/* Check if a TLB exception was taken */
+		if (cpu->cd.mips.coproc[0]->reg[COP0_STATUS] & STATUS_EXL)
+			return 1;
 		fatal("mips_cpu_interpret_mips16_SLOW(): could not read "
 		    "the instruction at 0x%" PRIx64 "\n", addr);
 		cpu->running = 0;
