@@ -597,7 +597,8 @@ machine_t *be300_create(const machine_config_t *cfg)
                             0x00000000); /* nop */
 
                         fprintf(stderr, "[BE300] Patched ROM BEV"
-                            " vectors: TLB@+0x200, GenExc@+0x280,"
+                            " vectors: TLB@+0x200, GenExc@+0x2300"
+                            " (stub@+0x280),"
                             " boot code relocated +0x384→+0x394\n");
                     }
                 } else {
