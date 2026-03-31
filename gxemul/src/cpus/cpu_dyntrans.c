@@ -189,10 +189,26 @@ int DYNTRANS_RUN_INSTR_DEF(struct cpu *cpu)
 		int m16_count = 0;
 		while (cpu->cd.mips.mips16 && cpu->running &&
 		    m16_count < N_SAFE_DYNTRANS_LIMIT) {
-			if (!mips_cpu_interpret_mips16_SLOW(cpu))
+			int r = mips_cpu_interpret_mips16_SLOW(cpu);
+			if (!r) {
+				if (!cpu->running)
+					fprintf(stderr,
+					    "[M16_LOOP] interpret returned 0,"
+					    " running=0 pc=0x%08" PRIx64
+					    " m16=%d\n",
+					    (uint64_t)cpu->pc,
+					    cpu->cd.mips.mips16);
 				break;
+			}
 			m16_count++;
 		}
+		if (!cpu->running)
+			fprintf(stderr,
+			    "[M16_LOOP] exiting with running=0"
+			    " count=%d pc=0x%08" PRIx64
+			    " m16=%d\n",
+			    m16_count, (uint64_t)cpu->pc,
+			    cpu->cd.mips.mips16);
 		return m16_count > 0 ? m16_count : 1;
 	}
 #endif
@@ -1995,6 +2011,8 @@ bad:	/*
 	if (!(single_step || cpu->machine->instruction_trace))
 		DISASSEMBLE(cpu, ib, 1, 0);
 
+	fprintf(stderr, "[DYNTRANS] running=0 at bad label, PC=0x%08"
+	    PRIx64 "\n", (uint64_t)cpu->pc);
 	cpu->running = 0;
 
 	/*  Note: Single-stepping can jump here.  */

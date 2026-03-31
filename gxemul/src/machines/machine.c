@@ -640,7 +640,20 @@ bool machine_run(struct machine *machine)
 	for (int i=0; i<ncpus; i++) {
 		if (cpus[i]->running) {
 			any_running = true;
+			int was_mips16 = cpus[i]->cd.mips.mips16;
+			uint64_t pc_before = cpus[i]->pc;
 			cpus[i]->run_instr(cpus[i]);
+			if (!cpus[i]->running) {
+				fprintf(stderr,
+				    "[MACHINE_RUN] cpu%d stopped after"
+				    " run_instr: before_pc=0x%08" PRIx64
+				    " after_pc=0x%08" PRIx64
+				    " was_m16=%d now_m16=%d\n",
+				    i, pc_before,
+				    (uint64_t)cpus[i]->pc,
+				    was_mips16,
+				    cpus[i]->cd.mips.mips16);
+			}
 		}
 	}
 

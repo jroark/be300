@@ -901,7 +901,11 @@ static bool be300_run_batch(machine_t *m)
 
     if (!machine_run(gxm)) {
         wince_boot_note_fatal_stop(m, "machine-no-longer-running");
-        fprintf(stderr, "[BE300] Loop exit: machine no longer running\n");
+        fprintf(stderr, "[BE300] Loop exit: machine no longer running"
+            " (mips16=%d halted=%d PC=0x%08X)\n",
+            m->cpu->cd.mips.mips16,
+            m->cpu->is_halted,
+            (uint32_t)m->cpu->pc);
 
         /* Dump full CPU state at crash point */
         if (m->cfg.wince_cold_boot) {
