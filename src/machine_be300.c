@@ -1257,114 +1257,25 @@ static bool be300_run_batch(machine_t *m)
                 }
 
                 /*
-                 * Inject ALL warm-boot seed state at the first WAIT.
-                 * Skip the cold-boot callback pass entirely — the
-                 * warm-boot state has fully initialized hardware from
-                 * a running system.  This avoids the interrupt state
-                 * conflicts that occur when mixing cold-boot callbacks
-                 * with warm-boot resume.
+                 * Jump to the kernel cold-start entry at 0x8007B398.
+                 * This function initializes the kernel from scratch:
+                 *   - Clears CP0 (Cause, Context, EntryLo, PageMask)
+                 *   - Zeros page table at PA 0x1000 (4KB)
+                 *   - Sets up section table at PA 0x18C0 (64 entries)
+                 *   - Sets SP to 0xA00017E0 (kseg1, no TLB needed)
+                 *   - Writes TLB entries for kernel address space
+                 *   - Creates processes, loads 95 modules, starts shell
                  *
-                 * Regions: exception vectors (PA 0x0000), TLB page
-                 * tables (PA 0x2000), resume_ctx (PA 0x2200), etc.
+                 * No warm-boot seeds or GPR setup needed — this function
+                 * builds everything from scratch using only kseg0/kseg1.
                  */
-                for (uint32_t si = 0;
-                     si < wince_hw_seed_region_count; si++) {
-                    const wince_pa_seed_region_t *sr =
-                        &wince_hw_seed_regions[si];
-                    store_buf(m->cpu,
-                        0xffffffff80000000ULL | sr->pa,
-                        (const char *)sr->data, sr->size);
-                    fprintf(stderr,
-                        "[COLD_BOOT] Injected warm seed %s:"
-                        " PA 0x%06X, %u bytes\n",
-                        sr->name, sr->pa, sr->size);
-                }
-
-                /* Also inject ROM dispatcher data (callback table,
-                 * bootctx stub, dispatch tables) */
-                {
-                    const size_t nregions = sizeof(wince_resume_replay_regions)
-                        / sizeof(wince_resume_replay_regions[0]);
-                    for (size_t ri = 0; ri < nregions; ri++) {
-                        const wince_resume_region_t *reg =
-                            &wince_resume_replay_regions[ri];
-                        if (strstr(reg->name, "resume_context") ||
-                            strstr(reg->name, "stack_frame"))
-                            continue;
-                        uint32_t words_written = 0;
-                        for (uint32_t wi = 0; wi < reg->word_count; wi++) {
-                            if (reg->valid_words[wi]) {
-                                uint64_t va = 0xffffffff80000000ULL
-                                    | (reg->pa + wi * 4);
-                                store_32bit_word(m->cpu, va,
-                                    reg->words[wi]);
-                                words_written++;
-                            }
-                        }
-                        fprintf(stderr,
-                            "[COLD_BOOT] Injected %s: PA 0x%06X,"
-                            " %u/%u words\n",
-                            reg->name, reg->pa,
-                            words_written, reg->word_count);
-                    }
-                }
-
-                /*
-                 * Restore all GPRs and CP0 directly from the
-                 * warm-boot resume_ctx, then jump to RA.
-                 * This bypasses the post-WAIT OAL code entirely
-                 * (vtable init, HW setup, check1/check2) which
-                 * causes interrupt state side effects.
-                 */
-                {
-                    const uint8_t *ctx =
-                        wince_hw_seed_resume_ctx_data;
-#define CTX32(off) ((uint32_t)ctx[off] | \
-    ((uint32_t)ctx[(off)+1]<<8) | \
-    ((uint32_t)ctx[(off)+2]<<16) | \
-    ((uint32_t)ctx[(off)+3]<<24))
-                    /* GPR 1-7 */
-                    for (int r = 1; r <= 7; r++)
-                        m->cpu->cd.mips.gpr[r] =
-                            (int32_t)CTX32((r-1)*4);
-                    /* GPR 9-28 (skip t0=8) */
-                    for (int r = 9; r <= 28; r++)
-                        m->cpu->cd.mips.gpr[r] =
-                            (int32_t)CTX32(0x1C + (r-9)*4);
-                    /* SP, FP, RA */
-                    m->cpu->cd.mips.gpr[29] =
-                        (int32_t)CTX32(0x6C);
-                    m->cpu->cd.mips.gpr[30] =
-                        (int32_t)CTX32(0x70);
-                    m->cpu->cd.mips.gpr[31] =
-                        (int32_t)CTX32(0x74);
-                    /* HI, LO */
-                    m->cpu->cd.mips.hi = (int32_t)CTX32(0x78);
-                    m->cpu->cd.mips.lo = (int32_t)CTX32(0x7C);
-                    /* CP0 Status, EPC, Config */
-                    /* Restore Status from resume_ctx, then set IE=1.
-                     * The warm-boot capture had IE=0 (atomicity at
-                     * hibernate time).  The kernel expects interrupts
-                     * enabled — the scheduler needs timer ticks. */
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
-                        CTX32(0xA8) | 0x1u;  /* IE=1 */
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] =
-                        CTX32(0xB0);
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_CONFIG] =
-                        CTX32(0xB4);
-                    /* Jump to RA */
-                    uint32_t ra = CTX32(0x74);
-                    m->cpu->pc = (int32_t)ra;
-                    m->cpu->is_halted = false;
-                    fprintf(stderr,
-                        "[COLD_BOOT] Direct warm resume:"
-                        " PC=0x%08X SP=0x%08X"
-                        " Status=0x%08X\n",
-                        ra,
-                        (uint32_t)m->cpu->cd.mips.gpr[29],
-                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
-#undef CTX32
-                }
+                m->cpu->pc = (int64_t)(int32_t)UINT32_C(0x8007B398);
+                m->cpu->is_halted = false;
+                m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &=
+                    ~(uint64_t)0x1u;  /* clear IE */
+                fprintf(stderr,
+                    "[COLD_BOOT] Jumping to kernel cold-start"
+                    " at 0x8007B398\n");
 
                 /* Dump decompressed NK.exe binary for analysis */
                 {
