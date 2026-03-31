@@ -675,7 +675,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 				imm8 <<= 2;
 			}
 			M16REG(rx) = (int32_t)(
-			    (int32_t)((cpu->pc + 2) & ~3) + imm8);
+			    (int32_t)(cpu->pc & ~(uint32_t)3) + imm8);
 		}
 		break;
 
@@ -1180,7 +1180,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			} else {
 				imm8 <<= 2;
 			}
-			a = ((cpu->pc + 2) & ~3) + imm8;
+			a = (cpu->pc & ~(uint64_t)3) + imm8;
 			val = m16_load_word(cpu, a, &ok);
 			M16_CHECK_MEM_OK(ok);
 			M16REG(rx) = (int32_t)val;
