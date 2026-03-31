@@ -914,7 +914,8 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			int imm8;
 			if (extended) {
 				imm8 = ((extend_word & 0x1f) << 11) |
-				    (iw & 0xff);
+				    ((extend_word >> 5) & 0x3f) << 5 |
+				    (iw & 0x1f);
 				imm8 = SIGN_EXTEND(imm8, 16);
 			} else {
 				imm8 = iw & 0xff;
@@ -929,7 +930,8 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			uint32_t imm8;
 			if (extended) {
 				imm8 = ((extend_word & 0x1f) << 11) |
-				    (iw & 0xff);
+				    ((extend_word >> 5) & 0x3f) << 5 |
+				    (iw & 0x1f);
 				imm8 = SIGN_EXTEND(imm8, 16);
 			} else {
 				imm8 = iw & 0xff;
