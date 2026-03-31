@@ -1949,7 +1949,13 @@ void mips_cpu_exception(struct cpu *cpu, int exccode, int tlb, uint64_t vaddr,
 			reg[COP0_EPC] = cpu->pc;
 			reg[COP0_CAUSE] &= ~CAUSE_BD;
 		}
+		/*  Preserve MIPS16 mode in EPC bit 0:  */
+		if (cpu->cd.mips.mips16)
+			reg[COP0_EPC] |= 1;
 	}
+
+	/*  Exceptions always execute in MIPS32 mode:  */
+	cpu->cd.mips.mips16 = 0;
 
 	if (cpu->delay_slot)
 		cpu->delay_slot = EXCEPTION_IN_DELAY_SLOT;
