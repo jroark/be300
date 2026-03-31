@@ -572,20 +572,29 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 	 */
 	if (cpu->delay_slot == DELAYED) {
 		uint64_t target = cpu->cd.mips.m16_delay_target;
+		int mode = cpu->cd.mips.m16_delay_jalx;
 		cpu->delay_slot = NOT_DELAYED;
-		if (cpu->cd.mips.m16_delay_jalx) {
-			/*  Switching to MIPS32 mode  */
-			cpu->cd.mips.mips16 = 0;
-			cpu->cd.mips.m16_delay_jalx = 0;
-			cpu->pc = target & ~(uint64_t)1;
-		} else if (target & 1) {
-			/*  Staying in MIPS16 mode (JR/JALR return)  */
-			cpu->pc = target & ~(uint64_t)1;
-		} else {
-			/*  MIPS32 target without JALX (shouldn't happen
-			 *  in normal code, but handle it)  */
+		cpu->cd.mips.m16_delay_jalx = 0;
+		switch (mode) {
+		case 0:
+			/*  JAL: stay in MIPS16 mode, target is
+			 *  a plain address (bit 0 not meaningful)  */
+			cpu->pc = target;
+			break;
+		case 1:
+			/*  JALX: switch to MIPS32 mode  */
 			cpu->cd.mips.mips16 = 0;
 			cpu->pc = target;
+			break;
+		case 2:
+			/*  JR/JALR: mode determined by target bit 0  */
+			if (target & 1) {
+				cpu->pc = target & ~(uint64_t)1;
+			} else {
+				cpu->cd.mips.mips16 = 0;
+				cpu->pc = target;
+			}
+			break;
 		}
 		return 1;
 	}
@@ -663,6 +672,26 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 	}
 
 	cpu->ninstrs ++;
+
+	/* Debug trace for ROM MIPS16 dispatcher key PCs */
+	{
+		uint32_t pc32 = (uint32_t)cpu->pc;
+		if (pc32 >= 0x9FC00C20 && pc32 <= 0x9FC00D20) {
+			uint32_t s0 = (uint32_t)cpu->cd.mips.gpr[16];
+			uint32_t s1 = (uint32_t)cpu->cd.mips.gpr[17];
+			uint32_t v0 = (uint32_t)cpu->cd.mips.gpr[2];
+			uint32_t v1 = (uint32_t)cpu->cd.mips.gpr[3];
+			uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[4];
+			uint32_t sp = (uint32_t)cpu->cd.mips.gpr[29];
+			uint32_t ra = (uint32_t)cpu->cd.mips.gpr[31];
+			fprintf(stderr,
+			    "[M16] PC=%08X iw=%04X%s"
+			    " v0=%08X v1=%08X a0=%08X s0=%08X s1=%08X"
+			    " sp=%08X ra=%08X\n",
+			    pc32, iw, extended ? " EXT" : "",
+			    v0, v1, a0, s0, s1, sp, ra);
+		}
+	}
 
 	rx = (iw >> 8) & 0x7;
 	ry = (iw >> 5) & 0x7;
@@ -1338,7 +1367,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 				/*  JR has a one-instruction delay slot.
 				 *  Save target and advance PC to delay slot.  */
 				cpu->cd.mips.m16_delay_target = target;
-				cpu->cd.mips.m16_delay_jalx = !(target & 1);
+				cpu->cd.mips.m16_delay_jalx = 2;  /* JR/JALR: use bit 0 */
 				cpu->pc += 2;  /*  advance to delay slot  */
 				cpu->delay_slot = TO_BE_DELAYED;
 				if (rx == 0 &&
@@ -1355,7 +1384,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 				    (cpu->pc + 4) | 1;
 				/*  JALR has a one-instruction delay slot.  */
 				cpu->cd.mips.m16_delay_target = target;
-				cpu->cd.mips.m16_delay_jalx = !(target & 1);
+				cpu->cd.mips.m16_delay_jalx = 2;  /* JR/JALR: use bit 0 */
 				cpu->pc += 2;  /*  advance to delay slot  */
 				cpu->delay_slot = TO_BE_DELAYED;
 				if (cpu->machine->show_trace_tree)
