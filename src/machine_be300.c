@@ -599,6 +599,16 @@ machine_t *be300_create(const machine_config_t *cfg)
                         store_32bit_word(m->cpu, rom_va + 0x3F8,
                             0x00000000); /* nop */
 
+                        /* Patch delay loop SUB→SUBU at +0x51C/+0x520.
+                         * The delay function uses SUB (traps on overflow)
+                         * to compute elapsed Count ticks. In the emulator,
+                         * Count can wrap past 0x80000000, causing signed
+                         * overflow. SUBU is safe (same arithmetic, no trap). */
+                        store_32bit_word(m->cpu, rom_va + 0x51C,
+                            0x00C53023); /* subu a2,a2,a1 (was sub) */
+                        store_32bit_word(m->cpu, rom_va + 0x520,
+                            0x00461023); /* subu v0,v0,a2 (was sub) */
+
                         fprintf(stderr, "[BE300] Patched ROM BEV"
                             " vectors: TLB@+0x200, GenExc@+0x2300"
                             " (stub@+0x280),"
