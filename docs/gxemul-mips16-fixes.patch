@@ -1,0 +1,231 @@
+diff --git a/src/cpus/cpu_mips16.c b/src/cpus/cpu_mips16.c
+index f107c2f..9634fbc 100644
+--- a/src/cpus/cpu_mips16.c
++++ b/src/cpus/cpu_mips16.c
+@@ -212,11 +212,11 @@ int mips_cpu_disassemble_instr_mips16(struct cpu *cpu, unsigned char *ib,
+ 				break;
+ 			case M16_I8_MOV32R:
+ 				{
+-					int r32 = ((iw >> 3) & 0x1f);
+-					int rz16 = (iw & 0x7);
++					int rz5 = iw & 0x1f;
++					int r32 = ((rz5 & 0x7) << 2) | (rz5 >> 3);
+ 					debug("mov32r\t$%s, $%s\n",
+ 					    regnames[r32],
+-					    regnames[mips16_reg_map[rz16]]);
++					    regnames[mips16_reg_map[ry]]);
+ 				}
+ 				break;
+ 			case M16_I8_MOVR32:
+@@ -574,6 +574,35 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 		return 0;
+ 	}
+ 
++	/*
++	 *  Delay slot completion: if we just executed a delay slot
++	 *  instruction (delay_slot == DELAYED), redirect PC to the
++	 *  saved branch target now.
++	 */
++	if (cpu->delay_slot == DELAYED) {
++		uint64_t target = cpu->cd.mips.m16_delay_target;
++		int mode = cpu->cd.mips.m16_delay_jalx;
++		cpu->delay_slot = NOT_DELAYED;
++		cpu->cd.mips.m16_delay_jalx = 0;
++		switch (mode) {
++		case 0:  /* JAL: stay in MIPS16 mode */
++			cpu->pc = target;
++			break;
++		case 1:  /* JALX: switch to MIPS32 */
++			cpu->cd.mips.mips16 = 0;
++			cpu->pc = target;
++			break;
++		case 2:  /* JR/JALR: mode from bit 0 */
++			if (target & 1) {
++				cpu->pc = target & ~(uint64_t)1;
++			} else {
++				cpu->cd.mips.mips16 = 0;
++				cpu->pc = target;
++			}
++			break;
++		}
++		return 1;
++	}
+ 
+ 	/*  Fetch the instruction  */
+ 	iw = m16_fetch(cpu, addr, &ok);
+@@ -667,7 +696,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 				imm8 <<= 2;
+ 			}
+ 			M16REG(rx) = (int32_t)(
+-			    (int32_t)((cpu->pc + 2) & ~3) + imm8);
++			    (int32_t)(cpu->pc & ~(uint32_t)3) + imm8);
+ 		}
+ 		break;
+ 
+@@ -736,24 +765,24 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 			    ((uint32_t)((hi_word >> 5) & 0x1f) << 16) |
+ 			    lo_word;
+ 
+-			/*  Link: RA = address of instruction after JAL (PC+4,
+-			 *  since JAL is 4 bytes).  Set bit 0 to indicate
+-			 *  MIPS16 mode for the return.  */
++			/*  Link: RA = address after the 2-byte delay slot.  */
+ 			cpu->cd.mips.gpr[MIPS_GPR_RA] =
+-			    (cpu->pc + 4) | 1;
++			    (cpu->pc + 6) | 1;
+ 
+-			/*  Compute target: 26-bit field shifted left 2  */
++			/*  Save target for delay slot mechanism  */
+ 			target <<= 2;
+-			cpu->pc = ((cpu->pc + 2) &
++			cpu->cd.mips.m16_delay_target =
++			    ((cpu->pc + 2) &
+ 			    ~(uint64_t)0x0fffffff) | target;
++			cpu->cd.mips.m16_delay_jalx = jalx;
+ 
+-			if (jalx) {
+-				/*  Switch to MIPS32 mode  */
+-				cpu->cd.mips.mips16 = 0;
+-			}
++			/*  Advance PC to delay slot (PC + 4)  */
++			cpu->pc += 4;
++			cpu->delay_slot = TO_BE_DELAYED;
+ 
+ 			if (cpu->machine->show_trace_tree)
+-				cpu_functioncall_trace(cpu, cpu->pc);
++				cpu_functioncall_trace(cpu,
++				    cpu->cd.mips.m16_delay_target);
+ 			return 1;
+ 		}
+ 
+@@ -861,7 +890,8 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 			int imm8;
+ 			if (extended) {
+ 				imm8 = ((extend_word & 0x1f) << 11) |
+-				    (iw & 0xff);
++				    ((extend_word >> 5) & 0x3f) << 5 |
++				    (iw & 0x1f);
+ 				imm8 = SIGN_EXTEND(imm8, 16);
+ 			} else {
+ 				imm8 = iw & 0xff;
+@@ -876,7 +906,8 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 			uint32_t imm8;
+ 			if (extended) {
+ 				imm8 = ((extend_word & 0x1f) << 11) |
+-				    (iw & 0xff);
++				    ((extend_word >> 5) & 0x3f) << 5 |
++				    (iw & 0x1f);
+ 				imm8 = SIGN_EXTEND(imm8, 16);
+ 			} else {
+ 				imm8 = iw & 0xff;
+@@ -979,10 +1010,10 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 					 *  Actually: r32 = bits 4:0
+ 					 *  combined from different fields.
+ 					 */
+-					int r32 = ((iw >> 3) & 0x1f);
+-					int rz16 = iw & 0x7;
++					int rz5 = iw & 0x1f;
++					int r32 = ((rz5 & 0x7) << 2) | (rz5 >> 3);
+ 					cpu->cd.mips.gpr[r32] =
+-					    M16REG(rz16);
++					    M16REG(ry);
+ 				}
+ 				break;
+ 			case M16_I8_MOVR32:
+@@ -1007,7 +1038,8 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 			int imm8 = iw & 0xff;
+ 			if (extended) {
+ 				imm8 = ((extend_word & 0x1f) << 11) |
+-				    (iw & 0x7ff);
++				    ((extend_word >> 5) & 0x3f) << 5 |
++				    (iw & 0x1f);
+ 				imm8 = SIGN_EXTEND(imm8, 16);
+ 			}
+ 			M16REG(rx) = (int32_t)imm8;
+@@ -1019,7 +1051,8 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 			int imm8 = iw & 0xff;
+ 			if (extended) {
+ 				imm8 = ((extend_word & 0x1f) << 11) |
+-				    (iw & 0x7ff);
++				    ((extend_word >> 5) & 0x3f) << 5 |
++				    (iw & 0x1f);
+ 				imm8 = SIGN_EXTEND(imm8, 16);
+ 			}
+ 			cpu->cd.mips.gpr[MIPS_GPR_T8] =
+@@ -1166,7 +1199,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 			} else {
+ 				imm8 <<= 2;
+ 			}
+-			a = ((cpu->pc + 2) & ~3) + imm8;
++			a = (cpu->pc & ~(uint64_t)3) + imm8;
+ 			val = m16_load_word(cpu, a, &ok);
+ 			if (!ok) { M16_MEM_EXCEPTION_CHECK(); }
+ 			M16REG(rx) = (int32_t)val;
+@@ -1281,23 +1314,35 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 		case M16_RR_JR:
+ 			{
+ 				uint64_t target;
++				/*
++				 *  MIPS16 JR/JALR share func=0.
++				 *  ry field [7:5] distinguishes them:
++				 *    ry=000: JR rx (no link)
++				 *    ry=010: JALR rx (link RA)
++				 *  When rx=0: JR $ra
++				 */
++				int is_jalr = (ry == 2 && rx != 0);
+ 				if (rx == 0) {
+-					/*  JR $ra  */
+ 					target = cpu->cd.mips.gpr[MIPS_GPR_RA];
+ 				} else {
+ 					target = M16REG(rx);
+ 				}
+-				if (target & 1) {
+-					/*  Stay in MIPS16 mode  */
+-					cpu->pc = target & ~(uint64_t)1;
+-				} else {
+-					/*  Switch to MIPS32 mode  */
+-					cpu->cd.mips.mips16 = 0;
+-					cpu->pc = target;
++				if (is_jalr) {
++					cpu->cd.mips.gpr[MIPS_GPR_RA] =
++					    (cpu->pc + 4) | 1;
+ 				}
+-				if (rx == 0 &&
++				/*  Both JR and JALR have a delay slot  */
++				cpu->cd.mips.m16_delay_target = target;
++				cpu->cd.mips.m16_delay_jalx = 2;
++				cpu->pc += 2;
++				cpu->delay_slot = TO_BE_DELAYED;
++				if (!is_jalr && rx == 0 &&
+ 				    cpu->machine->show_trace_tree)
+ 					cpu_functioncall_trace_return(cpu);
++				else if (is_jalr &&
++				    cpu->machine->show_trace_tree)
++					cpu_functioncall_trace(cpu,
++					    target & ~(uint64_t)1);
+ 				return 1;
+ 			}
+ 		case M16_RR_JALR:
+@@ -1429,5 +1474,9 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
+ 	else
+ 		cpu->pc += 2;
+ 
++	/*  Transition delay slot state  */
++	if (cpu->delay_slot == TO_BE_DELAYED)
++		cpu->delay_slot = DELAYED;
++
+ 	return 1;
+ }
+diff --git a/src/include/cpu_mips.h b/src/include/cpu_mips.h
+index 82eb1d4..b7f6706 100644
+--- a/src/include/cpu_mips.h
++++ b/src/include/cpu_mips.h
+@@ -217,6 +217,8 @@ struct mips_cpu {
+ 
+ 	/*  MIPS16 ISA mode:  */
+ 	int		mips16;		/*  1 = currently in MIPS16 mode  */
++	uint64_t	m16_delay_target;  /*  JAL/JALX/JR/JALR target (pending delay slot)  */
++	int		m16_delay_jalx;    /*  0=JAL(stay M16), 1=JALX(->M32), 2=JR/JALR(bit0)  */
+ 
+ 	/*  Coprocessors:  */
+ 	struct mips_coproc *coproc[N_MIPS_COPROCS];
