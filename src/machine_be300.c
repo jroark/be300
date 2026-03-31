@@ -1299,22 +1299,56 @@ static bool be300_run_batch(machine_t *m)
                  * 0x79668 restores GPRs/CP0 from resume_ctx and
                  * JR $ra.  Without seeding, SP=0 and RA=0 → crash.
                  *
-                 * Set RA to 0x800794C8 (post-WAIT OAL init) which
-                 * calls the OEMInit callback dispatcher at 0x7AB38.
-                 * This initializes hardware that kernel processes
-                 * need.  SP set to kseg1 stack that doesn't need TLB.
+                 * Resume_ctx layout (PA 0x2200):
+                 *   GPR: 0x00-0x7C (packed, skips $t0)
+                 *     0x6C=SP, 0x70=$fp, 0x74=RA, 0x78=HI, 0x7C=LO
+                 *   CP0: 0x80-0xD0 (packed, skips some)
+                 *     0x80=Index, 0x84=Random, 0x88=EntryLo0,
+                 *     0x8C=EntryLo1, 0x90=Context, 0x94=PageMask,
+                 *     0x98=Wired, 0x9C=Count, 0xA0=EntryHi,
+                 *     0xA4=Compare, 0xA8=Status, 0xAC=Cause,
+                 *     0xB0=EPC, 0xB4=Config
                  *
-                 * Resume_ctx layout:
-                 *   0x6C=SP, 0x74=RA, 0xA8=Status, 0xAC=Cause
+                 * Critical: Wired MUST be 2 so TLB entries 0,1
+                 * (installed by cold-start) survive TLBWR eviction.
+                 * Values from BE300Probe_v1.txt PA 0x2280-0x22B4.
                  */
+                /* GPR seeds */
                 store_32bit_word(m->cpu,
-                    0xffffffffa000226cULL, 0xA00017E0u); /* SP */
+                    0xffffffffa000226cULL, 0xA00017E0u); /* SP (kseg1, no TLB) */
                 store_32bit_word(m->cpu,
                     0xffffffffa0002274ULL, 0x800794C8u); /* RA → OAL init */
+                /* CP0 seeds from hardware survey */
+                store_32bit_word(m->cpu,
+                    0xffffffffa0002290ULL, 0x00000220u); /* Context: PTEBase */
+                store_32bit_word(m->cpu,
+                    0xffffffffa0002294ULL, 0x00001800u); /* PageMask: 4KB pages */
+                store_32bit_word(m->cpu,
+                    0xffffffffa0002298ULL, 0x00000002u); /* Wired: protect entries 0,1 */
                 store_32bit_word(m->cpu,
                     0xffffffffa00022a8ULL, 0x00008001u); /* Status: IE=1 IM7 KSU=0 */
                 store_32bit_word(m->cpu,
                     0xffffffffa00022acULL, 0x00000000u); /* Cause: clear */
+                store_32bit_word(m->cpu,
+                    0xffffffffa00022b4ULL, 0x10135923u); /* Config: VR4131 hw value */
+
+                /*
+                 * Inject TLB context at PA 0x2000 from hardware
+                 * survey (wince_hw_seed_ctx_tlb_data, 32 entries
+                 * × 16 bytes).  The TLB refill handler may use
+                 * this table to reload evicted entries.
+                 */
+                for (unsigned ci = 0;
+                     ci < sizeof(wince_hw_seed_ctx_tlb_data);
+                     ci += 4) {
+                    uint32_t w =
+                        (uint32_t)wince_hw_seed_ctx_tlb_data[ci]
+                        | ((uint32_t)wince_hw_seed_ctx_tlb_data[ci+1] << 8)
+                        | ((uint32_t)wince_hw_seed_ctx_tlb_data[ci+2] << 16)
+                        | ((uint32_t)wince_hw_seed_ctx_tlb_data[ci+3] << 24);
+                    store_32bit_word(m->cpu,
+                        0xffffffffa0002000ULL + ci, w);
+                }
 
                 m->cpu->pc =
                     (int64_t)(int32_t)UINT32_C(0x8007B398);
