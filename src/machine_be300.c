@@ -1247,25 +1247,35 @@ static bool be300_run_batch(machine_t *m)
                  * 1163-1188 already has the correct mapping.
                  */
 
-                /* Ensure PA 0x24FC has the NK.exe entry point.
-                 * The ROM code after the dispatcher reads this and
-                 * JR to NK.exe.  On real HW, the MIPS16 dispatcher
-                 * populates it.  Ensure it's set for our path too. */
+                /*
+                 * The MIPS16 dispatcher at 0x9FC00C20 populates the
+                 * OEMInit callback table and resume_ctx on real HW.
+                 * However, the dispatched functions need VRC4173
+                 * register emulation we don't have yet — they return
+                 * 0 from unimplemented registers, causing the dispatch
+                 * loop to run forever (SP underflows into kuseg).
+                 *
+                 * For now, skip the dispatcher and jump directly to
+                 * the kernel cold-start.  The callback table has been
+                 * injected from warm-boot captures (wince_resume_
+                 * replay_data.h).  Set up the same state the ROM boot
+                 * continuation at +0x3D0 would produce.
+                 */
                 store_32bit_word(m->cpu,
                     0xffffffffa00024fcULL, 0xA0060004u);
 
-                m->cpu->pc = (int64_t)(int32_t)UINT32_C(0x9FC00C20);
-                m->cpu->cd.mips.mips16 = 1;
-                m->cpu->cd.mips.gpr[MIPS_GPR_RA] =
-                    UINT32_C(0x8007B398);  /* return to cold-start */
+                m->cpu->pc =
+                    (int64_t)(int32_t)UINT32_C(0x8007B398);
+                m->cpu->cd.mips.mips16 = 0;
                 m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
                     (int32_t)UINT32_C(0x80003800);
                 m->cpu->is_halted = false;
                 m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &=
                     ~(uint64_t)0x1u;  /* clear IE */
                 fprintf(stderr,
-                    "[COLD_BOOT] Calling ROM MIPS16 dispatcher"
-                    " at 0x9FC00C20 (RA=0x8007B398)\n");
+                    "[COLD_BOOT] Skipping MIPS16 dispatcher,"
+                    " jumping to kernel cold-start at"
+                    " 0x8007B398\n");
 
                 /* Dump decompressed NK.exe binary for analysis */
                 {
