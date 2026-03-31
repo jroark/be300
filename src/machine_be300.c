@@ -389,10 +389,17 @@ machine_t *be300_create(const machine_config_t *cfg)
                     {
                         uint64_t rom_va = 0xffffffffBFC00000ULL;
 
-                        /* +0x200: BEV TLB Refill handler (identity map) */
+                        /* +0x200: BEV TLB Refill handler.
+                         * Maps kseg3 (0xC0000000+) to low SDRAM by masking
+                         * the upper address bits.  The ROM's MIPS16 dispatcher
+                         * uses stack at 0xFF10xxxx which needs to map to
+                         * PA 0x00F0xxxx.  Uses VPN2 & 0x1FFFFF as PFN. */
                         static const uint32_t tlb_refill[] = {
                             0x401B5000, /* mfc0 $k1, EntryHi    */
                             0x001BD1C2, /* srl  $k0, $k1, 7     */
+                            0x3C1B1FFF, /* lui  $k1, 0x1FFF     */
+                            0x377BFFFF, /* ori  $k1, 0xFFFF     */
+                            0x035BD024, /* and  $k0, $k0, $k1   */
                             0x375A001F, /* ori  $k0, $k0, 0x1F  */
                             0x409A1000, /* mtc0 $k0, EntryLo0   */
                             0x275B0040, /* addiu $k1, $k0, 0x40 */
@@ -400,7 +407,7 @@ machine_t *be300_create(const machine_config_t *cfg)
                             0x42000006, /* tlbwr                 */
                             0x42000018, /* eret                  */
                         };
-                        for (unsigned j = 0; j < 8; j++)
+                        for (unsigned j = 0; j < sizeof(tlb_refill)/sizeof(tlb_refill[0]); j++)
                             store_32bit_word(m->cpu,
                                 rom_va + 0x200 + j * 4,
                                 tlb_refill[j]);
