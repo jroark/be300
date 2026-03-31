@@ -673,22 +673,6 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 
 	cpu->ninstrs ++;
 
-	/* Trace ROM MIPS16 region to find stack corruption */
-	{
-		uint32_t pc32 = (uint32_t)cpu->pc;
-		if (pc32 >= 0x9FC00C20 && pc32 < 0x9FC02200) {
-			fprintf(stderr,
-			    "[M16] %08X %04X%s sp=%08X ra=%08X a0=%08X"
-			    " v0=%08X s0=%08X\n",
-			    pc32, iw, extended ? "+" : " ",
-			    (uint32_t)cpu->cd.mips.gpr[29],
-			    (uint32_t)cpu->cd.mips.gpr[31],
-			    (uint32_t)cpu->cd.mips.gpr[4],
-			    (uint32_t)cpu->cd.mips.gpr[2],
-			    (uint32_t)cpu->cd.mips.gpr[16]);
-		}
-	}
-
 	rx = (iw >> 8) & 0x7;
 	ry = (iw >> 5) & 0x7;
 	rz = (iw >> 2) & 0x7;
