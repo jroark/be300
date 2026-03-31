@@ -365,8 +365,7 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
     /* SPL transfer engine registers (0xA400-0xA4FF). */
     if (offset >= NAND_XFER_BASE && offset < NAND_XFER_END) {
         uint32_t idx = (offset - NAND_XFER_BASE) >> 2;
-        if (offset == NAND_REG_XFER_STATUS ||
-            offset == NAND_REG_XFER_STATUS2) {
+        if (offset == NAND_REG_XFER_STATUS) {
             val = s->ready ? 0x00000001u : 0u;
         } else if (offset >= NAND_REG_BUFFER_BASE &&
                    offset < NAND_REG_BUFFER_END) {
