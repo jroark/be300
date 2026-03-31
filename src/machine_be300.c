@@ -1293,19 +1293,28 @@ static bool be300_run_batch(machine_t *m)
                 }
 
                 /*
-                 * The cold-start at 0x8007B398 ends with JR to
-                 * 0x8008B57C which is a context restore function.
-                 * It loads RA from PA 0x00D8 (= s0+0xD8 where
-                 * s0=0xA0000000).  On real HW, the ROM dispatcher
-                 * populates PA 0x00D8 with the address of the code
-                 * after the JR (0x8007B57C) which sets SP to the
-                 * kseg3 stack and calls kernel_init(pTOC).
+                 * Seed resume_ctx at PA 0x2200 for the post-WAIT
+                 * resume path.  After kernel_init, the scheduler
+                 * enters idle → WAIT.  The post-WAIT OAL code at
+                 * 0x79668 restores GPRs/CP0 from resume_ctx and
+                 * JR $ra.  Without seeding, SP=0 and RA=0 → crash.
                  *
-                 * Without this, RA=0 → JR to address 0 → executes
-                 * the TLB refill handler as normal code → crash.
+                 * Set RA to 0x800794C8 (post-WAIT OAL init) which
+                 * calls the OEMInit callback dispatcher at 0x7AB38.
+                 * This initializes hardware that kernel processes
+                 * need.  SP set to kseg1 stack that doesn't need TLB.
+                 *
+                 * Resume_ctx layout:
+                 *   0x6C=SP, 0x74=RA, 0xA8=Status, 0xAC=Cause
                  */
                 store_32bit_word(m->cpu,
-                    0xffffffffa00000d8ULL, 0x8007B57Cu);
+                    0xffffffffa000226cULL, 0xA00017E0u); /* SP */
+                store_32bit_word(m->cpu,
+                    0xffffffffa0002274ULL, 0x800794C8u); /* RA → OAL init */
+                store_32bit_word(m->cpu,
+                    0xffffffffa00022a8ULL, 0x00008001u); /* Status: IE=1 IM7 KSU=0 */
+                store_32bit_word(m->cpu,
+                    0xffffffffa00022acULL, 0x00000000u); /* Cause: clear */
 
                 m->cpu->pc =
                     (int64_t)(int32_t)UINT32_C(0x8007B398);
