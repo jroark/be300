@@ -565,6 +565,21 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 	int extended = 0;
 	uint16_t extend_word = 0;
 
+	/*
+	 *  JAL/JALX delay slot completion: if we just executed the
+	 *  delay slot instruction (delay_slot == DELAYED), redirect
+	 *  PC to the saved branch target now.
+	 */
+	if (cpu->delay_slot == DELAYED) {
+		cpu->pc = cpu->cd.mips.m16_delay_target;
+		cpu->delay_slot = NOT_DELAYED;
+		if (cpu->cd.mips.m16_delay_jalx) {
+			cpu->cd.mips.mips16 = 0;
+			cpu->cd.mips.m16_delay_jalx = 0;
+		}
+		return 1;
+	}
+
 	if (!cpu->cd.mips.mips16) {
 		fatal("mips_cpu_interpret_mips16_SLOW called when not in "
 		    "MIPS16 mode?\n");
@@ -749,24 +764,29 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			    ((uint32_t)((hi_word >> 5) & 0x1f) << 16) |
 			    lo_word;
 
-			/*  Link: RA = address of instruction after JAL (PC+4,
-			 *  since JAL is 4 bytes).  Set bit 0 to indicate
-			 *  MIPS16 mode for the return.  */
+			/*  Link: RA = address after the 2-byte delay slot
+			 *  (PC + 4 for the 32-bit JAL + 2 for delay slot).
+			 *  Set bit 0 to indicate MIPS16 return mode.  */
 			cpu->cd.mips.gpr[MIPS_GPR_RA] =
-			    (cpu->pc + 4) | 1;
+			    (cpu->pc + 6) | 1;
 
 			/*  Compute target: 26-bit field shifted left 2  */
 			target <<= 2;
-			cpu->pc = ((cpu->pc + 2) &
+			cpu->cd.mips.m16_delay_target =
+			    ((cpu->pc + 2) &
 			    ~(uint64_t)0x0fffffff) | target;
+			cpu->cd.mips.m16_delay_jalx = jalx;
 
-			if (jalx) {
-				/*  Switch to MIPS32 mode  */
-				cpu->cd.mips.mips16 = 0;
-			}
+			/*  Advance PC to delay slot (PC + 4).  The next
+			 *  interpreter call executes the delay slot, then
+			 *  the completion code at the top redirects to
+			 *  the branch target.  */
+			cpu->pc += 4;
+			cpu->delay_slot = TO_BE_DELAYED;
 
 			if (cpu->machine->show_trace_tree)
-				cpu_functioncall_trace(cpu, cpu->pc);
+				cpu_functioncall_trace(cpu,
+				    cpu->cd.mips.m16_delay_target);
 			return 1;
 		}
 
@@ -1446,6 +1466,11 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 		cpu->pc += 4;
 	else
 		cpu->pc += 2;
+
+	/*  Transition delay slot state: after executing the delay
+	 *  slot instruction, the next call will redirect to target.  */
+	if (cpu->delay_slot == TO_BE_DELAYED)
+		cpu->delay_slot = DELAYED;
 
 	return 1;
 }
