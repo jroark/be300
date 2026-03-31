@@ -52,6 +52,21 @@ static const int mips16_reg_map[8] = MIPS16_REG_MAP;
 
 #define	M16REG(x)	cpu->cd.mips.gpr[mips16_reg_map[(x) & 7]]
 
+/*
+ *  When a MIPS16 memory access fails, check if it was a TLB exception
+ *  (EXL now set in Status).  If so, return 1 — the exception was taken
+ *  and the exception handler will run.  Only kill the CPU for true
+ *  fatal failures (bus error, etc.).
+ */
+#define	M16_CHECK_MEM_OK(ok)	do {					\
+	if (!(ok)) {							\
+		if (cpu->cd.mips.coproc[0]->reg[COP0_STATUS] & STATUS_EXL) \
+			return 1;  /* exception taken, handler will run */  \
+		cpu->running = 0;					\
+		return 0;						\
+	}								\
+} while (0)
+
 /*  Sign-extend a value with 'bits' significant bits  */
 #define	SIGN_EXTEND(val, bits)	\
 	((int32_t)((val) << (32 - (bits))) >> (32 - (bits)))
@@ -1032,7 +1047,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			a = (uint64_t)((int64_t)(int32_t)M16REG(rx) +
 			    offset5);
 			val = m16_load_byte(cpu, a, &ok);
-			if (!ok) { cpu->running = 0; return 0; }
+			M16_CHECK_MEM_OK(ok);
 			M16REG(ry) = (int32_t)(int8_t)val;
 		}
 		break;
@@ -1053,7 +1068,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			a = (uint64_t)((int64_t)(int32_t)M16REG(rx) +
 			    offset5);
 			val = m16_load_half(cpu, a, &ok);
-			if (!ok) { cpu->running = 0; return 0; }
+			M16_CHECK_MEM_OK(ok);
 			M16REG(ry) = (int32_t)(int16_t)val;
 		}
 		break;
@@ -1074,7 +1089,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			a = (uint64_t)((int64_t)(int32_t)
 			    cpu->cd.mips.gpr[MIPS_GPR_SP] + imm8);
 			val = m16_load_word(cpu, a, &ok);
-			if (!ok) { cpu->running = 0; return 0; }
+			M16_CHECK_MEM_OK(ok);
 			M16REG(rx) = (int32_t)val;
 		}
 		break;
@@ -1095,7 +1110,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			a = (uint64_t)((int64_t)(int32_t)M16REG(rx) +
 			    offset5);
 			val = m16_load_word(cpu, a, &ok);
-			if (!ok) { cpu->running = 0; return 0; }
+			M16_CHECK_MEM_OK(ok);
 			M16REG(ry) = (int32_t)val;
 		}
 		break;
@@ -1116,7 +1131,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			a = (uint64_t)((int64_t)(int32_t)M16REG(rx) +
 			    offset5);
 			val = m16_load_byte(cpu, a, &ok);
-			if (!ok) { cpu->running = 0; return 0; }
+			M16_CHECK_MEM_OK(ok);
 			M16REG(ry) = val;
 		}
 		break;
@@ -1137,7 +1152,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			a = (uint64_t)((int64_t)(int32_t)M16REG(rx) +
 			    offset5);
 			val = m16_load_half(cpu, a, &ok);
-			if (!ok) { cpu->running = 0; return 0; }
+			M16_CHECK_MEM_OK(ok);
 			M16REG(ry) = val;
 		}
 		break;
@@ -1157,7 +1172,7 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			}
 			a = ((cpu->pc + 2) & ~3) + imm8;
 			val = m16_load_word(cpu, a, &ok);
-			if (!ok) { cpu->running = 0; return 0; }
+			M16_CHECK_MEM_OK(ok);
 			M16REG(rx) = (int32_t)val;
 		}
 		break;
