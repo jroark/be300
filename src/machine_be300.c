@@ -467,9 +467,14 @@ machine_t *be300_create(const machine_config_t *cfg)
                             /* but at least we return cleanly)       */
                             0x42000018, /* eret                     */
                             0x00000000, /* nop                      */
-                            /* handle_tlb: identity map              */
+                            /* handle_tlb: map with addr mask        */
+                            /* (same as +0x200 handler: mask PFN    */
+                            /* with 0x1FFFFF to keep within SDRAM)  */
                             0x401B5000, /* mfc0 $k1, EntryHi       */
                             0x001BD1C2, /* srl  $k0, $k1, 7        */
+                            0x3C1B1FFF, /* lui  $k1, 0x1FFF        */
+                            0x377BFFFF, /* ori  $k1, 0xFFFF        */
+                            0x035BD024, /* and  $k0, $k0, $k1      */
                             0x375A001F, /* ori  $k0, $k0, 0x1F     */
                             0x409A1000, /* mtc0 $k0, EntryLo0      */
                             0x275B0040, /* addiu $k1, $k0, 0x40    */
