@@ -170,11 +170,43 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             s->ready = false;
         } else if (offset == NAND_REG_XFER_MODE) {
             /*
-             * SPL uses mode 5 for the first 520-byte burst, then mode 4 for
-             * the trailing 8-byte burst. Start stream on mode 5 and keep
-             * cursor continuity across mode 4.
+             * Transfer mode register:
+             *   0x00 = reset/idle
+             *   0x01 = prepare for buffer read
+             *   0x04 = 8-byte OOB/trailer into buffer regs
+             *   0x05 = 520-byte stream burst via 0xB000
              */
-            if (data_byte == 0x05u) {
+            if (data_byte == 0x00u) {
+                s->stream_active = false;
+                s->stream_cursor = 0;
+                s->xfer_buffer_valid = false;
+                memset(s->xfer_buffer, 0, sizeof(s->xfer_buffer));
+            } else if (data_byte == 0x01u) {
+                s->xfer_buffer_valid = false;
+            } else if (data_byte == 0x04u) {
+                /* Mode 4: read 8 bytes into buffer registers.
+                 * Activate stream from address if not already active. */
+                if (!s->stream_active && s->xfer_addr_count >= 3) {
+                    uint32_t row = (uint32_t)s->xfer_addr_bytes[1]
+                                 | ((uint32_t)s->xfer_addr_bytes[2] << 8);
+                    uint32_t col = (uint32_t)s->xfer_addr_bytes[0];
+                    s->stream_page = row;
+                    s->stream_col = col;
+                    s->stream_base = row * NAND_PAGE_DATA + col;
+                    s->stream_cursor = 0;
+                    s->stream_active = true;
+                }
+                memset(s->xfer_buffer, 0xFF, sizeof(s->xfer_buffer));
+                if (s->stream_active) {
+                    for (int i = 0; i < 8; i++) {
+                        int b = nand_stream_byte(s, s->stream_cursor + i);
+                        if (b >= 0)
+                            s->xfer_buffer[i] = (uint8_t)b;
+                    }
+                    s->stream_cursor += 8;
+                }
+                s->xfer_buffer_valid = true;
+            } else if (data_byte == 0x05u) {
                 uint32_t row = (uint32_t)s->xfer_addr_bytes[1]
                              | ((uint32_t)s->xfer_addr_bytes[2] << 8);
                 uint32_t col = (uint32_t)s->xfer_addr_bytes[0];
@@ -198,6 +230,18 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 }
             }
             s->ready = true;
+        } else if (offset == NAND_REG_XFER_MISC) {
+            /* WinCE writes 0x03FF repeatedly after mode/address setup.
+             * Pre-fill buffer registers from stream if active. */
+            if (s->stream_active && !s->xfer_buffer_valid) {
+                memset(s->xfer_buffer, 0xFF, sizeof(s->xfer_buffer));
+                for (int i = 0; i < 16; i++) {
+                    int b = nand_stream_byte(s, s->stream_cursor + i);
+                    if (b >= 0)
+                        s->xfer_buffer[i] = (uint8_t)b;
+                }
+                s->xfer_buffer_valid = true;
+            }
         }
         return;
     }
@@ -363,8 +407,16 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
     /* SPL transfer engine registers (0xA400-0xA4FF). */
     if (offset >= NAND_XFER_BASE && offset < NAND_XFER_END) {
         uint32_t idx = (offset - NAND_XFER_BASE) >> 2;
-        if (offset == NAND_REG_XFER_STATUS) {
+        if (offset == NAND_REG_XFER_STATUS ||
+            offset == NAND_REG_XFER_STATUS2) {
             val = s->ready ? 0x00000001u : 0u;
+        } else if (offset >= NAND_REG_BUFFER_BASE &&
+                   offset < NAND_REG_BUFFER_END) {
+            /* WinCE reads 4 x 32-bit from the data buffer */
+            uint32_t buf_off = offset - NAND_REG_BUFFER_BASE;
+            val = 0;
+            for (unsigned i = 0; i < size && (buf_off + i) < 16; i++)
+                val |= (uint64_t)s->xfer_buffer[buf_off + i] << (i * 8);
         } else if (idx < (sizeof(s->xfer_regs) / sizeof(s->xfer_regs[0]))) {
             val = s->xfer_regs[idx];
         } else {
