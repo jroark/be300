@@ -1135,62 +1135,35 @@ static bool be300_run_batch(machine_t *m)
                     }
                 }
 
-                /* Inject ROM dispatcher data (callback table,
-                 * bootctx stub, dispatch tables) — needed by the
-                 * OEMInit dispatcher at 0x7AB38. */
-                {
-                    const size_t nregions = sizeof(wince_resume_replay_regions)
-                        / sizeof(wince_resume_replay_regions[0]);
-                    for (size_t ri = 0; ri < nregions; ri++) {
-                        const wince_resume_region_t *reg =
-                            &wince_resume_replay_regions[ri];
-                        if (strstr(reg->name, "resume_context") ||
-                            strstr(reg->name, "stack_frame"))
-                            continue;
-                        uint32_t words_written = 0;
-                        for (uint32_t wi = 0; wi < reg->word_count; wi++) {
-                            if (reg->valid_words[wi]) {
-                                uint64_t va = 0xffffffff80000000ULL
-                                    | (reg->pa + wi * 4);
-                                store_32bit_word(m->cpu, va,
-                                    reg->words[wi]);
-                                words_written++;
-                            }
-                        }
-                        fprintf(stderr,
-                            "[COLD_BOOT] Injected %s: PA 0x%06X,"
-                            " %u/%u words\n",
-                            reg->name, reg->pa,
-                            words_written, reg->word_count);
-                    }
-                }
-
                 /*
-                 * Jump to the kernel cold-start entry at 0x8007B398.
+                 * Call the ROM's MIPS16 boot dispatcher at 0x9FC00C20.
+                 * On real hardware, the ROM calls JALR 0x9FC00C21
+                 * (bit 0 = MIPS16 mode) after the section copier.
+                 * The dispatcher populates:
+                 *   - OEMInit callback table at PA 0x51680
+                 *   - resume_ctx at PA 0x2200
+                 *   - Dispatch tables, bootctx stub
                  *
-                 * Do NOT save live state to resume_ctx or install
-                 * synthetic TLB handlers — the cold-start code builds
-                 * everything from scratch (page tables, TLB, exception
-                 * handlers, section table, stack).  Polluting resume_ctx
-                 * with RA=0x794C8 caused the post-init WAIT loop.
-                 * This function initializes the kernel from scratch:
-                 *   - Clears CP0 (Cause, Context, EntryLo, PageMask)
-                 *   - Zeros page table at PA 0x1000 (4KB)
-                 *   - Sets up section table at PA 0x18C0 (64 entries)
-                 *   - Sets SP to 0xA00017E0 (kseg1, no TLB needed)
-                 *   - Writes TLB entries for kernel address space
-                 *   - Creates processes, loads 95 modules, starts shell
+                 * Set RA to the kernel cold-start at 0x8007B398
+                 * so when the dispatcher returns (JR $ra in MIPS32),
+                 * the kernel initializes page tables, TLB, section
+                 * table, exception handlers, loads modules, and
+                 * starts the shell.
                  *
-                 * No warm-boot seeds or GPR setup needed — this function
-                 * builds everything from scratch using only kseg0/kseg1.
+                 * Set SP to 0x80003800 (same as ROM boot uses).
                  */
-                m->cpu->pc = (int64_t)(int32_t)UINT32_C(0x8007B398);
+                m->cpu->pc = (int64_t)(int32_t)UINT32_C(0x9FC00C20);
+                m->cpu->cd.mips.mips16 = 1;
+                m->cpu->cd.mips.gpr[MIPS_GPR_RA] =
+                    UINT32_C(0x8007B398);  /* return to cold-start */
+                m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                    (int32_t)UINT32_C(0x80003800);
                 m->cpu->is_halted = false;
                 m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &=
                     ~(uint64_t)0x1u;  /* clear IE */
                 fprintf(stderr,
-                    "[COLD_BOOT] Jumping to kernel cold-start"
-                    " at 0x8007B398\n");
+                    "[COLD_BOOT] Calling ROM MIPS16 dispatcher"
+                    " at 0x9FC00C20 (RA=0x8007B398)\n");
 
                 /* Dump decompressed NK.exe binary for analysis */
                 {
