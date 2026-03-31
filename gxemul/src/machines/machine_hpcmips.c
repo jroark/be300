@@ -309,6 +309,12 @@ MACHINE_SETUP(hpcmips)
 		    Real VR4131 bus masks PA to 29 bits; add a mirror:  */
 		dev_ram_init(machine, 0x20000000, 0x20000000,
 		    DEV_RAM_MIRROR | DEV_RAM_MIGHT_POINT_TO_DEVICES, 0x0, NULL);
+
+		/*  ROM MIPS16 boot dispatcher uses stack at PA 0x09100000
+		    (VA 0xA9100000 kseg1).  This may be VRC4173 on-chip SRAM
+		    or an external bus region.  Map 8KB of RAM there.  */
+		dev_ram_init(machine, 0x09100000, 0x2000,
+		    DEV_RAM_RAM, 0, NULL);
 	}
 
 	if (!machine->prom_emulation)
