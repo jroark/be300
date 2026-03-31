@@ -1264,6 +1264,27 @@ static bool be300_run_batch(machine_t *m)
                 store_32bit_word(m->cpu,
                     0xffffffffa00024fcULL, 0xA0060004u);
 
+                /* Inject OEMInit callback table from warm-boot
+                 * captures.  The kernel_init at 0x800947C8 walks
+                 * this table (32 entries × 20 bytes at PA 0x51680)
+                 * to call OEM hardware init functions. */
+                {
+                    const uint32_t *w =
+                        wince_resume_callback_table_a0051680_words;
+                    const uint8_t *v =
+                        wince_resume_callback_table_a0051680_valid;
+                    for (unsigned i = 0; i < 128; i++) {
+                        if (v[i]) {
+                            store_32bit_word(m->cpu,
+                                0xffffffffa0051680ULL + i * 4,
+                                w[i]);
+                        }
+                    }
+                    fprintf(stderr,
+                        "[COLD_BOOT] Injected OEMInit callback"
+                        " table at PA 0x51680 (128 words)\n");
+                }
+
                 m->cpu->pc =
                     (int64_t)(int32_t)UINT32_C(0x8007B398);
                 m->cpu->cd.mips.mips16 = 0;
