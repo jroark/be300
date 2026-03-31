@@ -571,8 +571,11 @@ machine_t *be300_create(const machine_config_t *cfg)
                            Now relocated to +0x3D0, target is +0x3B0.
                            offset = (0x3B0 - 0x3D4) / 4 = -0x24/4 = -9
                            = 0xFFF7 */
+                        /* Original: BEQ v0,zero → loop back to
+                         * call dispatcher again.  NOP it out — the
+                         * dispatcher already ran, proceed to NK.exe. */
                         store_32bit_word(m->cpu, rom_va + 0x3D0,
-                            0x1040FFF7); /* beqz $v0, -9 → +0x3B0 */
+                            0x00000000); /* nop (was beqz loop) */
                         store_32bit_word(m->cpu, rom_va + 0x3D4,
                             0x00000000); /* nop */
                         /* Rest of boot code (load PA 0x24FC, JR): */
