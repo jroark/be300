@@ -176,14 +176,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
              *   0x04 = 8-byte OOB/trailer into buffer regs
              *   0x05 = 520-byte stream burst via 0xB000
              */
-            if (data_byte == 0x00u) {
-                s->stream_active = false;
-                s->stream_cursor = 0;
-                s->xfer_buffer_valid = false;
-                memset(s->xfer_buffer, 0, sizeof(s->xfer_buffer));
-            } else if (data_byte == 0x01u) {
-                s->xfer_buffer_valid = false;
-            } else if (data_byte == 0x04u) {
+            if (data_byte == 0x04u) {
                 /* Mode 4: read 8 bytes into buffer registers.
                  * Activate stream from address if not already active. */
                 if (!s->stream_active && s->xfer_addr_count >= 3) {
