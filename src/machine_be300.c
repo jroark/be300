@@ -571,28 +571,23 @@ machine_t *be300_create(const machine_config_t *cfg)
                            Now relocated to +0x3D0, target is +0x3B0.
                            offset = (0x3B0 - 0x3D4) / 4 = -0x24/4 = -9
                            = 0xFFF7 */
-                        /* Original: BEQ v0,zero → loop back to
-                         * call dispatcher again.  NOP it out — the
-                         * dispatcher already ran, proceed to NK.exe. */
+                        /* NOP out BEQ loop, then J to NK.exe entry
+                         * in unused ROM space.  MUST NOT overwrite
+                         * 0x3DC+ (serial init, called via JALX from
+                         * MIPS16 function library at 0x1232). */
                         store_32bit_word(m->cpu, rom_va + 0x3D0,
-                            0x00000000); /* nop (was beqz loop) */
+                            0x0BF008D8); /* j 0xBFC02360 */
                         store_32bit_word(m->cpu, rom_va + 0x3D4,
-                            0x00000000); /* nop */
-                        /* Jump to NK.exe entry point directly.
-                         * Original code loaded PA 0x24FC and JR'd to it,
-                         * but the LW at +0x3E0 gets hit via the BEV
-                         * exception vector path (0x380→0x394→...→0x3E0)
-                         * with $t0 corrupted, causing an AdEL loop.
-                         * Replace with a direct J to the NK.exe entry. */
-                        store_32bit_word(m->cpu, rom_va + 0x3D8,
+                            0x00000000); /* nop (delay slot) */
+                        /* NK.exe jump trampoline at +0x2360 (after
+                         * gen_handler which ends at +0x235C) */
+                        store_32bit_word(m->cpu, rom_va + 0x2360,
                             0x3C08A006); /* lui $t0, 0xA006 */
-                        store_32bit_word(m->cpu, rom_va + 0x3DC,
+                        store_32bit_word(m->cpu, rom_va + 0x2364,
                             0x25080004); /* addiu $t0, 0x0004 */
-                        store_32bit_word(m->cpu, rom_va + 0x3E0,
+                        store_32bit_word(m->cpu, rom_va + 0x2368,
                             0x01000008); /* jr $t0 (→ 0xA0060004) */
-                        store_32bit_word(m->cpu, rom_va + 0x3E4,
-                            0x00000000); /* nop */
-                        store_32bit_word(m->cpu, rom_va + 0x3E8,
+                        store_32bit_word(m->cpu, rom_va + 0x236C,
                             0x00000000); /* nop */
                         /* Error recovery path: */
                         store_32bit_word(m->cpu, rom_va + 0x3EC,
