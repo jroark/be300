@@ -140,7 +140,7 @@ Rather than adding MIPS16 support to GXemul (would require ~3K LOC of architectu
 **Things to note**
 - originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
 - None of the test kernels had full hw support
-- The BE-300 is never truly cold-booted in normal use — factory process pre-hibernates the device with valid state at PA 0x2200 (resume_ctx) and PA 0x2524 (hibernate signature 0x3210xxxx)
+- The BE-300 CAN be cold-booted from a fully unpowered state (battery removed). The ROM boot dispatcher handles all initialization.
 
 ---
 
@@ -271,8 +271,8 @@ the kernel entry at VA 0xA0060004.
 - Calls 3 more init functions: 0x79BB4, 0x79B5C, 0x79C88
 - Falls through to 0x79560 → PMU/DCU/SDRAMU → WAIT
 - Function 0x7AB38 is an OEMInit callback dispatcher: walks 32 entries (20 bytes each) at PA 0xA0051680, calls function pointers via JALR. These callbacks do real WinCE kernel initialization.
-- Running 0x794C8 populates the resume_ctx at PA 0x2200 with real values (SP, GPRs, CP0 Config, etc.)
-- OEMInit callback table at PA 0x51680 remains empty — callbacks are registered by WinCE kernel runtime code, not by the OAL or section copier. Registration likely depends on the ROM boot dispatcher (0x9FC00C21, MIPS16) which we haven't replicated.
+- Running 0x794C8 does NOT update resume_ctx — the init functions at 0x794C8 don't write to PA 0x2200
+- OEMInit callback table at PA 0x51680: 11 callback groups (55 non-zero words) captured from warm-boot and injected from `wince_resume_replay_data.h`. Contains function pointers into NK.exe OAL code (0x8007xxxx, 0x800Axxxx). On real hardware, populated by the ROM's MIPS16 boot dispatcher at 0x9FC00C21.
 
 **ROMHDR / COPYentry (WinCE image section copier):**
 - NK.exe has "ECEC" signature at offset 0x40, pTOC pointer at offset 0x44 (= 0x80655C54)
@@ -297,10 +297,53 @@ Steps 1-4 are handled by the SPL. Step 5 is our COPYentry code. Step 6 is the mi
 **Post-WAIT OAL Init (always taken on both cold and warm boot):**
 - NOP sled → kseg0 switch → check1 (buttons) → check2 (VRC4173)
 - check1 reads PA 0x0A00A042 (button register), masks 0x9E00
-- The BNE after check2 tests $t0 (clobbered by check1), so the branch to 0x79634 is always taken
+- **$t0 clobber bug:** check1 sets $t0=0xAA00A000 (button register base address).
+  check2 (at 0x8007AFA8) only touches $a0/$a1/$v0, NOT $t0. The BNE $t0,$zero
+  after check2 is ALWAYS taken → branch to 0x79634 (warm path). The cold boot
+  init at 0x79DF8 is **dead code** via this path.
 - 0x79634: JAL 0x78BC0 (OAL vtable init) → VR41xx HW setup → timer → ICU
 - 0x79668: Full GPR/CP0 restore from resume_ctx table at PA 0x2200
 - 0x797DC: LW $t0, 0($sp); JR $ra — function epilogue
+
+**Kernel Cold-Start Entry (0x8007B398):**
+The true kernel cold-start initialization, building everything from scratch:
+- Clears CP0: Cause, EntryHi, Context, EntryLo0/1, PageMask, Count
+- Zeros page table at PA 0x1000 (4KB)
+- Sets up section table at PA 0x18C0 (64 entries, default handler 0x8008BC18, special handler 0x8008B8E4 for section 9)
+- Initializes SP to 0xA00017E0 (kseg1, no TLB needed)
+- Sets kernel data pointers at PA 0x1AC8 (0x80000000) and PA 0x1ACC (0x8008B84C)
+- Sets PageMask=0x1800, Wired=2, writes fixed TLB entries for kernel address space
+- Installs real exception handlers via JAL 0x8007B5F4:
+  - PA 0x0000 (TLB refill): code from 0x8008C418
+  - PA 0x0180 (general exception): code from 0x8008B240
+  - PA 0x0100 (cache error): code from 0x800A8438
+- Calls kernel functions: JAL 0x800A8448, JAL 0x800A83D8
+- **Calls kernel main init: JAL 0x800947C8($a0=pTOC=0x80655C54)** — this is the function that should create processes, load the 95 XIP modules, and start the shell
+- Calls OAL vtable init: JAL 0x80078BC0
+- Calls more kernel functions: JAL 0x800A5C78, JAL 0x800942B4, JAL 0x800964FC
+- Eventually enters the scheduler
+
+**Kernel Entry Table (VA 0x80074D90):**
+- [0] = 0x8008CEA4, [1] = 0x8009101C, [2] = 0x80090F34, [3] = 0x80090F40
+- [4] = 0x80090F8C, [5] = 0x80090FC8, [6] = 0x80090FF4, [7] = 0x00000000
+- 0x80074DB0 = 0x80655C54 (pTOC pointer)
+- 0x80074DBC = "OEM\0" (ASCII identifier)
+
+**NK.exe Memory Layout:**
+```
+0x80060000-0x80075FFF: Bootstrap and OAL data
+0x80076B50-0x80079xxx: OAL initialization code
+0x8007Axxx-0x8007Bxxx: OAL hardware drivers and cold-start
+0x80080000-0x800Fffff: Kernel proper (~640KB)
+  - 0x8008B240: General exception handler source (copied to PA 0x0180)
+  - 0x8008BC18: Default section handler
+  - 0x8008C418: TLB refill handler source (copied to PA 0x0000)
+  - 0x800947C8: Kernel main init (takes pTOC as $a0)
+0x800A0000-0x800Bxxxx: OAL callbacks and device drivers
+0x80060000-0x80656AC8: Total NK.exe image (6.2MB)
+0x80655C54: ROMHDR (pTOC) — physfirst=0x80060000, nummods=95
+0x80660000-0x81000000: RAM (ulRAMStart to ulRAMEnd)
+```
 
 **Key SDRAM Data Structures:**
 - PA 0x2200-0x22FF: resume_ctx — GPR/CP0 save area
@@ -332,6 +375,13 @@ is gated by four checks. ALL must pass for the save to run:
 Note: the version check at 0x76CBC clears PA 0x254C if PA 0x2400 != 0x03020100,
 which prevents check 4 from passing even if PA 0x254C was previously set.
 This function is NOT called from the main NK.exe pre-WAIT init path.
+It does NOT run during cold boot — resume_ctx is populated by the ROM dispatcher.
+
+**VRC4173 Interrupt Registers:**
+- VRC4173 ICU SYSINT1REG at offset 0x060 from VRC4173 base (0x0A000000) is **read-only** on real hardware — reflects active peripheral interrupt sources
+- Interrupt status registers in ranges 0x060-0x077, 0x1100-0x113F, 0x1B00-0x1B2F use **write-1-to-clear** semantics in the emulator
+- MSYSINT1 in dev_vr41xx.c must NOT force-enable ETIMER (bit 3) — prevents WinCE from controlling its own timer mask
+- The NAND controller has phase-aware behavior (`wince_mode` flag in nand_state_t): buffer registers 0xA4A0-0xA4AC and STATUS2 at 0xA4C0 return 0 during SPL (to avoid ECC errors), active data after NK.exe loads
 
 **NK.exe Analysis Tools:**
 - Emulator dumps decompressed NK.exe to `nk_decompressed.bin` on first WAIT (6.2MB)
@@ -351,5 +401,6 @@ This function is NOT called from the main NK.exe pre-WAIT init path.
 - `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU, timer, GPIO, interrupt assert/deassert; `timer_tick()` increments `pending_timer_interrupts`, `DEVICE_TICK(vr41xx)` asserts interrupt line; timer interrupt is deasserted on RTCINTREG write (offset 0x13E)
 - `gxemul/src/devices/dev_ns16550.c` — VRC4173 SIU UART (GXemul native at 0x0A008680)
 - `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, RTCINTREG write-one-to-clear
-- `src/hw/nand.c` — NAND flash controller with SPL transfer engine and OOB synthesis
+- `src/hw/nand.c` — NAND flash controller with SPL transfer engine, OOB synthesis, and phase-aware WinCE mode
+- `src/wince_resume_replay_data.h` — captured OEMInit callback table, bootctx stub, dispatch tables (from warm-boot)
 - `src/hw/bcu.c` — Silenced unhandled register reads (SPL probes many)
