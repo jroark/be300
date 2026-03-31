@@ -62,6 +62,9 @@ static const int mips16_reg_map[8] = MIPS16_REG_MAP;
 	if (!(ok)) {							\
 		if (cpu->cd.mips.coproc[0]->reg[COP0_STATUS] & STATUS_EXL) \
 			return 1;  /* exception taken, handler will run */  \
+		fprintf(stderr, "[MIPS16] fatal mem fail pc=0x%" PRIx64	\
+		    " status=0x%08x\n", cpu->pc,			\
+		    (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);\
 		cpu->running = 0;					\
 		return 0;						\
 	}								\
@@ -573,6 +576,8 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 	/*  Fetch the instruction  */
 	iw = m16_fetch(cpu, addr, &ok);
 	if (!ok) {
+		if (cpu->cd.mips.coproc[0]->reg[COP0_STATUS] & STATUS_EXL)
+			return 1;
 		fatal("mips_cpu_interpret_mips16_SLOW(): could not read "
 		    "the instruction at 0x%" PRIx64 "\n", addr);
 		cpu->running = 0;
@@ -587,6 +592,8 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 		addr += 2;
 		iw = m16_fetch(cpu, addr, &ok);
 		if (!ok) {
+			if (cpu->cd.mips.coproc[0]->reg[COP0_STATUS] & STATUS_EXL)
+				return 1;
 			fatal("mips_cpu_interpret_mips16_SLOW(): could not "
 			    "read extended instruction\n");
 			cpu->running = 0;
@@ -718,6 +725,8 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 			/*  Fetch second halfword  */
 			lo_word = m16_fetch(cpu, cpu->pc + 2, &ok);
 			if (!ok) {
+				if (cpu->cd.mips.coproc[0]->reg[COP0_STATUS] & STATUS_EXL)
+					return 1;
 				fatal("mips_cpu_interpret_mips16_SLOW(): "
 				    "could not read JAL second halfword\n");
 				cpu->running = 0;
@@ -949,10 +958,10 @@ int mips_cpu_interpret_mips16_SLOW(struct cpu *cpu)
 					uint64_t a =
 					    cpu->cd.mips.gpr[MIPS_GPR_SP] +
 					    offset8;
-					if (!m16_store_word(cpu, a,
-					    cpu->cd.mips.gpr[MIPS_GPR_RA])) {
-						cpu->running = 0;
-						return 0;
+					{
+						int sw_ok = m16_store_word(cpu, a,
+						    cpu->cd.mips.gpr[MIPS_GPR_RA]);
+						M16_CHECK_MEM_OK(sw_ok);
 					}
 				}
 				break;
