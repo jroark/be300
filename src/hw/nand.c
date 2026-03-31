@@ -176,7 +176,30 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
              *   0x04 = 8-byte OOB/trailer into buffer regs
              *   0x05 = 520-byte stream burst via 0xB000
              */
-            if (data_byte == 0x05u) {
+            if (data_byte == 0x04u && s->wince_mode) {
+                /* WinCE mode-4: fill buffer from stream position.
+                 * Only active after NK.exe loads — the SPL expects
+                 * buffer registers to return 0. */
+                if (!s->stream_active && s->xfer_addr_count >= 3) {
+                    uint32_t row = (uint32_t)s->xfer_addr_bytes[1]
+                                 | ((uint32_t)s->xfer_addr_bytes[2] << 8);
+                    uint32_t col = (uint32_t)s->xfer_addr_bytes[0];
+                    s->stream_page = row;
+                    s->stream_col = col;
+                    s->stream_base = row * NAND_PAGE_DATA + col;
+                    s->stream_cursor = 0;
+                    s->stream_active = true;
+                }
+                memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
+                if (s->stream_active) {
+                    for (int i = 0; i < 16; i++) {
+                        int b = nand_stream_byte(s, s->stream_cursor + i);
+                        if (b >= 0)
+                            s->xfer_buffer[i] = (uint8_t)b;
+                    }
+                }
+                s->xfer_buffer_valid = true;
+            } else if (data_byte == 0x05u) {
                 uint32_t row = (uint32_t)s->xfer_addr_bytes[1]
                              | ((uint32_t)s->xfer_addr_bytes[2] << 8);
                 uint32_t col = (uint32_t)s->xfer_addr_bytes[0];
@@ -365,7 +388,8 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
     /* SPL transfer engine registers (0xA400-0xA4FF). */
     if (offset >= NAND_XFER_BASE && offset < NAND_XFER_END) {
         uint32_t idx = (offset - NAND_XFER_BASE) >> 2;
-        if (offset == NAND_REG_XFER_STATUS) {
+        if (offset == NAND_REG_XFER_STATUS ||
+            (offset == NAND_REG_XFER_STATUS2 && s->wince_mode)) {
             val = s->ready ? 0x00000001u : 0u;
         } else if (offset >= NAND_REG_BUFFER_BASE &&
                    offset < NAND_REG_BUFFER_END) {
