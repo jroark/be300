@@ -1681,29 +1681,100 @@ static bool be300_run_batch(machine_t *m)
                         " (OAL init is idempotent, scheduler is"
                         " interrupt-driven)\n");
 
-                    /* Dump TLB state to verify kseg3 mappings */
+                    /* Dump kernel data structures to check
+                     * if kernel_init populated them */
                     {
-                        struct mips_coproc *cp =
-                            m->cpu->cd.mips.coproc[0];
+                        unsigned char buf[4];
+                        uint32_t w;
+                        /* Object table pointer [0x80660000] */
                         fprintf(stderr,
-                            "[COLD_BOOT] TLB dump (Wired=%u):\n",
-                            (uint32_t)cp->reg[COP0_WIRED]);
-                        for (int ti = 0; ti < cp->nr_of_tlbs; ti++) {
-                            uint64_t hi = cp->tlbs[ti].hi;
-                            uint64_t lo0 = cp->tlbs[ti].lo0;
-                            uint64_t lo1 = cp->tlbs[ti].lo1;
-                            uint64_t mask = cp->tlbs[ti].mask;
-                            if (hi == 0 && lo0 == 0 && lo1 == 0)
-                                continue;
+                            "[COLD_BOOT] Kernel data after init:\n");
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffff80660000ULL, buf, 4,
+                                MEM_READ, CACHE_DATA)) {
+                            w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
                             fprintf(stderr,
-                                "[COLD_BOOT]   TLB[%2d]:"
-                                " hi=%08X lo0=%08X"
-                                " lo1=%08X mask=%08X\n",
-                                ti, (uint32_t)hi,
-                                (uint32_t)lo0,
-                                (uint32_t)lo1,
-                                (uint32_t)mask);
+                                "[COLD_BOOT]   [0x80660000] = 0x%08X"
+                                " (obj table ptr)\n", w);
+                            if (w != 0) {
+                                /* Read first 4 entries of object table */
+                                for (int j = 0; j < 4; j++) {
+                                    uint64_t va = 0xffffffff00000000ULL
+                                        | (uint64_t)(int32_t)(w + j*4);
+                                    if (m->cpu->memory_rw(m->cpu,
+                                            m->cpu->mem, va, buf, 4,
+                                            MEM_READ, CACHE_DATA)) {
+                                        uint32_t e = buf[0]|(buf[1]<<8)
+                                            |(buf[2]<<16)|(buf[3]<<24);
+                                        fprintf(stderr,
+                                            "[COLD_BOOT]   [0x%08X+%d]"
+                                            " = 0x%08X\n", w, j*4, e);
+                                    }
+                                }
+                            }
                         }
+                        /* First 16 words of .data (PA 0x660000) */
+                        fprintf(stderr,
+                            "[COLD_BOOT]   .data (PA 0x660000):");
+                        for (int j = 0; j < 16; j++) {
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    0xffffffffa0660000ULL + j*4, buf, 4,
+                                    MEM_READ, CACHE_DATA)) {
+                                w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                                if (j % 8 == 0 && j > 0)
+                                    fprintf(stderr, "\n[COLD_BOOT]          ");
+                                fprintf(stderr, " %08X", w);
+                            }
+                        }
+                        fprintf(stderr, "\n");
+                        /* Check ulRAMStart area (0x80660000+)
+                         * for signs kernel_init wrote here */
+                        int nz = 0;
+                        for (int j = 0; j < 256; j++) {
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    0xffffffffa0660000ULL + j*4, buf, 4,
+                                    MEM_READ, CACHE_DATA)) {
+                                w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                                if (w != 0) nz++;
+                            }
+                        }
+                        fprintf(stderr,
+                            "[COLD_BOOT]   .data non-zero words"
+                            " (first 1KB): %d/256\n", nz);
+                        /* Section table at PA 0x18C0 (first 8) */
+                        fprintf(stderr,
+                            "[COLD_BOOT]   Section table (PA 0x18C0):");
+                        for (int j = 0; j < 8; j++) {
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    0xffffffffa00018c0ULL + j*4, buf, 4,
+                                    MEM_READ, CACHE_DATA)) {
+                                w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                                fprintf(stderr, " %08X", w);
+                            }
+                        }
+                        fprintf(stderr, "\n");
+                        /* Page table at PA 0x1000 (first 8) */
+                        fprintf(stderr,
+                            "[COLD_BOOT]   Page table (PA 0x1000):");
+                        for (int j = 0; j < 8; j++) {
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    0xffffffffa0001000ULL + j*4, buf, 4,
+                                    MEM_READ, CACHE_DATA)) {
+                                w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                                fprintf(stderr, " %08X", w);
+                            }
+                        }
+                        fprintf(stderr, "\n");
+                        /* Check current live GPR state */
+                        fprintf(stderr,
+                            "[COLD_BOOT]   Live GPR: PC=0x%08X"
+                            " SP=0x%08X RA=0x%08X"
+                            " S0=0x%08X V0=0x%08X\n",
+                            (uint32_t)m->cpu->pc,
+                            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                            (uint32_t)m->cpu->cd.mips.gpr[16],
+                            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V0]);
                     }
                 }
 
