@@ -109,6 +109,7 @@ typedef struct {
     bool cold_boot_wait_logged;
     bool cold_boot_copy_done;
     uint32_t cold_boot_wait_count;
+    uint32_t cold_boot_pc_probes_logged;
 
     uint32_t fault_site_logged_mask;
     uint32_t replay_region_drift_logged_mask;
