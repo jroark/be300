@@ -1,0 +1,59 @@
+This is a full-duplex audio driver for the ITE IT8172G Super RISC
+companion chip, which contains, among many other peripherals,
+an AC'97 digital audio controller.
+
+This driver was based on the ES1371 audio driver, so it
+shares some of the same characteristics of that driver.
+
+ALaw/uLaw sample formats
+------------------------
+
+Like the ES1371 driver, this driver does not support the
+ALaw/uLaw sample formats. See Documentation/sound/es1371.
+
+Blocking vs. nonblocking IO
+---------------------------
+
+Like the ES1371 driver, this driver honours the O_NONBLOCK file
+flag during open, read and write. See Documentation/sound/es1371.
+
+Options
+--------
+
+This driver supports S/PDIF output and playback/record from
+an I2S bus. These features are enabled/configured with the
+following boot option format:
+
+it8172=[spdif],[i2s:<I2S format>]
+
+S/PDIF Support
+--------------
+
+The "spdif" option enables S/PDIF output. When enabled,
+the analog AC'97 master and PCM channel outputs are muted,
+and the SOUND_MIXER_WRITE_PCM ioctl can be used to set
+the digital S/PDIF output volume.
+
+I2S Support
+-----------
+
+The IT8172G audio controller can be configured to understand
+three different data formats on the I2S bus. This is selectable
+with the "i2s:<format>" option, where <format> is one of the
+following:
+
+dac: DAC, digital format
+adc: ADC, DSP serial port
+i2s: I2S mode
+
+If the "i2s:<format>" is not given, "i2s:i2s" is assumed.
+
+The driver accepts I2S ioctl's on the SOUND_MIXER_DIGITAL1
+channel. So the I2S channel volume is settable with the
+MIXER_WRITE(SOUND_MIXER_DIGITAL1) ioctl, and recording from
+the I2S bus is accomplished by specifying SOUND_MASK_DIGITAL1
+to the SOUND_MIXER_WRITE_RECSRC ioctl.
+
+
+Steve Longerbeam
+stevel@mvista.com

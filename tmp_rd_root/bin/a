@@ -1,0 +1,31 @@
+#!/bin/sh
+
+# export QWS_DISPLAY=LinuxFb:0
+# export QTDIR=/opt/Qtopia
+# /bin/hello -qws
+# /bin/cat /proc/giuinfo
+case "$1" in
+    f)
+    PROG=fire
+    ;;
+    s)
+    PROG=testsprite
+    ;;
+    tm)
+    PROG=testtimer
+    ;;
+    ty)
+    PROG=testtypes
+    ;;
+    v)
+    PROG=testver
+    ;;
+    a)
+    PROG=regstat
+    ;;
+    *)
+    PROG=sdlregstat
+    ;;
+esac
+shift
+SDL_NOMOUSE=1 /usr/bin/$PROG $*

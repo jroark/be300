@@ -1,0 +1,155 @@
+[BEDIAG_KICK] build=builtinref1 mode=mini select=cmdline tick_ms=98689 key="Drivers\BuiltIn\BDGMini" boot_log_before=0
+[BEDIAG_KICK] reg_key_exists=yes
+[BEDIAG_KICK] reg_dll_present=no
+[BEDIAG_KICK] reg_dll="<missing>"
+[BEDIAG_KICK] reg_prefix_present=no
+[BEDIAG_KICK] reg_prefix="<missing>"
+[BEDIAG_KICK] reg_index_present=no
+[BEDIAG_KICK] reg_index=0
+[BEDIAG_KICK] reg_order_present=no
+[BEDIAG_KICK] reg_order=0
+[BEDIAG_KICK] dll_exists=no path="<missing>"
+[BEDIAG_KICK] active_key_before=NONE
+[BEDIAG_KICK] loadlibrary=no handle=0x00000000 last_error=0
+[BEDIAG_KICK] loadlibrary_path="<missing>"
+[BEDIAG_KICK] export_MDG_Init=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Deinit=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Open=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Close=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_IOControl=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Read=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Write=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Seek=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_PowerDown=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_PowerUp=no proc=0x00000000
+[BEDIAG_KICK] phase=activate_builtin begin
+[BEDIAG_KICK] phase=activate_builtin boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
+[BEDIAG_KICK] phase=activate_builtin breadcrumbs_before key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=activate_builtin activate_handle=0x00000000 last_error=0
+[BEDIAG_KICK] phase=activate_builtin active_key_after=NONE
+[BEDIAG_KICK] phase=activate_builtin boot_log_after=0
+[BEDIAG_KICK] phase=activate_builtin breadcrumbs_after key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=activate_builtin end
+[BEDIAG_KICK] phase=register_device begin
+[BEDIAG_KICK] phase=register_device boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
+[BEDIAG_KICK] phase=register_device breadcrumbs_before key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=register_device register_handle=0x00000000 last_error=0
+[BEDIAG_KICK] phase=register_device createfile_handle=SKIPPED
+[BEDIAG_KICK] phase=register_device active_key_after=NONE
+[BEDIAG_KICK] phase=register_device boot_log_after=0
+[BEDIAG_KICK] phase=register_device breadcrumbs_after key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=register_device deregister_ret=SKIPPED
+[BEDIAG_KICK] phase=register_device end
+[BEDIAG_KICK] tmp_copy_src="<missing>"
+[BEDIAG_KICK] tmp_copy_dst="\Windows\BDGMiniTmp.dll"
+[BEDIAG_KICK] tmp_copy_ok=no
+[BEDIAG_KICK] tmp_copy_err=0
+[BEDIAG_KICK] phase=register_device_windows_copy begin
+[BEDIAG_KICK] phase=register_device_windows_copy skipped_reason=tmp_copy_failed
+[BEDIAG_KICK] phase=register_device_windows_copy end
+[BEDIAG_KICK] temp_key_create_ok=no
+[BEDIAG_KICK] phase=activate_builtin_windows_copy begin
+[BEDIAG_KICK] phase=activate_builtin_windows_copy skipped_reason=temp_key_create_failed
+[BEDIAG_KICK] phase=activate_builtin_windows_copy end
+[BEDIAG_KICK] phase=direct_init_nullctx begin
+[BEDIAG_KICK] phase=direct_init_nullctx boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
+[BEDIAG_KICK] phase=direct_init_nullctx breadcrumbs_before key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=direct_init_nullctx init_context=0x00000000 context_path="<none>"
+[BEDIAG_KICK] phase=direct_init_nullctx init_ret=0x00000000
+[BEDIAG_KICK] phase=direct_init_nullctx deinit_ret=SKIPPED
+[BEDIAG_KICK] phase=direct_init_nullctx boot_log_after=0
+[BEDIAG_KICK] phase=direct_init_nullctx breadcrumbs_after key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=direct_init_nullctx end
+[BEDIAG_KICK] phase=direct_init_builtinctx begin
+[BEDIAG_KICK] phase=direct_init_builtinctx boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
+[BEDIAG_KICK] phase=direct_init_builtinctx breadcrumbs_before key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=direct_init_builtinctx init_context=0x00015318 context_path="Drivers\BuiltIn\BDGMini"
+[BEDIAG_KICK] phase=direct_init_builtinctx init_ret=0x00000000
+[BEDIAG_KICK] phase=direct_init_builtinctx deinit_ret=SKIPPED
+[BEDIAG_KICK] phase=direct_init_builtinctx boot_log_after=0
+[BEDIAG_KICK] phase=direct_init_builtinctx breadcrumbs_after key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=direct_init_builtinctx end
+[BEDIAG_KICK] build=builtinref1 mode=mini select=cmdline tick_ms=400876 key="Drivers\BuiltIn\BDGMini" boot_log_before=0
+[BEDIAG_KICK] reg_key_exists=yes
+[BEDIAG_KICK] reg_dll_present=yes
+[BEDIAG_KICK] reg_dll="\Nand Disk\Program Files\Patch\BDGMini.dll"
+[BEDIAG_KICK] reg_prefix_present=yes
+[BEDIAG_KICK] reg_prefix="MDG"
+[BEDIAG_KICK] reg_index_present=yes
+[BEDIAG_KICK] reg_index=1
+[BEDIAG_KICK] reg_order_present=yes
+[BEDIAG_KICK] reg_order=1
+[BEDIAG_KICK] dll_exists=yes path="\Nand Disk\Program Files\Patch\BDGMini.dll"
+[BEDIAG_KICK] active_key_before=NONE
+[BEDIAG_KICK] loadlibrary=yes handle=0x80D76A14 last_error=0
+[BEDIAG_KICK] loadlibrary_path="\Nand Disk\Program Files\Patch\BDGMini.dll"
+[BEDIAG_KICK] export_MDG_Init=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Deinit=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Open=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Close=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_IOControl=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Read=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Write=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_Seek=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_PowerDown=no proc=0x00000000
+[BEDIAG_KICK] export_MDG_PowerUp=no proc=0x00000000
+[BEDIAG_KICK] phase=activate_builtin begin
+[BEDIAG_KICK] phase=activate_builtin boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
+[BEDIAG_KICK] phase=activate_builtin breadcrumbs_before key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=activate_builtin activate_handle=0x00000000 last_error=1
+[BEDIAG_KICK] phase=activate_builtin active_key_after=NONE
+[BEDIAG_KICK] phase=activate_builtin boot_log_after=0
+[BEDIAG_KICK] phase=activate_builtin breadcrumbs_after key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=activate_builtin end
+[BEDIAG_KICK] phase=register_device begin
+[BEDIAG_KICK] phase=register_device boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
+[BEDIAG_KICK] phase=register_device breadcrumbs_before key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=register_device register_handle=0x00000000 last_error=1
+[BEDIAG_KICK] phase=register_device createfile_handle=SKIPPED
+[BEDIAG_KICK] phase=register_device active_key_after=NONE
+[BEDIAG_KICK] phase=register_device boot_log_after=0
+[BEDIAG_KICK] phase=register_device breadcrumbs_after key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=register_device deregister_ret=SKIPPED
+[BEDIAG_KICK] phase=register_device end
+[BEDIAG_KICK] tmp_copy_src="\Nand Disk\Program Files\Patch\BDGMini.dll"
+[BEDIAG_KICK] tmp_copy_dst="\Windows\BDGMiniTmp.dll"
+[BEDIAG_KICK] tmp_copy_ok=yes
+[BEDIAG_KICK] tmp_copy_err=0
+[BEDIAG_KICK] phase=register_device_windows_copy begin
+[BEDIAG_KICK] phase=register_device_windows_copy boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
+[BEDIAG_KICK] phase=register_device_windows_copy breadcrumbs_before key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=register_device_windows_copy register_handle=0x00000000 last_error=1
+[BEDIAG_KICK] phase=register_device_windows_copy createfile_handle=SKIPPED
+[BEDIAG_KICK] phase=register_device_windows_copy active_key_after=NONE
+[BEDIAG_KICK] phase=register_device_windows_copy boot_log_after=0
+[BEDIAG_KICK] phase=register_device_windows_copy breadcrumbs_after key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=register_device_windows_copy deregister_ret=SKIPPED
+[BEDIAG_KICK] phase=register_device_windows_copy end
+[BEDIAG_KICK] temp_key_create_ok=yes
+[BEDIAG_KICK] phase=activate_builtin_windows_copy begin
+[BEDIAG_KICK] phase=activate_builtin_windows_copy boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
+[BEDIAG_KICK] phase=activate_builtin_windows_copy breadcrumbs_before key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=activate_builtin_windows_copy activate_handle=0x00000000 last_error=1
+[BEDIAG_KICK] phase=activate_builtin_windows_copy active_key_after=NONE
+[BEDIAG_KICK] phase=activate_builtin_windows_copy boot_log_after=0
+[BEDIAG_KICK] phase=activate_builtin_windows_copy breadcrumbs_after key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=activate_builtin_windows_copy end
+[BEDIAG_KICK] phase=activate_builtin_windows_copy cleanup_temp_key_rc=0
+[BEDIAG_KICK] phase=direct_init_nullctx begin
+[BEDIAG_KICK] phase=direct_init_nullctx boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
+[BEDIAG_KICK] phase=direct_init_nullctx breadcrumbs_before key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=direct_init_nullctx init_context=0x00000000 context_path="<none>"
+[BEDIAG_KICK] phase=direct_init_nullctx init_ret=0x00000000
+[BEDIAG_KICK] phase=direct_init_nullctx deinit_ret=SKIPPED
+[BEDIAG_KICK] phase=direct_init_nullctx boot_log_after=0
+[BEDIAG_KICK] phase=direct_init_nullctx breadcrumbs_after key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=direct_init_nullctx end
+[BEDIAG_KICK] phase=direct_init_builtinctx begin
+[BEDIAG_KICK] phase=direct_init_builtinctx boot_log_before=0 delete_attempted=0 delete_ok=0 delete_err=0
+[BEDIAG_KICK] phase=direct_init_builtinctx breadcrumbs_before key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=direct_init_builtinctx init_context=0x00015318 context_path="Drivers\BuiltIn\BDGMini"
+[BEDIAG_KICK] phase=direct_init_builtinctx init_ret=0x00000000
+[BEDIAG_KICK] phase=direct_init_builtinctx deinit_ret=SKIPPED
+[BEDIAG_KICK] phase=direct_init_builtinctx boot_log_after=0
+[BEDIAG_KICK] phase=direct_init_builtinctx breadcrumbs_after key_present=yes loaded_present=no loaded=0 init_tick_present=no init_tick=0 worker_present=no worker=0 status_present=no status="<missing>"
+[BEDIAG_KICK] phase=direct_init_builtinctx end

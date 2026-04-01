@@ -1,0 +1,1530 @@
+Serial port opened.
+
+entry=801f0650  addr=80004000-803423a0
+
+entry=801f0650  addr=80004000-803423a0
+
+Linux version 4.2.9 (root@5263354453cf) (gcc version 10.3.0 (Ubuntu 10.3.0-1ubuntu1) ) #1 Tue Mar 31 18:39:45 UTC 2026
+bootconsole [early0] enabled
+CPU0 revision is: 00000c80 (NEC VR4131)
+Determined physical RAM map:
+ memory: 01000000 @ 00000000 (usable)
+debug: skip boot console de-registration.
+Initrd not found or empty - disabling initrd
+Zone ranges:
+  Normal   [mem 0x0000000000000000-0x0000000000ffffff]
+Movable zone start for each node
+Early memory node ranges
+  node   0: [mem 0x0000000000000000-0x0000000000ffffff]
+Initmem setup node 0 [mem 0x0000000000000000-0x0000000000ffffff]
+Primary instruction cache 16kB, VIPT, 2-way, linesize 32 bytes.
+Primary data cache 16kB, 2-way, VIPT, cache aliases, linesize 16 bytes
+Built 1 zonelists in Zone order, mobility grouping off.  Total pages: 4064
+Kernel command line: console=tty0 earlyprintk keep_bootcon
+PID hash table entries: 64 (order: -4, 256 bytes)
+Dentry cache hash table entries: 2048 (order: 1, 8192 bytes)
+Inode-cache hash table entries: 1024 (order: 0, 4096 bytes)
+BUG: Bad page state in process swapper  pfn:00e04
+page:80360080 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Not tainted 4.2.9 #1
+Stack : 80200000 0000000b 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000a8e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 8023746c 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+Disabling lock debugging due to kernel taint
+BUG: Bad page state in process swapper  pfn:00e25
+page:803604a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000aae 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000002f 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e26
+page:803604c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000aae 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000003e 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e3e
+page:803607c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000aae 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000004d 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e3f
+page:803607e0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000aae 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000005c 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e8b
+page:80361160 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000b0e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000006b 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e8d
+page:803611a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000b0e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000007a 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e8e
+page:803611c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000b0e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 00000089 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00eab
+page:80361560 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000b2e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 00000098 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00ee9
+page:80361d20 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000b6e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 000000a7 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f06
+page:803620c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000b8e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 000000b6 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f15
+page:803622a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000b8e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 000000c5 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f18
+page:80362300 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000b8e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 000000d4 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f25
+page:803624a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000bae 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 000000e3 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f40
+page:80362800 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 00000f60 00000bce 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 000000f2 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080980>] free_pages_prepare+0x78/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8b
+page:80363160 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000c0e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 00000101 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8c
+page:80363180 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000c0e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 00000110 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8d
+page:803631a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000c0e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000011f 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8f
+page:803631e0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000c0e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000012e 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f9e
+page:803633c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000c0e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000013d 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00fea
+page:80363d40 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000c6e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000014c 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00feb
+page:80363d60 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000c6e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000015b 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00ff1
+page:80363e20 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #1
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 803335c8 80340000 00000000
+	  8023746c 8023746c 00000c6e 80057980 80336488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80340000 00000000 0000016a 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+Memory: 11576K/16384K available (2002K kernel code, 77K rwdata, 292K rodata, 868K init, 72K bss, 3528K reserved, 0K cma-reserved)
+NR_IRQS:128
+PClock: 165888000Hz
+VTClock: 82944000Hz
+TClock: 41472000Hz
+clocksource: MIPS: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 184342249877 ns
+sched_clock: 32 bits at 10MHz, resolution 96ns, wraps every 207126123471ns
+Console: colour dummy device 80x25
+console [tty0] enabled
+Calibrating delay loop... Serial port opened.
+
+entry=801f0650  addr=80004000-802923a0
+
+entry=801f0650  addr=80004000-802923a0
+
+Linux version 4.2.9 (root@5263354453cf) (gcc version 10.3.0 (Ubuntu 10.3.0-1ubuntu1) ) #2 Tue Mar 31 18:41:06 UTC 2026
+bootconsole [early0] enabled
+CPU0 revision is: 00000c80 (NEC VR4131)
+Determined physical RAM map:
+ memory: 01000000 @ 00000000 (usable)
+debug: skip boot console de-registration.
+Initrd not found or empty - disabling initrd
+Zone ranges:
+  Normal   [mem 0x0000000000000000-0x0000000000ffffff]
+Movable zone start for each node
+Early memory node ranges
+  node   0: [mem 0x0000000000000000-0x0000000000ffffff]
+Initmem setup node 0 [mem 0x0000000000000000-0x0000000000ffffff]
+Primary instruction cache 16kB, VIPT, 2-way, linesize 32 bytes.
+Primary data cache 16kB, 2-way, VIPT, cache aliases, linesize 16 bytes
+Built 1 zonelists in Zone order, mobility grouping off.  Total pages: 4064
+Kernel command line: console=tty0 earlyprintk keep_bootcon
+PID hash table entries: 64 (order: -4, 256 bytes)
+Dentry cache hash table entries: 2048 (order: 1, 8192 bytes)
+Inode-cache hash table entries: 1024 (order: 0, 4096 bytes)
+BUG: Bad page state in process swapper  pfn:00e04
+page:802b0080 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Not tainted 4.2.9 #2
+Stack : 80200000 0000000b 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000b3e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 8023746c 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+Disabling lock debugging due to kernel taint
+BUG: Bad page state in process swapper  pfn:00e25
+page:802b04a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000b5e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000002f 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e26
+page:802b04c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000b5e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000003e 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e3e
+page:802b07c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000b5e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000004d 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e3f
+page:802b07e0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000b5e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000005c 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e8b
+page:802b1160 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000bbe 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000006b 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e8d
+page:802b11a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000bbe 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000007a 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e8e
+page:802b11c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000bbe 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 00000089 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00eab
+page:802b1560 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000bde 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 00000098 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00ee9
+page:802b1d20 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000c1e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 000000a7 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f06
+page:802b20c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000c3e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 000000b6 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f15
+page:802b22a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000c3e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 000000c5 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f18
+page:802b2300 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000c3e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 000000d4 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f25
+page:802b24a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000c5e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 000000e3 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f40
+page:802b2800 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 00000f60 00000c7e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 000000f2 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080980>] free_pages_prepare+0x78/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8b
+page:802b3160 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000cbe 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 00000101 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8c
+page:802b3180 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000cbe 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 00000110 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8d
+page:802b31a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000cbe 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000011f 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8f
+page:802b31e0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000cbe 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000012e 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f9e
+page:802b33c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000cbe 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000013d 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00fea
+page:802b3d40 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000d1e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000014c 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00feb
+page:802b3d60 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000d1e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000015b 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00ff1
+page:802b3e20 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #2
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802835c8 80290000 00000000
+	  8023746c 8023746c 00000d1e 80057980 80286488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 80290000 00000000 0000016a 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+Memory: 12280K/16384K available (2002K kernel code, 77K rwdata, 292K rodata, 164K init, 72K bss, 2824K reserved, 0K cma-reserved)
+NR_IRQS:128
+PClock: 165888000Hz
+VTClock: 82944000Hz
+TClock: 41472000Hz
+clocksource: MIPS: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 184342249877 ns
+sched_clock: 32 bits at 10MHz, resolution 96ns, wraps every 207126123471ns
+Console: colour dummy device 80x25
+console [tty0] enabled
+Calibrating delay loop... 110.08 BogoMIPS (lpj=220160)
+pid_max: default: 32768 minimum: 301
+Mount-cache hash table entries: 1024 (order: 0, 4096 bytes)
+Mountpoint-cache hash table entries: 1024 (order: 0, 4096 bytes)
+devtmpfs: initialized
+clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+clocksource: Switched to clocksource MIPS
+Console: switching to colour frame buffer device 30x40
+fb0: Casio BE-x00 frame buffer device, using 160K of video memory
+futex hash table entries: 256 (order: -1, 3072 bytes)
+Block layer SCSI generic (bsg) driver version 0.4 loaded (major 254)
+io scheduler noop registered (default)
+brd: module loaded
+input: BE-300 Buttons as /devices/virtual/input/input0
+BE-300 Buttons: 8 buttons, polling at 200ms
+Freeing unused kernel memory: 164K (80257000 - 80280000)
+random: nonblocking pool is initialized
+Serial port opened.
+
+entry=801f0650  addr=80004000-802d23a0
+
+entry=801f0650  addr=80004000-802d23a0
+
+Linux version 4.2.9 (root@5263354453cf) (gcc version 10.3.0 (Ubuntu 10.3.0-1ubuntu1) ) #3 Tue Mar 31 18:42:28 UTC 2026
+bootconsole [early0] enabled
+CPU0 revision is: 00000c80 (NEC VR4131)
+Determined physical RAM map:
+ memory: 01000000 @ 00000000 (usable)
+debug: skip boot console de-registration.
+Initrd not found or empty - disabling initrd
+Zone ranges:
+  Normal   [mem 0x0000000000000000-0x0000000000ffffff]
+Movable zone start for each node
+Early memory node ranges
+  node   0: [mem 0x0000000000000000-0x0000000000ffffff]
+Initmem setup node 0 [mem 0x0000000000000000-0x0000000000ffffff]
+Primary instruction cache 16kB, VIPT, 2-way, linesize 32 bytes.
+Primary data cache 16kB, 2-way, VIPT, cache aliases, linesize 16 bytes
+Built 1 zonelists in Zone order, mobility grouping off.  Total pages: 4064
+Kernel command line: console=tty0 earlyprintk keep_bootcon
+PID hash table entries: 64 (order: -4, 256 bytes)
+Dentry cache hash table entries: 2048 (order: 1, 8192 bytes)
+Inode-cache hash table entries: 1024 (order: 0, 4096 bytes)
+BUG: Bad page state in process swapper  pfn:00e04
+page:802f0080 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Not tainted 4.2.9 #3
+Stack : 80200000 0000000b 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000afe 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 8023746c 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+Disabling lock debugging due to kernel taint
+BUG: Bad page state in process swapper  pfn:00e25
+page:802f04a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000b1e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000002f 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e26
+page:802f04c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000b1e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000003e 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e3e
+page:802f07c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000b1e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000004d 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e3f
+page:802f07e0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000b1e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000005c 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e8b
+page:802f1160 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000b7e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000006b 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e8d
+page:802f11a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000b7e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000007a 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00e8e
+page:802f11c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000b7e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 00000089 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00eab
+page:802f1560 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000b9e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 00000098 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00ee9
+page:802f1d20 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000bde 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 000000a7 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f06
+page:802f20c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000bfe 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 000000b6 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f15
+page:802f22a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000bfe 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 000000c5 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f18
+page:802f2300 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000bfe 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 000000d4 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f25
+page:802f24a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000c1e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 000000e3 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f40
+page:802f2800 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 00000f60 00000c3e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 000000f2 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080980>] free_pages_prepare+0x78/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8b
+page:802f3160 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000c7e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 00000101 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8c
+page:802f3180 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000c7e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 00000110 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8d
+page:802f31a0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000c7e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000011f 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f8f
+page:802f31e0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000c7e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000012e 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00f9e
+page:802f33c0 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000c7e 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000013d 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00fea
+page:802f3d40 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000cde 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000014c 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00feb
+page:802f3d60 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000cde 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000015b 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+BUG: Bad page state in process swapper  pfn:00ff1
+page:802f3e20 count:0 mapcount:1 mapping:  (null) index:0x0
+flags: 0x0()
+page dumped because: nonzero mapcount
+CPU: 0 PID: 0 Comm: swapper Tainted: G    B           4.2.9 #3
+Stack : 80200000 00000009 802324b8 80246cb0 80246927 802c35c8 802d0000 00000000
+	  8023746c 8023746c 00000cde 80057980 802c6488 00000002 00000001 00000000
+	  80235e54 80245d54 8023746c 801f21a0 802d0000 00000000 0000016a 00000000
+	  80245d54 802324b8 00000000 00000000 00000000 00000000 00000000 00000000
+	  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+	  ...
+Call Trace:
+[<8000f990>] show_stack+0x28/0x80
+[<800808dc>] bad_page+0xfc/0x128
+[<80080b1c>] free_pages_prepare+0x214/0x288
+[<8008139c>] __free_pages_ok+0x40/0x5a4
+[<80263478>] free_all_bootmem+0x158/0x288
+[<8025cdf0>] mem_init+0x48/0xdc
+[<80257968>] start_kernel+0x230/0x468
+
+Memory: 12024K/16384K available (2002K kernel code, 77K rwdata, 292K rodata, 420K init, 72K bss, 3080K reserved, 0K cma-reserved)
+NR_IRQS:128
+PClock: 165888000Hz
+VTClock: 82944000Hz
+TClock: 41472000Hz
+clocksource: MIPS: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 184342249877 ns
+sched_clock: 32 bits at 10MHz, resolution 96ns, wraps every 207126123471ns
+Console: colour dummy device 80x25
+console [tty0] enabled
+Calibrating delay loop... 110.08 BogoMIPS (lpj=220160)
+pid_max: default: 32768 minimum: 301
+Mount-cache hash table entries: 1024 (order: 0, 4096 bytes)
+Mountpoint-cache hash table entries: 1024 (order: 0, 4096 bytes)
+devtmpfs: initialized
+clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+clocksource: Switched to clocksource MIPS
+Console: switching to colour frame buffer device 30x40
+fb0: Casio BE-x00 frame buffer device, using 160K of video memory
+futex hash table entries: 256 (order: -1, 3072 bytes)
+Block layer SCSI generic (bsg) driver version 0.4 loaded (major 254)
+io scheduler noop registered (default)
+brd: module loaded
+input: BE-300 Buttons as /devices/virtual/input/input0
+BE-300 Buttons: 8 buttons, polling at 200ms
+Freeing unused kernel memory: 420K (80257000 - 802c0000)
+
+do_page_fault(): sending SIGSEGV to init for invalid read access from 00000000
+epc = 00000000 in init[400000+8b000]
+ra  = 004005f0 in init[400000+8b000]
+
+Kernel panic - not syncing: Attempted to kill init! exitcode=0x0000000b
+
+---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x0000000b
+

@@ -1,0 +1,153 @@
+Casio E15 gpio definition (2002/03/18)
+======================================
+
+François Leblanc <francois.leblanc@cev-sa.com>
+
+This document is the result of my investigations 
+about Casio Cassiopeia hardware definitions. 
+Feel free to add any informations about E15 that
+you think useful.
+
+
+This informations are not officials since Casio cie 
+never transmit me any informations on this device
+although I ask them many times.
+
+<<I advice everybody to not buy casio devices for future
+use unless they don't need linux on it. Casio don't 
+care of open source developpers and don't give any
+informations of any kinds about theirs products. I 
+I had to spend a lot of my time life to get this 
+informations available althought device is quite 
+old... I don't think that device schematics are 
+still secret, perhaps they use it on nuclear weapons? :-).>>
+
+Sorry, it's for my nerves because they get on my nerves...
+due to this I prefer add below:
+
+/*
+ * THIS INFORMATIONS ARE PROVIDED BY The Author "AS IS". The Author 
+ * IS NOT RESPONSABLE IN ANY WAY OF LOSS OF DATA HARDWARE DAMAGE OR
+ * ANY THINGS THAT CAN RESULT OF THE USE OF THIS INFORMATIONS. YOU
+ * USE THEM AT YOUR OWN RISK.
+ */
+
+
+KERNEL BUILD SECTION
+====================
+
+The linux kernel for casio e15 is available can be found at
+http://linux-mips.sourceforge.net 
+
+To build simply copying defconfig-casio-e15 to .config under root dir
+then type commands:
+
+-first prepare configuration
+cp arch/mips/configs/defconfig-casio-e15 .config
+make menuconfig, you can make adjustments but the default config should
+be quite fine.
+
+-second run build
+make stripped
+make modules 
+
+This should produce the kernel the file arch/mips/boot/vmlinux-stripped
+witch is linux OS.
+
+-install modules to the prepared root dir
+make INSTALL_MOD_PATH=c:/home/flc/mips/appli/rootfs modules_install
+
+WARNING: INSTALL_MOD_PATH must be an absolute path name elsewhere 
+modules are not propely installed.
+
+-transfering arch/mips/boot/vmlinux-stripped to casio e15 with cyace.exe 
+and cyacecfg.txt. cyace.exe is the kernel luncher under win ce you may 
+find it on the net.
+
+-transfering your ready build root to casio e15. 
+
+For the two last scripts, descriptions and tools for transfering, build
+rootfs etc... are grouped under package called casio-mips (try to look 
+for casio-mips.tar.gz) on the net, I will make it available soon (I hope).
+
+GPIO SECTION
+============
+
+Small memo about gpio use in casio E15. To complete explains have 
+a look to files:
+include/asm-mips/vr41xx/e15.h
+include/linux/button.h
+drivers/char/buttons.c
+drivers/char/gpiobtns.c
+
+GPIO base value:
+----------------
+0xab000100:     0x0000  0x1fc0  0x7fc3  0xebe9  0x8004  0x1414  0xffff  0xe03f
+0xab000110:     0x0000  0x0000  0x0038  0x0002  0xffe9  0xe02a  0x0f67  0x0000
+
+0xab000100:		0x0000
+0xab000102:		0x1fc0
+0xab000104:		0x7fc3
+0xab000106:		0xebe9
+
+                    gpiodl
+I/O | fonction    | 0x7fc3 | 0111 1111 1100 0011 | hexa value | name
+----------------------------------------------------------------------
+(I) |             |        | 1111 1111 1100 0011 |            | GPIO15
+(I) | KEYPAD DOWN | 0x3fc3 | 0011 1111 1100 0011 |            | GPIO14
+(I) | ACTION UP   | 0x5fc3 | 0101 1111 1100 0011 |            | GPIO13
+(I) | ACTION DOWN | 0x6fc3 | 0110 1111 1100 0011 |            | GPIO12
+(I) | VOICE       | 0x77c3 | 0111 0111 1100 0011 |            | GPIO11
+(I) | APP1        | 0x7bc3 | 0111 1011 1100 0011 |            | GPIO10
+(I) | APP2        | 0x7dc3 | 0111 1101 1100 0011 |            | GPIO9
+(I) | APP3        | 0x7ec3 | 0111 1110 1100 0011 |            | GPIO8
+(I) | EXIT        | 0x7f43 | 0111 1111 0100 0011 |            | GPIO7
+(I) | ACTION PUSH | 0x7f83 | 0111 1111 1000 0011 |            | GPIO6
+(I) | POWER       | 0x7fe3 | 0111 1111 1110 0011 |            | GPIO5
+(I) |             |        | 0111 1111 1101 0011 |            | GPIO4
+(I) |             |        | 0111 1111 1100 1011 |            | GPIO3
+(I) |             |        | 0111 1111 1100 0111 |            | GPIO2
+(I) |             |        | 0111 1111 1110 0001 |            | GPIO1
+(I) |             |        | 0111 1111 1110 0010 |            | GPIO0
+
+                    gpiodh
+I/O | fonction    | 0xe3e9 | 1110 0011 1110 1001 | hexa value | name
+----------------------------------------------------------------------
+(I) | KEYPAD LEFT | 0x63e9 | 0110 0011 1110 1001 |            | GPIO31
+(I) | KEYPAD RIGHT| 0xa3e9 | 1010 0011 1110 1001 |            | GPIO30
+(I) | KEYPAD UP   | 0xc3e9 | 1100 0011 1110 1001 |            | GPIO29
+(O) | UNKNOW      |        |                     | 0x1000     | GPIO28
+(O) | SPEAKER     |        |                     | 0x0800     | GPIO27
+(O) | BACKLIGHT   |        |                     | 0x0400     | GPIO26
+(O) | UNKNOW      |        |                     | 0x0200     | GPIO25
+(O) | LCD ON/OFF  |        |                     | 0x0100     | GPIO24
+ 
+(I) |             |        |                     |            | GPIO23
+(I) |             |        |                     |            | GPIO22
+(I) |             |        |                     |            | GPIO21
+
+(I) |             | 0xe3fd | 1110 0011 1111 1101 |            | GPIO20 (main battery low???)
+(I) | RESET?      | 0xXXXX | 1110 0011 1110 0001 |            | GPIO19 (back reset button???) 
+(I) |             | 0xe3ed | 1110 0011 1110 1101 |            | GPIO18 (backup battery low???)
+(I) |             |        |                     |            | GPIO17
+(I) |             |        |                     |            | GPIO16
+ 
+	  
+CONTROL:
+----
+UNKNOW:			0x1000	GPIO28
+
+SOUND (SPEAKER):0x0800	GPIO27
+LCD BACKLIGHT: 	0x0400	GPIO26
+UNKNOW:			0x0200	GPIO25
+LCD ON/OFF:		0x0100	GPIO24
+
+UNKNOW:			0x0080	GPIO23
+UNKNOW:			0x0040	GPIO22
+
+CONTRAST: 0xab00 011c = 0x0f67
+---------
+
+0-16: PODAT LOW xxxx xxxx xxxx 0000 Low contrast value 0
+                xxxx xxxx xxxx 1111 Max contrast value 16
+							
