@@ -1061,6 +1061,34 @@ static bool be300_run_batch(machine_t *m)
         m->last_report = m->cpu->ninstrs;
     }
 
+    /* Cold boot PC probes: one-shot logging of key function entries */
+    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged) {
+        uint32_t pc32 = (uint32_t)m->cpu->pc;
+        static const struct { uint32_t addr; uint32_t bit; const char *name; } probes[] = {
+            { 0x8007B5F4, 0x01, "install_exception_handlers" },
+            { 0x800947C8, 0x02, "kernel_init(pTOC)" },
+            { 0x8007AB38, 0x04, "OEMInit_callback_dispatcher" },
+            { 0x80078BC0, 0x08, "OAL_vtable_init" },
+            { 0x80096894, 0x10, "scheduler_dispatch" },
+            { 0x800794C8, 0x20, "OAL_init_entry" },
+        };
+        for (unsigned i = 0; i < sizeof(probes)/sizeof(probes[0]); i++) {
+            if (pc32 == probes[i].addr &&
+                !(m->wince.cold_boot_pc_probes_logged & probes[i].bit)) {
+                m->wince.cold_boot_pc_probes_logged |= probes[i].bit;
+                fprintf(stderr,
+                    "[COLD_BOOT_PROBE] Hit %s at PC=0x%08X"
+                    " (%" PRIi64 "M instrs, SP=0x%08X"
+                    " RA=0x%08X A0=0x%08X)\n",
+                    probes[i].name, pc32,
+                    m->cpu->ninstrs / 1000000LL,
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0]);
+            }
+        }
+    }
+
     if (m->cpu->is_halted) {
         if (m->cfg.wince_cold_boot) {
             uint32_t wait_pc = (uint32_t)m->cpu->pc;
@@ -1356,8 +1384,16 @@ static bool be300_run_batch(machine_t *m)
                 m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
                     (int32_t)UINT32_C(0x80003800);
                 m->cpu->is_halted = false;
+                /*
+                 * Clear BEV (bit 22) so exceptions use the
+                 * kernel's handlers at PA 0x0000/0x0180 instead
+                 * of the ROM's BEV vectors.  On real hardware,
+                 * the ROM clears BEV before jumping to NK.exe.
+                 * Also clear IE so the cold-start runs with
+                 * interrupts disabled until it's ready.
+                 */
                 m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] &=
-                    ~(uint64_t)0x1u;  /* clear IE */
+                    ~(uint64_t)(0x00400001u);  /* clear BEV + IE */
                 fprintf(stderr,
                     "[COLD_BOOT] Skipping MIPS16 dispatcher,"
                     " jumping to kernel cold-start at"
@@ -1577,25 +1613,100 @@ static bool be300_run_batch(machine_t *m)
                 }
             } else {
                 /*
-                 * Subsequent WAITs: the OAL init restored Status
-                 * with IE=0 (from the zeroed resume_ctx table), so
-                 * the timer can't wake the CPU.  Fix Status to
-                 * enable interrupts, then leave halted.  The pending
-                 * timer interrupt (Cause IP[7] already set) will
-                 * immediately fire and wake the CPU via GXemul's
-                 * interrupt mechanism.
+                 * Subsequent WAITs: the scheduler idle loop.
+                 *
+                 * WAIT #2 (count==1): OAL init at 0x794C8 has just
+                 * run — callbacks initialized hardware.  Update
+                 * resume_ctx RA from 0x794C8 (OAL init, one-time)
+                 * to 0x80096894 (scheduler dispatch, steady-state).
+                 * Also update SP and $s0 from hardware survey so
+                 * the scheduler has proper kernel stack and context.
+                 *
+                 * WAIT #3+: scheduler idle, timer fires → scheduler
+                 * checks for ready threads → dispatches or idles.
                  */
                 m->wince.cold_boot_wait_count++;
 
-                /*
-                 * After the first pass through 0x794C8 (OEMInit
-                 * callbacks have run, HW is initialized), inject
-                 * warm-boot seed state: TLB page tables (ctx_tlb
-                 * at PA 0x2000), exception vectors (PA 0x0000),
-                 * and resume_ctx (PA 0x2200 with kernel RA/SP).
-                 * This bridges from cold-boot HW init to a kernel
-                 * state that can enter the WinCE scheduler.
-                 */
+                if (m->wince.cold_boot_wait_count == 1) {
+                    /*
+                     * First subsequent WAIT after cold-start.
+                     * Do NOT switch resume_ctx to scheduler mode.
+                     *
+                     * The OAL init at RA=0x800794C8 is the correct
+                     * resume target — it runs idempotent HW init and
+                     * falls through to WAIT (the system idle point).
+                     * The WinCE scheduler is interrupt-driven: the
+                     * timer ISR dispatches threads, not the resume
+                     * path.  Patching resume_ctx RA to the scheduler
+                     * dispatch loop (0x80096894) caused a crash
+                     * because the scheduler's stack frame at
+                     * SP=0xFFFFD7B4 was uninitialized.
+                     *
+                     * Dump resume_ctx and TLB for diagnostics.
+                     */
+                    /* Dump current resume_ctx key fields */
+                    {
+                        unsigned char buf[4];
+                        uint32_t ctx_ra = 0, ctx_sp = 0, ctx_s0 = 0;
+                        uint32_t ctx_status = 0, ctx_epc = 0;
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffffa0002274ULL, buf, 4,
+                                MEM_READ, CACHE_DATA))
+                            ctx_ra = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffffa000226cULL, buf, 4,
+                                MEM_READ, CACHE_DATA))
+                            ctx_sp = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffffa0002238ULL, buf, 4,
+                                MEM_READ, CACHE_DATA))
+                            ctx_s0 = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffffa00022a8ULL, buf, 4,
+                                MEM_READ, CACHE_DATA))
+                            ctx_status = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffffa00022b0ULL, buf, 4,
+                                MEM_READ, CACHE_DATA))
+                            ctx_epc = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                        fprintf(stderr,
+                            "[COLD_BOOT] WAIT #2 resume_ctx:"
+                            " RA=0x%08X SP=0x%08X S0=0x%08X"
+                            " Status=0x%08X EPC=0x%08X\n",
+                            ctx_ra, ctx_sp, ctx_s0,
+                            ctx_status, ctx_epc);
+                    }
+                    fprintf(stderr,
+                        "[COLD_BOOT] WAIT #2: keeping resume_ctx"
+                        " (OAL init is idempotent, scheduler is"
+                        " interrupt-driven)\n");
+
+                    /* Dump TLB state to verify kseg3 mappings */
+                    {
+                        struct mips_coproc *cp =
+                            m->cpu->cd.mips.coproc[0];
+                        fprintf(stderr,
+                            "[COLD_BOOT] TLB dump (Wired=%u):\n",
+                            (uint32_t)cp->reg[COP0_WIRED]);
+                        for (int ti = 0; ti < cp->nr_of_tlbs; ti++) {
+                            uint64_t hi = cp->tlbs[ti].hi;
+                            uint64_t lo0 = cp->tlbs[ti].lo0;
+                            uint64_t lo1 = cp->tlbs[ti].lo1;
+                            uint64_t mask = cp->tlbs[ti].mask;
+                            if (hi == 0 && lo0 == 0 && lo1 == 0)
+                                continue;
+                            fprintf(stderr,
+                                "[COLD_BOOT]   TLB[%2d]:"
+                                " hi=%08X lo0=%08X"
+                                " lo1=%08X mask=%08X\n",
+                                ti, (uint32_t)hi,
+                                (uint32_t)lo0,
+                                (uint32_t)lo1,
+                                (uint32_t)mask);
+                        }
+                    }
+                }
+
                 {
                     uint32_t status =
                         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
