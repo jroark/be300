@@ -1,0 +1,1 @@
+5.0.4-git|/opt/homebrew/opt/emscripten/libexec/llvm/bin

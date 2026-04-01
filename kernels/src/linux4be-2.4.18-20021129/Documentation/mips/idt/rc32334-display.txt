@@ -1,0 +1,132 @@
+Copyright (c) 2001 THOMSON multimedia
+
+
+Using the idtdisplay character device with Linux
+------------------------------------------------
+
+Contents:
+
+	1) Overview
+	2) How to use the display ?
+	3) Module Command Line Parameters
+	4) An example using idtDisplay
+	5) Run and Stop the driver
+	6) Generate thecnical documentation with doxygen
+
+1) Overview
+-----------
+
+Idtdisplay is a driver wich allows one to display 4 characters on a
+digital display, mounted on an IDT 79S334A eval board.
+
+It can be used to :
+- write one character on one display cell
+- write a "word" of four characters
+- write a string of more than four characters and scroll it with a delay.
+- clear the display
+- change the delay between scrolling
+
+Idtdisplay is a misc driver. Therefore it uses only a minor number
+(default 254). The major number (set to 10) is shared with others
+misc devices.
+
+	$ mknod /dev/idtdisplay c 10 254
+
+
+2) How to use the display ?
+___________________________
+
+* write : you can write on the device such as a file (the character
+          string will scroll).
+  For example : 
+
+	$ echo "See me scrolling" > /dev/idtdisplay
+
+* read : clean the device. Example:
+
+	$ cat < /dev/idtdisplay
+
+* ioctl perform different fuctions :
+
+
+ - IDTDISPLAY_IOCTL_CLEAN : clean the display, no arg.
+ 
+
+ - IDTDISPLAY_IOCTL_WRITE_CHAR : write one char on the display 
+ 	at the specified location (see idtdisp_wc_struct)
+
+		struct idtdisp_wc_struct {
+			char ch ; /* character to display */
+			int nb ;  /* cell number where the display
+			             start (from 0 to 3) [0|1|2|3] */
+		};
+
+ - IDTDISPLAY_IOCTL_WRITE_4 : write four chars on the display
+    arg : a string of four characters
+ 
+ - IDTDISPLAY_IOCTL_DELAY : set up a new delay between scrolling
+    arg : an unsigned long delay (in ms)
+
+ Ioctl function return -1 if it failled, 0 otherwise.
+ For futher details look at the man page for each system call.
+
+2) Module Command Line Parameters
+---------------------------------
+minor = misc device's minor number
+delay = scrolling in ms
+
+3) An example using idtDisplay
+---------------------------------
+
+#include <sys/ioctl.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h> 
+#include <stdio.h>
+#include <stdlib.h> 
+
+#include "idtdisplay.h"
+
+
+int main(int argc, char *argv[])
+{
+  int desc = 0 ;
+  char ref[20]           = "/dev/idtdisplay" ;
+  char msg[5]           = "hye!" ;
+
+  if ( (desc = open(ref, O_RDWR)) < 0){
+    perror("error open") ;
+    exit(1) ;
+  }
+
+  if( ioctl(desc, IDTDISPLAY_IOCTL_WRITE_4, (int) msg) < 0 ){
+    perror("write four char failed : ") ;
+    close(desc) ;
+    exit(1) ;
+  }    
+
+  close(desc) ;
+
+  return 0 ;
+}
+
+
+4) Run And Stop the driver
+--------------------------
+make sure /dev/idtdisplay exist. Otherwise it need to be created.
+ex : mknod /dev/idtdisplay c 10 254
+
+As root :
+insmod idtdisplay.o
+rmmod idtdisplay
+
+
+5) Generate technical documentation with doxygen
+------------------------------------------------
+This is implementation documentation.
+A doxygen options file (Doxyfile.cfg) is provided with the driver. 
+You must update it and then run the following command :
+
+doxygen Doxyfile.cfg
+
+You can generate html, man, rtf or latex documentation.

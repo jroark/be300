@@ -1,0 +1,6 @@
+#!/bin/sh
+
+mount -t proc none /proc
+mount -t devfs none /dev 2>/dev/null
+SDL_NOMOUSE=1 sdlregstat
+exec /sbin/init

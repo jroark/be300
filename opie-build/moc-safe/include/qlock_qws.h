@@ -1,0 +1,79 @@
+/****************************************************************************
+** $Id: qt/src/kernel/qlock_qws.h   2.3.10   edited 2005-01-24 $
+**
+** Definition of QLock class. This manages interprocess locking
+**
+** Created : 20000406
+**
+** Copyright (C) 1992-2000 Trolltech AS.  All rights reserved.
+**
+** This file is part of the kernel module of the Qt GUI Toolkit.
+**
+** This file may be distributed and/or modified under the terms of the
+** GNU General Public License version 2 as published by the Free Software
+** Foundation and appearing in the file LICENSE.GPL included in the
+** packaging of this file.
+**
+** Licensees holding valid Qt Enterprise Edition or Qt Professional Edition
+** licenses for Qt/Embedded may use this file in accordance with the
+** Qt Embedded Commercial License Agreement provided with the Software.
+**
+** This file is provided AS IS with NO WARRANTY OF ANY KIND, INCLUDING THE
+** WARRANTY OF DESIGN, MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+**
+** See http://www.trolltech.com/pricing.html or email sales@trolltech.com for
+**   information about Qt Commercial License Agreements.
+** See http://www.trolltech.com/gpl/ for GPL licensing information.
+**
+** Contact info@trolltech.com if any conditions of this licensing are
+** not clear to you.
+**
+**********************************************************************/
+
+#ifndef QLOCK_QWS_H
+#define QLOCK_QWS_H
+
+#ifndef QT_H
+/* moc-stub */
+#endif // QT_H
+
+class QLockData;
+
+class QLock
+{
+public:
+    QLock( const QString &filename, char id, bool create = FALSE );
+    ~QLock();
+
+    enum Type { };
+
+    bool isValid() const;
+    void lock( Type type );
+    void unlock();
+    bool locked() const;
+
+private:
+    Type type;
+    QLockData *data;
+};
+
+
+// Nice class for ensuring the lock is released.
+// Just create one on the stack and the lock is automatically released
+// when QLockHolder is destructed.
+class QLockHolder
+{
+public:
+    QLockHolder( QLock *l, QLock::Type type ) : qlock(l) { }
+    ~QLockHolder() { }
+
+    void lock( QLock::Type type ) { }
+    void unlock() { }
+    bool locked() const { }
+
+private:
+    QLock *qlock;
+};
+
+#endif
+

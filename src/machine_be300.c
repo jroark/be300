@@ -1061,9 +1061,10 @@ static bool be300_run_batch(machine_t *m)
         m->last_report = m->cpu->ninstrs;
     }
 
-    /* Cold boot PC probes: one-shot logging of key function entries */
+    /* Cold boot PC probes: one-shot logging and patches */
     if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged) {
         uint32_t pc32 = (uint32_t)m->cpu->pc;
+
         static const struct { uint32_t addr; uint32_t bit; const char *name; } probes[] = {
             { 0x8007B5F4, 0x01, "install_exception_handlers" },
             { 0x800947C8, 0x02, "kernel_init(pTOC)" },
@@ -1090,6 +1091,21 @@ static bool be300_run_batch(machine_t *m)
     }
 
     if (m->cpu->is_halted) {
+        if (m->cfg.wince_cold_boot &&
+            m->wince.cold_boot_wait_logged &&
+            m->wince.cold_boot_wait_count < 3) {
+            fprintf(stderr,
+                "[COLD_BOOT_HALT] PC=0x%08X norm=0x%08X"
+                " SP=0x%08X RA=0x%08X"
+                " wait_logged=%d copy_done=%d count=%u\n",
+                (uint32_t)m->cpu->pc,
+                (uint32_t)m->cpu->pc & 0x1FFFFFFFu,
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                m->wince.cold_boot_wait_logged,
+                m->wince.cold_boot_copy_done,
+                m->wince.cold_boot_wait_count);
+        }
         if (m->cfg.wince_cold_boot) {
             uint32_t wait_pc = (uint32_t)m->cpu->pc;
             uint32_t norm = wait_pc & 0x1FFFFFFFu;
@@ -1292,6 +1308,22 @@ static bool be300_run_batch(machine_t *m)
                 store_32bit_word(m->cpu,
                     0xffffffffa00024fcULL, 0xA0060004u);
 
+                /*
+                 * Fix version marker at PA 0x2400.
+                 * The SPL writes 0x03020101 but NK.exe expects
+                 * 0x03020100.  The version check at 0x76CBC clears
+                 * PA 0x254C on mismatch, which prevents the state-
+                 * save function from running.  Also re-seed the
+                 * hibernate signature and flags since the NK.exe
+                 * pre-WAIT init may have modified them.
+                 */
+                store_32bit_word(m->cpu,
+                    0xffffffffa0002400ULL, 0x03020100u);
+                store_32bit_word(m->cpu,
+                    0xffffffffa0002524ULL, 0x32100000u);
+                store_32bit_word(m->cpu,
+                    0xffffffffa000254cULL, 0x00000003u);
+
                 /* Inject ALL warm-boot replay regions.  The kernel
                  * needs not just the OEMInit callback table but also
                  * dispatch tables, bootctx stub, and stack frame data
@@ -1377,6 +1409,46 @@ static bool be300_run_batch(machine_t *m)
                     store_32bit_word(m->cpu,
                         0xffffffffa0002000ULL + ci, w);
                 }
+
+                /*
+                 * Patch WAIT at 0x80079598 to JR $ra during
+                 * cold-start.  The OAL init code at 0x800794C8
+                 * falls through to WAIT, which is a dead end.
+                 * Sub-functions called from 0x800A5C78 enter this
+                 * code block and get stuck.  Replacing WAIT with
+                 * JR $ra lets the code return to callers so the
+                 * cold-start can complete (0x800942B4, 0x800964FC).
+                 *
+                 * 0x42000023 (WAIT) → 0x03E00008 (JR $ra)
+                 * Also NOP the delay slot (already NOP=0x00000000).
+                 */
+                store_32bit_word(m->cpu,
+                    0xffffffff80079598ULL, 0x03E00008u);
+                fprintf(stderr,
+                    "[COLD_BOOT] Patched WAIT at 0x80079598"
+                    " → JR $ra (cold-start init phase)\n");
+
+                /*
+                 * Patch NK.exe cold-start TLB[1] EntryLo0 value.
+                 *
+                 * At VA 0x8007B4D4, the cold-start does "li v0, 1"
+                 * (0x24020001) which sets EntryLo0 = 1 (G=1, V=0).
+                 * This makes the even page of the kernel stack TLB
+                 * entry INVALID.  The stack at SP=0xFFFFD7E0 can
+                 * only grow to 0xFFFFD000 (~2KB) before hitting
+                 * the invalid page.  kernel_init needs more stack.
+                 *
+                 * Patch to "li v0, 0x5F" (0x2402005F):
+                 *   PFN=1 → PA 0x400, C=3, D=1, V=1, G=1
+                 * This maps the even page (VA 0xFFFFC000) to PA 0x400,
+                 * giving kernel_init ~6KB of stack total.
+                 */
+                store_32bit_word(m->cpu,
+                    0xffffffff8007B4D4ULL, 0x2402005Fu);
+                fprintf(stderr,
+                    "[COLD_BOOT] Patched TLB[1] EntryLo0:"
+                    " li v0,1 → li v0,0x5F at 0x8007B4D4"
+                    " (even page VA 0xFFFFC000→PA 0x400)\n");
 
                 m->cpu->pc =
                     (int64_t)(int32_t)UINT32_C(0x8007B398);
@@ -1613,6 +1685,121 @@ static bool be300_run_batch(machine_t *m)
                 }
             } else {
                 /*
+                 * Check if we're still in cold-start init phase.
+                 * [0x80669554] is set by 0x800942B4 when the kernel
+                 * memory pool is initialized.  Until then, sub-calls
+                 * from 0x800A5C78 may hit WAIT, and the post-WAIT
+                 * resume path would hijack execution via resume_ctx.
+                 * Skip WAITs during this phase.
+                 */
+                unsigned char ck_buf[4];
+                uint32_t ck_val = 0;
+                bool in_init_phase = false;
+                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                        0xffffffff80669554ULL, ck_buf, 4,
+                        MEM_READ, CACHE_DATA))
+                    ck_val = ck_buf[0]|(ck_buf[1]<<8)
+                            |(ck_buf[2]<<16)|(ck_buf[3]<<24);
+                if (ck_val == 0 &&
+                    m->wince.cold_boot_wait_count < 50)
+                    in_init_phase = true;
+
+                /* Restore WAIT instruction when init completes */
+                if (!in_init_phase &&
+                    m->wince.cold_boot_wait_count > 0 &&
+                    m->wince.cold_boot_wait_count < 50) {
+                    store_32bit_word(m->cpu,
+                        0xffffffff80079598ULL, 0x42000023u);
+                    fprintf(stderr,
+                        "[COLD_BOOT] Restored WAIT at 0x80079598"
+                        " (cold-start init complete after %u"
+                        " WAIT cycles)\n",
+                        m->wince.cold_boot_wait_count);
+                }
+
+                if (in_init_phase) {
+                /*
+                 * WAIT during cold-start init phase.
+                 *
+                 * The cold-start at 0x8007B5C0 calls 0x800A5C78,
+                 * which calls sub-functions that hit WAIT.  The
+                 * post-WAIT resume path at 0x79668 restores ALL
+                 * GPRs from resume_ctx (PA 0x2200).  If resume_ctx
+                 * has our initial seeds (RA=0x800794C8), execution
+                 * is hijacked to OAL init and the cold-start never
+                 * completes.
+                 *
+                 * Fix: save the current GPR/CP0 state into
+                 * resume_ctx before each WAIT.  This is what the
+                 * real hardware's state-save function at 0x76E68
+                 * does, but we fail its gating checks.  After the
+                 * post-WAIT resume path restores from resume_ctx,
+                 * execution continues from the correct point.
+                 *
+                 * resume_ctx layout (PA 0x2200):
+                 *   GPR: 0x00-0x7C (packed, skips $t0)
+                 *     at(1)-a3(7), t1(9)-gp(28), sp, fp, ra, HI, LO
+                 *   CP0: 0x80-0xD0
+                 */
+                {
+                    /* Save GPRs to resume_ctx (PA 0x2200).
+                     * Layout: packed, skips $t0 (reg 8). */
+                    static const int gpr_map[] = {
+                        1,2,3,4,5,6,7,  /* at-a3: offsets 0x00-0x18 */
+                        9,10,11,12,13,14,15, /* t1-t7: 0x1C-0x34 */
+                        16,17,18,19,20,21,22,23, /* s0-s7: 0x38-0x54 */
+                        24,25,26,27,28, /* t8-gp: 0x58-0x68 */
+                        29,30,31, /* sp,fp,ra: 0x6C-0x74 */
+                    };
+                    for (unsigned gi = 0;
+                         gi < sizeof(gpr_map)/sizeof(gpr_map[0]);
+                         gi++) {
+                        uint32_t val = (uint32_t)
+                            m->cpu->cd.mips.gpr[gpr_map[gi]];
+                        store_32bit_word(m->cpu,
+                            0xffffffffa0002200ULL + gi * 4, val);
+                    }
+                    /* HI, LO at offsets 0x78, 0x7C */
+                    store_32bit_word(m->cpu,
+                        0xffffffffa0002278ULL,
+                        (uint32_t)m->cpu->cd.mips.hi);
+                    store_32bit_word(m->cpu,
+                        0xffffffffa000227cULL,
+                        (uint32_t)m->cpu->cd.mips.lo);
+
+                    /* Save key CP0 regs (offsets 0x80-0xD0) */
+                    uint64_t *cp0r =
+                        m->cpu->cd.mips.coproc[0]->reg;
+                    static const struct { int reg; int off; } cp0_map[] = {
+                        {COP0_INDEX,0x80}, {COP0_RANDOM,0x84},
+                        {COP0_ENTRYLO0,0x88}, {COP0_ENTRYLO1,0x8C},
+                        {COP0_CONTEXT,0x90}, {COP0_PAGEMASK,0x94},
+                        {COP0_WIRED,0x98}, {COP0_COUNT,0x9C},
+                        {COP0_ENTRYHI,0xA0}, {COP0_COMPARE,0xA4},
+                        {COP0_STATUS,0xA8}, {COP0_CAUSE,0xAC},
+                        {COP0_EPC,0xB0}, {COP0_CONFIG,0xB4},
+                    };
+                    for (unsigned ci = 0;
+                         ci < sizeof(cp0_map)/sizeof(cp0_map[0]);
+                         ci++) {
+                        store_32bit_word(m->cpu,
+                            0xffffffffa0002200ULL + cp0_map[ci].off,
+                            (uint32_t)cp0r[cp0_map[ci].reg]);
+                    }
+                }
+                m->wince.cold_boot_wait_count++;
+                if (m->wince.cold_boot_wait_count <= 10) {
+                    fprintf(stderr,
+                        "[COLD_BOOT] Saved GPR/CP0 to resume_ctx"
+                        " before WAIT #%u at PC=0x%08X"
+                        " (SP=0x%08X RA=0x%08X)\n",
+                        m->wince.cold_boot_wait_count + 1,
+                        (uint32_t)m->cpu->pc,
+                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
+                }
+                } else {
+                /*
                  * Subsequent WAITs: the scheduler idle loop.
                  *
                  * WAIT #2 (count==1): OAL init at 0x794C8 has just
@@ -1729,18 +1916,161 @@ static bool be300_run_batch(machine_t *m)
                         fprintf(stderr, "\n");
                         /* Check ulRAMStart area (0x80660000+)
                          * for signs kernel_init wrote here */
-                        int nz = 0;
-                        for (int j = 0; j < 256; j++) {
+                        {
+                            int nz1k = 0, nz4k = 0, nz16k = 0;
+                            for (int j = 0; j < 4096; j++) {
+                                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                        0xffffffffa0660000ULL + j*4, buf, 4,
+                                        MEM_READ, CACHE_DATA)) {
+                                    w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                                    if (w != 0) {
+                                        nz16k++;
+                                        if (j < 1024) nz4k++;
+                                        if (j < 256) nz1k++;
+                                    }
+                                }
+                            }
+                            fprintf(stderr,
+                                "[COLD_BOOT]   .data non-zero:"
+                                " 1KB=%d/256 4KB=%d/1024"
+                                " 16KB=%d/4096\n",
+                                nz1k, nz4k, nz16k);
+                        }
+                        /* Trace cold-start function execution by
+                         * checking side effects of each call */
+                        fprintf(stderr,
+                            "[COLD_BOOT]   Cold-start call trace:\n");
+                        /* 0x8007B5BC: sh PRId to [0x80669514]
+                         * (LUI 0x8067 + ADDIU 0x9514 = 0x80669514) */
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffff80669514ULL, buf, 4,
+                                MEM_READ, CACHE_DATA)) {
+                            w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                            fprintf(stderr,
+                                "[COLD_BOOT]     [0x80669514] PRId"
+                                " = 0x%04X (%s)\n", w & 0xFFFF,
+                                (w & 0xFFFF) != 0
+                                    ? "sh PRId ran" : "NOT reached");
+                        }
+                        /* 0x800A5C78 writes 25 to [0x806696D4]
+                         * after all its sub-calls (step 18) */
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffff806696D4ULL, buf, 4,
+                                MEM_READ, CACHE_DATA)) {
+                            w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                            fprintf(stderr,
+                                "[COLD_BOOT]     [0x806696D4]"
+                                " = %u (A5C78 step18 %s)\n", w,
+                                w == 25 ? "reached" : "NOT reached");
+                        }
+                        /* 0x800A5C78 writes to [0x8066956C] near
+                         * end (step 23, after LBTR check) */
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffff8066956CULL, buf, 4,
+                                MEM_READ, CACHE_DATA)) {
+                            w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                            fprintf(stderr,
+                                "[COLD_BOOT]     [0x8066956C]"
+                                " = 0x%08X (A5C78 late %s)\n", w,
+                                w != 0 ? "reached" : "NOT reached");
+                        }
+                        /* 0x800964FC writes to [0x80668C20] */
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffff80668C20ULL, buf, 4,
+                                MEM_READ, CACHE_DATA)) {
+                            w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                            fprintf(stderr,
+                                "[COLD_BOOT]     [0x80668C20]"
+                                " = 0x%08X (964FC %s)\n", w,
+                                w != 0 ? "ran" : "NOT reached");
+                        }
+                        /* Check key addresses that 0x800942B4
+                         * should have written */
+                        {
+                            uint32_t addrs[] = {
+                                0x0066D000, /* should be 1 (init flag) */
+                                0x0066D004, /* should be "MIKE" */
+                                0x0066D008, /* should be 0 or data */
+                            };
+                            for (unsigned j = 0; j < 3; j++) {
+                                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                        0xffffffffa0000000ULL | addrs[j],
+                                        buf, 4, MEM_READ, CACHE_DATA)) {
+                                    w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                                    fprintf(stderr,
+                                        "[COLD_BOOT]   PA 0x%06X"
+                                        " = 0x%08X%s\n",
+                                        addrs[j], w,
+                                        addrs[j]==0x66D004 && w==0x4D494B45
+                                            ? " (MIKE)" : "");
+                                }
+                            }
+                            /* Check [0x80669554] — pointer set by
+                             * 0x800942B4 to kseg1(ulRAMFree)
+                             * (LUI 0x8067 + offset 0x9554 =
+                             *  0x80670000 - 0x6AAC = 0x80669554) */
                             if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                                    0xffffffffa0660000ULL + j*4, buf, 4,
+                                    0xffffffff80669554ULL, buf, 4,
                                     MEM_READ, CACHE_DATA)) {
                                 w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
-                                if (w != 0) nz++;
+                                fprintf(stderr,
+                                    "[COLD_BOOT]   [0x80669554]"
+                                    " = 0x%08X (free RAM ptr)\n", w);
                             }
                         }
+                        /* Check free RAM at ulRAMFree=0x8066D000
+                         * where kernel_init allocates */
+                        {
+                            int nz_free = 0;
+                            uint32_t first_nz = 0, last_nz = 0;
+                            for (int j = 0; j < 8192; j++) {
+                                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                        0xffffffffa066D000ULL + j*4, buf, 4,
+                                        MEM_READ, CACHE_DATA)) {
+                                    w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                                    if (w != 0) {
+                                        nz_free++;
+                                        uint32_t addr = 0x66D000+j*4;
+                                        if (first_nz == 0) first_nz = addr;
+                                        last_nz = addr;
+                                    }
+                                }
+                            }
+                            fprintf(stderr,
+                                "[COLD_BOOT]   Free RAM (PA 0x66D000+"
+                                " 32KB): %d/8192 non-zero",
+                                nz_free);
+                            if (nz_free > 0)
+                                fprintf(stderr,
+                                    " first=0x%06X last=0x%06X",
+                                    first_nz, last_nz);
+                            fprintf(stderr, "\n");
+                        }
+                        /* Dump PA 0x2400 version marker */
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                0xffffffffa0002400ULL, buf, 4,
+                                MEM_READ, CACHE_DATA)) {
+                            w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                            fprintf(stderr,
+                                "[COLD_BOOT]   PA 0x2400"
+                                " (version): 0x%08X\n", w);
+                        }
+                        /* Dump ROMHDR at pTOC (0x80655C54) */
                         fprintf(stderr,
-                            "[COLD_BOOT]   .data non-zero words"
-                            " (first 1KB): %d/256\n", nz);
+                            "[COLD_BOOT]   ROMHDR at pTOC"
+                            " (0x80655C54):");
+                        for (int j = 0; j < 16; j++) {
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    0xffffffff80655C54ULL + j*4, buf, 4,
+                                    MEM_READ, CACHE_DATA)) {
+                                w = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                                if (j % 8 == 0 && j > 0)
+                                    fprintf(stderr,
+                                        "\n[COLD_BOOT]                    ");
+                                fprintf(stderr, " %08X", w);
+                            }
+                        }
+                        fprintf(stderr, "\n");
                         /* Section table at PA 0x18C0 (first 8) */
                         fprintf(stderr,
                             "[COLD_BOOT]   Section table (PA 0x18C0):");
@@ -1851,6 +2181,7 @@ static bool be300_run_batch(machine_t *m)
                     }
                 }
             }
+            }  /* close outer else (cold-start phase check) */
         } else if (m->wince.hibernate_redirect_count < 5) {
             uint32_t norm = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
             if (norm >= 0x00060000u && norm < 0x00100000u) {

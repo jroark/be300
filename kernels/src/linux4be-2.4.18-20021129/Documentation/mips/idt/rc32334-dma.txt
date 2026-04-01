@@ -1,0 +1,318 @@
+Using the IDT 79RC32334 DMA controller with Linux
+-------------------------------------------------
+Copyright (C) 2001,2002 THOMSON multimedia
+fillods@thmulti.com
+
+Contents:
+
+	1) Overview
+	2) Restrictions
+	3) How to use the IDT RC32334 DMA
+	4) Two examples using RC32334 DMA
+
+1) Overview
+   --------
+
+The IDT 79RC32334 embeds a general purpose DMA controller which has
+scatter/gather capability. 4 general purpose DMA channels move data
+between source and destination resources, such as system memory, PCI
+or external I/O devices, in any combination. The RC32334 DMA support
+transfer burst sizes from 1 to 16 bytes. On-the-fly endianess byte
+swapping is also possible.
+
+Arbitration:
+
+The BIU has the highest priority on the bus, followed by DMA 0 to DMA 3,
+and then the lowest priority is the PCI.
+
+Note the DMA is only available to code within the Linux kernel,
+and the single functions only support *logical* addresses (i.e. non-virtual 
+addresses, such as returned by kmalloc, or non-module variables).
+Memory blocks address through virtual memory must use the "sg" functions,
+unless the physical address is deduced.
+
+The DMA functions run safe in the interrupt context, as well as
+non interrupt context.
+
+Cost of a DMA setup:
+
+My rough guess is less than 100 CPU cycles for "single" DMA and 150+
+cycles in the case of "sg" DMA. TBC. So it's only worth to set off the
+DMA for block transfer size above, hmmm, let's say 100 bytes. TBC.
+(If you have real numbers, please fix this document)
+
+Note: using the DMA won't make your block tranfer faster,
+however, it will certainly releave the CPU from this odd job,
+giving a chance for another process to actually run while
+bits are moved in the background.
+
+No need of locking between DMA channels, just make sure you're done
+with the current transfer before going on with the next one on the same
+channel.
+
+
+2) Restrictions
+   ------------
+- Only DMA 0 and 1 have the dma_ready_n pins, so only these channels may be
+  used to transfer data to or from "slow" I/O devices.
+- When the source or destination address is a constant (such as in I/O
+  devices), the address must be word-aligned.
+- The following transfers are not supported:
+	* source is incremented and destination is decremented
+	* source is decremented and destination is incremented
+- Unaligned word/burst transfers can only be done in byte mode.
+- When an address is decremented or constant, the DMA will not support burst
+  transfers. In other words, DMA burst only works with memory.
+- The starting address must be half-word aligned for half-word transfers.
+- Devices must have the same port width when doing DMA transfers from I/O to
+  I/O.
+- The maximum size of one DMA transaction can not exceed 65535 bytes!
+  In other words, this DMA controller is NOT able to handle a full 64KB
+  tranfer in one shot. (Grr, what were you thinking of IDT guys? It's
+  totally usefless for a DMA controller to be able to transfer 0 bytes!
+  Even the 8237 knows the trick to automatically add 1 to the tranfer count,
+  or interpret 0 as 65536. sigh)
+
+
+3) How to use the DMA channels
+   ___________________________
+
+DMA mappings:
+
+First of all, if you're using some buffers in memory,
+you have to make this memory reachable to the DMA controller.
+This operation is mandatory so the DMA controller actually
+"see" the buffers from the bus, and make sure nothing's left
+in the CPU cache.
+
+As a matter of fact, there are 3 kind of DMA memory buffers.
+And forget about the kmalloc(x, GPF_DMA), this crap is only needed
+with 8237 DMA controllers.
+
+Here we have real stuff, much like the PCI DMA, and it's no
+coincidence if the RC32334 DMA API matches the Linux PCI API,
+at least regarding the buffer mapping.
+
+So here are the 3 DMA mappings:
+
+- Consistent DMA mappings
+
+  These exist for the life of the driver. A consistently mapped buffer
+  must be simultaneously available to both the CPU and the peripheral. The
+  buffer should also, if possible, not have caching issues that could cause
+  one not to see updates made by the other.
+
+  void *rc32334_alloc_consistent(void *hwdev, size_t size,
+                                 dma_addr_t *dma_handle);
+  void rc32334_free_consistent(void *hwdev, size_t size, void *vaddr,
+                               dma_addr_t dma_handle);
+
+  rc32334_alloc_consistent allocates a buffer of size bytes, filling dma_handle
+  with the bus address, and returning a pointer to this buffer in non-cached
+  area. hwdev is only here for PCI compatibility, and is actually ignored.
+  You've guessed already what's the use of rc32334_free_consistent..
+
+
+- Streaming DMA mappings, contiguous buffer
+
+  These are set up for a single operation. This is the recommanded
+  mapping to use. Easy to switch from buffer to buffer, etc.
+
+  dma_addr_t rc32334_map_single(void *hwdev, void *ptr, size_t size,
+                                int direction);
+  void rc32334_unmap_single(void *hwdev, dma_addr_t dma_addr, size_t size,
+                            int direction);
+  void rc32334_dma_sync_single(void *hwdev, dma_addr_t dma_handle, size_t size,
+                               int direction);
+			 
+  rc32334_map_single maps size bytes at address in ptr, in the specified
+  direction (DMA_FROMDEVICE, DMA_TODEVICE, DMA_BIDIRECTIONAL). The function
+  returns a pointer suitable for bus operation, i.e. to be fed to
+  rc32334_dma_initiate_single for example, or for Bus Mastering operation.
+  rc32334_unmap_single should have no secret for you.
+  rc32334_dma_sync_single might be useful if you touched your buffer
+  through the cache, and you want to make sure this modification will be
+  seen by the DMA which is reading directly from the DRAM (bypassing the
+  cache). hwdev is only here for PCI compatibility, and is ignored.
+
+- Streaming DMA mappings, scattered buffers
+
+  Like contiguous buffers, these are set up for a single operation.
+  However, these are able to cope with buffers scattered in physical memory.
+  In other words, people using vmalloc or virtual buffer will find these quite
+  handy, at the cost of populating a little struct scatterlist array.
+
+  For these functions to work, your driver has to pass a sg pointer to 
+  a scatterlist array containing nents elements. Please refer to PCI DMA
+  documentation for an explanation of how it works.
+
+ int rc32334_map_sg(void *hwdev, struct scatterlist *sg, int nents,
+                    int direction);
+ void rc32334_unmap_sg(void *hwdev, struct scatterlist *sg, int nents,
+                       int direction);
+ void rc32334_dma_sync_sg(void *hwdev, struct scatterlist *sg, int nents,
+                          int direction);
+
+
+Seting up and initiating a DMA transfer:
+
+- dmanr is the DMA channel number: 0..3
+- src and dst are the _bus_ addresses of the source and destination,
+   be it an I/O, PCI, or memory address.
+- size if the number of bytes to transfer
+- status: a mix of
+
+  DMA_SRC_CONST, DMA_DST_CONST: source or destination is an I/O or PCI port.
+  DMA_SRC_DEC, DMA_DST_DEC: src or dst is memory, and decrmenting
+  DMA_SRC_BE, DMA_DST_BE: src or dst is in big endian format
+  DMA_DONE_INT: ask kindly the DMA controller to call the dma_done_cb
+	        with arg, upon DMA tranfer completion.
+
+  sg special case:
+  * use either DMA_SRC_CONST or DMA_DST_CONST to tell whether addr
+    is the source or the destination (and the other way around for the sg
+    descs).
+  * or DMA_FROM_ADDR, DMA_TO_ADDR, which are special defines
+    indicating the addr is the source or the destination respectively, 
+    and *incrementing*.
+    Note: decrementing is not possible. However, endianess is available, 
+    as well as done_int.
+
+- dma_done_cb and arg: pointer to function and arg to pass as argument to this
+  function, to be called upon transfer completion. DMA_DONE_INT must be
+  set as part of status for this callback to be fired up.
+
+- sg: the very same structure you passed to rc32334_map_sg(), along with nents.
+
+- sgdesc: is a pointer to a buffer to be used as DMA sg descriptors.
+  Basically, it can be a kmalloc(nents*sizeof(rc32334_dma_desc_t)).
+  A global or static variable will do also, but make sure it's not
+  in virtual memory (e.g. a variable in a kernel module). The address
+  has to be "logical". Treat this buffer as an opaque data structure.
+  Once you're done with the transfer (after completion, in the call back
+  for example), it's safe to free this memory. And be nice, it's
+  recommanded to recycle your buffer bits!
+
+- addr is the source or destination in scatter/gather operation. This Linux
+  implementation volountarily does not support the ability to copy
+  scattered data to scattered data, because it's very unusual, and it
+  would make the API pretty much clutured and ineffective. So depending
+  on DMA_SRC_CONST and DMA_DST_CONST, addr will be the source or
+  destination, and sg will be the opposite. c.f. status parameter for
+  more information. addr must be a bus address.
+
+- cfg: is an OR'ed combination of DMA_RDY, DMA_BURSTSZ16, DMA_BURSTSZ4
+	DMA_BURSTSZ2, DMA_BURSTSZ1. Default value 0 means ignore DMArdy,
+	and burst size of 1 byte (ouch).
+
+  void rc32334_dma_setup_single(unsigned int dmanr, dma_addr_t src,
+                            dma_addr_t dst, size_t size, int status,
+			    void (*dma_done_cb)(void *), void *arg);
+
+  void rc32334_dma_setup_sg(unsigned int dmanr, rc32334_dma_desc_t *sgdescs,
+	                struct scatterlist *sg, dma_addr_t addr,
+			int nents, int status, 
+	                void (*dma_done_cb)(void *), void *arg);
+
+Kick it: 
+
+  void rc32334_dma_initiate_single(unsigned int dmanr, unsigned int cfg);
+  void rc32334_dma_initiate_sg(unsigned int dmanr, unsigned int cfg);
+
+
+
+4a) An example using single DMA
+   ---------------------------
+
+/*
+   transfers 1KB from a hardware register, which is 4bytes wide, into buf[].
+   Upon completion of the transfer, mycb() callback is called.
+ */
+
+
+  #include <asm/rc32300/rc32334_dma.h>
+  
+  ...
+ 
+  #define DMA_NUM 0
+  #define TABSZ 1024
+  #define HARDWARE_REG_ADDR 0xwhatever
+  
+  char buf[TABSZ];
+  dma_addr_t psrc, pdest;
+  
+  ...
+  static void mycb(void *a)
+  {
+  	printk("transfer done.\n");
+  	rc32334_unmap_single(NULL, pdest, TABSZ, DMA_TODEVICE);
+  }
+  ...
+ 
+  psrc = HARDWARE_REG_ADDR;
+  pdest = rc32334_map_single(NULL, buf, TABSZ, DMA_TODEVICE);
+   
+  rc32334_dma_setup_single(DMA_NUM, psrc, pdest, TABSZ, 
+  			DMA_SRC_CONST|DMA_DONE_INT, mycb, NULL);
+   
+  rc32334_dma_initiate_single(DMA_NUM, DMA_BURSTSZ4);
+  printk("go DMA, go!\n");
+  
+
+  ...
+
+4b) An example using scatter/gather DMA
+   -----------------------------------
+
+/*
+   transfers 2KB from a hardware register, which is 4bytes wide, 
+   into 2 buffers of 1KB each, using scatter/gather DMA.
+   Upon completion of the transfer, mycb() callback is called.
+   The IDT scatter/gather needs an opaque data struct, which must
+   be an array of SG_NUM elements, in non-virtual memory!
+ */
+ 
+
+
+  #include <asm/rc32300/rc32334_dma.h>
+  
+  ...
+ 
+  #define DMA_NUM 0
+  #define SG_NUM 2
+  #define TABSZ 1024
+  #define HARDWARE_REG_ADDR 0xwhatever
+  
+  char buf1[TABSZ];
+  char buf2[TABSZ];
+  struct scatterlist sg[SG_NUM];
+  rc32334_dma_desc_t *sgd;
+  dma_addr_t psrc;
+
+  ...
+
+  static void mycb(void *a)
+  {
+  	printk("sg transfer done.\n");
+  	rc32334_unmap_sg(NULL, sg, SG_NUM, DMA_TODEVICE);
+  }
+  ...
+ 
+  psrc = HARDWARE_REG_ADDR;
+  sgd = kmalloc(SG_NUM*sizeof(rc32334_dma_desc_t), GFP_KERNEL);
+
+  sg[0].address = buf1;
+  sg[0].length = TABSZ;
+  sg[1].address = buf2;
+  sg[1].length = TABSZ;
+  rc32334_map_sg(NULL, sg, SG_NUM, DMA_TODEVICE);
+ 
+  rc32334_dma_setup_sg(DMA_NUM, sgd, sg, psrc, SG_NUM,
+                          DMA_SRC_CONST|DMA_DONE_INT, mycb, NULL);                         
+   
+  rc32334_dma_initiate_sg(DMA_NUM, DMA_BURSTSZ4);
+
+  printk("go sgDMA, go!\n");
+  
+
+
