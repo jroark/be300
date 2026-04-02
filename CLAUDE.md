@@ -193,6 +193,7 @@ Push with: `git push -u origin <current branch>`
      ```
      Baseline images in the project root: `Starting.bmp` (the "Starting..." screen), `Initializing.bmp` (the "Initializing..." with progress bar). The tool reports pixel similarity and which baseline (if any) matches. Always report the result to the user.
    - **Screenshot is only saved on clean exit** (crash, ui_quit, `be300_stop`). When `gtimeout` kills the process with SIGTERM (exit code 124), no screenshot is saved because there is no signal handler — the process is terminated without running `be300_destroy`/`be300_runtime_finalize`. If exit=124, note that there is no screenshot from that run.
+   - If the screenshot does not match either baseline, it could be: (a) a stuck/partial progress bar on "Initializing...", (b) a later valid screen such as touch calibration, or (c) a corrupt display. Corrupt displays seen so far have a large portion of the screen filled with red. Report what you observe.
    - The user watches the SDL window live and may see things the screenshot misses — always report what the screenshot shows.
 
 ---
