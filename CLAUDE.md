@@ -187,7 +187,12 @@ Push with: `git push -u origin <current branch>`
    - Serial output goes to stdout; emulator diagnostics go to stderr.
    - The emulator opens an SDL window on macOS regardless of DISPLAY. It can be run non-interactively (e.g., from CI, Bash tool, or with redirected I/O) — use `gtimeout` to kill it after a set duration since the kernels run indefinitely.
    - When redirecting stdout to a file, `console_putchar()` flushes immediately so output survives timeout kills.
-   - **After every emulator test run**, check the latest screenshot BMP to verify framebuffer state. The emulator saves timestamped screenshots to `build-host/screenshot_YYYYMMDD_HHMMSS.bmp`. Compare pixel content (non-zero byte percentage) against previous runs to detect regressions. The user watches the SDL window live and may see things the screenshot misses — always report what the screenshot shows.
+   - **After every emulator test run**, compare the screenshot against baseline images using the comparison tool:
+     ```bash
+     python3 tools/compare_screenshot.py build-host/screenshot_YYYYMMDD_HHMMSS.bmp
+     ```
+     Baseline images in the project root: `Starting.bmp` (the "Starting..." screen), `Initializing.bmp` (the "Initializing..." with progress bar). The tool reports pixel similarity and which baseline (if any) matches. Always report the result to the user.
+   - The user watches the SDL window live and may see things the screenshot misses — always report what the screenshot shows.
 
 ---
 
