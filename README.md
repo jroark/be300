@@ -1,4 +1,4 @@
-# be300-framebuffer
+# be300 emulator
 
 Casio BE-300 (NEC VR4131 MIPS little-endian) emulator based on the GXemul engine.
 

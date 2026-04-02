@@ -144,7 +144,8 @@ void console_deinit_main(void)
 	if (!console_initialized)
 		return;
 
-	tcsetattr(STDIN_FILENO, TCSANOW, &console_oldtermios);
+	if (isatty(STDIN_FILENO))
+		tcsetattr(STDIN_FILENO, TCSANOW, &console_oldtermios);
 
 	console_initialized = 0;
 }
@@ -165,7 +166,8 @@ void console_sigcont(int x)
 		return;
 
 	/*  Make sure that the correct (current) termios setting is active:  */
-	tcsetattr(STDIN_FILENO, TCSANOW, &console_curtermios);
+	if (isatty(STDIN_FILENO))
+		tcsetattr(STDIN_FILENO, TCSANOW, &console_curtermios);
 
 	/*  Reset the signal handler:  */
 	signal(SIGCONT, console_sigcont);
@@ -279,19 +281,20 @@ static void start_xterm(int handle)
  */
 static int d_avail(int d)
 {
-	fd_set rfds;
-	struct timeval tv;
-
-	FD_ZERO(&rfds);
-	FD_SET(d, &rfds);
-	tv.tv_sec = 0;
-	tv.tv_usec = 0;
-
 	for (;;) {
-		// Select may return -1 if interrupted.
+		fd_set rfds;
+		struct timeval tv;
+
+		FD_ZERO(&rfds);
+		FD_SET(d, &rfds);
+		tv.tv_sec = 0;
+		tv.tv_usec = 0;
+
 		int r = select(d+1, &rfds, NULL, NULL, &tv);
 		if (r >= 0)
 			return r;
+		if (errno != EINTR)
+			return 0;
 	}
 }
 
@@ -321,6 +324,8 @@ void console_makeavail(int handle, char ch)
  *  Returns 1 if a char is available from a handle's read descriptor,
  *  0 otherwise.
  */
+static int stdin_eof = 0;
+
 static int console_stdin_avail(int handle)
 {
 #ifdef __EMSCRIPTEN__
@@ -335,8 +340,11 @@ static int console_stdin_avail(int handle)
 	if (!console_handles[handle].in_use_for_input)
 		return 0;
 
-	if (!allow_slaves)
+	if (!allow_slaves) {
+		if (stdin_eof)
+			return 0;
 		return d_avail(STDIN_FILENO);
+	}
 
 	if (console_handles[handle].using_xterm ==
 	    USING_XTERM_BUT_NOT_YET_OPEN)
@@ -382,6 +390,12 @@ int console_charavail(int handle)
 			d = console_handles[handle].r_descriptor;
 
 		len = read(d, ch, sizeof(ch));
+
+		if (len <= 0) {
+			if (d == STDIN_FILENO)
+				stdin_eof = 1;
+			break;
+		}
 
 		for (i=0; i<len; i++) {
 			/*  printf("[ %i: %i ]\n", i, ch[i]);  */

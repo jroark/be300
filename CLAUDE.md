@@ -6,10 +6,10 @@ I also have another VM with Platform Builder 3.0.
 - docs/Vr4131-um_200203.pdf - NEC vr4131 SOC Users Manual
 - docs/U14579EJ2V0UM00.pdf - NEC vrc4173 Companion Chip Users Manual
 - docs/hardware.txt - notes from Linux4be project developers
-- `docs/hw_dump_combined.txt` - real hardware memory/register dumps from BEDiag tool
-- `docs/BE300BootROM_v1.txt` - full 16KB ROM dump (PA 0x1FC00000, CRC32=0xFA3B5582)
-- `docs/be300_boot_rom.bin` - extracted ROM binary loaded by emulator
-- `ce/bediag/` - BEDiag diagnostic tool source and output
+- docs/hw_dump_combined.txt - real hardware memory/register dumps from BEDiag tool
+- docs/BE300BootROM_v1.txt - full 16KB ROM dump (PA 0x1FC00000, CRC32=0xFA3B5582)
+- docs/be300_boot_rom.bin - extracted ROM binary loaded by emulator
+- ce/bediag/ - BEDiag diagnostic tool source and output
 
 ## Source Code Layout
 
@@ -47,6 +47,8 @@ I also have another VM with Platform Builder 3.0.
 - What the next step should be
 
 This applies to: code changes, diagnostic instrumentation, failed experiments, documentation updates, and analysis results.
+
+Don't commit files unrelated to the change or built/testing artifacts
 
 ## Branch
 Stay on the current branch, don't create PRs.
@@ -104,7 +106,7 @@ Push with: `git push -u origin <current branch>`
 
 **Boot ROM**
 - 16KB masked ROM at PA 0x1FC00000 (VA 0xBFC00000 kseg1, 0x9FC00000 kseg0)
-- Dumped from real hardware: `hardware_survey/be300_boot_rom.bin`
+- Dumped from real hardware: `docs/be300_boot_rom.bin`
 - Reset vector: NOP → LUI/ORI/JR to 0xBFC002F0 (main boot code)
 - ROM does: CP0 init, SDRAM timing, clock setup, NAND read, SPL load
 - BEV TLB refill vector (+0x200) is all 0xFF in the original ROM (no handler)
@@ -114,7 +116,6 @@ Push with: `git push -u origin <current branch>`
 - BEV exception handler at +0x380 does JALR to 0x9FC00C85 (bit 0 = MIPS16 mode switch)
 - MIPS16 functions use JALX (jump-and-link-exchange) to call back into MIPS32 ROM helpers, creating a cross-mode call graph
 - NK.exe is 100% MIPS32 — no MIPS16 anywhere in the 6.2MB kernel
-- Full MIPS16 disassembly saved in `build-host/rom_mips16_disasm.txt` (use `-m mips:16` flag with objdump)
 
 **Boot ROM Layout:**
 ```
@@ -134,8 +135,6 @@ Push with: `git push -u origin <current branch>`
 - 0x9FC00BC0: another helper
 - 0x9FC00C04: trampoline (MIPS32 at 0xC00-0xC1C pops s0,s1,a0 from stack, JR a0)
 
-**MIPS16 workaround approach:**
-Rather than adding MIPS16 support to GXemul (would require ~3K LOC of architectural changes to the dyntrans JIT — fixed 4-byte IC entries, no ISA mode tracking, no PC bit 0 handling) or translating all 34 MIPS16 functions, the emulator patches the ROM's BEV vectors at load time with purpose-built MIPS32 exception handlers. The MIPS16 function library in the ROM is never executed. objdump flag for MIPS16 disassembly: `-m mips:16` (not `-m mips:isa16`)
 
 **Things to note**
 - originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
@@ -186,7 +185,7 @@ Rather than adding MIPS16 support to GXemul (would require ~3K LOC of architectu
 4. **Logs & artifacts:**
    - Always capture both stdout and stderr from emulator runs (`*.log`) and screenshot.
    - Serial output goes to stdout; emulator diagnostics go to stderr.
-   - The emulator opens an SDL window on macOS regardless of DISPLAY. **Do not run the emulator from automated/non-interactive contexts** (e.g., CI, Bash tool) — it will hang on SDL init. Always ask the user to run emulator tests from their terminal.
+   - The emulator opens an SDL window on macOS regardless of DISPLAY. It can be run non-interactively (e.g., from CI, Bash tool, or with redirected I/O) — use `gtimeout` to kill it after a set duration since the kernels run indefinitely.
    - When redirecting stdout to a file, `console_putchar()` flushes immediately so output survives timeout kills.
 
 ---
