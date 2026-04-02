@@ -192,6 +192,7 @@ Push with: `git push -u origin <current branch>`
      python3 tools/compare_screenshot.py build-host/screenshot_YYYYMMDD_HHMMSS.bmp
      ```
      Baseline images in the project root: `Starting.bmp` (the "Starting..." screen), `Initializing.bmp` (the "Initializing..." with progress bar). The tool reports pixel similarity and which baseline (if any) matches. Always report the result to the user.
+   - **Screenshot is only saved on clean exit** (crash, ui_quit, `be300_stop`). When `gtimeout` kills the process with SIGTERM (exit code 124), no screenshot is saved because there is no signal handler — the process is terminated without running `be300_destroy`/`be300_runtime_finalize`. If exit=124, note that there is no screenshot from that run.
    - The user watches the SDL window live and may see things the screenshot misses — always report what the screenshot shows.
 
 ---
