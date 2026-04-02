@@ -1066,12 +1066,23 @@ static bool be300_run_batch(machine_t *m)
         uint32_t pc32 = (uint32_t)m->cpu->pc;
 
         static const struct { uint32_t addr; uint32_t bit; const char *name; } probes[] = {
-            { 0x8007B5F4, 0x01, "install_exception_handlers" },
-            { 0x800947C8, 0x02, "kernel_init(pTOC)" },
-            { 0x8007AB38, 0x04, "OEMInit_callback_dispatcher" },
-            { 0x80078BC0, 0x08, "OAL_vtable_init" },
-            { 0x80096894, 0x10, "scheduler_dispatch" },
-            { 0x800794C8, 0x20, "OAL_init_entry" },
+            { 0x8007B5F4, 0x0001, "install_exception_handlers" },
+            { 0x800947C8, 0x0002, "kernel_init(pTOC)" },
+            { 0x8007AB38, 0x0004, "OEMInit_callback_dispatcher" },
+            { 0x80078BC0, 0x0008, "OAL_vtable_init" },
+            { 0x80096894, 0x0010, "scheduler_dispatch" },
+            { 0x800794C8, 0x0020, "OAL_init_entry" },
+            { 0x800A5C78, 0x0040, "A5C78_OAL_callbacks" },
+            { 0x800942B4, 0x0080, "942B4_real_kernel_init" },
+            { 0x800964FC, 0x0100, "964FC_scheduler_init" },
+            { 0x800AB990, 0x0200, "AB990_jalr_func_ptr" },
+            { 0x80078D74, 0x0400, "78D74_init" },
+            { 0x8007A65C, 0x0800, "7A65C_timer_setup" },
+            { 0x800A78C8, 0x1000, "A78C8_timer_calc" },
+            { 0x800A8934, 0x2000, "A8934_ISR_registration" },
+            { 0x800A5E70, 0x4000, "A5E70_ICU_programming" },
+            { 0x800A5FEC, 0x8000, "A5FEC_VRC4173_setup" },
+            { 0x800A6090, 0x10000, "A6090_VRC4173_setup2" },
         };
         for (unsigned i = 0; i < sizeof(probes)/sizeof(probes[0]); i++) {
             if (pc32 == probes[i].addr &&
@@ -1086,7 +1097,123 @@ static bool be300_run_batch(machine_t *m)
                     (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
                     (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
                     (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0]);
+
+                /* When OAL_init_entry is hit, dump caller context */
+                if (pc32 == 0x800794C8u) {
+                    uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+                    fprintf(stderr,
+                        "[COLD_BOOT_PROBE] OAL_init caller:"
+                        " RA=0x%08X SP=0x%08X"
+                        " S0=0x%08X S1=0x%08X\n",
+                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                        sp,
+                        (uint32_t)m->cpu->cd.mips.gpr[16],
+                        (uint32_t)m->cpu->cd.mips.gpr[17]);
+                    /* Dump top 8 stack words */
+                    fprintf(stderr,
+                        "[COLD_BOOT_PROBE] Stack dump:");
+                    for (int si = 0; si < 8; si++) {
+                        unsigned char sb[4];
+                        uint64_t sva = 0xffffffff00000000ULL
+                            | (uint64_t)(int32_t)(sp + si * 4);
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                sva, sb, 4, MEM_READ, CACHE_DATA)) {
+                            uint32_t sw = sb[0]|(sb[1]<<8)
+                                |(sb[2]<<16)|(sb[3]<<24);
+                            fprintf(stderr, " %08X", sw);
+                        }
+                    }
+                    fprintf(stderr, "\n");
+                }
             }
+        }
+    }
+
+    /*
+     * Intercept execution in the OAL init continuation block
+     * (0x800794C0-0x8007959C) during cold-start.  This block
+     * does PMU/DCU setup and ends in WAIT.  Memory patches may
+     * not take effect due to dyntrans caching — intercept at
+     * the run-loop level instead.
+     */
+    /*
+     * Intercept execution in the OAL init / post-WAIT block
+     * (0x80079480-0x800797E0) during cold-start.
+     *
+     * This block does: HW init calls → cache flush → PMU/DCU
+     * setup → WAIT → NOP sled → checks → warm-path init →
+     * GPR/CP0 restore from resume_ctx → JR $ra.
+     *
+     * There are multiple entry points (0x79480, 0x794C0,
+     * 0x794C8, 0x79510) and internal JALs that keep RA
+     * pointing within the block.  Memory patches via
+     * store_32bit_word may not take effect due to dyntrans
+     * caching.  Intercept at the run-loop level instead.
+     *
+     * Walk the stack to find a return address outside this
+     * block and redirect there.
+     */
+    /*
+     * Intercept execution in the OAL init / post-WAIT block
+     * (0x80079480-0x800797E0) during cold-start init phase.
+     *
+     * This block does HW init, PMU/DCU setup, and WAIT.
+     * During cold-start, entering this block is a dead-end.
+     * On real hardware, the MIPS16 ROM boot dispatcher at
+     * 0x9FC00C21 handles this — we can't run MIPS16.
+     *
+     * Strategy: when PC enters this range, redirect to the
+     * return address of 0x80078D74 (the vtable function at
+     * call 4 of 0x800A5C78 that enters this block).  The
+     * function at 0x80078D74 has a 24-byte stack frame with
+     * RA saved at SP+0x14.  Rather than unwinding the stack,
+     * redirect PC to just after call 4 in 0x800A5C78
+     * (0x800A5CA4, the instruction after call 4's delay slot).
+     *
+     * This intercept is persistent — it fires every batch
+     * while the init phase is active, because the dyntrans
+     * cache may re-enter the block between batch calls.
+     */
+    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
+        && m->wince.cold_boot_wait_count < 50) {
+        uint32_t pc32 = (uint32_t)m->cpu->pc;
+        if (pc32 >= 0x80079480u && pc32 <= 0x800797E0u) {
+            if (!m->wince.cold_boot_oal_intercept_logged) {
+                fprintf(stderr,
+                    "[COLD_BOOT] OAL init intercept:"
+                    " PC=0x%08X RA=0x%08X SP=0x%08X\n",
+                    pc32,
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]);
+                m->wince.cold_boot_oal_intercept_logged = true;
+            }
+
+            /*
+             * Redirect to 0x800A5CA4 — the instruction after
+             * call 4 (jal 0x80078D74) in 0x800A5C78.  Unwind
+             * 0x80078D74's stack frame (24 bytes, RA at SP+0x14).
+             */
+            {
+                uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+                unsigned char sb[4];
+                uint32_t saved_ra = 0;
+                /* Restore RA from 0x80078D74's frame */
+                uint64_t ra_va = 0xffffffff00000000ULL
+                    | (uint64_t)(int32_t)(sp + 0x14);
+                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                        ra_va, sb, 4, MEM_READ, CACHE_DATA))
+                    saved_ra = sb[0]|(sb[1]<<8)
+                        |(sb[2]<<16)|(sb[3]<<24);
+                /* Unwind 0x80078D74's frame */
+                m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                    (int32_t)(sp + 0x18);
+                m->cpu->cd.mips.gpr[MIPS_GPR_RA] =
+                    (int32_t)saved_ra;
+                /* Set PC to after call 4 in 0x800A5C78 */
+                m->cpu->pc =
+                    (int64_t)(int32_t)UINT32_C(0x800A5CA4);
+            }
+            m->cpu->is_halted = false;
         }
     }
 
@@ -1228,6 +1355,27 @@ static bool be300_run_batch(machine_t *m)
                             }
                         }
                     }
+                }
+
+                /* Probe key values after COPYentry for diagnostics */
+                {
+                    unsigned char pb[4];
+                    uint32_t func_ptr_84 = 0, pa_1d004 = 0;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            0xffffffff80660084ULL, pb, 4,
+                            MEM_READ, CACHE_DATA))
+                        func_ptr_84 = pb[0]|(pb[1]<<8)
+                            |(pb[2]<<16)|(pb[3]<<24);
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            0xffffffffa001d004ULL, pb, 4,
+                            MEM_READ, CACHE_DATA))
+                        pa_1d004 = pb[0]|(pb[1]<<8)
+                            |(pb[2]<<16)|(pb[3]<<24);
+                    fprintf(stderr,
+                        "[COLD_BOOT] Post-COPYentry probes:"
+                        " [0x80660084]=0x%08X (JALR target)"
+                        " PA 0x1D004=0x%08X (AB990 guard)\n",
+                        func_ptr_84, pa_1d004);
                 }
 
                 /*
@@ -1411,22 +1559,80 @@ static bool be300_run_batch(machine_t *m)
                 }
 
                 /*
-                 * Patch WAIT at 0x80079598 to JR $ra during
-                 * cold-start.  The OAL init code at 0x800794C8
-                 * falls through to WAIT, which is a dead end.
-                 * Sub-functions called from 0x800A5C78 enter this
-                 * code block and get stuck.  Replacing WAIT with
-                 * JR $ra lets the code return to callers so the
-                 * cold-start can complete (0x800942B4, 0x800964FC).
+                 * Patch OAL init continuation at 0x800794C8 to
+                 * JR $ra during cold-start.
                  *
-                 * 0x42000023 (WAIT) → 0x03E00008 (JR $ra)
-                 * Also NOP the delay slot (already NOP=0x00000000).
+                 * The code at 0x800794C8 is the "OAL init
+                 * continuation" block: it runs 6 init functions,
+                 * flushes cache, calls 3 more init functions, then
+                 * falls through to PMU/DCU setup and WAIT at
+                 * 0x80079598.  During the cold-start, one of the
+                 * sub-calls from 0x800A5C78 enters this block.
+                 * The internal JAL at 0x80079558 clobbers RA to
+                 * 0x80079560, so when WAIT (patched to JR $ra)
+                 * executes, it loops back to the PMU/DCU setup —
+                 * infinite loop.
+                 *
+                 * Fix: patch the ENTRY to the block (0x800794C8)
+                 * to JR $ra.  This prevents the block from running
+                 * entirely when called during cold-start.  The
+                 * init functions it runs are also called directly
+                 * by the cold-start or 0x800A5C78, so nothing is
+                 * lost.  Original instruction: JAL 0x79ADC
+                 * (0x0C01E6B7).
                  */
                 store_32bit_word(m->cpu,
-                    0xffffffff80079598ULL, 0x03E00008u);
+                    0xffffffff800794C8ULL, 0x03E00008u); /* JR $ra */
+                store_32bit_word(m->cpu,
+                    0xffffffff800794CCULL, 0x00000000u); /* NOP */
+                /* NOP-fill the entire OAL init continuation block
+                 * from 0x800794C0 to 0x8007959C (56 words).
+                 * End with JR $ra at 0x80079598.  This prevents
+                 * ALL entry points into this block.  The block
+                 * does PMU/DCU setup and ends in WAIT — all of
+                 * which is unnecessary during cold-start. */
+                for (uint32_t pi = 0; pi < 56; pi++) {
+                    store_32bit_word(m->cpu,
+                        0xffffffff800794C0ULL + pi * 4,
+                        0x00000000u); /* NOP */
+                }
+                /* Place JR $ra at the start and end */
+                store_32bit_word(m->cpu,
+                    0xffffffff800794C0ULL, 0x03E00008u); /* JR $ra */
+                store_32bit_word(m->cpu,
+                    0xffffffff800794C8ULL, 0x03E00008u); /* JR $ra */
+                store_32bit_word(m->cpu,
+                    0xffffffff80079598ULL, 0x03E00008u); /* JR $ra */
+                /* Force invalidate dyntrans code cache so patches
+                 * take effect. */
+                if (m->cpu->invalidate_code_translation)
+                    m->cpu->invalidate_code_translation(
+                        m->cpu, 0, INVALIDATE_ALL);
+                /* Verify patches by reading back */
+                {
+                    static const uint32_t verify_addrs[] = {
+                        0x800794C0, 0x800794C8,
+                        0x80079560, 0x80079598,
+                    };
+                    fprintf(stderr,
+                        "[COLD_BOOT] Verify patches:");
+                    for (unsigned vi = 0; vi < 4; vi++) {
+                        unsigned char vb[4];
+                        uint64_t vva = 0xffffffff00000000ULL
+                            | (uint64_t)(int32_t)verify_addrs[vi];
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                vva, vb, 4, MEM_READ, CACHE_DATA)) {
+                            uint32_t vw = vb[0]|(vb[1]<<8)
+                                |(vb[2]<<16)|(vb[3]<<24);
+                            fprintf(stderr, " [%08X]=%08X",
+                                verify_addrs[vi], vw);
+                        }
+                    }
+                    fprintf(stderr, "\n");
+                }
                 fprintf(stderr,
-                    "[COLD_BOOT] Patched WAIT at 0x80079598"
-                    " → JR $ra (cold-start init phase)\n");
+                    "[COLD_BOOT] Patched 0x800794C0/C8/9560/9598"
+                    " → JR $ra (block all OAL init paths)\n");
 
                 /*
                  * Patch NK.exe cold-start TLB[1] EntryLo0 value.
@@ -1704,14 +1910,22 @@ static bool be300_run_batch(machine_t *m)
                     m->wince.cold_boot_wait_count < 50)
                     in_init_phase = true;
 
-                /* Restore WAIT instruction when init completes */
+                /* Restore patched instructions when init completes */
                 if (!in_init_phase &&
                     m->wince.cold_boot_wait_count > 0 &&
                     m->wince.cold_boot_wait_count < 50) {
                     store_32bit_word(m->cpu,
-                        0xffffffff80079598ULL, 0x42000023u);
+                        0xffffffff800794C0ULL, 0x0801E53Eu); /* J 0x794F8 */
+                    store_32bit_word(m->cpu,
+                        0xffffffff800794C8ULL, 0x0C01E6B7u); /* JAL 0x79ADC */
+                    store_32bit_word(m->cpu,
+                        0xffffffff80079560ULL, 0x3C08AF00u); /* LUI t0, 0xAF00 */
+                    store_32bit_word(m->cpu,
+                        0xffffffff80079564ULL, 0x3409FB3Bu); /* LI t1, 0xFB3B */
+                    store_32bit_word(m->cpu,
+                        0xffffffff80079598ULL, 0x42000023u); /* WAIT */
                     fprintf(stderr,
-                        "[COLD_BOOT] Restored WAIT at 0x80079598"
+                        "[COLD_BOOT] Restored OAL init block"
                         " (cold-start init complete after %u"
                         " WAIT cycles)\n",
                         m->wince.cold_boot_wait_count);
