@@ -48,7 +48,7 @@ I also have another VM with Platform Builder 3.0.
 
 This applies to: code changes, diagnostic instrumentation, failed experiments, documentation updates, and analysis results.
 
-Don't commit files unrelated to the change or built/testing artifacts
+Don't commit files unrelated to the change or build/testing artifacts
 
 ## Branch
 Stay on the current branch, don't create PRs.
