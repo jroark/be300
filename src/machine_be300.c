@@ -1178,14 +1178,32 @@ static bool be300_run_batch(machine_t *m)
         && m->wince.cold_boot_wait_count < 50) {
         uint32_t pc32 = (uint32_t)m->cpu->pc;
         if (pc32 >= 0x80079480u && pc32 <= 0x800797E0u) {
-            if (!m->wince.cold_boot_oal_intercept_logged) {
-                fprintf(stderr,
-                    "[COLD_BOOT] OAL init intercept:"
-                    " PC=0x%08X RA=0x%08X SP=0x%08X\n",
-                    pc32,
-                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
-                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]);
-                m->wince.cold_boot_oal_intercept_logged = true;
+            {
+                static int intercept_count = 0;
+                intercept_count++;
+                if (intercept_count <= 10) {
+                    uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+                    fprintf(stderr,
+                        "[COLD_BOOT] OAL init intercept #%d:"
+                        " PC=0x%08X RA=0x%08X SP=0x%08X",
+                        intercept_count, pc32,
+                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                        sp);
+                    /* Dump stack RA values to trace caller */
+                    fprintf(stderr, " stack:");
+                    for (int si = 0; si < 8; si++) {
+                        unsigned char sb[4];
+                        uint64_t sva = 0xffffffff00000000ULL
+                            | (uint64_t)(int32_t)(sp + si * 4);
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                sva, sb, 4, MEM_READ, CACHE_DATA)) {
+                            uint32_t sw = sb[0]|(sb[1]<<8)
+                                |(sb[2]<<16)|(sb[3]<<24);
+                            fprintf(stderr, " %08X", sw);
+                        }
+                    }
+                    fprintf(stderr, "\n");
+                }
             }
 
             /*
@@ -1209,9 +1227,28 @@ static bool be300_run_batch(machine_t *m)
                     (int32_t)(sp + 0x18);
                 m->cpu->cd.mips.gpr[MIPS_GPR_RA] =
                     (int32_t)saved_ra;
-                /* Set PC to after call 4 in 0x800A5C78 */
+                /*
+                 * Skip the ENTIRE 0x800A5C78 function.
+                 *
+                 * Multiple sub-calls (calls 4, and others among
+                 * 5-14) re-enter the OAL init block.  Redirecting
+                 * to mid-function causes infinite re-entry.
+                 *
+                 * Instead, skip 0x800A5C78 entirely and continue
+                 * the cold-start at 0x8007B5C8 (jal 0x800942B4).
+                 * Set SP to the cold-start's initial value.
+                 *
+                 * The functions that 0x800A5C78 calls (timer setup,
+                 * ICU programming, ISR registration) are also called
+                 * by the post-WAIT OAL code at 0x79634 when the
+                 * system enters normal operation.  Skipping them
+                 * here means they'll run on the first idle loop
+                 * iteration instead.
+                 */
+                m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                    (int32_t)UINT32_C(0xFFFFD7E0);
                 m->cpu->pc =
-                    (int64_t)(int32_t)UINT32_C(0x800A5CA4);
+                    (int64_t)(int32_t)UINT32_C(0x8007B5C8);
             }
             m->cpu->is_halted = false;
         }
