@@ -187,6 +187,7 @@ Push with: `git push -u origin <current branch>`
    - Serial output goes to stdout; emulator diagnostics go to stderr.
    - The emulator opens an SDL window on macOS regardless of DISPLAY. It can be run non-interactively (e.g., from CI, Bash tool, or with redirected I/O) — use `gtimeout` to kill it after a set duration since the kernels run indefinitely.
    - When redirecting stdout to a file, `console_putchar()` flushes immediately so output survives timeout kills.
+   - **After every emulator test run**, check the latest screenshot BMP to verify framebuffer state. The emulator saves timestamped screenshots to `build-host/screenshot_YYYYMMDD_HHMMSS.bmp`. Compare pixel content (non-zero byte percentage) against previous runs to detect regressions. The user watches the SDL window live and may see things the screenshot misses — always report what the screenshot shows.
 
 ---
 
@@ -254,6 +255,17 @@ grep -E "mtc0|mfc0" spl_disasm.txt
 The `--wince-cold-boot` flag lets the SPL run its natural cold boot path. The SPL
 decompresses NK.exe (~6.2MB) from NAND into RAM at PA 0x60000 and jumps to
 the kernel entry at VA 0xA0060004.
+
+**Real hardware cold boot sequence (framebuffer):**
+1. "Initializing..." with progress bar that fills up (NK.exe pre-WAIT init)
+2. "Starting..." displayed briefly
+3. Touch calibration screen loads
+4. WinCE desktop
+
+The "Starting..." screen appeared in the emulator for the first time on 2026-04-01
+after the OAL init block intercept was implemented. Prior to that, the emulator
+only showed "Initializing..." before getting stuck. The "Starting..." indicates
+NK.exe's post-init code is running (between kernel_init and the shell).
 
 **NK.exe Cold Boot Flow:**
 - Entry: VA 0x80076B50 → CP0 init → JR to 0xA0076BA0 (kseg1)
