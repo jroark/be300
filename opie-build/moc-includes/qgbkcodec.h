@@ -1,1 +1,0 @@
-../src/3rdparty/tools/qgbkcodec.h

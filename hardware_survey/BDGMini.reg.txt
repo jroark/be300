@@ -1,5 +1,0 @@
-[HKEY_LOCAL_MACHINE\Drivers\BuiltIn\BDGMini]
-"Dll"="\\Nand Disk\\Program Files\\Patch\\BDGMini.dll"
-"Prefix"="MDG"
-"Index"=dword:1
-"Order"=dword:1
