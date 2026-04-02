@@ -1179,39 +1179,92 @@ static bool be300_run_batch(machine_t *m)
         uint32_t pc32 = (uint32_t)m->cpu->pc;
         if (pc32 >= 0x80079480u && pc32 <= 0x800797E0u) {
             if (!m->wince.cold_boot_oal_intercept_logged) {
+                uint32_t isp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
                 fprintf(stderr,
                     "[COLD_BOOT] OAL init intercept:"
                     " PC=0x%08X RA=0x%08X SP=0x%08X\n",
                     pc32,
                     (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
-                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]);
+                    isp);
+                /* Dump full stack from SP to initial SP (0xFFFFD7E0) */
+                fprintf(stderr, "[COLD_BOOT] Stack dump"
+                    " (SP=0x%08X to 0xFFFFD7E0):\n", isp);
+                for (uint32_t si = 0;
+                     si < 32 && (isp + si * 4) <= 0xFFFFD7E0u;
+                     si++) {
+                    unsigned char sb[4];
+                    uint64_t sva = 0xffffffff00000000ULL
+                        | (uint64_t)(int32_t)(isp + si * 4);
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            sva, sb, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t sw = sb[0]|(sb[1]<<8)
+                            |(sb[2]<<16)|(sb[3]<<24);
+                        fprintf(stderr, "[COLD_BOOT]   SP+%02X"
+                            " [%08X]: %08X\n",
+                            si * 4, isp + si * 4, sw);
+                    }
+                }
+                /* Dump GPRs */
+                fprintf(stderr, "[COLD_BOOT] GPR:"
+                    " s0=%08X s1=%08X s2=%08X s3=%08X"
+                    " s4=%08X s5=%08X s6=%08X s7=%08X\n",
+                    (uint32_t)m->cpu->cd.mips.gpr[16],
+                    (uint32_t)m->cpu->cd.mips.gpr[17],
+                    (uint32_t)m->cpu->cd.mips.gpr[18],
+                    (uint32_t)m->cpu->cd.mips.gpr[19],
+                    (uint32_t)m->cpu->cd.mips.gpr[20],
+                    (uint32_t)m->cpu->cd.mips.gpr[21],
+                    (uint32_t)m->cpu->cd.mips.gpr[22],
+                    (uint32_t)m->cpu->cd.mips.gpr[23]);
                 m->wince.cold_boot_oal_intercept_logged = true;
             }
 
             /*
-             * Redirect to 0x800A5CA4 — the instruction after
-             * call 4 (jal 0x80078D74) in 0x800A5C78.  Unwind
-             * 0x80078D74's stack frame (24 bytes, RA at SP+0x14).
+             * Walk the stack to find a return address within
+             * 0x800A5C78 (range 0x800A5C78-0x800A5E6C).
+             * Set SP to the slot AFTER that RA and jump there.
+             *
+             * Stack layout (from diagnostic dump):
+             *   SP+74: 0x8007B5C8 (cold-start, after jal A5C78)
+             *   SP+5C: 0x800A5D3C (within A5C78, after calls)
+             *   SP+44: 0x800A60A8 (intermediate)
+             *   SP+2C: 0x8007829C (vtable)
+             *   SP+24: 0x80078E2C (vtable func)
+             *
+             * We want SP+5C (0x800A5D3C) which is the
+             * continuation within 0x800A5C78 after the sub-
+             * call chain that entered the OAL init block.
              */
             {
                 uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
                 unsigned char sb[4];
-                uint32_t saved_ra = 0;
-                /* Restore RA from 0x80078D74's frame */
-                uint64_t ra_va = 0xffffffff00000000ULL
-                    | (uint64_t)(int32_t)(sp + 0x14);
-                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                        ra_va, sb, 4, MEM_READ, CACHE_DATA))
-                    saved_ra = sb[0]|(sb[1]<<8)
-                        |(sb[2]<<16)|(sb[3]<<24);
-                /* Unwind 0x80078D74's frame */
-                m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
-                    (int32_t)(sp + 0x18);
-                m->cpu->cd.mips.gpr[MIPS_GPR_RA] =
-                    (int32_t)saved_ra;
-                /* Set PC to after call 4 in 0x800A5C78 */
-                m->cpu->pc =
-                    (int64_t)(int32_t)UINT32_C(0x800A5CA4);
+                bool found = false;
+                for (uint32_t si = 0; si < 32; si++) {
+                    uint64_t sva = 0xffffffff00000000ULL
+                        | (uint64_t)(int32_t)(sp + si * 4);
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            sva, sb, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t sw = sb[0]|(sb[1]<<8)
+                            |(sb[2]<<16)|(sb[3]<<24);
+                        if (sw >= 0x800A5C78u && sw <= 0x800A5E6Cu) {
+                            /* Found RA within 0x800A5C78 */
+                            m->cpu->pc = (int64_t)(int32_t)sw;
+                            m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                                (int32_t)(sp + (si + 1) * 4);
+                            m->cpu->cd.mips.gpr[MIPS_GPR_RA] =
+                                (int32_t)sw;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                    /* Fallback: return to cold-start after A5C78 */
+                    m->cpu->pc =
+                        (int64_t)(int32_t)UINT32_C(0x8007B5C8);
+                    m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                        (int32_t)UINT32_C(0xFFFFD7E0);
+                }
             }
             m->cpu->is_halted = false;
         }
@@ -1635,26 +1688,20 @@ static bool be300_run_batch(machine_t *m)
                     " → JR $ra (block all OAL init paths)\n");
 
                 /*
-                 * Patch NK.exe cold-start TLB[1] EntryLo0 value.
+                 * DO NOT patch TLB[1] EntryLo0.
                  *
-                 * At VA 0x8007B4D4, the cold-start does "li v0, 1"
-                 * (0x24020001) which sets EntryLo0 = 1 (G=1, V=0).
-                 * This makes the even page of the kernel stack TLB
-                 * entry INVALID.  The stack at SP=0xFFFFD7E0 can
-                 * only grow to 0xFFFFD000 (~2KB) before hitting
-                 * the invalid page.  kernel_init needs more stack.
+                 * The original "li v0, 1" at 0x8007B4D4 is reused
+                 * as the TLB Index value at 0x8007B4E4 (mtc0 v0,
+                 * Index).  Patching v0 to 0x5F corrupted Index to
+                 * 95, causing TLB entry 1 to not be written and
+                 * the kernel stack at VA 0xFFFFD000 to be unmapped.
                  *
-                 * Patch to "li v0, 0x5F" (0x2402005F):
-                 *   PFN=1 → PA 0x400, C=3, D=1, V=1, G=1
-                 * This maps the even page (VA 0xFFFFC000) to PA 0x400,
-                 * giving kernel_init ~6KB of stack total.
+                 * The original EntryLo0=1 (G=1, V=0) makes the
+                 * even page (VA 0xFFFFC000) invalid, but the odd
+                 * page (VA 0xFFFFD000) has EntryLo1=0x11F (V=1,
+                 * D=1, PFN=4→PA 0x1000).  The kernel stack at
+                 * SP=0xFFFFD7E0 only needs 0xFFFFD000-0xFFFFDFFF.
                  */
-                store_32bit_word(m->cpu,
-                    0xffffffff8007B4D4ULL, 0x2402005Fu);
-                fprintf(stderr,
-                    "[COLD_BOOT] Patched TLB[1] EntryLo0:"
-                    " li v0,1 → li v0,0x5F at 0x8007B4D4"
-                    " (even page VA 0xFFFFC000→PA 0x400)\n");
 
                 m->cpu->pc =
                     (int64_t)(int32_t)UINT32_C(0x8007B398);
