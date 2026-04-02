@@ -4358,9 +4358,10 @@ X(to_be_translated)
 				}
 				break;
 			case COP0_SUSPEND:
-				/*  Used by NetBSD on HPCmips (VR41xx) to
-				    halt the machine.  */
-				ic->f = instr(reboot);
+				/*  VR41xx SUSPEND/STANDBY — treat as WAIT
+				    (halt until interrupt) instead of reboot.
+				    WinCE uses this for power management. */
+				ic->f = instr(wait);
 				break;
 			case COP0_EI:
 				if (cpu->cd.mips.cpu_type.rev == MIPS_R5900) {
