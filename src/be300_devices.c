@@ -191,14 +191,16 @@ DEVICE_ACCESS(be300_wince_aux)
         memcpy(&d->bytes[off], data, len);
 
         /*
-         * WinCE uses 0x0C000520 as a command/status register and polls
-         * bit 1 for completion after each command write. Mirror the
-         * last command word and force the ready bit high on the alias.
+         * WinCE uses 0x0C000520 as a command latch and then polls the
+         * same halfword until bit 1 clears. Captured companion-chip
+         * surveys show the backing word at 0x0A000520 idles at zero, so
+         * keep reads of the exact 0x520 status halfword deasserted even
+         * after command writes.
          */
         if (off == 0x400 && len >= 2) {
-            uint16_t ready = (uint16_t)val | 0x0002u;
+            uint16_t idle = 0;
 
-            memcpy(&d->bytes[off], &ready, sizeof(ready));
+            memcpy(&d->bytes[off], &idle, sizeof(idle));
         }
 
         wince_boot_note_mmio_access(cpu, WINCE_AUX_BASE + off,
@@ -213,9 +215,13 @@ DEVICE_ACCESS(be300_wince_aux)
         memcpy(data, &d->bytes[off], len);
         val = memory_readmax64(cpu, data, len);
 
-        if (off == 0x400) {
-            val |= 0x0002u;
+        if (off == 0x400 && len >= 2) {
+            val = 0;
             memory_writemax64(cpu, data, len, val);
+        }
+
+        if (off == 0x400) {
+            val = memory_readmax64(cpu, data, len);
         }
 
         wince_boot_note_mmio_access(cpu, WINCE_AUX_BASE + off,

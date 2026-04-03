@@ -1916,6 +1916,18 @@ static bool be300_run_batch(machine_t *m)
                     0xffffffffa00022b4ULL, 0x10135923u); /* Config: VR4131 hw value */
 
                 /*
+                 * Cold boot later reaches the VR41xx low-power idle
+                 * helpers at 0x80079990 / 0x800799F8. GXemul does not
+                 * implement those standby/suspend opcodes for this CPU,
+                 * so replace them with NOPs and let the surrounding
+                 * interrupt-ack path continue running.
+                 */
+                store_32bit_word(m->cpu,
+                    0xffffffff80079990ULL, 0x00000000u); /* suspend -> nop */
+                store_32bit_word(m->cpu,
+                    0xffffffff800799F8ULL, 0x00000000u); /* standby -> nop */
+
+                /*
                  * Inject TLB context at PA 0x2000 from hardware
                  * survey (wince_hw_seed_ctx_tlb_data, 32 entries
                  * × 16 bytes).  The TLB refill handler may use

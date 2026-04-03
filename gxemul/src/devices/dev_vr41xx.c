@@ -82,6 +82,7 @@ struct vr41xx_data {
 	int		pending_timer_interrupts;
 	int		replay_etimer_suppressed;
 	struct interrupt timer_irq;
+	struct interrupt rtcl1_irq;
 	struct timer	*timer;
 
 	/*  See icureg.h in NetBSD for more info.  */
@@ -814,6 +815,7 @@ static void timer_tick(struct timer *timer, void *extra)
 	if (d->replay_etimer_suppressed)
 		return;
 	d->pending_timer_interrupts ++;
+	d->rtc.rtcint |= RTCINT_RTCLONG1_INT;
 }
 
 
@@ -826,7 +828,7 @@ DEVICE_TICK(vr41xx)
 	timer_allowed = wince_boot_timer_irq_allowed(cpu->machine, cpu) ? 1 : 0;
 
 	if (d->pending_timer_interrupts > 0 && timer_allowed) {
-		INTERRUPT_ASSERT(d->timer_irq);
+		INTERRUPT_ASSERT(d->rtcl1_irq);
 		{
 			static int timer_fire_diag = 0;
 			if (timer_fire_diag < 3) {
@@ -1222,10 +1224,14 @@ DEVICE_ACCESS(vr41xx)
 	case 0x13e:	/*  on 4181? / VR4131 RTCINTREG  */
 	case 0x1de:	/*  on 4121?  */
 		/*  RTC interrupt register...  */
-		/*  Ack. timer interrupts?  */
-		INTERRUPT_DEASSERT(d->timer_irq);
-		if (d->pending_timer_interrupts > 0)
-			d->pending_timer_interrupts --;
+		/*  Ack. only the timer sources whose RTCINT bits are written. */
+		if (idata & RTCINT_RTCLONG1_INT) {
+			INTERRUPT_DEASSERT(d->rtcl1_irq);
+			if (d->pending_timer_interrupts > 0)
+				d->pending_timer_interrupts --;
+		}
+		if (idata & RTCINT_ELAPSEDTIME_INT)
+			INTERRUPT_DEASSERT(d->timer_irq);
 		if (d->cpumodel == 4131 && relative_addr == 0x13e)
 			rtc_write(&d->rtc, RTC_RTCINTREG, (unsigned)len,
 			    (uint32_t)idata);
@@ -1446,6 +1452,9 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 		snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i",
 		    machine->path, machine->bootstrap_cpu, VRIP_INTR_ETIMER);
 	INTERRUPT_CONNECT(tmps, d->timer_irq);
+	snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i",
+	    machine->path, machine->bootstrap_cpu, VRIP_INTR_RTCL1);
+	INTERRUPT_CONNECT(tmps, d->rtcl1_irq);
 
 	memory_device_register(mem, "vr41xx", baseaddr, DEV_VR41XX_LENGTH,
 	    dev_vr41xx_access, (void *)d, DM_DEFAULT, NULL);
