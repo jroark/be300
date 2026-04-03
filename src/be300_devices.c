@@ -79,6 +79,14 @@ struct be300_vrc4173_segment {
     uint32_t offset_in_latch;    /* offset of this segment within the latch */
 };
 
+#define WINCE_AUX_BASE  0x0C000120ULL
+#define WINCE_AUX_SIZE  0x00000500u
+
+struct be300_wince_aux {
+    uint8_t bytes[WINCE_AUX_SIZE];
+    bool    log_mmio;
+};
+
 DEVICE_ACCESS(be300_vrc4173)
 {
     struct be300_vrc4173_segment *seg = (struct be300_vrc4173_segment *)extra;
@@ -169,6 +177,61 @@ DEVICE_ACCESS(be300_vrc4173)
     return 1;
 }
 
+DEVICE_ACCESS(be300_wince_aux)
+{
+    struct be300_wince_aux *d = (struct be300_wince_aux *)extra;
+    uint32_t off = (uint32_t)relative_addr;
+    uint64_t val;
+
+    if (off + len > WINCE_AUX_SIZE)
+        return 0;
+
+    if (writeflag == MEM_WRITE) {
+        val = memory_readmax64(cpu, data, len);
+        memcpy(&d->bytes[off], data, len);
+
+        /*
+         * WinCE uses 0x0C000520 as a command/status register and polls
+         * bit 1 for completion after each command write. Mirror the
+         * last command word and force the ready bit high on the alias.
+         */
+        if (off == 0x400 && len >= 2) {
+            uint16_t ready = (uint16_t)val | 0x0002u;
+
+            memcpy(&d->bytes[off], &ready, sizeof(ready));
+        }
+
+        wince_boot_note_mmio_access(cpu, WINCE_AUX_BASE + off,
+            writeflag, val, len);
+        if (d->log_mmio) {
+            fprintf(stderr,
+                "[WINCE_AUX] W PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
+                (uint32_t)(WINCE_AUX_BASE + off), len,
+                (unsigned long long)val, (uint32_t)cpu->pc);
+        }
+    } else {
+        memcpy(data, &d->bytes[off], len);
+        val = memory_readmax64(cpu, data, len);
+
+        if (off == 0x400) {
+            val |= 0x0002u;
+            memory_writemax64(cpu, data, len, val);
+        }
+
+        wince_boot_note_mmio_access(cpu, WINCE_AUX_BASE + off,
+            writeflag, memory_readmax64(cpu, data, len), len);
+        if (d->log_mmio) {
+            fprintf(stderr,
+                "[WINCE_AUX] R PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
+                (uint32_t)(WINCE_AUX_BASE + off), len,
+                (unsigned long long)memory_readmax64(cpu, data, len),
+                (uint32_t)cpu->pc);
+        }
+    }
+
+    return 1;
+}
+
 bool be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out)
 {
     uint32_t off;
@@ -237,9 +300,12 @@ void be300_register_nand(struct machine *gxm, nand_state_t *nand, bool log_mmio)
 void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
 {
     struct be300_vrc4173_latch *latch;
+    struct be300_wince_aux *aux;
     CHECK_ALLOCATION(latch = calloc(1, sizeof(struct be300_vrc4173_latch)));
     latch->log_mmio = log_mmio;
     g_be300_vrc4173_latch = latch;
+    CHECK_ALLOCATION(aux = calloc(1, sizeof(struct be300_wince_aux)));
+    aux->log_mmio = log_mmio;
 
     /*
      * Pre-populate latch with real hardware register values from
@@ -290,6 +356,30 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
             uint32_t v = 0x00007100;
             memcpy(&latch->bytes[0x0A0C0], &v, 4);
         }
+
+        /*
+         * Cold-boot WinCE later reaches a second alias of the companion
+         * command block at 0x0C000120/0x0C000520. Real hardware surveys
+         * show the same sparse 0,1,1,1 pattern at 0x0A000120/0x0A000520.
+         */
+        {
+            static const struct {
+                uint32_t off;
+                uint32_t val;
+            } aux_regs[] = {
+                { 0x000, 0x00000000 },
+                { 0x004, 0x00000001 },
+                { 0x008, 0x00000001 },
+                { 0x00C, 0x00000001 },
+                { 0x400, 0x00000000 },
+                { 0x404, 0x00000001 },
+                { 0x408, 0x00000001 },
+                { 0x40C, 0x00000001 },
+            };
+
+            for (unsigned i = 0; i < sizeof(aux_regs) / sizeof(aux_regs[0]); i++)
+                memcpy(&aux->bytes[aux_regs[i].off], &aux_regs[i].val, 4);
+        }
     }
 
     /*
@@ -326,7 +416,12 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
             dev_be300_vrc4173_access, (void *)seg, DM_DEFAULT, NULL);
     }
 
-    fprintf(stderr, "[BE300] Registered VRC4173 latch (4 segments, avoiding SIU/NAND/input)\n");
+    memory_device_register(gxm->memory, "be300_wince_aux",
+        WINCE_AUX_BASE, WINCE_AUX_SIZE,
+        dev_be300_wince_aux_access, (void *)aux, DM_DEFAULT, NULL);
+
+    fprintf(stderr,
+        "[BE300] Registered VRC4173 latch plus WinCE 0x0C000120 alias\n");
 }
 
 

@@ -18,6 +18,49 @@ static inline void rtc_rearm_elapsed_irq(rtc_state_t *s)
     rtc_update_elapsed_irq(s);
 }
 
+static inline uint64_t rtc_48bit_mask(void)
+{
+    return UINT64_C(0x0000FFFFFFFFFFFF);
+}
+
+static void rtc_write_48bit(uint64_t *target, uint32_t offset, unsigned size,
+    uint32_t val)
+{
+    uint64_t reg = *target;
+
+    switch (offset) {
+    case RTC_ETIMELREG:
+    case RTC_ECMPLREG:
+        if (size >= 4) {
+            reg = (reg & ~UINT64_C(0xFFFFFFFF))
+                | (uint64_t)val;
+        } else {
+            reg = (reg & ~UINT64_C(0xFFFF))
+                | (uint64_t)(val & 0xFFFFu);
+        }
+        break;
+    case RTC_ETIMEMREG:
+    case RTC_ECMPMREG:
+        if (size >= 4) {
+            reg = (reg & ~(UINT64_C(0xFFFFFFFF) << 16))
+                | ((uint64_t)val << 16);
+        } else {
+            reg = (reg & ~(UINT64_C(0xFFFF) << 16))
+                | ((uint64_t)(val & 0xFFFFu) << 16);
+        }
+        break;
+    case RTC_ETIMEHREG:
+    case RTC_ECMPHREG:
+        reg = (reg & ~(UINT64_C(0xFFFF) << 32))
+            | ((uint64_t)(val & 0xFFFFu) << 32);
+        break;
+    default:
+        return;
+    }
+
+    *target = reg & rtc_48bit_mask();
+}
+
 void rtc_init(rtc_state_t *s)
 {
     /*
@@ -52,22 +95,25 @@ void rtc_init(rtc_state_t *s)
 uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
 {
     if (offset == RTC_ETIMELREG || offset == RTC_ETIMEMREG || offset == RTC_ETIMEHREG) {
-        uint32_t step = s->etime_read_step;
-        if (step != 0u) {
-            /*
-             * Optional read-assist for SPL polling loops.  When disabled
-             * (step=0), ETIME advances only via rtc_tick().
-             */
-            s->etime += step;
+        uint64_t snap = s->etime;
+        uint32_t ret = 0;
+
+        /*
+         * WinCE uses two ETIME access patterns:
+         * 1. a stable-read helper that samples low/mid/high using 32-bit
+         *    low-register reads and retries if they disagree
+         * 2. a wait-for-tick helper at 0x800A7C80 that polls 16-bit ETIMEL
+         *    until two successive reads differ before programming ETIME/ECMP
+         *
+         * Keep 32-bit ETIMEL reads stable, but advance on 16-bit ETIMEL
+         * reads so the wait-for-tick helper eventually falls through.
+         */
+        if (offset == RTC_ETIMELREG && size < 4 && s->etime_read_step != 0u) {
+            s->etime += s->etime_read_step;
             rtc_update_elapsed_irq(s);
+            snap = s->etime;
         }
 
-        /* Keep a stable snapshot across multiword read sequences. */
-        if (s->etime_reads == 0)
-            s->etime_latched = s->etime;
-
-        uint64_t snap = s->etime_latched;
-        uint32_t ret = 0;
         if (size >= 4) {
             if (offset == RTC_ETIMELREG) ret =  (uint32_t)(snap & 0xFFFFFFFFu);
             if (offset == RTC_ETIMEMREG) ret =  (uint32_t)((snap >> 16) & 0xFFFFFFFFu);
@@ -77,10 +123,6 @@ uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
             if (offset == RTC_ETIMEMREG) ret =  (uint32_t)((snap >> 16) & 0xFFFF);
             if (offset == RTC_ETIMEHREG) ret =  (uint32_t)((snap >> 32) & 0xFFFF);
         }
-
-        s->etime_reads++;
-        if (s->etime_reads >= 6)
-            s->etime_reads = 0;
         return ret;
     }
 
@@ -121,26 +163,22 @@ uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
 
 void rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val)
 {
-    (void)size;
     switch (offset) {
-    /* ETIME is read-only on real hardware; accept writes as a no-op */
     case RTC_ETIMELREG:
     case RTC_ETIMEMREG:
     case RTC_ETIMEHREG:
+        rtc_write_48bit(&s->etime, offset, size, val);
+        s->etime_latched = s->etime;
+        s->etime_reads = 0;
+        rtc_update_elapsed_irq(s);
         break;
     case RTC_ECMPLREG:
-        s->ecmp = (s->ecmp & ~UINT64_C(0xFFFF))
-                | ((uint64_t)(val & 0xFFFF));
+        rtc_write_48bit(&s->ecmp, offset, size, val);
         rtc_rearm_elapsed_irq(s);
         break;
     case RTC_ECMPMREG:
-        s->ecmp = (s->ecmp & ~UINT64_C(0xFFFF0000))
-                | ((uint64_t)(val & 0xFFFF) << 16);
-        rtc_rearm_elapsed_irq(s);
-        break;
     case RTC_ECMPHREG:
-        s->ecmp = (s->ecmp & ~UINT64_C(0xFFFF00000000))
-                | ((uint64_t)(val & 0xFFFF) << 32);
+        rtc_write_48bit(&s->ecmp, offset, size, val);
         rtc_rearm_elapsed_irq(s);
         break;
     case RTC_RTCL1LREG:
