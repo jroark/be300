@@ -39,6 +39,294 @@
 extern volatile bool emul_shutdown;
 extern volatile bool emul_executing;
 
+enum {
+    COLD_BOOT_PROBE_STACK_TLB_LOGGED      = 0x00020000u,
+    COLD_BOOT_PROBE_STACK_TLB_VALID       = 0x00040000u,
+    COLD_BOOT_PROBE_D8XX_FAULT_LOGGED     = 0x00080000u,
+    COLD_BOOT_PROBE_D8XX_HELPER_INSTALLED = 0x00100000u,
+};
+
+static uint64_t be300_va32_to_mips64(uint32_t va)
+{
+    return (uint64_t)(int64_t)(int32_t)va;
+}
+
+static uint64_t be300_tlb_region_bits(machine_t *m)
+{
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+        return 0;
+
+    return (uint64_t)m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI]
+        & ENTRYHI_R_MASK;
+}
+
+static uint64_t be300_tlb_match_va_zeroext(machine_t *m, uint32_t va)
+{
+    uint64_t payload;
+
+    payload = (uint64_t)va & (ENTRYHI_VPN2_MASK | UINT64_C(0x1FFF));
+    return be300_tlb_region_bits(m) | payload;
+}
+
+static uint64_t be300_tlb_match_va_signext(machine_t *m, uint32_t va)
+{
+    uint64_t payload;
+
+    payload = be300_va32_to_mips64(va)
+        & (ENTRYHI_VPN2_MASK | UINT64_C(0x1FFF));
+    return be300_tlb_region_bits(m) | payload;
+}
+
+static bool be300_translate_va(machine_t *m, uint32_t va, uint64_t *paddr_out)
+{
+    uint64_t paddr;
+
+    if (!m || !m->cpu || !m->cpu->translate_v2p)
+        return false;
+    if (!m->cpu->translate_v2p(m->cpu, be300_va32_to_mips64(va), &paddr,
+            FLAG_NOEXCEPTIONS))
+        return false;
+
+    if (paddr_out)
+        *paddr_out = paddr;
+    return true;
+}
+
+static void be300_invalidate_all(machine_t *m)
+{
+    if (!m || !m->cpu)
+        return;
+    if (m->cpu->invalidate_translation_caches)
+        m->cpu->invalidate_translation_caches(m->cpu, 0, INVALIDATE_ALL);
+    if (m->cpu->invalidate_code_translation)
+        m->cpu->invalidate_code_translation(m->cpu, 0, INVALIDATE_ALL);
+}
+
+static bool be300_decode_tlb_match(machine_t *m, const struct mips_tlb *tlb,
+    uint32_t va, uint64_t *pa_out, bool *valid_out, bool *dirty_out,
+    bool *global_out, bool *odd_out, uint32_t *page_mask_out,
+    const char **mode_out)
+{
+    const uint64_t vpn2_mask = ENTRYHI_R_MASK | ENTRYHI_VPN2_MASK;
+    const uint32_t pagemask_mask = PAGEMASK_MASK_R4100;
+    const int pagemask_shift = PAGEMASK_SHIFT_R4100;
+    const int pfn_shift = 10;
+    uint32_t pmask;
+    uint64_t cached_hi;
+    uint64_t cached_lo0;
+    uint64_t cached_lo1;
+    uint64_t entry_vpn2;
+    uint64_t vaddr_vpn2;
+    uint64_t entry_asid;
+    uint64_t current_asid;
+    uint64_t lo;
+    uint64_t pfn;
+    uint64_t paddr;
+    uint64_t match_va_zero;
+    uint64_t match_va_sign;
+    uint64_t chosen_match_va = 0;
+    uint32_t page_mask;
+    bool odd;
+    bool global;
+    bool valid;
+    bool dirty;
+    size_t candidate_index;
+    bool matched = false;
+    const char *match_mode = NULL;
+
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0] || !tlb)
+        return false;
+
+    pmask = (uint32_t)tlb->mask & pagemask_mask;
+    cached_hi = tlb->hi;
+    cached_lo0 = tlb->lo0;
+    cached_lo1 = tlb->lo1;
+    match_va_zero = be300_tlb_match_va_zeroext(m, va);
+    match_va_sign = be300_tlb_match_va_signext(m, va);
+
+    entry_asid = cached_hi & ENTRYHI_ASID;
+    current_asid = m->cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI]
+        & ENTRYHI_ASID;
+    global = (cached_lo0 & ENTRYLO_G) != 0 && (cached_lo1 & ENTRYLO_G) != 0;
+
+    for (candidate_index = 0; candidate_index < 2; candidate_index++) {
+        uint64_t candidate_match_va =
+            candidate_index == 0 ? match_va_zero : match_va_sign;
+
+        if (pmask == 0) {
+            entry_vpn2 = (cached_hi & vpn2_mask) >> pagemask_shift;
+            vaddr_vpn2 = (candidate_match_va & vpn2_mask)
+                >> pagemask_shift;
+            page_mask = (UINT32_C(1) << (pagemask_shift - 1)) - 1u;
+            odd = (candidate_match_va >> (pagemask_shift - 1)) & 1u;
+        } else {
+            int pageshift;
+
+            switch (pmask | ((UINT32_C(1) << pagemask_shift) - 1u)) {
+            case 0x00007ff: pageshift = 10; break;
+            case 0x0001fff: pageshift = 12; break;
+            case 0x0007fff: pageshift = 14; break;
+            case 0x001ffff: pageshift = 16; break;
+            case 0x007ffff: pageshift = 18; break;
+            case 0x01fffff: pageshift = 20; break;
+            case 0x07fffff: pageshift = 22; break;
+            case 0x1ffffff: pageshift = 24; break;
+            case 0x7ffffff: pageshift = 26; break;
+            default:
+                return false;
+            }
+
+            entry_vpn2 = (cached_hi & vpn2_mask) >> (pageshift + 1);
+            vaddr_vpn2 = (candidate_match_va & vpn2_mask)
+                >> (pageshift + 1);
+            page_mask = (UINT32_C(1) << pageshift) - 1u;
+            odd = (candidate_match_va >> pageshift) & 1u;
+        }
+
+        if (entry_vpn2 != vaddr_vpn2)
+            continue;
+        if (entry_asid != current_asid && !global)
+            continue;
+
+        chosen_match_va = candidate_match_va;
+        matched = true;
+        match_mode = candidate_index == 0 ? "zeroext" : "signext";
+        break;
+    }
+
+    if (!matched)
+        return false;
+
+    lo = odd ? cached_lo1 : cached_lo0;
+    valid = (lo & ENTRYLO_V) != 0;
+    dirty = (lo & ENTRYLO_D) != 0;
+    pfn = (lo & ENTRYLO_PFN_MASK) >> ENTRYLO_PFN_SHIFT;
+    paddr = ((pfn << pfn_shift) & ~((uint64_t)page_mask))
+        | (chosen_match_va & page_mask);
+
+    if (pa_out)
+        *pa_out = paddr;
+    if (valid_out)
+        *valid_out = valid;
+    if (dirty_out)
+        *dirty_out = dirty;
+    if (global_out)
+        *global_out = global;
+    if (odd_out)
+        *odd_out = odd;
+    if (page_mask_out)
+        *page_mask_out = page_mask;
+    if (mode_out)
+        *mode_out = match_mode;
+    return true;
+}
+
+static bool be300_find_tlb_match(machine_t *m, uint32_t va, int *index_out,
+    uint32_t *entryhi_out, uint32_t *entrylo0_out, uint32_t *entrylo1_out,
+    uint32_t *mask_out, uint64_t *pa_out, bool *valid_out, bool *dirty_out,
+    bool *global_out, bool *odd_out, const char **mode_out)
+{
+    struct mips_coproc *cp0;
+    int i;
+
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+        return false;
+
+    cp0 = m->cpu->cd.mips.coproc[0];
+    for (i = 0; i < cp0->nr_of_tlbs; i++) {
+        uint64_t match_pa = 0;
+        bool valid = false;
+        bool dirty = false;
+        bool global = false;
+        bool odd = false;
+        uint32_t page_mask = 0;
+        const char *mode = NULL;
+
+        if (!be300_decode_tlb_match(m, &cp0->tlbs[i], va, &match_pa,
+                &valid, &dirty, &global, &odd, &page_mask, &mode)) {
+            continue;
+        }
+
+        if (index_out)
+            *index_out = i;
+        if (entryhi_out)
+            *entryhi_out = (uint32_t)cp0->tlbs[i].hi;
+        if (entrylo0_out)
+            *entrylo0_out = (uint32_t)cp0->tlbs[i].lo0;
+        if (entrylo1_out)
+            *entrylo1_out = (uint32_t)cp0->tlbs[i].lo1;
+        if (mask_out)
+            *mask_out = (uint32_t)cp0->tlbs[i].mask;
+        if (pa_out)
+            *pa_out = match_pa;
+        if (valid_out)
+            *valid_out = valid;
+        if (dirty_out)
+            *dirty_out = dirty;
+        if (global_out)
+            *global_out = global;
+        if (odd_out)
+            *odd_out = odd;
+        if (mode_out)
+            *mode_out = mode;
+        return true;
+    }
+
+    return false;
+}
+
+static void be300_install_cold_boot_d8xx_helper(machine_t *m, uint32_t fault_va)
+{
+    struct mips_coproc *cp0;
+    uint64_t resolved_pa = 0;
+    int entry_index;
+
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+        return;
+    if (m->wince.cold_boot_pc_probes_logged
+        & COLD_BOOT_PROBE_D8XX_HELPER_INSTALLED)
+        return;
+
+    cp0 = m->cpu->cd.mips.coproc[0];
+    entry_index = cp0->nr_of_tlbs - 1;
+    if (entry_index < 0)
+        return;
+
+    mips_coproc_tlb_set_entry(m->cpu, entry_index, 4096,
+        UINT32_C(0xFFFFD800), UINT32_C(0x00001000), UINT32_C(0x00002000),
+        1, 1, 1, 1, 1, 0, 3, 3);
+    cp0->tlbs[entry_index].hi = UINT32_C(0xFFFFD800);
+    cp0->tlbs[entry_index].lo0 = UINT32_C(0x0000019F);
+    cp0->tlbs[entry_index].lo1 = UINT32_C(0x000001DF);
+    m->wince.cold_boot_pc_probes_logged |=
+        COLD_BOOT_PROBE_D8XX_HELPER_INSTALLED;
+    be300_invalidate_all(m);
+
+    fprintf(stderr,
+        "[COLD_BOOT] Installed helper TLB[%d] for VA 0xFFFFD800"
+        " after BadVA=0x%08X (hi=0x%08X lo0=0x%08X lo1=0x%08X)\n",
+        entry_index,
+        fault_va,
+        (uint32_t)cp0->tlbs[entry_index].hi,
+        (uint32_t)cp0->tlbs[entry_index].lo0,
+        (uint32_t)cp0->tlbs[entry_index].lo1);
+    if (be300_translate_va(m, UINT32_C(0xFFFFD888), &resolved_pa)) {
+        fprintf(stderr,
+            "[COLD_BOOT] Helper probe: VA 0xFFFFD888 -> PA 0x%08" PRIx64 "\n",
+            resolved_pa);
+    } else {
+        fprintf(stderr,
+            "[COLD_BOOT] Helper probe: VA 0xFFFFD888 still unmapped\n");
+    }
+}
+
+static void be300_handle_stop_signal(int signum)
+{
+    (void)signum;
+    emul_shutdown = true;
+    __sync_synchronize();
+}
+
 static void be300_serial_ring_push(machine_t *m, int ch)
 {
     if (!m)
@@ -790,8 +1078,9 @@ static void be300_runtime_start(machine_t *m)
     m->runtime_finalized = false;
     emul_executing = true;
 
+    signal(SIGTERM, be300_handle_stop_signal);
     if (!m->web_mode)
-        signal(SIGINT, SIG_DFL);
+        signal(SIGINT, be300_handle_stop_signal);
 
     host_io_set_serial_sink(be300_serial_sink, m);
     host_io_set_stdout_enabled(m->mirror_serial_to_stdout);
@@ -813,6 +1102,8 @@ static void be300_runtime_finalize(machine_t *m)
     host_io_set_stdout_enabled(true);
 
     emul_executing = false;
+    signal(SIGTERM, SIG_DFL);
+    signal(SIGINT, SIG_DFL);
     cpu_run_deinit(m->gxe_machine);
     m->runtime_stopped = true;
     m->runtime_finalized = true;
@@ -1157,100 +1448,147 @@ static bool be300_run_batch(machine_t *m)
      * Intercept execution in the OAL init / post-WAIT block
      * (0x80079480-0x800797E0) during cold-start init phase.
      *
-     * This block does HW init, PMU/DCU setup, and WAIT.
-     * During cold-start, entering this block is a dead-end.
-     * On real hardware, the MIPS16 ROM boot dispatcher at
-     * 0x9FC00C21 handles this — we can't run MIPS16.
-     *
-     * Strategy: when PC enters this range, redirect to the
-     * return address of 0x80078D74 (the vtable function at
-     * call 4 of 0x800A5C78 that enters this block).  The
-     * function at 0x80078D74 has a 24-byte stack frame with
-     * RA saved at SP+0x14.  Rather than unwinding the stack,
-     * redirect PC to just after call 4 in 0x800A5C78
-     * (0x800A5CA4, the instruction after call 4's delay slot).
-     *
-     * This intercept is persistent — it fires every batch
-     * while the init phase is active, because the dyntrans
-     * cache may re-enter the block between batch calls.
+     * Pragmatic cold boot cannot run the ROM's MIPS16 dispatcher, so
+     * entering this block is a dead-end. Skip the entire 0x800A5C78
+     * callback sequence and resume at the next cold-start JAL instead.
      */
     if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
         && m->wince.cold_boot_wait_count < 50) {
         uint32_t pc32 = (uint32_t)m->cpu->pc;
         if (pc32 >= 0x80079480u && pc32 <= 0x800797E0u) {
-            {
-                static int intercept_count = 0;
-                intercept_count++;
-                if (intercept_count <= 10) {
-                    uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
-                    fprintf(stderr,
-                        "[COLD_BOOT] OAL init intercept #%d:"
-                        " PC=0x%08X RA=0x%08X SP=0x%08X",
-                        intercept_count, pc32,
-                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
-                        sp);
-                    /* Dump stack RA values to trace caller */
-                    fprintf(stderr, " stack:");
-                    for (int si = 0; si < 8; si++) {
-                        unsigned char sb[4];
-                        uint64_t sva = 0xffffffff00000000ULL
-                            | (uint64_t)(int32_t)(sp + si * 4);
-                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                                sva, sb, 4, MEM_READ, CACHE_DATA)) {
-                            uint32_t sw = sb[0]|(sb[1]<<8)
-                                |(sb[2]<<16)|(sb[3]<<24);
-                            fprintf(stderr, " %08X", sw);
-                        }
+            if (!m->wince.cold_boot_oal_intercept_logged) {
+                uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+
+                m->wince.cold_boot_oal_intercept_logged = true;
+                fprintf(stderr,
+                    "[COLD_BOOT] OAL init intercept:"
+                    " PC=0x%08X RA=0x%08X SP=0x%08X",
+                    pc32,
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    sp);
+                fprintf(stderr, " stack:");
+                for (int si = 0; si < 8; si++) {
+                    unsigned char sb[4];
+                    uint64_t sva = 0xffffffff00000000ULL
+                        | (uint64_t)(int32_t)(sp + si * 4);
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            sva, sb, 4, MEM_READ, CACHE_DATA)) {
+                        uint32_t sw = sb[0]|(sb[1]<<8)
+                            |(sb[2]<<16)|(sb[3]<<24);
+                        fprintf(stderr, " %08X", sw);
                     }
-                    fprintf(stderr, "\n");
                 }
+                fprintf(stderr, "\n");
             }
 
-            /*
-             * Redirect to 0x800A5CA4 — the instruction after
-             * call 4 (jal 0x80078D74) in 0x800A5C78.  Unwind
-             * 0x80078D74's stack frame (24 bytes, RA at SP+0x14).
-             */
             {
-                uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
-                unsigned char sb[4];
-                uint32_t saved_ra = 0;
-                /* Restore RA from 0x80078D74's frame */
-                uint64_t ra_va = 0xffffffff00000000ULL
-                    | (uint64_t)(int32_t)(sp + 0x14);
-                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                        ra_va, sb, 4, MEM_READ, CACHE_DATA))
-                    saved_ra = sb[0]|(sb[1]<<8)
-                        |(sb[2]<<16)|(sb[3]<<24);
-                /* Unwind 0x80078D74's frame */
-                m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
-                    (int32_t)(sp + 0x18);
-                m->cpu->cd.mips.gpr[MIPS_GPR_RA] =
-                    (int32_t)saved_ra;
-                /*
-                 * Skip the ENTIRE 0x800A5C78 function.
-                 *
-                 * Multiple sub-calls (calls 4, and others among
-                 * 5-14) re-enter the OAL init block.  Redirecting
-                 * to mid-function causes infinite re-entry.
-                 *
-                 * Instead, skip 0x800A5C78 entirely and continue
-                 * the cold-start at 0x8007B5C8 (jal 0x800942B4).
-                 * Set SP to the cold-start's initial value.
-                 *
-                 * The functions that 0x800A5C78 calls (timer setup,
-                 * ICU programming, ISR registration) are also called
-                 * by the post-WAIT OAL code at 0x79634 when the
-                 * system enters normal operation.  Skipping them
-                 * here means they'll run on the first idle loop
-                 * iteration instead.
-                 */
+                int tlb_index = -1;
+                uint32_t tlb_hi = 0;
+                uint32_t tlb_lo0 = 0;
+                uint32_t tlb_lo1 = 0;
+                uint32_t tlb_mask = 0;
+                uint64_t tlb_pa = 0;
+                uint64_t live_pa = 0;
+                uint64_t alias_pa = 0;
+                bool tlb_valid = false;
+                bool tlb_dirty = false;
+                bool tlb_global = false;
+                bool tlb_odd = false;
+                const char *tlb_mode = NULL;
+
                 m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
                     (int32_t)UINT32_C(0xFFFFD7E0);
                 m->cpu->pc =
                     (int64_t)(int32_t)UINT32_C(0x8007B5C8);
+                if (!(m->wince.cold_boot_pc_probes_logged
+                        & COLD_BOOT_PROBE_STACK_TLB_LOGGED)) {
+                    m->wince.cold_boot_pc_probes_logged |=
+                        COLD_BOOT_PROBE_STACK_TLB_LOGGED;
+                    if (be300_find_tlb_match(m, UINT32_C(0xFFFFD000),
+                            &tlb_index, &tlb_hi, &tlb_lo0, &tlb_lo1,
+                            &tlb_mask, &tlb_pa, &tlb_valid, &tlb_dirty,
+                            &tlb_global, &tlb_odd, &tlb_mode)
+                        && tlb_valid
+                        && be300_translate_va(m, UINT32_C(0xFFFFD000),
+                            &live_pa)) {
+                        m->wince.cold_boot_pc_probes_logged |=
+                            COLD_BOOT_PROBE_STACK_TLB_VALID;
+                        fprintf(stderr,
+                            "[COLD_BOOT] Verified stack TLB[%u]"
+                            " for VA 0xFFFFD000:"
+                            " EntryHi=%08X EntryLo0=%08X"
+                            " EntryLo1=%08X PageMask=%08X"
+                            " mode=%s odd=%d dirty=%d global=%d"
+                            " tlb_pa=0x%08" PRIx64
+                            " live_pa=0x%08" PRIx64 "\n",
+                            (unsigned)tlb_index,
+                            tlb_hi,
+                            tlb_lo0,
+                            tlb_lo1,
+                            tlb_mask,
+                            tlb_mode ? tlb_mode : "-",
+                            tlb_odd ? 1 : 0,
+                            tlb_dirty ? 1 : 0,
+                            tlb_global ? 1 : 0,
+                            tlb_pa,
+                            live_pa);
+                    } else {
+                        fprintf(stderr,
+                            "[COLD_BOOT] Missing live stack TLB mapping"
+                            " for VA 0xFFFFD000 after intercept"
+                            " (match=%d valid=%d translate=%d)\n",
+                            tlb_index >= 0 ? 1 : 0,
+                            tlb_valid ? 1 : 0,
+                            be300_translate_va(m, UINT32_C(0xFFFFD000),
+                                NULL) ? 1 : 0);
+                    }
+
+                    if ((m->wince.cold_boot_pc_probes_logged
+                            & COLD_BOOT_PROBE_STACK_TLB_VALID)
+                        && !be300_translate_va(m, UINT32_C(0xFFFFD888),
+                            &alias_pa)
+                        && !(m->wince.cold_boot_pc_probes_logged
+                            & COLD_BOOT_PROBE_D8XX_HELPER_INSTALLED)) {
+                        be300_install_cold_boot_d8xx_helper(m,
+                            UINT32_C(0xFFFFD888));
+                    }
+                }
             }
             m->cpu->is_halted = false;
+        }
+    }
+
+    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged) {
+        uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
+        uint32_t badva = (uint32_t)cp0[COP0_BADVADDR];
+        uint32_t badva_window = badva & UINT32_C(0xFFFFFFC0);
+
+        if (badva_window == UINT32_C(0xFFFFD880)
+            || badva_window == UINT32_C(0xFFFFD8C0)) {
+            if (!(m->wince.cold_boot_pc_probes_logged
+                    & COLD_BOOT_PROBE_D8XX_FAULT_LOGGED)) {
+                m->wince.cold_boot_pc_probes_logged |=
+                    COLD_BOOT_PROBE_D8XX_FAULT_LOGGED;
+                fprintf(stderr,
+                    "[COLD_BOOT] First D8xx alias fault:"
+                    " PC=0x%08" PRIx64 " EPC=0x%08X"
+                    " BadVA=0x%08X Status=0x%08X Cause=0x%08X"
+                    " SP=0x%08X stack_tlb_valid=%d\n",
+                    m->cpu->pc,
+                    (uint32_t)cp0[COP0_EPC],
+                    badva,
+                    (uint32_t)cp0[COP0_STATUS],
+                    (uint32_t)cp0[COP0_CAUSE],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                    (m->wince.cold_boot_pc_probes_logged
+                        & COLD_BOOT_PROBE_STACK_TLB_VALID) ? 1 : 0);
+            }
+            if ((m->wince.cold_boot_pc_probes_logged
+                    & COLD_BOOT_PROBE_STACK_TLB_VALID)
+                && !(m->wince.cold_boot_pc_probes_logged
+                    & COLD_BOOT_PROBE_D8XX_HELPER_INSTALLED)) {
+                be300_install_cold_boot_d8xx_helper(m, badva);
+            }
         }
     }
 
@@ -1672,26 +2010,11 @@ static bool be300_run_batch(machine_t *m)
                     " → JR $ra (block all OAL init paths)\n");
 
                 /*
-                 * Patch NK.exe cold-start TLB[1] EntryLo0 value.
-                 *
-                 * At VA 0x8007B4D4, the cold-start does "li v0, 1"
-                 * (0x24020001) which sets EntryLo0 = 1 (G=1, V=0).
-                 * This makes the even page of the kernel stack TLB
-                 * entry INVALID.  The stack at SP=0xFFFFD7E0 can
-                 * only grow to 0xFFFFD000 (~2KB) before hitting
-                 * the invalid page.  kernel_init needs more stack.
-                 *
-                 * Patch to "li v0, 0x5F" (0x2402005F):
-                 *   PFN=1 → PA 0x400, C=3, D=1, V=1, G=1
-                 * This maps the even page (VA 0xFFFFC000) to PA 0x400,
-                 * giving kernel_init ~6KB of stack total.
+                 * Keep the original TLB[1] setup. Patching v0 at
+                 * 0x8007B4D4 also corrupts the later Index write and
+                 * prevents the wired VA 0xFFFFD000 kernel stack entry
+                 * from being installed.
                  */
-                store_32bit_word(m->cpu,
-                    0xffffffff8007B4D4ULL, 0x2402005Fu);
-                fprintf(stderr,
-                    "[COLD_BOOT] Patched TLB[1] EntryLo0:"
-                    " li v0,1 → li v0,0x5F at 0x8007B4D4"
-                    " (even page VA 0xFFFFC000→PA 0x400)\n");
 
                 m->cpu->pc =
                     (int64_t)(int32_t)UINT32_C(0x8007B398);
