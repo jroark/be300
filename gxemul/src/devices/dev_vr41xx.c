@@ -81,6 +81,7 @@ struct vr41xx_data {
 	/*  Timer:  */
 	int		pending_timer_interrupts;
 	int		replay_etimer_suppressed;
+	int		rtcl1_irq_asserted;
 	struct interrupt timer_irq;
 	struct interrupt rtcl1_irq;
 	struct timer	*timer;
@@ -827,8 +828,22 @@ DEVICE_TICK(vr41xx)
 	wince_boot_on_vr41xx_tick(cpu->machine, cpu);
 	timer_allowed = wince_boot_timer_irq_allowed(cpu->machine, cpu) ? 1 : 0;
 
+	/*
+	 * Model RTCL1 as a direct CPU interrupt pulse. WinCE programs the
+	 * periodic source once and then services recurring timer callbacks
+	 * without writing RTCINTREG on every tick, so holding the line level-
+	 * asserted until a register ack leaves the kernel spinning forever.
+	 * Keep a small backlog when interrupts are masked, but retire one
+	 * queued event as soon as we emit the pulse.
+	 */
+	if (d->rtcl1_irq_asserted) {
+		INTERRUPT_DEASSERT(d->rtcl1_irq);
+		d->rtcl1_irq_asserted = 0;
+	}
 	if (d->pending_timer_interrupts > 0 && timer_allowed) {
 		INTERRUPT_ASSERT(d->rtcl1_irq);
+		d->rtcl1_irq_asserted = 1;
+		d->pending_timer_interrupts --;
 		{
 			static int timer_fire_diag = 0;
 			if (timer_fire_diag < 3) {
@@ -1227,8 +1242,7 @@ DEVICE_ACCESS(vr41xx)
 		/*  Ack. only the timer sources whose RTCINT bits are written. */
 		if (idata & RTCINT_RTCLONG1_INT) {
 			INTERRUPT_DEASSERT(d->rtcl1_irq);
-			if (d->pending_timer_interrupts > 0)
-				d->pending_timer_interrupts --;
+			d->rtcl1_irq_asserted = 0;
 		}
 		if (idata & RTCINT_ELAPSEDTIME_INT)
 			INTERRUPT_DEASSERT(d->timer_irq);
@@ -1452,8 +1466,14 @@ struct vr41xx_data *dev_vr41xx_init(struct machine *machine,
 		snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i",
 		    machine->path, machine->bootstrap_cpu, VRIP_INTR_ETIMER);
 	INTERRUPT_CONNECT(tmps, d->timer_irq);
-	snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i",
-	    machine->path, machine->bootstrap_cpu, VRIP_INTR_RTCL1);
+	/*
+	 * WinCE routes the VR4131 RTCL1 source through the dedicated timer
+	 * CPU interrupt path rather than the generic SYSINT1 dispatcher.
+	 * Feeding it back into VRIP bit 2 leaves SYSINT1 stuck at 0x0004
+	 * while the kernel's primary poller explicitly masks that bit out.
+	 */
+	snprintf(tmps, sizeof(tmps), "%s.cpu[%i].3",
+	    machine->path, machine->bootstrap_cpu);
 	INTERRUPT_CONNECT(tmps, d->rtcl1_irq);
 
 	memory_device_register(mem, "vr41xx", baseaddr, DEV_VR41XX_LENGTH,

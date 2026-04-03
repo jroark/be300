@@ -23,6 +23,7 @@ bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t halt_pc,
     uint32_t *target_pc, uint32_t *target_sp);
 void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu);
 void wince_boot_note_exec_entry(struct cpu *cpu);
+void wince_boot_note_loop_observation(machine_t *m);
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
     uint64_t relative_addr, uint64_t value);
 bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu);

@@ -17,6 +17,7 @@ static machine_t *g_active_wince_machine = NULL;
 static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
 
 #define WINCE_EXCCODE_BIT(code) (UINT32_C(1) << (code))
+#define WINCE_COLD_LATE_PROBE_LOGGED UINT32_C(0x00200000)
 
 enum {
     WINCE_FAULT_SITE_PTE_WALK = UINT32_C(1) << 0,
@@ -120,6 +121,7 @@ static bool block_matches(const uint32_t *a, const uint32_t *b, size_t words);
 static void read_block(machine_t *m, uint32_t pa, uint32_t *out, size_t words);
 static void maybe_log_checkpoint(machine_t *m, const char *tag,
     const char *detail);
+static void maybe_log_cold_boot_scheduler_probe(machine_t *m, uint32_t sampled_pc);
 static void synthesize_word_after_write(machine_t *m, uint32_t word_pa,
     uint64_t write_pa, const unsigned char *new_data, size_t len,
     uint32_t *before_out, uint32_t *after_out);
@@ -3146,10 +3148,14 @@ void wince_boot_note_exec_entry(struct cpu *cpu)
     }
 
     m = g_active_wince_machine;
-    if (!replay_mode_enabled(m) || !m->wince.cold_boot_redirected
-        || !m->wince.log_stall) {
+    if (!m->wince.cold_boot_redirected || !m->wince.log_stall) {
         return;
     }
+
+    maybe_log_cold_boot_scheduler_probe(m, (uint32_t)cpu->pc);
+
+    if (!replay_mode_enabled(m))
+        return;
 
     pc = (uint32_t)cpu->pc;
     maybe_log_post_handler_return(m, pc);
@@ -3186,6 +3192,14 @@ void wince_boot_note_exec_entry(struct cpu *cpu)
             pc,
             m->wince.replay_post_handler_return_pc);
     }
+}
+
+void wince_boot_note_loop_observation(machine_t *m)
+{
+    if (!m || !m->cpu)
+        return;
+
+    maybe_log_cold_boot_scheduler_probe(m, (uint32_t)m->cpu->pc);
 }
 
 static void synthesize_word_after_write(machine_t *m, uint32_t word_pa,
@@ -3932,6 +3946,86 @@ static void maybe_log_fault_site(machine_t *m)
     log_fault_site(m, site, epc, badvaddr, exccode, source);
 }
 
+static bool cold_boot_scheduler_probe_pc_match(uint32_t value)
+{
+    return (value >= UINT32_C(0x80079900) && value <= UINT32_C(0x800799C0))
+        || (value >= UINT32_C(0x80089760) && value <= UINT32_C(0x800897C0))
+        || (value >= UINT32_C(0x80089870) && value <= UINT32_C(0x800898F8))
+        || (value >= UINT32_C(0x8008B4F0) && value <= UINT32_C(0x8008B6C0))
+        || (value >= UINT32_C(0x8007A3F0) && value <= UINT32_C(0x8007A6B0));
+}
+
+static bool cold_boot_scheduler_probe_epc_match(uint32_t value)
+{
+    return cold_boot_scheduler_probe_pc_match(value)
+        || value == UINT32_C(0x80089A50);
+}
+
+static void maybe_log_cold_boot_scheduler_probe(machine_t *m, uint32_t sampled_pc)
+{
+    uint32_t pc;
+    uint32_t epc;
+    uint32_t sp;
+    uint32_t s0;
+    uint32_t s1;
+    uint32_t status;
+    uint32_t cause;
+    uint32_t badva;
+
+    if (!m || !m->wince.active || !m->wince.log_stall
+        || !m->wince.cold_boot_redirected || replay_mode_enabled(m)) {
+        return;
+    }
+    if ((m->wince.cold_boot_pc_probes_logged
+        & WINCE_COLD_LATE_PROBE_LOGGED) != 0) {
+        return;
+    }
+
+    pc = sampled_pc;
+    epc = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    badva = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR];
+    if (!cold_boot_scheduler_probe_pc_match(pc)
+        && !cold_boot_scheduler_probe_epc_match(epc)
+        && badva != UINT32_C(0x0201FE2C)) {
+        return;
+    }
+
+    m->wince.cold_boot_pc_probes_logged |= WINCE_COLD_LATE_PROBE_LOGGED;
+    sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+    s0 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S0];
+    s1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S1];
+    status = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
+    cause = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE];
+
+    fprintf(stderr,
+        "[WINCE_COLD_LATE] pc=0x%08X epc=0x%08X sp=0x%08X"
+        " s0=0x%08X s1=0x%08X status=0x%08X cause=0x%08X"
+        " badva=0x%08X\n",
+        pc,
+        epc,
+        sp,
+        s0,
+        s1,
+        status,
+        cause,
+        badva);
+
+    dump_gpr_window(m);
+    dump_va_window(m, "cold_late_pc", pc & ~UINT32_C(0x1F), 0x60u);
+    if (epc != 0)
+        dump_va_window(m, "cold_late_epc", epc & ~UINT32_C(0x1F), 0x60u);
+    dump_va_window(m, "cold_late_sched_961c", UINT32_C(0x8067961C), 0x20u);
+    dump_va_window(m, "cold_late_sched_9654", UINT32_C(0x80679654), 0x20u);
+    dump_va_window(m, "cold_late_sched_96d8", UINT32_C(0x806796D8), 0x20u);
+    dump_va_window(m, "cold_late_sched_96f8", UINT32_C(0x806796F8), 0x20u);
+    dump_va_window(m, "cold_late_sched_9780", UINT32_C(0x80679780), 0x20u);
+    dump_va_window(m, "cold_late_obj_table", UINT32_C(0x8066BFC0), 0x40u);
+    if (s0 != 0)
+        dump_va_window(m, "cold_late_s0", s0 & ~UINT32_C(0x1F), 0x120u);
+    if (s1 != 0)
+        dump_va_window(m, "cold_late_s1", s1 & ~UINT32_C(0x1F), 0x60u);
+}
+
 static bool apply_pa_seed_regions(machine_t *m, bool resume_only)
 {
     bool applied = false;
@@ -4200,6 +4294,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     maybe_track_low_vector_runtime_changes(m);
     maybe_note_first_exception(m);
     maybe_log_fault_site(m);
+    maybe_log_cold_boot_scheduler_probe(m, (uint32_t)cpu->pc);
     maybe_apply_replay_tlb_idx01_even_clone(m);
     maybe_apply_replay_tlb_b000_helper(m);
     maybe_apply_replay_tlb_b000_even_clone(m);
