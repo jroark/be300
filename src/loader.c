@@ -350,12 +350,7 @@ int loader_load_elf(machine_t *m, const char *path,
 /* WinCE NAND / B000FF loader                                          */
 /* ------------------------------------------------------------------ */
 
-#define B000FF_SIG        "B000FF\n"
-#define B000FF_SIG_LEN    7
-#define NAND_SPL_OFFSET   0x4000u
-
-int loader_load_nand(machine_t *m, const char *path,
-                     uint32_t *entry_va_out)
+int loader_load_nand_image(machine_t *m, const char *path)
 {
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -367,8 +362,8 @@ int loader_load_nand(machine_t *m, const char *path,
     long fsize = ftell(f);
     rewind(f);
 
-    if (fsize < (long)(NAND_SPL_OFFSET + B000FF_SIG_LEN + 8 + 12)) {
-        fprintf(stderr, "[LOADER] NAND image too small (%ld bytes)\n", fsize);
+    if (fsize <= 0) {
+        fprintf(stderr, "[LOADER] NAND image empty\n");
         fclose(f);
         return -1;
     }
@@ -385,92 +380,8 @@ int loader_load_nand(machine_t *m, const char *path,
     }
     fclose(f);
 
-    /* Validate B000FF signature */
-    if (memcmp(data + NAND_SPL_OFFSET, B000FF_SIG, B000FF_SIG_LEN) != 0) {
-        fprintf(stderr, "[LOADER] No B000FF signature at NAND offset 0x%X\n",
-                NAND_SPL_OFFSET);
-        free(data);
-        return -1;
-    }
-
-    uint32_t off = NAND_SPL_OFFSET + B000FF_SIG_LEN;
-    uint32_t img_start, img_length;
-    memcpy(&img_start,  data + off, 4); off += 4;
-    memcpy(&img_length, data + off, 4); off += 4;
-
-    fprintf(stderr, "[LOADER] B000FF: image_start=0x%08X  image_length=0x%X\n",
-            img_start, img_length);
-
-    uint32_t records_start = off;
-    uint32_t records_end   = records_start + img_length;
-    if (records_end > (uint32_t)fsize) {
-        fprintf(stderr, "[LOADER] B000FF image extends past NAND\n");
-        free(data);
-        return -1;
-    }
-
-    int rec_count = 0;
-    while (off + 12 <= records_end) {
-        uint32_t addr, length, cksum;
-        uint32_t rec_hdr_off = off;
-        memcpy(&addr,   data + off, 4);
-        memcpy(&length, data + off + 4, 4);
-        memcpy(&cksum,  data + off + 8, 4);
-        off += 12;
-
-        if (length == 0) {
-            fprintf(stderr, "[LOADER] B000FF: entry point VA=0x%08X (%d records loaded)\n",
-                    addr, rec_count);
-            if (entry_va_out)
-                *entry_va_out = addr;
-            m->nand_data = data;
-            m->nand_size = (size_t)fsize;
-            return 0;
-        }
-
-        if (off + length > records_end) {
-            /* Check for 4-byte sentinel before entry record */
-            if (addr == 0 && rec_hdr_off + 4 + 12 <= records_end) {
-                uint32_t next_addr, next_len, next_cksum;
-                uint32_t next_off = rec_hdr_off + 4;
-                memcpy(&next_addr, data + next_off, 4);
-                memcpy(&next_len,  data + next_off + 4, 4);
-                memcpy(&next_cksum, data + next_off + 8, 4);
-                bool next_is_kseg =
-                    ((next_addr & 0xE0000000u) == 0x80000000u) ||
-                    ((next_addr & 0xE0000000u) == 0xA0000000u);
-                if (next_len == 0 && next_is_kseg && next_cksum == 0xFFFFFFFFu) {
-                    fprintf(stderr, "[LOADER] B000FF: skipped sentinel, entry VA=0x%08X\n",
-                            next_addr);
-                    if (entry_va_out) *entry_va_out = next_addr;
-                    m->nand_data = data;
-                    m->nand_size = (size_t)fsize;
-                    return 0;
-                }
-            }
-            fprintf(stderr, "[LOADER] B000FF record %d data overflows\n", rec_count);
-            break;
-        }
-
-        uint32_t pa = addr & 0x1FFFFFFFu;
-        fprintf(stderr, "[LOADER] B000FF: rec[%d] VA=0x%08X PA=0x%08X len=0x%X\n",
-                rec_count, addr, pa, length);
-
-        if (pa + length <= m->cfg.sdram_size) {
-            gxe_mem_write(m->cpu, pa, data + off, length);
-        } else {
-            fprintf(stderr, "[LOADER] B000FF: rec[%d] exceeds SDRAM, skipping\n", rec_count);
-        }
-
-        off += length;
-        rec_count++;
-    }
-
-    fprintf(stderr, "[LOADER] B000FF: no entry record, using image_start=0x%08X\n",
-            img_start);
-    if (entry_va_out)
-        *entry_va_out = img_start;
     m->nand_data = data;
     m->nand_size = (size_t)fsize;
+    fprintf(stderr, "[LOADER] NAND image loaded: %ld bytes\n", fsize);
     return 0;
 }

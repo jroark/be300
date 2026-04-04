@@ -318,17 +318,18 @@ machine_t *be300_create(const machine_config_t *cfg)
         }
 
     } else if (cfg->nand_path) {
-        uint32_t entry_va = 0;
-
-        if (loader_load_nand(m, cfg->nand_path, &entry_va) != 0) {
+        if (loader_load_nand_image(m, cfg->nand_path) != 0) {
             fprintf(stderr, "[BE300] Failed to load NAND image\n");
             free(m);
             return NULL;
         }
 
-        m->cpu->pc = (uint64_t)(int32_t)entry_va;
+        /* True cold boot: start at ROM reset vector.
+         * The ROM will read NAND, load the SPL, run the MIPS16
+         * section copier and boot dispatcher, then jump to NK.exe. */
+        m->cpu->pc = 0xffffffffBFC00000ULL;
         m->boot_mode = BE300_BOOT_NAND;
-        fprintf(stderr, "[BE300] NAND SPL entry: PC=0x%08X\n", entry_va);
+        fprintf(stderr, "[BE300] Cold boot: PC=0xBFC00000 (ROM reset vector)\n");
 
         /* Re-initialize NAND controller with image data */
         if (m->nand_data) {
