@@ -46,6 +46,7 @@ enum {
     COLD_BOOT_PROBE_D8XX_HELPER_INSTALLED = 0x00100000u,
     COLD_BOOT_PROBE_LATE_LOOP_LOGGED      = 0x00200000u,
     COLD_BOOT_PROBE_RESTORED_WAIT_LOGGED  = 0x00400000u,
+    COLD_BOOT_PROBE_RESTORED_RA_LOGGED    = 0x00800000u,
 };
 
 #define COLD_BOOT_OAL_BLOCK_BASE  UINT32_C(0x800794C0)
@@ -2716,6 +2717,32 @@ static bool be300_run_batch(machine_t *m)
                         store_32bit_word(m->cpu,
                             0xffffffffa0002200ULL + cp0_map[ci].off,
                             (uint32_t)cp0r[cp0_map[ci].reg]);
+                    }
+
+                    /*
+                     * Once the original OAL block has been restored,
+                     * the idle WAIT at 0x80079598 must resume at the
+                     * post-WAIT continuation (0x800795B4), not back
+                     * into the PMU/DCU setup at RA=0x80079560.
+                     */
+                    if (g_cold_boot_oal_block_restored
+                        && wait_pc == UINT32_C(0x80079598)) {
+                        store_32bit_word(m->cpu,
+                            0xffffffffa0002274ULL,
+                            UINT32_C(0x800795B4));
+                        store_32bit_word(m->cpu,
+                            0xffffffffa00022b0ULL,
+                            UINT32_C(0x800795B4));
+                        if (!(m->wince.cold_boot_pc_probes_logged
+                                & COLD_BOOT_PROBE_RESTORED_RA_LOGGED)) {
+                            m->wince.cold_boot_pc_probes_logged |=
+                                COLD_BOOT_PROBE_RESTORED_RA_LOGGED;
+                            fprintf(stderr,
+                                "[COLD_BOOT] Restored OAL WAIT resume_ctx"
+                                " override: RA/EPC -> 0x800795B4"
+                                " (live RA=0x%08X)\n",
+                                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
+                        }
                     }
                 }
                 m->wince.cold_boot_wait_count++;
