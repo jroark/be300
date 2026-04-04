@@ -438,6 +438,9 @@ static void be300_maybe_restore_cold_boot_oal_block(machine_t *m,
 static bool be300_cold_late_probe_match(uint32_t value)
 {
     return (value >= UINT32_C(0x80079900) && value <= UINT32_C(0x800799C0))
+        || (value >= UINT32_C(0x80078320) && value <= UINT32_C(0x8007835C))
+        || (value >= UINT32_C(0x80079560) && value <= UINT32_C(0x80079584))
+        || (value >= UINT32_C(0x800A7170) && value <= UINT32_C(0x800A71A8))
         || (value >= UINT32_C(0x80089760) && value <= UINT32_C(0x800897C0))
         || (value >= UINT32_C(0x80089870) && value <= UINT32_C(0x800898F8))
         || (value >= UINT32_C(0x80089A40) && value <= UINT32_C(0x80089A60))
@@ -537,6 +540,11 @@ static void be300_log_cold_boot_late_loop(machine_t *m)
     be300_log_va_words(m, "pc_code", pc & ~UINT32_C(0x1F), 0x40u);
     if (epc != 0)
         be300_log_va_words(m, "epc_code", epc & ~UINT32_C(0x1F), 0x40u);
+    be300_log_va_words(m, "init_9554", UINT32_C(0x80669554), 0x20u);
+    be300_log_va_words(m, "init_956c", UINT32_C(0x8066956C), 0x20u);
+    be300_log_va_words(m, "init_96d4", UINT32_C(0x806696D4), 0x20u);
+    be300_log_va_words(m, "init_8c20", UINT32_C(0x80668C20), 0x20u);
+    be300_log_va_words(m, "sched_9614", UINT32_C(0x80679614), 0x20u);
     be300_log_va_words(m, "sched_961c", UINT32_C(0x8067961C), 0x20u);
     be300_log_va_words(m, "sched_9654", UINT32_C(0x80679654), 0x20u);
     be300_log_va_words(m, "sched_96d8", UINT32_C(0x806796D8), 0x20u);
