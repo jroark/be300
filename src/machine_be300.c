@@ -45,8 +45,14 @@ enum {
     COLD_BOOT_PROBE_D8XX_FAULT_LOGGED     = 0x00080000u,
     COLD_BOOT_PROBE_D8XX_HELPER_INSTALLED = 0x00100000u,
     COLD_BOOT_PROBE_LATE_LOOP_LOGGED      = 0x00200000u,
-    COLD_BOOT_PROBE_A5C78_SKIP_LOGGED     = 0x00400000u,
 };
+
+#define COLD_BOOT_OAL_BLOCK_BASE  UINT32_C(0x800794C0)
+#define COLD_BOOT_OAL_BLOCK_WORDS 56u
+
+static uint32_t g_cold_boot_oal_block_saved[COLD_BOOT_OAL_BLOCK_WORDS];
+static bool g_cold_boot_oal_block_saved_valid = false;
+static bool g_cold_boot_oal_block_restored = false;
 
 static uint64_t be300_va32_to_mips64(uint32_t va)
 {
@@ -355,6 +361,78 @@ static void be300_log_va_words(machine_t *m, const char *label, uint32_t va,
             fprintf(stderr, " ????????");
     }
     fprintf(stderr, "\n");
+}
+
+static void be300_capture_cold_boot_oal_block(machine_t *m)
+{
+    unsigned i;
+
+    if (!m || !m->cpu)
+        return;
+
+    g_cold_boot_oal_block_saved_valid = false;
+    g_cold_boot_oal_block_restored = false;
+    for (i = 0; i < COLD_BOOT_OAL_BLOCK_WORDS; i++) {
+        if (!be300_read_va_word(m,
+                COLD_BOOT_OAL_BLOCK_BASE + i * 4u,
+                &g_cold_boot_oal_block_saved[i])) {
+            return;
+        }
+    }
+    g_cold_boot_oal_block_saved_valid = true;
+}
+
+static void be300_restore_cold_boot_oal_block(machine_t *m, const char *reason)
+{
+    unsigned i;
+
+    if (!m || !m->cpu || !g_cold_boot_oal_block_saved_valid
+        || g_cold_boot_oal_block_restored) {
+        return;
+    }
+
+    for (i = 0; i < COLD_BOOT_OAL_BLOCK_WORDS; i++) {
+        store_32bit_word(m->cpu,
+            be300_va32_to_mips64(COLD_BOOT_OAL_BLOCK_BASE + i * 4u),
+            g_cold_boot_oal_block_saved[i]);
+    }
+    be300_invalidate_all(m);
+    g_cold_boot_oal_block_restored = true;
+    fprintf(stderr,
+        "[COLD_BOOT] Restored full OAL block at 0x%08X"
+        " (%u words)%s%s\n",
+        COLD_BOOT_OAL_BLOCK_BASE,
+        COLD_BOOT_OAL_BLOCK_WORDS,
+        reason ? " reason=" : "",
+        reason ? reason : "");
+}
+
+static void be300_maybe_restore_cold_boot_oal_block(machine_t *m,
+    const char *context)
+{
+    uint32_t ready_ptr = 0;
+    char reason[80];
+
+    if (!m || !m->cpu || !m->cfg.wince_cold_boot
+        || !m->wince.cold_boot_wait_logged
+        || !g_cold_boot_oal_block_saved_valid
+        || g_cold_boot_oal_block_restored) {
+        return;
+    }
+
+    if (!be300_read_va_word(m, UINT32_C(0x80669554), &ready_ptr)
+        || ready_ptr == 0) {
+        return;
+    }
+
+    if (context && context[0] != '\0') {
+        snprintf(reason, sizeof(reason),
+            "%s:80669554=0x%08X", context, ready_ptr);
+    } else {
+        snprintf(reason, sizeof(reason),
+            "80669554=0x%08X", ready_ptr);
+    }
+    be300_restore_cold_boot_oal_block(m, reason);
 }
 
 static bool be300_cold_late_probe_match(uint32_t value)
@@ -1492,6 +1570,7 @@ static bool be300_run_batch(machine_t *m)
 
     wince_boot_note_loop_observation(m);
     be300_log_cold_boot_late_loop(m);
+    be300_maybe_restore_cold_boot_oal_block(m, "loop");
 
     if (m->cpu->ninstrs - m->last_report >= 50000000LL) {
         uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
@@ -1605,9 +1684,9 @@ static bool be300_run_batch(machine_t *m)
      * (0x80079480-0x800797E0) during cold-start init phase.
      *
      * Pragmatic cold boot cannot run the ROM's MIPS16 dispatcher, so
-     * entering this block is a dead-end. Resume at the true cold-start
-     * continuation (0x8007B57C) and skip only the 0x800A5C78 callback
-     * block itself at its call site.
+     * entering this block early is a dead-end. Resume at the true
+     * cold-start continuation (0x8007B57C), then restore the original
+     * OAL block later once kernel init has populated its core state.
      */
     if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
         && m->wince.cold_boot_wait_count < 50) {
@@ -1711,26 +1790,6 @@ static bool be300_run_batch(machine_t *m)
                     }
                 }
             }
-            m->cpu->is_halted = false;
-        }
-    }
-
-    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged) {
-        uint32_t pc32 = (uint32_t)m->cpu->pc;
-
-        if (pc32 == UINT32_C(0x8007B5C0)) {
-            if ((m->wince.cold_boot_pc_probes_logged
-                    & COLD_BOOT_PROBE_A5C78_SKIP_LOGGED) == 0) {
-                m->wince.cold_boot_pc_probes_logged |=
-                    COLD_BOOT_PROBE_A5C78_SKIP_LOGGED;
-                fprintf(stderr,
-                    "[COLD_BOOT] Skipping 0x800A5C78 call at"
-                    " PC=0x%08X SP=0x%08X RA=0x%08X\n",
-                    pc32,
-                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
-                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
-            }
-            m->cpu->pc = (int64_t)(int32_t)UINT32_C(0x8007B5C8);
             m->cpu->is_halted = false;
         }
     }
@@ -2145,6 +2204,7 @@ static bool be300_run_batch(machine_t *m)
                  * lost.  Original instruction: JAL 0x79ADC
                  * (0x0C01E6B7).
                  */
+                be300_capture_cold_boot_oal_block(m);
                 store_32bit_word(m->cpu,
                     0xffffffff800794C8ULL, 0x03E00008u); /* JR $ra */
                 store_32bit_word(m->cpu,
@@ -2459,26 +2519,8 @@ static bool be300_run_batch(machine_t *m)
                     m->wince.cold_boot_wait_count < 50)
                     in_init_phase = true;
 
-                /* Restore patched instructions when init completes */
-                if (!in_init_phase &&
-                    m->wince.cold_boot_wait_count > 0 &&
-                    m->wince.cold_boot_wait_count < 50) {
-                    store_32bit_word(m->cpu,
-                        0xffffffff800794C0ULL, 0x0801E53Eu); /* J 0x794F8 */
-                    store_32bit_word(m->cpu,
-                        0xffffffff800794C8ULL, 0x0C01E6B7u); /* JAL 0x79ADC */
-                    store_32bit_word(m->cpu,
-                        0xffffffff80079560ULL, 0x3C08AF00u); /* LUI t0, 0xAF00 */
-                    store_32bit_word(m->cpu,
-                        0xffffffff80079564ULL, 0x3409FB3Bu); /* LI t1, 0xFB3B */
-                    store_32bit_word(m->cpu,
-                        0xffffffff80079598ULL, 0x42000023u); /* WAIT */
-                    fprintf(stderr,
-                        "[COLD_BOOT] Restored OAL init block"
-                        " (cold-start init complete after %u"
-                        " WAIT cycles)\n",
-                        m->wince.cold_boot_wait_count);
-                }
+                if (!in_init_phase)
+                    be300_maybe_restore_cold_boot_oal_block(m, "halt");
 
                 if (in_init_phase) {
                 /*
