@@ -258,7 +258,7 @@ static bool log_checkpoint_header(machine_t *m, const char *tag,
     uint32_t entryhi;
     uint32_t pagemask;
 
-    if (!m->wince.active || !m->wince.log_stall)
+    if (!m->wince.active)
         return false;
 
     status = (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
@@ -341,7 +341,7 @@ static void scan_low_vectors(machine_t *m)
             m->wince.vectors_ready = ready;
             m->wince.low_vector_observed_valid = false;
             invalidate_all(m);
-            if (m->wince.log_stall && !m->wince.low_vector_guest_write_logged) {
+            if (!m->wince.low_vector_guest_write_logged) {
                 fprintf(stderr,
                     "[WINCE_CKPT] guest_low_vector_takeover"
                     " tlb_match=%d general_match=%d ready=%d\n",
@@ -356,8 +356,7 @@ static void scan_low_vectors(machine_t *m)
         return;
     }
 
-    if ((m->wince.vector_owner == WINCE_VECTOR_GUEST
-        || m->wince.vector_owner == WINCE_VECTOR_SEEDED)
+    if (m->wince.vector_owner == WINCE_VECTOR_GUEST
         && ready && !m->wince.vectors_ready) {
         m->wince.vectors_ready = true;
         maybe_log_checkpoint(m, "vector_owner", "guest-low-vectors");
@@ -429,7 +428,7 @@ static void maybe_track_low_vector_runtime_changes(machine_t *m)
     if (m->wince.vector_owner != WINCE_VECTOR_GUEST)
         m->wince.vector_owner = WINCE_VECTOR_GUEST;
 
-    if (m->wince.log_stall && !m->wince.low_vector_runtime_drift_logged) {
+    if (!m->wince.low_vector_runtime_drift_logged) {
         uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
         uint32_t pc = (uint32_t)m->cpu->pc;
 
@@ -514,7 +513,7 @@ static void maybe_log_cold_boot_scheduler_probe(machine_t *m,
     uint32_t cause;
     uint32_t badva;
 
-    if (!m || !m->wince.active || !m->wince.log_stall
+    if (!m || !m->wince.active
         || !m->wince.cold_boot_redirected) {
         return;
     }
@@ -647,7 +646,7 @@ void wince_boot_install_synthetic_low_vectors(machine_t *m,
         m->wince.vectors_ready = false;
     }
 
-    if (m->wince.log_stall && reason)
+    if (reason)
         fprintf(stderr, "[WINCE_CKPT] synthetic_low_vectors reason=%s\n",
             reason);
 }
@@ -676,7 +675,7 @@ void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
 
     m->wince.timer_config_logged = true;
     maybe_log_checkpoint(m, "timer_config", "vr41xx-rtcl1");
-    if (m->wince.log_stall) {
+    {
         fprintf(stderr,
             "[WINCE_CKPT] timer_register off=0x%03" PRIx64
             " value=0x%04" PRIx64 "\n",
@@ -694,12 +693,12 @@ bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
 
     if (!m || !m->wince.active)
         return true;
-    cold_boot_timer_gate_active = m->cfg.wince_cold_boot
+    cold_boot_timer_gate_active = m->wince.active
         && m->wince.cold_boot_wait_logged;
     if (!m->wince.cold_boot_redirected && !cold_boot_timer_gate_active)
         return true;
     if (!m->wince.vectors_ready) {
-        if (m->wince.log_stall && !m->wince.timer_gate_logged) {
+        if (!m->wince.timer_gate_logged) {
             fprintf(stderr,
                 "[WINCE_CKPT] timer_irq_gate active waiting_for_vectors\n");
             m->wince.timer_gate_logged = true;
@@ -707,10 +706,10 @@ bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
         return false;
     }
 
-    if (m->cfg.wince_cold_boot) {
+    if (m->wince.active) {
         ready_ptr_valid = load_va_word(m, UINT32_C(0x80669550), &ready_ptr);
         if (m->wince.cold_boot_late_oal_wait_seen) {
-            if (m->wince.log_stall && !m->wince.timer_release_logged) {
+            if (!m->wince.timer_release_logged) {
                 fprintf(stderr,
                     "[WINCE_CKPT] timer_irq_gate released"
                     " after_restored_oal_wait ready_ptr=%s0x%08X\n",
@@ -721,7 +720,7 @@ bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
             return true;
         }
         if (!ready_ptr_valid || ready_ptr == 0) {
-            if (m->wince.log_stall && !m->wince.timer_kernel_gate_logged) {
+            if (!m->wince.timer_kernel_gate_logged) {
                 fprintf(stderr,
                     "[WINCE_CKPT] timer_irq_gate active"
                     " waiting_for_kernel_init ready_ptr=%s0x%08X\n",
@@ -733,7 +732,7 @@ bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
         }
     }
 
-    if (m->wince.log_stall && !m->wince.timer_release_logged) {
+    if (!m->wince.timer_release_logged) {
         fprintf(stderr,
             "[WINCE_CKPT] timer_irq_gate released owner=%d"
             " ready_ptr=0x%08X\n",
@@ -763,7 +762,7 @@ void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
     if (m->wince.vector_owner != WINCE_VECTOR_GUEST) {
         m->wince.vector_owner = WINCE_VECTOR_GUEST;
         m->wince.vectors_ready = false;
-        if (m->wince.log_stall && !m->wince.low_vector_guest_write_logged) {
+        if (!m->wince.low_vector_guest_write_logged) {
             fprintf(stderr,
                 "[WINCE_CKPT] guest_low_vector_write"
                 " paddr=0x%08" PRIx64 " len=%zu\n",

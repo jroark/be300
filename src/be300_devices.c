@@ -140,8 +140,6 @@ DEVICE_ACCESS(be300_vrc4173)
                     (uint32_t)(VRC4173_LATCH_BASE + off), len,
                     (unsigned long long)val, (uint32_t)cpu->pc);
     } else {
-        uint64_t val;
-
         /*
          * ScCmcu registers (Casio-specific, PA 0x0A007800-0x0A00783F):
          * The ROM MIPS16 boot dispatcher at 0x9FC00C20 writes a command
@@ -153,10 +151,8 @@ DEVICE_ACCESS(be300_vrc4173)
          */
         if (off >= 0x7800 && off < 0x7840) {
             memset(data, 0, len);
-            val = 0;
         } else {
             memcpy(data, &d->bytes[off], len);
-            val = memory_readmax64(cpu, data, len);
         }
         if (d->log_mmio)
             fprintf(stderr, "[VRC4173] R PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",

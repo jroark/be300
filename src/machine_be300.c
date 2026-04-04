@@ -579,7 +579,7 @@ static void be300_log_cold_boot_late_loop(machine_t *m)
     bool tlb_odd = false;
     const char *tlb_mode = NULL;
 
-    if (!m || !m->cpu || !m->wince.log_stall)
+    if (!m || !m->cpu || !m->wince.active)
         return;
     if ((m->wince.cold_boot_pc_probes_logged
         & COLD_BOOT_PROBE_LATE_LOOP_LOGGED) != 0) {
