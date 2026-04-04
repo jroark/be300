@@ -1594,8 +1594,11 @@ static bool be300_run_batch(machine_t *m)
             & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)
         && m->wince.cold_boot_wait_count < 200) {
         uint32_t pc32 = (uint32_t)m->cpu->pc;
-        if (pc32 == UINT32_C(0x800794C0)
-            || pc32 == UINT32_C(0x800794C8)) {
+        /* Intercept ALL entry points into the OAL block,
+         * including 0x80079560 (PMU writes) which the
+         * dyntrans IC cache still has from before patching. */
+        if (pc32 >= UINT32_C(0x800794C0)
+            && pc32 <= UINT32_C(0x80079598)) {
             uint32_t ra = (uint32_t)
                 m->cpu->cd.mips.gpr[MIPS_GPR_RA];
             m->cpu->pc = (int64_t)(int32_t)ra;
@@ -1675,17 +1678,21 @@ static bool be300_run_batch(machine_t *m)
         if (kinit_marker != 0) {
             m->wince.cold_boot_pc_probes_logged |=
                 COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE;
-            /* Restore the OAL block so WAIT works naturally
-             * for the remaining cold-start calls. */
-            /* Keep NOP patches (JR $ra at OAL entry points).
-             * The remaining cold-start calls return immediately
-             * from OAL block calls.  The OAL block will be
-             * restored when the scheduler is entered (PC at
-             * 0x8008B21C, detected by a separate check). */
+            /* Restore the OAL block for the scheduler's
+             * WAIT/resume cycle. */
+            be300_restore_cold_boot_oal_block(m,
+                "batch: entering scheduler");
+            /* Skip ALL remaining cold-start calls and go
+             * directly to the scheduler/exception handler
+             * at 0x8008B21C.  The 3 remaining calls
+             * (0x800A5C78, 0x800942B4, 0x800964FC) can't
+             * complete due to dyntrans IC cache issues with
+             * the OAL block.  The OEMInit callbacks in the
+             * WAIT/resume cycle will handle initialization. */
             m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
                 (int32_t)UINT32_C(0xFFFFD7E0);
             m->cpu->pc =
-                (int64_t)(int32_t)UINT32_C(0x8007B5AC);
+                (int64_t)(int32_t)UINT32_C(0x8008B21C);
             m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] |=
                 UINT64_C(0x8801);
             m->cpu->is_halted = false;
@@ -1693,7 +1700,7 @@ static bool be300_run_batch(machine_t *m)
             fprintf(stderr,
                 "[COLD_BOOT] Kernel init done"
                 " (0x80669550=0x%08X),"
-                " redirect 0x8007B5AC (NOP patches kept)\n",
+                " redirect 0x8007B5AC RA=0x8008B21C\n",
                 kinit_marker);
         }
     }
@@ -2795,31 +2802,17 @@ static bool be300_run_batch(machine_t *m)
                     0xffffffff800794C8ULL, 0x03E00008u); /* JR $ra */
                 store_32bit_word(m->cpu,
                     0xffffffff800794CCULL, 0x00000000u); /* NOP */
-                /* Selective OAL block patching:
-                 *
-                 * NOP 0x800794C0 to 0x8007955F (40 words) — block
-                 * the entry points and early init code.
-                 *
-                 * KEEP 0x80079560 to 0x80079594 ORIGINAL — these
-                 * are the PMU/DCU/SDRAMU register writes that the
-                 * copy function's hardware poll at 0x800783B4
-                 * depends on.  Without these writes, the SDRAMU
-                 * status bits never advance and the kernel init's
-                 * module-processing loop spins forever.
-                 *
-                 * Replace WAIT at 0x80079598 with JR $ra + NOP
-                 * to prevent halting while letting the register
-                 * writes execute on every OAL block call.
-                 */
-                /* NOP 0x800794C0-0x8007955C (40 words) */
-                for (uint32_t pi = 0; pi < 40; pi++) {
+                /* Full NOP fill of the OAL block (56 words,
+                 * 0x800794C0-0x8007959C) including the PMU/DCU
+                 * writes at 0x79560-0x79594.  The hardware polls
+                 * at 0x80078330 and 0x800783B4 are bypassed by
+                 * the flag seeds at 0x80660008=1 and 0x80660405=0x40.
+                 * JR $ra at entry points and at the WAIT location. */
+                for (uint32_t pi = 0; pi < 56; pi++) {
                     store_32bit_word(m->cpu,
                         0xffffffff800794C0ULL + pi * 4,
                         0x00000000u); /* NOP */
                 }
-                /* JR $ra at entry points 0x800794C0 and 0x800794C8.
-                 * The copy function polls are bypassed by the flag
-                 * seeds at 0x80660008 and 0x80660405. */
                 store_32bit_word(m->cpu,
                     0xffffffff800794C0ULL, 0x03E00008u); /* JR $ra */
                 store_32bit_word(m->cpu,
@@ -2829,11 +2822,12 @@ static bool be300_run_batch(machine_t *m)
                     0xffffffff80079598ULL, 0x03E00008u); /* JR $ra */
                 store_32bit_word(m->cpu,
                     0xffffffff8007959cULL, 0x00000000u); /* NOP */
-                /* Force invalidate dyntrans code cache so patches
-                 * take effect. */
-                if (m->cpu->invalidate_code_translation)
-                    m->cpu->invalidate_code_translation(
-                        m->cpu, 0, INVALIDATE_ALL);
+                /* Nuclear flush: reset the entire translation cache.
+                 * invalidate_code_translation(INVALIDATE_ALL) doesn't
+                 * properly flush IC pages for kseg0 writes.
+                 * cpu_create_or_reset_tc zeroes the base table and
+                 * calls INVALIDATE_ALL internally. */
+                cpu_create_or_reset_tc(m->cpu);
                 /* Verify patches by reading back */
                 {
                     static const uint32_t verify_addrs[] = {
