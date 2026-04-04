@@ -1546,6 +1546,21 @@ static bool be300_run_batch(machine_t *m)
         fprintf(stderr, "[BE300] Loop batch %d, PC=0x%08" PRIx64 "\n",
                 m->loop_count, m->cpu->pc);
     }
+    /* Sample 0x80669550 periodically during cold boot */
+    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
+        && m->loop_count % 5000 == 0 && m->loop_count > 20000) {
+        uint32_t kinit_val = 0;
+        be300_read_va_word(m, UINT32_C(0x80669550), &kinit_val);
+        if (kinit_val != 0) {
+            static int logged_kinit = 0;
+            if (!logged_kinit) {
+                logged_kinit = 1;
+                fprintf(stderr,
+                    "[COLD_BOOT] 0x80669550=0x%08X at batch %d!\n",
+                    kinit_val, m->loop_count);
+            }
+        }
+    }
 
     /*
      * Cold-start completion check: when kernel main init finishes
@@ -1554,7 +1569,6 @@ static bool be300_run_batch(machine_t *m)
      * processes and enter the scheduler.
      */
     if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
-        && !g_cold_boot_oal_block_restored
         && !(m->wince.cold_boot_pc_probes_logged
             & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)) {
         uint32_t kinit_marker = 0;
@@ -1562,6 +1576,10 @@ static bool be300_run_batch(machine_t *m)
         if (kinit_marker != 0) {
             m->wince.cold_boot_pc_probes_logged |=
                 COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE;
+            /* Restore the OAL block so WAIT works naturally
+             * for the remaining cold-start calls. */
+            be300_restore_cold_boot_oal_block(m,
+                "batch: kernel init done");
             m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
                 (int32_t)UINT32_C(0xFFFFD7E0);
             m->cpu->pc =
@@ -1569,10 +1587,11 @@ static bool be300_run_batch(machine_t *m)
             m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] |=
                 UINT64_C(0x8801); /* IE + IM3 + IM7 */
             m->cpu->is_halted = false;
+            be300_store_resume_ctx_word(m, 0xA8u, 0x00008801u);
             fprintf(stderr,
                 "[COLD_BOOT] Kernel init done"
-                " (0x80669550=0x%08X), redirecting"
-                " to 0x8007B5AC\n",
+                " (0x80669550=0x%08X),"
+                " OAL restored, redirect 0x8007B5AC\n",
                 kinit_marker);
         }
     }
@@ -2674,24 +2693,40 @@ static bool be300_run_batch(machine_t *m)
                     0xffffffff800794C8ULL, 0x03E00008u); /* JR $ra */
                 store_32bit_word(m->cpu,
                     0xffffffff800794CCULL, 0x00000000u); /* NOP */
-                /* NOP-fill the entire OAL init continuation block
-                 * from 0x800794C0 to 0x8007959C (56 words).
-                 * End with JR $ra at 0x80079598.  This prevents
-                 * ALL entry points into this block.  The block
-                 * does PMU/DCU setup and ends in WAIT — all of
-                 * which is unnecessary during cold-start. */
-                for (uint32_t pi = 0; pi < 56; pi++) {
+                /* Selective OAL block patching:
+                 *
+                 * NOP 0x800794C0 to 0x8007955F (40 words) — block
+                 * the entry points and early init code.
+                 *
+                 * KEEP 0x80079560 to 0x80079594 ORIGINAL — these
+                 * are the PMU/DCU/SDRAMU register writes that the
+                 * copy function's hardware poll at 0x800783B4
+                 * depends on.  Without these writes, the SDRAMU
+                 * status bits never advance and the kernel init's
+                 * module-processing loop spins forever.
+                 *
+                 * Replace WAIT at 0x80079598 with JR $ra + NOP
+                 * to prevent halting while letting the register
+                 * writes execute on every OAL block call.
+                 */
+                /* NOP 0x800794C0-0x8007955C (40 words) */
+                for (uint32_t pi = 0; pi < 40; pi++) {
                     store_32bit_word(m->cpu,
                         0xffffffff800794C0ULL + pi * 4,
                         0x00000000u); /* NOP */
                 }
-                /* Place JR $ra at the start and end */
+                /* JR $ra at entry points 0x800794C0 and 0x800794C8.
+                 * The copy function polls are bypassed by the flag
+                 * seeds at 0x80660008 and 0x80660405. */
                 store_32bit_word(m->cpu,
                     0xffffffff800794C0ULL, 0x03E00008u); /* JR $ra */
                 store_32bit_word(m->cpu,
                     0xffffffff800794C8ULL, 0x03E00008u); /* JR $ra */
+                /* JR $ra + NOP at WAIT location */
                 store_32bit_word(m->cpu,
                     0xffffffff80079598ULL, 0x03E00008u); /* JR $ra */
+                store_32bit_word(m->cpu,
+                    0xffffffff8007959cULL, 0x00000000u); /* NOP */
                 /* Force invalidate dyntrans code cache so patches
                  * take effect. */
                 if (m->cpu->invalidate_code_translation)
@@ -2751,18 +2786,36 @@ static bool be300_run_batch(machine_t *m)
                  * flag never gets set and the kernel init loops
                  * forever.  Pre-seed it so the poll succeeds.
                  */
+                /*
+                 * Seed copy-function flags so hardware polls
+                 * succeed without the real OAL idle path:
+                 * - VA 0x80660405 bit 6: poll at 0x80078330
+                 * - VA 0x80660008 non-zero: skips SIU LSR
+                 *   poll at 0x800783B4 (BNE r14,$zero)
+                 *
+                 * On real hardware, the ROM dispatcher sets
+                 * these during boot.
+                 */
                 {
                     unsigned char flag = 0x40;
-                    unsigned char verify = 0;
                     m->cpu->memory_rw(m->cpu, m->cpu->mem,
                         0xffffffff80660405ULL, &flag, 1,
                         MEM_WRITE, CACHE_DATA);
-                    m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                        0xffffffff80660405ULL, &verify, 1,
-                        MEM_READ, CACHE_DATA);
+                    store_32bit_word(m->cpu,
+                        0xffffffff80660008ULL, 0x00000001u);
+                    /* Seed Status template at VA 0xFFFFD890
+                     * (PA 0x1890, mapped via TLB[1] odd page).
+                     * Cold-start at 0x8007B5D0 loads this and
+                     * ORs bit 0 (IE) before MTC0 Status.
+                     * Include IM3 (ICU/RTCL1) + IM7 so timer
+                     * interrupts reach the scheduler. */
+                    store_32bit_word(m->cpu,
+                        0xffffffffa0001890ULL, 0x00008800u);
                     fprintf(stderr,
-                        "[COLD_BOOT] Seeded copy flag at"
-                        " VA 0x80660405 = 0x%02X\n", verify);
+                        "[COLD_BOOT] Seeded copy flags + status:"
+                        " [0x80660405]=0x40,"
+                        " [0x80660008]=0x01,"
+                        " [PA 0x1890]=0x8800\n");
                 }
                 /*
                  * Push Compare far away so the Count/Compare
