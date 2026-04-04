@@ -1936,13 +1936,72 @@ static bool be300_run_batch(machine_t *m)
                 bool tlb_odd = false;
                 const char *tlb_mode = NULL;
 
-                if (found_resume_pc) {
-                    m->cpu->pc = (int64_t)(int32_t)resume_pc;
-                } else {
-                    m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
-                        (int32_t)UINT32_C(0xFFFFD7E0);
-                    m->cpu->pc =
-                        (int64_t)(int32_t)UINT32_C(0x8007B57C);
+                /*
+                 * Restore the original OAL block and let the
+                 * WAIT/resume cycle take its natural course.
+                 * The cold-start has already installed: page
+                 * tables, exception handlers, TLB entries, and
+                 * kernel data pointers.  The post-WAIT resume
+                 * path (→ OAL vtable init → resume_ctx restore
+                 * → 0x800794C8 → OEMInit callbacks) will drive
+                 * the remaining initialization.
+                 */
+                be300_restore_cold_boot_oal_block(m,
+                    "cold-start entered OAL block");
+                /* Don't redirect PC — let the restored code
+                 * run from the current position. */
+                (void)found_resume_pc;
+                (void)resume_pc;
+
+                /*
+                 * Fix up the kernel stack TLB entry: the cold-start
+                 * installed the entry with the even page (0xFFFFC000)
+                 * invalid (EntryLo0.V=0).  The post-WAIT resume path
+                 * (OEMInit callbacks) uses more stack depth, pushing
+                 * below 0xFFFFD000 into 0xFFFFC000.  Make the even
+                 * page valid: PA 0x3000, cacheable, dirty, global.
+                 */
+                {
+                    int si;
+                    struct mips_coproc *cp0c = m->cpu->cd.mips.coproc[0];
+                    uint64_t *cp0r = cp0c->reg;
+                    for (si = 0; si < (int)cp0c->nr_of_tlbs; si++) {
+                        uint64_t hi = cp0c->tlbs[si].hi;
+                        uint64_t lo0 = cp0c->tlbs[si].lo0;
+                        if ((hi & 0xFFFFE000ULL) == 0xFFFFC000ULL
+                            && !(lo0 & 0x02)) {
+                            /* Rewrite TLB entry via proper TLBWI
+                             * to update the dyntrans v2p cache.
+                             * Even page: PFN=3 (PA 0x3000) C=3
+                             * D=1 V=1 G=1. Odd page: unchanged. */
+                            uint64_t save_hi = cp0r[COP0_ENTRYHI];
+                            uint64_t save_lo0 = cp0r[COP0_ENTRYLO0];
+                            uint64_t save_lo1 = cp0r[COP0_ENTRYLO1];
+                            uint64_t save_mask = cp0r[COP0_PAGEMASK];
+                            uint64_t save_idx = cp0r[COP0_INDEX];
+
+                            cp0r[COP0_PAGEMASK] = cp0c->tlbs[si].mask;
+                            cp0r[COP0_ENTRYHI] = hi;
+                            cp0r[COP0_ENTRYLO0] = 0xDF; /* PA 0x3000 */
+                            cp0r[COP0_ENTRYLO1] = cp0c->tlbs[si].lo1;
+                            cp0r[COP0_INDEX] = (uint64_t)si;
+                            coproc_tlbwri(m->cpu, 0);
+
+                            cp0r[COP0_ENTRYHI] = save_hi;
+                            cp0r[COP0_ENTRYLO0] = save_lo0;
+                            cp0r[COP0_ENTRYLO1] = save_lo1;
+                            cp0r[COP0_PAGEMASK] = save_mask;
+                            cp0r[COP0_INDEX] = save_idx;
+
+                            fprintf(stderr,
+                                "[COLD_BOOT] Fixed kernel stack"
+                                " TLB[%d] even page:"
+                                " VA 0xFFFFC000 → PA 0x3000"
+                                " (was EntryLo0=0x%08X)\n",
+                                si, (uint32_t)lo0);
+                            break;
+                        }
+                    }
                 }
                 if (!(m->wince.cold_boot_pc_probes_logged
                         & COLD_BOOT_PROBE_STACK_TLB_LOGGED)) {
@@ -2473,6 +2532,26 @@ static bool be300_run_batch(machine_t *m)
                  * from being installed.
                  */
 
+                /*
+                 * Stop the RTCL1 timer before cold-start.  The
+                 * pre-WAIT NK.exe init programmed RTCL1 at 992 Hz;
+                 * leaving it running bleeds IP7 into the cold-start,
+                 * causing copy-loop functions to enter the OAL idle
+                 * path prematurely.  On real hardware the ROM boot
+                 * does not program RTCL1.  The kernel will re-program
+                 * it at the right time during OAL vtable init.
+                 */
+                dev_vr41xx_stop_rtcl1(m->gxe_machine);
+                m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE] = 0;
+                /*
+                 * Push Compare far away so the Count/Compare
+                 * timer doesn't reassert IP7 during cold-start.
+                 * The pre-WAIT NK.exe init set Compare to a
+                 * value that Count reaches within ~50M instrs.
+                 */
+                m->cpu->cd.mips.coproc[0]->reg[COP0_COMPARE] =
+                    UINT64_C(0xFFFFFFFF);
+
                 m->cpu->pc =
                     (int64_t)(int32_t)UINT32_C(0x8007B398);
                 m->cpu->cd.mips.mips16 = 0;
@@ -2764,43 +2843,28 @@ static bool be300_run_batch(machine_t *m)
                     && wait_pc == UINT32_C(0x80079598)
                     && !(m->wince.cold_boot_pc_probes_logged
                         & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)) {
-                    be300_save_current_resume_ctx(m);
-                    be300_apply_cold_boot_scheduler_resume(m);
-                    m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
-                        (int32_t)COLD_BOOT_REPLAY_ENTRY_SP;
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
-                        COLD_BOOT_REPLAY_STATUS;
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE] = 0;
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED] = 0;
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] =
-                        COLD_BOOT_SCHED_CTX_EPC;
-                    m->cpu->pc =
-                        (int64_t)(int32_t)UINT32_C(0x800795B4);
-                    m->cpu->is_halted = false;
+                    /*
+                     * Restored OAL WAIT reached.  Let the dyntrans
+                     * WAIT unhalt advance past it naturally — the
+                     * post-WAIT continuation will run check1/check2,
+                     * OAL vtable init, and resume_ctx restore.
+                     * Don't do the complex scheduler handoff here;
+                     * it overwrites TLB state and causes faults.
+                     */
                     m->wince.cold_boot_pc_probes_logged |=
                         COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE;
-                    if (!(m->wince.cold_boot_pc_probes_logged
-                            & COLD_BOOT_PROBE_RESTORED_SCHED_LOGGED)) {
-                        m->wince.cold_boot_pc_probes_logged |=
-                            COLD_BOOT_PROBE_RESTORED_SCHED_LOGGED;
-                        fprintf(stderr,
-                            "[COLD_BOOT] Restored OAL scheduler resume:"
-                            " entry_sp=0x%08X ctx_sp=0x%08X"
-                            " ctx_ra=0x%08X ctx_epc=0x%08X\n",
-                            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
-                            COLD_BOOT_SCHED_CTX_SP,
-                            COLD_BOOT_SCHED_CTX_RA,
-                            COLD_BOOT_SCHED_CTX_EPC);
-                    }
                     fprintf(stderr,
-                        "[COLD_BOOT] Direct restored-WAIT handoff:"
-                        " PC=0x800795B4 EPC=0x%08X"
-                        " SP=0x%08X Status=0x%08X\n",
-                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
-                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                        "[COLD_BOOT] Restored OAL WAIT:"
+                        " letting dyntrans WAIT-unhalt handle it"
+                        " PC=0x%08X Status=0x%08X Cause=0x%08X\n",
+                        wait_pc,
                         (uint32_t)m->cpu->cd.mips.coproc[0]
-                            ->reg[COP0_STATUS]);
-                    return true;
+                            ->reg[COP0_STATUS],
+                        (uint32_t)m->cpu->cd.mips.coproc[0]
+                            ->reg[COP0_CAUSE]);
+                    /* Stay halted — the dyntrans WAIT unhalt
+                     * (cpu_dyntrans.c) will advance PC past WAIT
+                     * on the next batch when it sees Cause.IP set. */
                 }
                 /*
                  * WAIT during cold-start init phase.
