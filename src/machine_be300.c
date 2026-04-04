@@ -122,14 +122,12 @@ static bool be300_is_plausible_resume_pc(machine_t *m, uint32_t pc)
 static bool be300_find_stack_resume_pc(machine_t *m, uint32_t sp,
     uint32_t *resume_pc_out, uint32_t *slot_va_out)
 {
-    uint32_t fallback_pc = 0;
-    uint32_t fallback_slot = 0;
     uint32_t off;
 
     if (!m || !m->cpu || !resume_pc_out)
         return false;
 
-    for (off = 0; off < 0x100u; off += 4u) {
+    for (off = 0; off < 0x200u; off += 4u) {
         uint32_t slot_va = sp + off;
         uint32_t candidate = 0;
 
@@ -144,19 +142,9 @@ static bool be300_find_stack_resume_pc(machine_t *m, uint32_t sp,
                 *slot_va_out = slot_va;
             return true;
         }
-        if (fallback_pc == 0) {
-            fallback_pc = candidate;
-            fallback_slot = slot_va;
-        }
     }
 
-    if (fallback_pc == 0)
-        return false;
-
-    *resume_pc_out = fallback_pc;
-    if (slot_va_out)
-        *slot_va_out = fallback_slot;
-    return true;
+    return false;
 }
 
 static void be300_invalidate_all(machine_t *m)
