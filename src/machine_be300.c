@@ -551,12 +551,21 @@ static void be300_log_cold_boot_late_loop(machine_t *m)
     be300_log_va_words(m, "sched_96f8", UINT32_C(0x806796F8), 0x20u);
     be300_log_va_words(m, "sched_9780", UINT32_C(0x80679780), 0x20u);
     be300_log_va_words(m, "obj_table", UINT32_C(0x8066BFC0), 0x40u);
-    be300_log_va_words(m, "fault_page", badva & ~UINT32_C(0x1F), 0x20u);
+    if (badva >= UINT32_C(0x80000000))
+        be300_log_va_words(m, "fault_page", badva & ~UINT32_C(0x1F), 0x20u);
+    else
+        fprintf(stderr,
+            "[COLD_BOOT_LATE] fault_page skipped for low badva=0x%08X\n",
+            badva);
     be300_log_va_words(m, "stack", sp & ~UINT32_C(0x1F), 0x40u);
     if (s0 != 0)
         be300_log_va_words(m, "s0_window", s0 & ~UINT32_C(0x1F), 0x60u);
-    if (s1 != 0)
+    if (s1 >= UINT32_C(0x80000000))
         be300_log_va_words(m, "s1_window", s1 & ~UINT32_C(0x1F), 0x40u);
+    else if (s1 != 0)
+        fprintf(stderr,
+            "[COLD_BOOT_LATE] s1_window skipped for low s1=0x%08X\n",
+            s1);
 }
 
 static void be300_handle_stop_signal(int signum)

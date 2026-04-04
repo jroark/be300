@@ -840,6 +840,8 @@ DEVICE_TICK(vr41xx)
 		INTERRUPT_DEASSERT(d->rtcl1_irq);
 		d->rtcl1_irq_asserted = 0;
 	}
+	if (!timer_allowed && d->pending_timer_interrupts > 1)
+		d->pending_timer_interrupts = 1;
 	if (d->pending_timer_interrupts > 0 && timer_allowed) {
 		INTERRUPT_ASSERT(d->rtcl1_irq);
 		d->rtcl1_irq_asserted = 1;

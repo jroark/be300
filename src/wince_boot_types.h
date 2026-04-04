@@ -71,6 +71,7 @@ typedef struct {
     bool first_exception_logged;
     bool fatal_exit_logged;
     bool timer_gate_logged;
+    bool timer_kernel_gate_logged;
     bool timer_release_logged;
     bool low_vector_guest_write_logged;
     bool first_fb_oob_logged;
