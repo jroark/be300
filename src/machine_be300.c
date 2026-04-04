@@ -3004,17 +3004,29 @@ static bool be300_run_batch(machine_t *m)
                      */
                     m->wince.cold_boot_pc_probes_logged |=
                         COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE;
+                    /*
+                     * The restored OAL WAIT was reached from the
+                     * OAL vtable init at 0x80078BC0.  The post-WAIT
+                     * resume_ctx.RA loops back to the vtable init.
+                     * Skip it: redirect to 0x8007B59C (the cold-start
+                     * instruction after JAL 0x80078BC0) to continue
+                     * with the remaining init calls that lead to
+                     * the scheduler.
+                     */
+                    m->cpu->pc =
+                        (int64_t)(int32_t)UINT32_C(0x8007B59C);
+                    m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                        (int32_t)UINT32_C(0xFFFFD7E0);
+                    m->cpu->is_halted = false;
+                    /* Enable IE so timer interrupts can drive
+                     * the scheduler after the remaining init. */
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] |=
+                        UINT64_C(0x8001); /* IE + IM7 */
                     fprintf(stderr,
                         "[COLD_BOOT] Restored OAL WAIT:"
-                        " letting dyntrans WAIT-unhalt handle it"
-                        " PC=0x%08X Status=0x%08X Cause=0x%08X\n",
-                        wait_pc,
-                        (uint32_t)m->cpu->cd.mips.coproc[0]
-                            ->reg[COP0_STATUS],
-                        (uint32_t)m->cpu->cd.mips.coproc[0]
-                            ->reg[COP0_CAUSE]);
-                    /* Fix TLB[1] even page before the dyntrans
-                     * WAIT unhalt advances execution. */
+                        " skipping vtable init loop,"
+                        " redirect to 0x8007B59C\n");
+                    /* Fix TLB[1] even page */
                     {
                         struct mips_coproc *cpc =
                             m->cpu->cd.mips.coproc[0];
@@ -3081,7 +3093,17 @@ static bool be300_run_batch(machine_t *m)
                      */
                     if (g_cold_boot_oal_block_restored
                         && wait_pc == UINT32_C(0x80079598)) {
-                        be300_apply_cold_boot_scheduler_resume(m);
+                        /*
+                         * Don't apply the warm-boot scheduler resume
+                         * bundle — it contains pointers (like EPC
+                         * 0x000117A8 and dispatch data 0x1006FF08)
+                         * that reference process address space from
+                         * a warm boot.  In cold boot, the kernel
+                         * init just loaded the modules, so the
+                         * cold-start's natural resume_ctx (saved
+                         * above) is the correct continuation.
+                         */
+                        /* be300_apply_cold_boot_scheduler_resume(m); */
                         /*
                          * Fix TLB[1] even page on every WAIT cycle.
                          * OAL vtable init (0x78BC0, called in the
