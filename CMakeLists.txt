@@ -41,10 +41,23 @@ else()
     endif()
 endif()
 
+# Generate embedded boot ROM header from binary
+set(BOOT_ROM_BIN "${CMAKE_SOURCE_DIR}/docs/be300_boot_rom.bin")
+set(BOOT_ROM_HDR "${CMAKE_BINARY_DIR}/boot_rom_embedded.h")
+add_custom_command(
+    OUTPUT "${BOOT_ROM_HDR}"
+    COMMAND ${CMAKE_COMMAND} -E env
+        sh ${CMAKE_SOURCE_DIR}/tools/gen_rom_header.sh
+            ${BOOT_ROM_BIN} ${BOOT_ROM_HDR}
+    DEPENDS "${BOOT_ROM_BIN}"
+    COMMENT "Generating embedded boot ROM header"
+)
+
 # Include directories
 include_directories(
     src
     gxemul/src/include
+    ${CMAKE_BINARY_DIR}
 )
 
 # ============================================================
@@ -112,7 +125,7 @@ set(BE300_SOURCES
 )
 
 # Main executable
-add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES})
+add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
 target_link_libraries(be300 m ${SDL2_LIBRARIES})
 
 if(BUILD_WEB)
@@ -134,7 +147,7 @@ if(BUILD_WEB)
                        COPYONLY)
     endforeach()
 
-    add_executable(be300_web ${GXEMUL_SOURCES} ${BE300_SOURCES})
+    add_executable(be300_web ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
     set_target_properties(be300_web PROPERTIES
         OUTPUT_NAME "be300_web"
         RUNTIME_OUTPUT_DIRECTORY ${WEB_OUTPUT_DIR}
