@@ -1,5 +1,5 @@
 # Core emulator binary
-be300
+/be300
 test_basic
 
 # Build artifacts
