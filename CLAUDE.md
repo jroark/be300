@@ -17,7 +17,7 @@ I also have another VM with Platform Builder 3.0.
 - `machine_be300.c` — Machine setup (GXemul framework init, VR4131 CPU, device registration, kernel loading) and main emulation loop
 - `be300.h` — be300_state_t struct, machine_config_t, physical address map constants
 - `loader.c` / `loader.h` — ELF kernel loader, B000FF NAND SPL parser (uses GXemul store_buf)
-- `ui.c` / `ui.h` — Display stub (GXemul dev_fb handles framebuffer; SDL2 integration TODO)
+- `ui.c` / `ui.h` — SDL2 display, input handling, screenshot capture
 - `main.c` — CLI argument parsing, calls be300_create/be300_run/be300_destroy
 
 **GXemul CPU engine (gxemul/)**
@@ -216,7 +216,7 @@ Push with: `git push -u origin <current branch>`
   1. JAL 0x80078BC0 — OAL vtable init
   2. JAL 0x80078C3C — serial debug output ("InitDebugEther")
   3. JAL 0x800AB990 — function pointer call
-  4. JAL 0x80078D74 — enters OAL init block (the problem block at 0x80079480+)
+  4. JAL 0x80078D74 — enters OAL init block (0x80079480+)
   5. ... timer, ICU, ISR, VRC4173 setup ...
   6. JAL 0x800A6090 — splash_update (refreshes display with a0=0)
 
@@ -282,10 +282,8 @@ the kernel entry at VA 0xA0060004.
 3. Touch calibration screen loads
 4. WinCE desktop
 
-The "Starting..." screen appeared in the emulator for the first time on 2026-04-01
-after the OAL init block intercept was implemented. Prior to that, the emulator
-only showed "Initializing..." before getting stuck. The "Starting..." indicates
-NK.exe's post-init code is running (between kernel_init and the shell).
+The "Starting..." screen indicates NK.exe's post-init code is running
+(between kernel_init and the shell).
 
 **NK.exe Cold Boot Flow:**
 - Entry: VA 0x80076B50 → CP0 init → JR to 0xA0076BA0 (kseg1)
@@ -309,21 +307,19 @@ NK.exe's post-init code is running (between kernel_init and the shell).
 - NK.exe has "ECEC" signature at offset 0x40, pTOC pointer at offset 0x44 (= 0x80655C54)
 - ROMHDR at pTOC: physfirst=0x80060000, physlast=0x80656AC8, nummods=95, ulRAMStart=0x80660000
 - 1 COPYentry: src=0x800BBA70 dst=0x80660000 copy=1029 total=52852 (kernel .data + .bss)
-- Emulator processes COPYentry at NK.exe entry detection time (PC in PA 0x60000-0x100000 range)
-- On real hardware, the ROM's MIPS16 section copier (0x9FC00C85) does this before NK.exe starts
-- The COPYentry alone does not enable callback registration — additional boot context is needed
+- The ROM's MIPS16 section copier (0x9FC00C85) processes COPYentry before NK.exe starts
 
-**ROM Boot Sequence (steps the emulator skips):**
+**ROM Boot Sequence:**
 The ROM at 0xBFC002F0 runs these steps before entering NK.exe:
 1. CP0 init, HW init (JALR 0x9FC006F0)
 2. Check functions (cold/warm detection)
 3. Cold boot: clear PA 0x2400/24FC, init (JAL 0xFC00734)
 4. Set SP=0x80003800, serial init (JAL 0xFC00498)
-5. BINFS section copier (JALR 0x9FC00C85, MIPS16) — runs natively via GXemul MIPS16 interpreter
-6. Boot dispatcher (JALR 0x9FC00C21, MIPS16) — runs natively (registers callbacks, NAND driver init)
+5. BINFS section copier (JALR 0x9FC00C85, MIPS16)
+6. Boot dispatcher (JALR 0x9FC00C21, MIPS16) — registers callbacks, NAND driver init
 7. SIU poke + BCU read loop (JAL 0xFC004E8/0xFC00488)
 8. Load PA 0x24FC, JR to NK.exe entry
-Steps 1-4 are handled by the SPL. Steps 5-6 execute as MIPS16 code via GXemul's MIPS16 interpreter.
+Steps 1-4 are handled by the SPL. Steps 5-8 execute from the boot ROM. Steps 5-6 are MIPS16 code (runs natively via GXemul's MIPS16 interpreter).
 
 **Post-WAIT OAL Init (always taken on both cold and warm boot):**
 - NOP sled → kseg0 switch → check1 (buttons) → check2 (VRC4173)
@@ -415,7 +411,7 @@ It does NOT run during cold boot — resume_ctx is populated by the ROM dispatch
 - The NAND controller has phase-aware behavior (`wince_mode` flag in nand_state_t): buffer registers 0xA4A0-0xA4AC and STATUS2 at 0xA4C0 return 0 during SPL (to avoid ECC errors), active data after NK.exe loads
 
 **NK.exe Analysis Tools:**
-- Emulator dumps decompressed NK.exe to `nk_decompressed.bin` on first WAIT (6.2MB)
+- Emulator dumps decompressed NK.exe to `nk_decompressed.bin` when PC enters NK.exe range (6.2MB)
 - NK.exe loaded at PA 0x60000: file offset = VA - 0x80060000
 - `tools/scan_nk_producers.py` — scan for store instructions to specific VAs
 - `tools/disasm_nk_ctx.py` — disassemble NK code regions
@@ -423,8 +419,8 @@ It does NOT run during cold boot — resume_ctx is populated by the ROM dispatch
 
 ### Key Files for WinCE Boot
 - `src/main.c` — `--nand` CLI flag, argument parsing
-- `src/be300.h` — `nand_path`, `nand_data`, `nand_size`, `wince_cold_boot` fields
-- `src/machine_be300.c` — WinCE boot path in `be300_create()`, NAND flash init, cold boot WAIT handling, ROM loading
+- `src/be300.h` — `nand_path`, `nand_data`, `nand_size` fields
+- `src/machine_be300.c` — WinCE boot path in `be300_create()`, NAND flash init, ROM loading, main emulation loop
 - `src/loader.c` — `loader_load_nand()` B000FF parser
 - `src/wince_boot.c` — WinCE cold-boot vector tracking, timer gating, diagnostic probes
 - `src/wince_boot_types.h` — WinCE boot state machine flags
