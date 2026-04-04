@@ -8,7 +8,7 @@ I also have another VM with Platform Builder 3.0.
 - docs/hardware.txt - notes from Linux4be project developers
 - docs/hw_dump_combined.txt - real hardware memory/register dumps from BEDiag tool
 - docs/BE300BootROM_v1.txt - full 16KB ROM dump (PA 0x1FC00000, CRC32=0xFA3B5582)
-- docs/be300_boot_rom.bin - extracted ROM binary loaded by emulator
+- docs/be300_boot_rom.bin - extracted ROM binary (embedded in emulator at build time via xxd)
 - ce/bediag/ - BEDiag diagnostic tool source and output
 
 ## Source Code Layout
@@ -16,7 +16,7 @@ I also have another VM with Platform Builder 3.0.
 **Core emulation (src/)**
 - `machine_be300.c` — Machine setup (GXemul framework init, VR4131 CPU, device registration, kernel loading) and main emulation loop
 - `be300.h` — be300_state_t struct, machine_config_t, physical address map constants
-- `loader.c` / `loader.h` — ELF kernel loader, B000FF NAND SPL parser (uses GXemul store_buf)
+- `loader.c` / `loader.h` — ELF kernel loader, NAND image file reader
 - `ui.c` / `ui.h` — SDL2 display, input handling, screenshot capture
 - `main.c` — CLI argument parsing, calls be300_create/be300_run/be300_destroy
 
@@ -153,7 +153,6 @@ Push with: `git push -u origin <current branch>`
 
 1. **Build and test from the host:**
    ```bash
-   # Inside the container
    # rebuild and test a 2.4 kernel
    mkdir -p build-host && cd build-host
    cmake ..
@@ -251,8 +250,7 @@ Push with: `git push -u origin <current branch>`
 cd /work && mkdir -p build-host && cd build-host
 cmake .. && make -j$(nproc)
 
-# WinCE NAND boot (cold boot is the only path)
-# Requires be300_boot_rom.bin in the working directory
+# WinCE NAND boot (starts from ROM reset vector)
 gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin --log-mmio \
   > cold_stdout.log 2> cold_stderr.log
 
@@ -278,9 +276,11 @@ grep -E "mtc0|mfc0" spl_disasm.txt
 
 ### WinCE Cold Boot
 
-Cold boot is the only NAND boot path (enabled by `--nand`). The SPL
-decompresses NK.exe (~6.2MB) from NAND into RAM at PA 0x60000 and jumps to
-the kernel entry at VA 0xA0060004.
+Cold boot is the only NAND boot path (enabled by `--nand`). The emulator
+starts at the ROM reset vector (0xBFC00000), just like real hardware after
+battery removal. The ROM reads NAND, loads the SPL, SPL decompresses NK.exe
+into RAM, then the ROM's MIPS16 boot dispatcher populates callback tables
+and hands off to NK.exe.
 
 **Real hardware cold boot sequence (framebuffer):**
 1. "Initializing..." with progress bar that fills up (NK.exe pre-WAIT init)
@@ -325,7 +325,7 @@ The ROM at 0xBFC002F0 runs these steps before entering NK.exe:
 6. Boot dispatcher (JALR 0x9FC00C21, MIPS16) — registers callbacks, NAND driver init
 7. SIU poke + BCU read loop (JAL 0xFC004E8/0xFC00488)
 8. Load PA 0x24FC, JR to NK.exe entry
-Steps 1-4 are handled by the SPL. Steps 5-8 execute from the boot ROM. Steps 5-6 are MIPS16 code (runs natively via GXemul's MIPS16 interpreter).
+The emulator starts at the reset vector and the ROM executes all steps natively. Steps 5-6 are MIPS16 code (runs via GXemul's MIPS16 interpreter). The ROM loads the SPL from NAND; the SPL decompresses NK.exe; then the ROM continues with steps 5-8.
 
 **Post-WAIT OAL Init (always taken on both cold and warm boot):**
 - NOP sled → kseg0 switch → check1 (buttons) → check2 (VRC4173)
@@ -427,7 +427,7 @@ It does NOT run during cold boot — resume_ctx is populated by the ROM dispatch
 - `src/main.c` — `--nand` CLI flag, argument parsing
 - `src/be300.h` — `nand_path`, `nand_data`, `nand_size` fields
 - `src/machine_be300.c` — WinCE boot path in `be300_create()`, NAND flash init, ROM loading, main emulation loop
-- `src/loader.c` — `loader_load_nand()` B000FF parser
+- `src/loader.c` — ELF kernel loader, NAND image file reader
 - `src/wince_boot.c` — WinCE cold-boot vector tracking, timer gating, diagnostic probes
 - `src/wince_boot_types.h` — WinCE boot state machine flags
 - `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU, timer, GPIO, interrupt assert/deassert; `timer_tick()` increments `pending_timer_interrupts`, `DEVICE_TICK(vr41xx)` asserts interrupt line; timer interrupt is deasserted on RTCINTREG write (offset 0x13E)
