@@ -1578,20 +1578,18 @@ static bool be300_run_batch(machine_t *m)
                 COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE;
             /* Restore the OAL block so WAIT works naturally
              * for the remaining cold-start calls. */
+            /* Restore the OAL block and let the natural
+             * WAIT/resume cycle take over.  With kernel init
+             * done (95 modules loaded, 0x80669550 set), the
+             * OEMInit callbacks should progress further.
+             * Seed resume_ctx Status with IM3+IM7+IE. */
             be300_restore_cold_boot_oal_block(m,
                 "batch: kernel init done");
-            m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
-                (int32_t)UINT32_C(0xFFFFD7E0);
-            m->cpu->pc =
-                (int64_t)(int32_t)UINT32_C(0x8007B5AC);
-            m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] |=
-                UINT64_C(0x8801); /* IE + IM3 + IM7 */
-            m->cpu->is_halted = false;
             be300_store_resume_ctx_word(m, 0xA8u, 0x00008801u);
             fprintf(stderr,
                 "[COLD_BOOT] Kernel init done"
                 " (0x80669550=0x%08X),"
-                " OAL restored, redirect 0x8007B5AC\n",
+                " OAL restored, natural resume\n",
                 kinit_marker);
         }
     }
@@ -3172,27 +3170,46 @@ static bool be300_run_batch(machine_t *m)
                      * on the next batch when it sees Cause.IP set. */
                 }
                 /*
-                 * WAIT during cold-start init phase.
+                 * Cold-start completion phase: after kernel init
+                 * done (HANDOFF_DONE set) with the OAL block
+                 * restored, skip WAIT by returning to $ra.  This
+                 * lets the PMU/DCU/SDRAMU writes at 0x79560-0x79594
+                 * execute (advancing hardware state) while avoiding
+                 * the post-WAIT resume_ctx path that hijacks to
+                 * 0x800794C8.  The remaining cold-start calls
+                 * (0x800A5C78, 0x800942B4, 0x800964FC) each hit
+                 * WAIT a few times — skip them all until the
+                 * scheduler starts (J 0x8008B21C), then let the
+                 * normal WAIT/resume cycle take over.
                  *
-                 * The cold-start at 0x8007B5C0 calls 0x800A5C78,
-                 * which calls sub-functions that hit WAIT.  The
-                 * post-WAIT resume path at 0x79668 restores ALL
-                 * GPRs from resume_ctx (PA 0x2200).  If resume_ctx
-                 * has our initial seeds (RA=0x800794C8), execution
-                 * is hijacked to OAL init and the cold-start never
-                 * completes.
-                 *
-                 * Fix: save the current GPR/CP0 state into
-                 * resume_ctx before each WAIT.  This is what the
-                 * real hardware's state-save function at 0x76E68
-                 * does, but we fail its gating checks.  After the
-                 * post-WAIT resume path restores from resume_ctx,
-                 * execution continues from the correct point.
-                 *
-                 * resume_ctx layout (PA 0x2200):
-                 *   GPR: 0x00-0x7C (packed, skips $t0)
-                 *     at(1)-a3(7), t1(9)-gp(28), sp, fp, ra, HI, LO
-                 *   CP0: 0x80-0xD0
+                 * Limit: skip up to 200 WAITs, then fall through
+                 * to the normal handler.
+                 */
+                if (g_cold_boot_oal_block_restored
+                    && (m->wince.cold_boot_pc_probes_logged
+                        & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)
+                    && wait_pc == UINT32_C(0x80079598)
+                    && m->wince.cold_boot_wait_count < 200) {
+                    uint32_t ra = (uint32_t)
+                        m->cpu->cd.mips.gpr[MIPS_GPR_RA];
+                    m->wince.cold_boot_wait_count++;
+                    m->cpu->pc = (int64_t)(int32_t)ra;
+                    m->cpu->is_halted = false;
+                    if (m->wince.cold_boot_wait_count <= 5
+                        || m->wince.cold_boot_wait_count == 200) {
+                        fprintf(stderr,
+                            "[COLD_BOOT] Skip WAIT #%u:"
+                            " PC→RA=0x%08X SP=0x%08X\n",
+                            m->wince.cold_boot_wait_count,
+                            ra,
+                            (uint32_t)m->cpu->cd.mips.gpr[
+                                MIPS_GPR_SP]);
+                    }
+                    return true;
+                }
+
+                /*
+                 * WAIT during cold-start init phase (fallback).
                  */
                 {
                     be300_save_current_resume_ctx(m);
