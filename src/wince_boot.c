@@ -4328,26 +4328,50 @@ void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
 bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
 {
     machine_t *m = wince_boot_from_gx(gxm);
+    uint32_t ready_ptr = 0;
+    bool ready_ptr_valid = false;
+    bool cold_boot_timer_gate_active = false;
     (void)cpu;
 
     if (!m || !m->wince.active)
         return true;
-    if (!m->wince.cold_boot_redirected)
+    cold_boot_timer_gate_active = m->cfg.wince_cold_boot
+        && m->wince.cold_boot_wait_logged;
+    if (!m->wince.cold_boot_redirected && !cold_boot_timer_gate_active)
         return true;
-    if (m->wince.vectors_ready) {
-        if (m->wince.log_stall && !m->wince.timer_release_logged) {
-            fprintf(stderr, "[WINCE_CKPT] timer_irq_gate released owner=%d\n",
-                (int)m->wince.vector_owner);
-            m->wince.timer_release_logged = true;
+    if (!m->wince.vectors_ready) {
+        if (m->wince.log_stall && !m->wince.timer_gate_logged) {
+            fprintf(stderr,
+                "[WINCE_CKPT] timer_irq_gate active waiting_for_vectors\n");
+            m->wince.timer_gate_logged = true;
         }
-        return true;
+        return false;
     }
 
-    if (m->wince.log_stall && !m->wince.timer_gate_logged) {
-        fprintf(stderr, "[WINCE_CKPT] timer_irq_gate active waiting_for_vectors\n");
-        m->wince.timer_gate_logged = true;
+    if (m->cfg.wince_cold_boot) {
+        ready_ptr_valid = load_va_word(m, UINT32_C(0x80669554), &ready_ptr);
+        if (!ready_ptr_valid || ready_ptr == 0) {
+            if (m->wince.log_stall && !m->wince.timer_kernel_gate_logged) {
+                fprintf(stderr,
+                    "[WINCE_CKPT] timer_irq_gate active"
+                    " waiting_for_kernel_init ready_ptr=%s0x%08X\n",
+                    ready_ptr_valid ? "" : "(unreadable) ",
+                    ready_ptr);
+                m->wince.timer_kernel_gate_logged = true;
+            }
+            return false;
+        }
     }
-    return false;
+
+    if (m->wince.log_stall && !m->wince.timer_release_logged) {
+        fprintf(stderr,
+            "[WINCE_CKPT] timer_irq_gate released owner=%d"
+            " ready_ptr=0x%08X\n",
+            (int)m->wince.vector_owner,
+            ready_ptr);
+        m->wince.timer_release_logged = true;
+    }
+    return true;
 }
 
 bool wince_boot_note_low_reference_fault(struct cpu *cpu, uint64_t vaddr,
