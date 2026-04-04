@@ -200,6 +200,29 @@ Push with: `git push -u origin <current branch>`
 
 ## WinCE NAND Boot: Debugging & Testing
 
+### Splash Screen
+  "Starting..." / "Initializing..." are runtime-rendered
+
+  The strings don't exist anywhere in NK.exe or the NAND image — not as ASCII, not as UTF-16LE, not as bitmaps. They are rendered at runtime by WinCE's GWE (graphics) subsystem using font rendering.
+
+  Display mechanism:
+  - OAL display function at 0x80078E10 acts as a blit dispatcher
+  - a0=10 → clear screen (fill framebuffer at 0xAA200000)
+  - a0=0 → blit splash buffer from VA 0x80061188 (all zeros in the binary, populated at runtime)
+  - a0=6 → blit 240x160 pixel buffer from VA 0x80061CD0 to framebuffer (this is what shows "Initializing..." + progress bar)
+  - The buffers are zero-filled in NK.exe — WinCE's GWE graphics engine renders text into them at runtime
+
+  Boot display call chain in 0x800A5C78:
+  1. JAL 0x80078BC0 — OAL vtable init
+  2. JAL 0x80078C3C — serial debug output ("InitDebugEther")
+  3. JAL 0x800AB990 — function pointer call
+  4. JAL 0x80078D74 — enters OAL init block (the problem block at 0x80079480+)
+  5. ... timer, ICU, ISR, VRC4173 setup ...
+  6. JAL 0x800A6090 — splash_update (refreshes display with a0=0)
+
+  The splash update at step 6 is what puts "Initializing..." on screen — but only AFTER steps 3-5 have set up the GWE display driver. The actual text rendering happens somewhere inside the 95 XIP modules loaded by kernel_init(pTOC) at
+  0x800947C8.
+
 ### NAND Image Layout (All_nand_300.bin, 16MB)
 - `0x00000` — Partition table / boot metadata (16KB)
 - `0x04000` — SPL bootloader (B000FF format, ~49KB, "Kernel loader core - Ver 0.52")
