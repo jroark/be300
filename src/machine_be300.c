@@ -1547,6 +1547,47 @@ static bool be300_run_batch(machine_t *m)
                 m->loop_count, m->cpu->pc);
     }
 
+    /*
+     * Persistent TLB[1] even page fix for cold boot.
+     *
+     * The kernel stack TLB[1] maps VPN2=0xFFFFC000 with the even
+     * page (0xFFFFC000-0xFFFFCFFF) invalid.  OAL vtable init at
+     * 0x80078BC0 reinstalls this entry on every WAIT/resume cycle.
+     * OEMInit callbacks need stack below 0xFFFFD000.  Re-fix the
+     * even page on every batch to ensure it stays valid.
+     *
+     * VR4131 pfn_shift=10: PA 0x3000 → PFN=0xC → EntryLo0=0x31F.
+     */
+    if (g_cold_boot_oal_block_restored && !m->cpu->is_halted) {
+        struct mips_coproc *cpc = m->cpu->cd.mips.coproc[0];
+        uint64_t hi1 = cpc->tlbs[1].hi;
+        uint64_t lo0_1 = cpc->tlbs[1].lo0;
+        if (((uint32_t)hi1 & 0xFFFFE000u) == 0xFFFFC000u
+            && !(lo0_1 & 0x02)) {
+            uint64_t *cp0r = cpc->reg;
+            uint64_t s_hi = cp0r[COP0_ENTRYHI];
+            uint64_t s_lo0 = cp0r[COP0_ENTRYLO0];
+            uint64_t s_lo1 = cp0r[COP0_ENTRYLO1];
+            uint64_t s_mask = cp0r[COP0_PAGEMASK];
+            uint64_t s_idx = cp0r[COP0_INDEX];
+            cp0r[COP0_PAGEMASK] = cpc->tlbs[1].mask;
+            cp0r[COP0_ENTRYHI] = hi1;
+            cp0r[COP0_ENTRYLO0] = 0x31F; /* PA 0x3000 V D G */
+            cp0r[COP0_ENTRYLO1] = cpc->tlbs[1].lo1;
+            cp0r[COP0_INDEX] = 1;
+            coproc_tlbwri(m->cpu, 0);
+            /* Flush 0xFFFFC000 translation — the old V=0 "miss"
+             * survives coproc_tlbwri (it only invalidates V=1). */
+            m->cpu->invalidate_translation_caches(m->cpu,
+                (int64_t)(int32_t)0xFFFFC000u, INVALIDATE_VADDR);
+            cp0r[COP0_ENTRYHI] = s_hi;
+            cp0r[COP0_ENTRYLO0] = s_lo0;
+            cp0r[COP0_ENTRYLO1] = s_lo1;
+            cp0r[COP0_PAGEMASK] = s_mask;
+            cp0r[COP0_INDEX] = s_idx;
+        }
+    }
+
     /* Detect user-mode execution (PC in kuseg: 0x00000000-0x7FFFFFFF) */
     {
         static int usermode_logged = 0;
@@ -1961,48 +2002,10 @@ static bool be300_run_batch(machine_t *m)
                  * below 0xFFFFD000 into 0xFFFFC000.  Make the even
                  * page valid: PA 0x3000, cacheable, dirty, global.
                  */
-                {
-                    int si;
-                    struct mips_coproc *cp0c = m->cpu->cd.mips.coproc[0];
-                    uint64_t *cp0r = cp0c->reg;
-                    for (si = 0; si < (int)cp0c->nr_of_tlbs; si++) {
-                        uint64_t hi = cp0c->tlbs[si].hi;
-                        uint64_t lo0 = cp0c->tlbs[si].lo0;
-                        if ((hi & 0xFFFFE000ULL) == 0xFFFFC000ULL
-                            && !(lo0 & 0x02)) {
-                            /* Rewrite TLB entry via proper TLBWI
-                             * to update the dyntrans v2p cache.
-                             * Even page: PFN=3 (PA 0x3000) C=3
-                             * D=1 V=1 G=1. Odd page: unchanged. */
-                            uint64_t save_hi = cp0r[COP0_ENTRYHI];
-                            uint64_t save_lo0 = cp0r[COP0_ENTRYLO0];
-                            uint64_t save_lo1 = cp0r[COP0_ENTRYLO1];
-                            uint64_t save_mask = cp0r[COP0_PAGEMASK];
-                            uint64_t save_idx = cp0r[COP0_INDEX];
-
-                            cp0r[COP0_PAGEMASK] = cp0c->tlbs[si].mask;
-                            cp0r[COP0_ENTRYHI] = hi;
-                            cp0r[COP0_ENTRYLO0] = 0xDF; /* PA 0x3000 */
-                            cp0r[COP0_ENTRYLO1] = cp0c->tlbs[si].lo1;
-                            cp0r[COP0_INDEX] = (uint64_t)si;
-                            coproc_tlbwri(m->cpu, 0);
-
-                            cp0r[COP0_ENTRYHI] = save_hi;
-                            cp0r[COP0_ENTRYLO0] = save_lo0;
-                            cp0r[COP0_ENTRYLO1] = save_lo1;
-                            cp0r[COP0_PAGEMASK] = save_mask;
-                            cp0r[COP0_INDEX] = save_idx;
-
-                            fprintf(stderr,
-                                "[COLD_BOOT] Fixed kernel stack"
-                                " TLB[%d] even page:"
-                                " VA 0xFFFFC000 → PA 0x3000"
-                                " (was EntryLo0=0x%08X)\n",
-                                si, (uint32_t)lo0);
-                            break;
-                        }
-                    }
-                }
+                fprintf(stderr,
+                    "[COLD_BOOT] OAL block restored;"
+                    " TLB[1] even page will be fixed"
+                    " on each WAIT cycle\n");
                 if (!(m->wince.cold_boot_pc_probes_logged
                         & COLD_BOOT_PROBE_STACK_TLB_LOGGED)) {
                     m->wince.cold_boot_pc_probes_logged |=
@@ -2065,6 +2068,34 @@ static bool be300_run_batch(machine_t *m)
         uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
         uint32_t badva = (uint32_t)cp0[COP0_BADVADDR];
         uint32_t badva_window = badva & UINT32_C(0xFFFFFFC0);
+
+        /* One-shot TLB dump for 0xFFFFCxxx faults */
+        if ((badva & 0xFFFFF000u) == 0xFFFFC000u
+            && !(m->wince.cold_boot_pc_probes_logged & 0x80000000u)) {
+            m->wince.cold_boot_pc_probes_logged |= 0x80000000u;
+            {
+                struct mips_coproc *cpc = m->cpu->cd.mips.coproc[0];
+                fprintf(stderr,
+                    "[COLD_BOOT] First 0xFFFFC fault:"
+                    " BadVA=0x%08X EPC=0x%08X"
+                    " Cause=0x%08X Wired=%u\n",
+                    badva, (uint32_t)cp0[COP0_EPC],
+                    (uint32_t)cp0[COP0_CAUSE],
+                    (uint32_t)cp0[COP0_WIRED]);
+                for (int ti = 0; ti < 4 && ti < (int)cpc->nr_of_tlbs; ti++) {
+                    fprintf(stderr,
+                        "[COLD_BOOT]   TLB[%d] hi=0x%016" PRIx64
+                        " lo0=0x%016" PRIx64
+                        " lo1=0x%016" PRIx64
+                        " mask=0x%08" PRIx64 "\n",
+                        ti,
+                        cpc->tlbs[ti].hi,
+                        cpc->tlbs[ti].lo0,
+                        cpc->tlbs[ti].lo1,
+                        cpc->tlbs[ti].mask);
+                }
+            }
+        }
 
         if (badva_window == UINT32_C(0xFFFFD880)
             || badva_window == UINT32_C(0xFFFFD8C0)) {
@@ -2862,6 +2893,33 @@ static bool be300_run_batch(machine_t *m)
                             ->reg[COP0_STATUS],
                         (uint32_t)m->cpu->cd.mips.coproc[0]
                             ->reg[COP0_CAUSE]);
+                    /* Fix TLB[1] even page before the dyntrans
+                     * WAIT unhalt advances execution. */
+                    {
+                        struct mips_coproc *cpc =
+                            m->cpu->cd.mips.coproc[0];
+                        if (((uint32_t)cpc->tlbs[1].hi & 0xFFFFE000u)
+                                == 0xFFFFC000u
+                            && !(cpc->tlbs[1].lo0 & 0x02)) {
+                            uint64_t *cp0r = cpc->reg;
+                            uint64_t s_hi = cp0r[COP0_ENTRYHI];
+                            uint64_t s_lo0 = cp0r[COP0_ENTRYLO0];
+                            uint64_t s_lo1 = cp0r[COP0_ENTRYLO1];
+                            uint64_t s_mask = cp0r[COP0_PAGEMASK];
+                            uint64_t s_idx = cp0r[COP0_INDEX];
+                            cp0r[COP0_PAGEMASK] = cpc->tlbs[1].mask;
+                            cp0r[COP0_ENTRYHI] = cpc->tlbs[1].hi;
+                            cp0r[COP0_ENTRYLO0] = 0x31F; /* PA 0x3000, pfn_shift=10 */
+                            cp0r[COP0_ENTRYLO1] = cpc->tlbs[1].lo1;
+                            cp0r[COP0_INDEX] = 1;
+                            coproc_tlbwri(m->cpu, 0);
+                            cp0r[COP0_ENTRYHI] = s_hi;
+                            cp0r[COP0_ENTRYLO0] = s_lo0;
+                            cp0r[COP0_ENTRYLO1] = s_lo1;
+                            cp0r[COP0_PAGEMASK] = s_mask;
+                            cp0r[COP0_INDEX] = s_idx;
+                        }
+                    }
                     /* Stay halted — the dyntrans WAIT unhalt
                      * (cpu_dyntrans.c) will advance PC past WAIT
                      * on the next batch when it sees Cause.IP set. */
@@ -2904,6 +2962,41 @@ static bool be300_run_batch(machine_t *m)
                     if (g_cold_boot_oal_block_restored
                         && wait_pc == UINT32_C(0x80079598)) {
                         be300_apply_cold_boot_scheduler_resume(m);
+                        /*
+                         * Fix TLB[1] even page on every WAIT cycle.
+                         * OAL vtable init (0x78BC0, called in the
+                         * post-WAIT warm path) rewrites TLB[1] with
+                         * the even page (0xFFFFC000) invalid.  The
+                         * OEMInit callbacks need stack below 0xFFFFD000.
+                         * Re-fix it here so it's valid when execution
+                         * resumes after this WAIT.
+                         */
+                        {
+                            struct mips_coproc *cpc =
+                                m->cpu->cd.mips.coproc[0];
+                            if ((cpc->tlbs[1].hi & 0xFFFFE000ULL)
+                                    == ((uint64_t)(int64_t)(int32_t)
+                                        0xFFFFC000u & 0xFFFFFFFFFFFFE000ULL)
+                                && !(cpc->tlbs[1].lo0 & 0x02)) {
+                                uint64_t *cp0r = cpc->reg;
+                                uint64_t s_hi = cp0r[COP0_ENTRYHI];
+                                uint64_t s_lo0 = cp0r[COP0_ENTRYLO0];
+                                uint64_t s_lo1 = cp0r[COP0_ENTRYLO1];
+                                uint64_t s_mask = cp0r[COP0_PAGEMASK];
+                                uint64_t s_idx = cp0r[COP0_INDEX];
+                                cp0r[COP0_PAGEMASK] = cpc->tlbs[1].mask;
+                                cp0r[COP0_ENTRYHI] = cpc->tlbs[1].hi;
+                                cp0r[COP0_ENTRYLO0] = 0x31F; /* PA 0x3000, pfn_shift=10 */
+                                cp0r[COP0_ENTRYLO1] = cpc->tlbs[1].lo1;
+                                cp0r[COP0_INDEX] = 1;
+                                coproc_tlbwri(m->cpu, 0);
+                                cp0r[COP0_ENTRYHI] = s_hi;
+                                cp0r[COP0_ENTRYLO0] = s_lo0;
+                                cp0r[COP0_ENTRYLO1] = s_lo1;
+                                cp0r[COP0_PAGEMASK] = s_mask;
+                                cp0r[COP0_INDEX] = s_idx;
+                            }
+                        }
                         if (!(m->wince.cold_boot_pc_probes_logged
                                 & COLD_BOOT_PROBE_RESTORED_RA_LOGGED)) {
                             m->wince.cold_boot_pc_probes_logged |=
