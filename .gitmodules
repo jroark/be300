@@ -1,0 +1,4 @@
+[submodule "gxemul"]
+	path = gxemul
+	url = git@github.com:jroark/GXemul.git
+	branch = be300

@@ -24,6 +24,13 @@ This project is an emulator for the Casio BE-300, a MIPS-based PDA. It uses the 
 
 ## Development
 
+### Clone
+```bash
+git clone --recurse-submodules <repo-url>
+# or after clone:
+git submodule update --init
+```
+
 ### Build and Test (Docker)
 ```bash
 docker compose build mips-dev
