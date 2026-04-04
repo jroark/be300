@@ -85,6 +85,8 @@ static uint64_t be300_tlb_match_va_signext(machine_t *m, uint32_t va)
     return be300_tlb_region_bits(m) | payload;
 }
 
+static bool be300_read_va_word(machine_t *m, uint32_t va, uint32_t *value_out);
+
 static bool be300_translate_va(machine_t *m, uint32_t va, uint64_t *paddr_out)
 {
     uint64_t paddr;
@@ -97,6 +99,63 @@ static bool be300_translate_va(machine_t *m, uint32_t va, uint64_t *paddr_out)
 
     if (paddr_out)
         *paddr_out = paddr;
+    return true;
+}
+
+static bool be300_is_plausible_resume_pc(machine_t *m, uint32_t pc)
+{
+    uint32_t instr = 0;
+
+    if ((pc & 0x3u) != 0)
+        return false;
+    if (pc < UINT32_C(0x80060000) || pc >= UINT32_C(0x80100000))
+        return false;
+    if (pc >= UINT32_C(0x80079480) && pc <= UINT32_C(0x800797E0))
+        return false;
+    if (!be300_read_va_word(m, pc, &instr))
+        return false;
+    if (instr == 0 || instr == UINT32_C(0xFFFFFFFF))
+        return false;
+    return true;
+}
+
+static bool be300_find_stack_resume_pc(machine_t *m, uint32_t sp,
+    uint32_t *resume_pc_out, uint32_t *slot_va_out)
+{
+    uint32_t fallback_pc = 0;
+    uint32_t fallback_slot = 0;
+    uint32_t off;
+
+    if (!m || !m->cpu || !resume_pc_out)
+        return false;
+
+    for (off = 0; off < 0x100u; off += 4u) {
+        uint32_t slot_va = sp + off;
+        uint32_t candidate = 0;
+
+        if (!be300_read_va_word(m, slot_va, &candidate))
+            continue;
+        if (!be300_is_plausible_resume_pc(m, candidate))
+            continue;
+        if (candidate >= UINT32_C(0x800947FC)
+            && candidate <= UINT32_C(0x80094850)) {
+            *resume_pc_out = candidate;
+            if (slot_va_out)
+                *slot_va_out = slot_va;
+            return true;
+        }
+        if (fallback_pc == 0) {
+            fallback_pc = candidate;
+            fallback_slot = slot_va;
+        }
+    }
+
+    if (fallback_pc == 0)
+        return false;
+
+    *resume_pc_out = fallback_pc;
+    if (slot_va_out)
+        *slot_va_out = fallback_slot;
     return true;
 }
 
@@ -1722,9 +1781,13 @@ static bool be300_run_batch(machine_t *m)
         && m->wince.cold_boot_wait_count < 50) {
         uint32_t pc32 = (uint32_t)m->cpu->pc;
         if (pc32 >= 0x80079480u && pc32 <= 0x800797E0u) {
-            if (!m->wince.cold_boot_oal_intercept_logged) {
-                uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+            uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
+            uint32_t resume_pc = 0;
+            uint32_t resume_slot = 0;
+            bool found_resume_pc = be300_find_stack_resume_pc(m, sp,
+                &resume_pc, &resume_slot);
 
+            if (!m->wince.cold_boot_oal_intercept_logged) {
                 m->wince.cold_boot_oal_intercept_logged = true;
                 fprintf(stderr,
                     "[COLD_BOOT] OAL init intercept:"
@@ -1745,6 +1808,16 @@ static bool be300_run_batch(machine_t *m)
                     }
                 }
                 fprintf(stderr, "\n");
+                if (found_resume_pc) {
+                    fprintf(stderr,
+                        "[COLD_BOOT] OAL intercept stack resume"
+                        " candidate=0x%08X from [0x%08X]\n",
+                        resume_pc, resume_slot);
+                } else {
+                    fprintf(stderr,
+                        "[COLD_BOOT] OAL intercept stack resume"
+                        " candidate not found, fallback=0x8007B57C\n");
+                }
             }
 
             {
@@ -1762,10 +1835,14 @@ static bool be300_run_batch(machine_t *m)
                 bool tlb_odd = false;
                 const char *tlb_mode = NULL;
 
-                m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
-                    (int32_t)UINT32_C(0xFFFFD7E0);
-                m->cpu->pc =
-                    (int64_t)(int32_t)UINT32_C(0x8007B57C);
+                if (found_resume_pc) {
+                    m->cpu->pc = (int64_t)(int32_t)resume_pc;
+                } else {
+                    m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                        (int32_t)UINT32_C(0xFFFFD7E0);
+                    m->cpu->pc =
+                        (int64_t)(int32_t)UINT32_C(0x8007B57C);
+                }
                 if (!(m->wince.cold_boot_pc_probes_logged
                         & COLD_BOOT_PROBE_STACK_TLB_LOGGED)) {
                     m->wince.cold_boot_pc_probes_logged |=
