@@ -112,7 +112,7 @@ Push with: `git push -u origin <current branch>`
 - BEV TLB refill vector (+0x200) is all 0xFF in the original ROM (no handler)
 - BEV general exception (+0x380) is boot code continuation (section copier + dispatcher), NOT a real exception handler — it just happens to overlap the BEV vector address
 - **Emulator patches ROM at load time** with MIPS32 BEV handlers: TLB refill at +0x200, general exception dispatcher at +0x280 (checks ExcCode), EXL check at +0x384 to distinguish exception vs boot flow, boot code relocated to +0x394
-- **ROM uses MIPS16 code** — ~5.5KB of MIPS16 at offsets 0xC20-0x219B (34 functions)
+- **ROM uses MIPS16 code** — ~5.5KB of MIPS16 at offsets 0xC20-0x219B (34 functions); executes natively via GXemul's MIPS16 interpreter
 - BEV exception handler at +0x380 does JALR to 0x9FC00C85 (bit 0 = MIPS16 mode switch)
 - MIPS16 functions use JALX (jump-and-link-exchange) to call back into MIPS32 ROM helpers, creating a cross-mode call graph
 - NK.exe is 100% MIPS32 — no MIPS16 anywhere in the 6.2MB kernel
@@ -245,20 +245,10 @@ Push with: `git push -u origin <current branch>`
 cd /work && mkdir -p build-host && cd build-host
 cmake .. && make -j$(nproc)
 
-# WinCE cold boot (SPL decompresses NK.exe, no hibernate redirect)
+# WinCE NAND boot (cold boot is the only path)
 # Requires be300_boot_rom.bin in the working directory
-gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
-  --wince-cold-boot --log-mmio \
+gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin --log-mmio \
   > cold_stdout.log 2> cold_stderr.log
-
-# WinCE NAND boot with warm-resume replay (legacy approach)
-timeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
-  --wince-hw-seed --wince-resume-replay --log-wince-stall \
-  > wince_stdout.log 2> wince_stderr.log
-
-# WinCE NAND boot with MMIO logging
-timeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin --log-mmio \
-  > wince_mmio_stdout.log 2> wince_mmio_stderr.log
 
 # Linux kernel regression tests (They all boot to userspace)
 # NOTE: These kernels never terminate on their own — they run until timeout
@@ -280,9 +270,9 @@ grep -E "lui.*0x(0a|aa|af|bf)" spl_disasm.txt
 grep -E "mtc0|mfc0" spl_disasm.txt
 ```
 
-### WinCE Cold Boot (--wince-cold-boot)
+### WinCE Cold Boot
 
-The `--wince-cold-boot` flag lets the SPL run its natural cold boot path. The SPL
+Cold boot is the only NAND boot path (enabled by `--nand`). The SPL
 decompresses NK.exe (~6.2MB) from NAND into RAM at PA 0x60000 and jumps to
 the kernel entry at VA 0xA0060004.
 
@@ -313,7 +303,7 @@ NK.exe's post-init code is running (between kernel_init and the shell).
 - Falls through to 0x79560 → PMU/DCU/SDRAMU → WAIT
 - Function 0x7AB38 is an OEMInit callback dispatcher: walks 32 entries (20 bytes each) at PA 0xA0051680, calls function pointers via JALR. These callbacks do real WinCE kernel initialization.
 - Running 0x794C8 does NOT update resume_ctx — the init functions at 0x794C8 don't write to PA 0x2200
-- OEMInit callback table at PA 0x51680: 11 callback groups (55 non-zero words) captured from warm-boot and injected from `wince_resume_replay_data.h`. Contains function pointers into NK.exe OAL code (0x8007xxxx, 0x800Axxxx). On real hardware, populated by the ROM's MIPS16 boot dispatcher at 0x9FC00C21.
+- OEMInit callback table at PA 0x51680: 11 callback groups (55 non-zero words). Contains function pointers into NK.exe OAL code (0x8007xxxx, 0x800Axxxx). Populated by the ROM's MIPS16 boot dispatcher at 0x9FC00C21.
 
 **ROMHDR / COPYentry (WinCE image section copier):**
 - NK.exe has "ECEC" signature at offset 0x40, pTOC pointer at offset 0x44 (= 0x80655C54)
@@ -329,11 +319,11 @@ The ROM at 0xBFC002F0 runs these steps before entering NK.exe:
 2. Check functions (cold/warm detection)
 3. Cold boot: clear PA 0x2400/24FC, init (JAL 0xFC00734)
 4. Set SP=0x80003800, serial init (JAL 0xFC00498)
-5. BINFS section copier (JALR 0x9FC00C85, MIPS16) — **we replicate this**
-6. Boot dispatcher (JALR 0x9FC00C21, MIPS16) — **NOT replicated** (registers callbacks, NAND driver init)
+5. BINFS section copier (JALR 0x9FC00C85, MIPS16) — runs natively via GXemul MIPS16 interpreter
+6. Boot dispatcher (JALR 0x9FC00C21, MIPS16) — runs natively (registers callbacks, NAND driver init)
 7. SIU poke + BCU read loop (JAL 0xFC004E8/0xFC00488)
 8. Load PA 0x24FC, JR to NK.exe entry
-Steps 1-4 are handled by the SPL. Step 5 is our COPYentry code. Step 6 is the missing piece.
+Steps 1-4 are handled by the SPL. Steps 5-6 execute as MIPS16 code via GXemul's MIPS16 interpreter.
 
 **Post-WAIT OAL Init (always taken on both cold and warm boot):**
 - NOP sled → kseg0 switch → check1 (buttons) → check2 (VRC4173)
@@ -432,16 +422,14 @@ It does NOT run during cold boot — resume_ctx is populated by the ROM dispatch
 - Docker: `mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL nk_decompressed.bin`
 
 ### Key Files for WinCE Boot
-- `src/main.c` — `--nand`, `--wince-cold-boot` CLI flags
+- `src/main.c` — `--nand` CLI flag, argument parsing
 - `src/be300.h` — `nand_path`, `nand_data`, `nand_size`, `wince_cold_boot` fields
 - `src/machine_be300.c` — WinCE boot path in `be300_create()`, NAND flash init, cold boot WAIT handling, ROM loading
 - `src/loader.c` — `loader_load_nand()` B000FF parser
-- `src/wince_boot.c` — WinCE diagnostic probes, replay logic, write watches (4500+ lines)
+- `src/wince_boot.c` — WinCE cold-boot vector tracking, timer gating, diagnostic probes
 - `src/wince_boot_types.h` — WinCE boot state machine flags
-- `src/wince_hw_seed_data.h` — captured initial memory/register state for warm resume
 - `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU, timer, GPIO, interrupt assert/deassert; `timer_tick()` increments `pending_timer_interrupts`, `DEVICE_TICK(vr41xx)` asserts interrupt line; timer interrupt is deasserted on RTCINTREG write (offset 0x13E)
 - `gxemul/src/devices/dev_ns16550.c` — VRC4173 SIU UART (GXemul native at 0x0A008680)
 - `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, RTCINTREG write-one-to-clear
 - `src/hw/nand.c` — NAND flash controller with SPL transfer engine, OOB synthesis, and phase-aware WinCE mode
-- `src/wince_resume_replay_data.h` — captured OEMInit callback table, bootctx stub, dispatch tables (from warm-boot)
 - `src/hw/bcu.c` — Silenced unhandled register reads (SPL probes many)

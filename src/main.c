@@ -13,17 +13,11 @@ static void usage(const char *prog)
         "  --cmdline <string>    Kernel command line passed via bootinfo\n"
         "  --trace               Print each executed instruction to stderr\n"
         "  --log-mmio            Log all MMIO register reads/writes\n"
-        "  --log-wince-stall     Log bounded WinCE NAND stall diagnostics\n"
         "  --sfb-5bit-green      Use 5-bit green expansion for 2.6 sfb.c\n"
         "  --ram <file>          Preload a raw RAM image at PA 0x00000000\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
-        "  --wince-hw-seed       Apply embedded WinCE init-phase hardware seed data\n"
-        "  --wince-resume-replay Replay WinCE warm-resume context after hibernate\n"
-        "  --wince-resume-replay-full\n"
-        "                        Replay WinCE warm-resume context using full captured windows\n"
-        "  --wince-cold-boot     Let SPL run its natural cold boot path (no hibernate redirect)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
-        "  --speed <mhz>         Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
+        "  --speed <mhz>        Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
         "  -h, --help            Show this help\n"
         "\n"
         "ROM image (positional arg) is loaded at PA 0x1FC00000 (MIPS reset vector).\n"
@@ -41,11 +35,6 @@ int main(int argc, char *argv[])
         .log_mmio       = false,
         .sfb_5bit_green = false,
         .log_nand_legacy = false,
-        .log_wince_stall = false,
-        .wince_hw_seed  = false,
-        .wince_resume_replay = false,
-        .wince_resume_replay_full = false,
-        .wince_cold_boot = false,
         .rom_path       = NULL,
         .kernel_path    = NULL,
         .cmdline        = NULL,
@@ -64,21 +53,10 @@ int main(int argc, char *argv[])
             cfg.trace = true;
         } else if (strcmp(argv[i], "--log-mmio") == 0) {
             cfg.log_mmio = true;
-        } else if (strcmp(argv[i], "--log-wince-stall") == 0) {
-            cfg.log_wince_stall = true;
         } else if (strcmp(argv[i], "--sfb-5bit-green") == 0) {
             cfg.sfb_5bit_green = true;
         } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {
             cfg.nand_path = argv[++i];
-        } else if (strcmp(argv[i], "--wince-hw-seed") == 0) {
-            cfg.wince_hw_seed = true;
-        } else if (strcmp(argv[i], "--wince-resume-replay") == 0) {
-            cfg.wince_resume_replay = true;
-        } else if (strcmp(argv[i], "--wince-resume-replay-full") == 0) {
-            cfg.wince_resume_replay = true;
-            cfg.wince_resume_replay_full = true;
-        } else if (strcmp(argv[i], "--wince-cold-boot") == 0) {
-            cfg.wince_cold_boot = true;
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
             cfg.ram_path = argv[++i];
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
@@ -117,33 +95,6 @@ int main(int argc, char *argv[])
             usage(argv[0]);
             return 1;
         }
-    }
-    if (cfg.wince_hw_seed && !cfg.nand_path) {
-        fprintf(stderr, "Error: --wince-hw-seed requires --nand\n");
-        return 1;
-    }
-    if (cfg.wince_resume_replay && !cfg.nand_path) {
-        fprintf(stderr, "Error: --wince-resume-replay requires --nand\n");
-        return 1;
-    }
-    if (cfg.wince_resume_replay && !cfg.wince_hw_seed) {
-        fprintf(stderr,
-            "Error: --wince-resume-replay requires --wince-hw-seed\n");
-        return 1;
-    }
-    if (cfg.wince_resume_replay_full && !cfg.wince_resume_replay) {
-        fprintf(stderr,
-            "Error: --wince-resume-replay-full requires --wince-resume-replay\n");
-        return 1;
-    }
-    if (cfg.wince_cold_boot && !cfg.nand_path) {
-        fprintf(stderr, "Error: --wince-cold-boot requires --nand\n");
-        return 1;
-    }
-    if (cfg.wince_cold_boot && cfg.wince_resume_replay) {
-        fprintf(stderr,
-            "Error: --wince-cold-boot and --wince-resume-replay are mutually exclusive\n");
-        return 1;
     }
 
     machine_t *m = be300_create(&cfg);

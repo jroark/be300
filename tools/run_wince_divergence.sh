@@ -13,7 +13,7 @@ docker compose run --rm mips-dev /bin/bash -lc "
 cd /work && mkdir -p build-docker && cd build-docker &&
 cmake .. && make -j\$(nproc) &&
 set +e
-timeout ${TIMEOUT_SECS}s ./be300 --nand ../ce/restore_images/All_nand_300.bin --log-mmio --log-wince-stall \
+timeout ${TIMEOUT_SECS}s ./be300 --nand ../ce/restore_images/All_nand_300.bin --log-mmio \
   > ${CONTAINER_OUT_DIR}/stdout.log 2> ${CONTAINER_OUT_DIR}/stderr.log
 rc=\$?
 set -e

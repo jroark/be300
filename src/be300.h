@@ -56,11 +56,6 @@ typedef struct {
     bool        log_mmio;
     bool        sfb_5bit_green;
     bool        log_nand_legacy;
-    bool        log_wince_stall;
-    bool        wince_hw_seed;
-    bool        wince_resume_replay;
-    bool        wince_resume_replay_full;
-    bool        wince_cold_boot;
 
     const char *rom_path;
     const char *kernel_path;
