@@ -34,8 +34,6 @@ typedef struct {
     bool cold_boot_wait_logged;
     bool cold_boot_copy_done;
     bool cold_boot_late_oal_wait_seen;
-    bool cold_boot_oal_intercept_logged;
-    uint32_t cold_boot_wait_count;
     uint32_t cold_boot_pc_probes_logged;
 
     /* Vector tracking */
