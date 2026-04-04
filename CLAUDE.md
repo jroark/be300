@@ -71,7 +71,7 @@ Push with: `git push -u origin <current branch>`
 
 **Target:** Casio BE-300 (NEC VR4131 MIPS little-endian) emulator using GXemul 0.7.0 MIPS CPU core.
 
-**CPU Engine:** GXemul 0.7.0 (copied into gxemul/ subdirectory, MIPS-only build). Provides native CP0, TLB, exception handling, dyntrans JIT, and kseg0/kseg1 address translation. Replaces Unicorn (removed). 
+**CPU Engine:** GXemul 0.7.0 (git submodule at gxemul/ from jroark/GXemul `be300` branch, MIPS-only build). Provides native CP0, TLB, exception handling, dyntrans JIT, and kseg0/kseg1 address translation. Replaces Unicorn (removed). Fresh clones need `git submodule update --init`.
 
 **Kernels**
 - All kernels have been booted to userspace on real hardware
