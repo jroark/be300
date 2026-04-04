@@ -69,8 +69,6 @@ void rtc_init(rtc_state_t *s)
      */
     s->etime = UINT64_C(0xA5B35149BB10);
     s->etime_latched = s->etime;
-    s->etime_reads = 0;
-    s->etime_read_step = 1;
     /*
      * Initialise ECMP above the starting ETIME so the elapsed-time
      * compare interrupt does not fire before the kernel programs ECMP.
@@ -97,22 +95,6 @@ uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
     if (offset == RTC_ETIMELREG || offset == RTC_ETIMEMREG || offset == RTC_ETIMEHREG) {
         uint64_t snap = s->etime;
         uint32_t ret = 0;
-
-        /*
-         * WinCE uses two ETIME access patterns:
-         * 1. a stable-read helper that samples low/mid/high using 32-bit
-         *    low-register reads and retries if they disagree
-         * 2. a wait-for-tick helper at 0x800A7C80 that polls 16-bit ETIMEL
-         *    until two successive reads differ before programming ETIME/ECMP
-         *
-         * Keep 32-bit ETIMEL reads stable, but advance on 16-bit ETIMEL
-         * reads so the wait-for-tick helper eventually falls through.
-         */
-        if (offset == RTC_ETIMELREG && size < 4 && s->etime_read_step != 0u) {
-            s->etime += s->etime_read_step;
-            rtc_update_elapsed_irq(s);
-            snap = s->etime;
-        }
 
         if (size >= 4) {
             if (offset == RTC_ETIMELREG) ret =  (uint32_t)(snap & 0xFFFFFFFFu);
@@ -169,7 +151,6 @@ void rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case RTC_ETIMEHREG:
         rtc_write_48bit(&s->etime, offset, size, val);
         s->etime_latched = s->etime;
-        s->etime_reads = 0;
         rtc_update_elapsed_irq(s);
         break;
     case RTC_ECMPLREG:

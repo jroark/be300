@@ -89,9 +89,15 @@ Push with: `git push -u origin <current branch>`
   - ramdisk: `kernels/ramdisk-pgui-full.gz`
 - `kernels/vmlinux-pgui-test1` - ELF32 MIPS LE, Linux version 2.4.18-mips (jroark@dhcppc4) (gcc version 3.0.1) #309 Sun May 18 03:01:37 PDT 2003
   - cmdline: "console=tty0 console=ttyS0,9600 root=/dev/ram"
+- `kernels/vmlinux-2.6`       - ELF32 MIPS LE, Linux version 2.6.8.1 (filip@build.linux4.be) (gcc version 2.96-sdelinuxmips-040127) #39 Wed Sep 8 16:15:43 CEST 2004
+  - prom_init() takes no parameters; arcs_cmdline is NOT populated from bootloader args
+  - --cmdline has no effect (kernel ignores fw_arg0/fw_arg1)
+  - serial console registered directly via be300_console_init() in prom_init (UART at 0xAA008680)
+  - use --sfb-5bit-green for correct framebuffer colors
 
 **Kernel source**
 - `kernels/src/linux-2.4.18` - approximate kernel source of 2.4.18 kernels
+- `kernels/kernel-2.6` - 2.6 kernel source tree for the BE-300 port
 
 **WinCE ELF loader**
 - `ce/cyace` - source code for CyaCE loader

@@ -48,8 +48,6 @@ typedef struct {
     uint16_t rtcint;      /* RTC interrupt status                 */
     uint8_t  elapsed_compare_fired; /* ECMP compare has fired since last ECMP write */
     uint64_t etime_latched;   /* stable snapshot across multi-read sequence */
-    uint8_t  etime_reads;     /* number of ETIME register reads in snapshot */
-    uint32_t etime_read_step; /* ticks added on each ETIME read (0 = disabled) */
 } rtc_state_t;
 
 void     rtc_init (rtc_state_t *s);
