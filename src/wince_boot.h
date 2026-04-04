@@ -17,27 +17,10 @@ void wince_boot_note_first_exception(machine_t *m, const char *detail);
 void wince_boot_note_fatal_stop(machine_t *m, const char *reason);
 void wince_boot_install_synthetic_low_vectors(machine_t *m,
     const uint32_t *handler, size_t word_count, const char *reason);
-void wince_boot_apply_initial_seed(machine_t *m);
-void wince_boot_apply_resume_seed(machine_t *m);
-bool wince_boot_prepare_resume_replay(machine_t *m, uint32_t halt_pc,
-    uint32_t *target_pc, uint32_t *target_sp);
 void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu);
-void wince_boot_note_exec_entry(struct cpu *cpu);
-void wince_boot_note_loop_observation(machine_t *m);
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
     uint64_t relative_addr, uint64_t value);
 bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu);
-bool wince_boot_note_low_reference_fault(struct cpu *cpu, uint64_t vaddr,
-    int exccode);
-void wince_boot_note_ram_write(struct cpu *cpu, uint64_t paddr,
-    const unsigned char *old_data, const unsigned char *new_data, size_t len);
-void wince_boot_note_mmio_access(struct cpu *cpu, uint64_t paddr,
-    int writeflag, uint64_t value, size_t len);
-bool wince_boot_override_vrc4173_read(struct cpu *cpu, uint32_t paddr,
-    size_t len, uint64_t *value_io);
-bool wince_boot_replay_full_active(struct machine *gxm);
-void wince_boot_note_replay_etimer_consumed(struct machine *gxm,
-    struct cpu *cpu);
 void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
     size_t len);
 void wince_boot_note_fb_oob(struct cpu *cpu, uint64_t paddr, size_t len);
