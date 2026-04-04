@@ -579,7 +579,7 @@ static void be300_maybe_restore_cold_boot_oal_block(machine_t *m,
         return;
     }
 
-    if (!be300_read_va_word(m, UINT32_C(0x80669554), &ready_ptr)
+    if (!be300_read_va_word(m, UINT32_C(0x80669550), &ready_ptr)
         || ready_ptr == 0) {
         return;
     }
@@ -1586,6 +1586,70 @@ static bool be300_run_batch(machine_t *m)
             cp0r[COP0_PAGEMASK] = s_mask;
             cp0r[COP0_INDEX] = s_idx;
         }
+
+        /* Also ensure TLB[2] (0xFFFFA/B000 stack page) exists
+         * and Wired >= 3.  The kernel may reset Wired=2 during
+         * resume_ctx restore, making TLB[2] evictable. */
+        {
+            uint64_t *cp0r = cpc->reg;
+            uint32_t hi2_32 = (uint32_t)cpc->tlbs[2].hi;
+            if ((hi2_32 & 0xFFFFE000u) != 0xFFFFA000u
+                || !(cpc->tlbs[2].lo1 & 0x02)) {
+                uint64_t s_hi = cp0r[COP0_ENTRYHI];
+                uint64_t s_lo0 = cp0r[COP0_ENTRYLO0];
+                uint64_t s_lo1 = cp0r[COP0_ENTRYLO1];
+                uint64_t s_mask = cp0r[COP0_PAGEMASK];
+                uint64_t s_idx = cp0r[COP0_INDEX];
+                cp0r[COP0_PAGEMASK] = 0x1800;
+                cp0r[COP0_ENTRYHI] =
+                    (int64_t)(int32_t)UINT32_C(0xFFFFA000);
+                cp0r[COP0_ENTRYLO0] = 0x21F; /* PA 0x2000 */
+                cp0r[COP0_ENTRYLO1] = 0x29F; /* PA 0x2800 */
+                cp0r[COP0_INDEX] = 2;
+                coproc_tlbwri(m->cpu, 0);
+                m->cpu->invalidate_translation_caches(m->cpu,
+                    (int64_t)(int32_t)0xFFFFA000u,
+                    INVALIDATE_VADDR);
+                m->cpu->invalidate_translation_caches(m->cpu,
+                    (int64_t)(int32_t)0xFFFFB000u,
+                    INVALIDATE_VADDR);
+                cp0r[COP0_ENTRYHI] = s_hi;
+                cp0r[COP0_ENTRYLO0] = s_lo0;
+                cp0r[COP0_ENTRYLO1] = s_lo1;
+                cp0r[COP0_PAGEMASK] = s_mask;
+                cp0r[COP0_INDEX] = s_idx;
+            }
+            if (cp0r[COP0_WIRED] < 3)
+                cp0r[COP0_WIRED] = 3;
+        }
+    }
+
+    /* One-shot diagnostic: dump copy-loop registers when stuck */
+    if (g_cold_boot_oal_block_restored == false
+        && m->cfg.wince_cold_boot
+        && m->wince.cold_boot_wait_logged
+        && m->loop_count > 22000) {
+        static int copy_loop_diag = 0;
+        uint32_t pc32 = (uint32_t)m->cpu->pc;
+        if ((pc32 >= 0x800A7150u && pc32 <= 0x800A71E0u)
+            && copy_loop_diag < 3) {
+            copy_loop_diag++;
+            fprintf(stderr,
+                "[COPY_LOOP_DIAG] PC=0x%08X"
+                " $a0(r4)=0x%08X $t2(r10)=0x%08X"
+                " $v0(r2)=0x%08X $v1(r3)=0x%08X"
+                " $t6(r14)=0x%08X $t7(r15)=0x%08X"
+                " SP=0x%08X RA=0x%08X\n",
+                pc32,
+                (uint32_t)m->cpu->cd.mips.gpr[4],
+                (uint32_t)m->cpu->cd.mips.gpr[10],
+                (uint32_t)m->cpu->cd.mips.gpr[2],
+                (uint32_t)m->cpu->cd.mips.gpr[3],
+                (uint32_t)m->cpu->cd.mips.gpr[14],
+                (uint32_t)m->cpu->cd.mips.gpr[15],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
+        }
     }
 
     /* Detect user-mode execution (PC in kuseg: 0x00000000-0x7FFFFFFF) */
@@ -1978,21 +2042,33 @@ static bool be300_run_batch(machine_t *m)
                 const char *tlb_mode = NULL;
 
                 /*
-                 * Restore the original OAL block and let the
-                 * WAIT/resume cycle take its natural course.
-                 * The cold-start has already installed: page
-                 * tables, exception handlers, TLB entries, and
-                 * kernel data pointers.  The post-WAIT resume
-                 * path (→ OAL vtable init → resume_ctx restore
-                 * → 0x800794C8 → OEMInit callbacks) will drive
-                 * the remaining initialization.
+                 * Cold-start entered the OAL block.  Check whether
+                 * kernel main init (0x800947C8) has completed by
+                 * reading VA 0x80669550 — the kernel stores
+                 * 0xFFFFD800 there after processing all 95 modules.
+                 * If complete: restore the OAL block so the WAIT
+                 * cycle takes over.  If not: redirect to 0x8007B57C
+                 * to let kernel init continue.
                  */
-                be300_restore_cold_boot_oal_block(m,
-                    "cold-start entered OAL block");
-                /* Don't redirect PC — let the restored code
-                 * run from the current position. */
-                (void)found_resume_pc;
-                (void)resume_pc;
+                {
+                    uint32_t kinit_done = 0;
+                    be300_read_va_word(m, UINT32_C(0x80669550),
+                        &kinit_done);
+                    if (kinit_done != 0) {
+                        be300_restore_cold_boot_oal_block(m,
+                            "kernel init done (0x80669550 set)");
+                        (void)found_resume_pc;
+                        (void)resume_pc;
+                    } else {
+                        /* Kernel init not done yet — redirect back */
+                        (void)found_resume_pc;
+                        (void)resume_pc;
+                        m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                            (int32_t)UINT32_C(0xFFFFD7E0);
+                        m->cpu->pc =
+                            (int64_t)(int32_t)UINT32_C(0x8007B57C);
+                    }
+                }
 
                 /*
                  * Fix up the kernel stack TLB entry: the cold-start
@@ -2002,10 +2078,54 @@ static bool be300_run_batch(machine_t *m)
                  * below 0xFFFFD000 into 0xFFFFC000.  Make the even
                  * page valid: PA 0x3000, cacheable, dirty, global.
                  */
+                /*
+                 * Install TLB entry for 0xFFFFA000 at index 2
+                 * to cover the stack page at 0xFFFFB000.  OEMInit
+                 * callbacks push SP as low as 0xFFFFBFB8.  The
+                 * VR4131 4KB pairing: even=0xFFFFA000 odd=0xFFFFB000.
+                 * PA 0x2000/0x2800 for the pages.
+                 *
+                 * VR4131 pfn_shift=10:
+                 *   PA 0x2000 → PFN=8 → EntryLo=(8<<6)|0x1F=0x21F
+                 *   PA 0x2800 → PFN=10 → EntryLo=(10<<6)|0x1F=0x29F
+                 */
+                {
+                    uint64_t *cp0r = m->cpu->cd.mips.coproc[0]->reg;
+                    uint64_t s_hi = cp0r[COP0_ENTRYHI];
+                    uint64_t s_lo0 = cp0r[COP0_ENTRYLO0];
+                    uint64_t s_lo1 = cp0r[COP0_ENTRYLO1];
+                    uint64_t s_mask = cp0r[COP0_PAGEMASK];
+                    uint64_t s_idx = cp0r[COP0_INDEX];
+
+                    cp0r[COP0_PAGEMASK] = 0x1800;
+                    cp0r[COP0_ENTRYHI] =
+                        (int64_t)(int32_t)UINT32_C(0xFFFFA000);
+                    cp0r[COP0_ENTRYLO0] = 0x21F;  /* PA 0x2000 */
+                    cp0r[COP0_ENTRYLO1] = 0x29F;  /* PA 0x2800 */
+                    cp0r[COP0_INDEX] = 2;
+                    coproc_tlbwri(m->cpu, 0);
+                    /* Flush both pages in case of stale misses */
+                    m->cpu->invalidate_translation_caches(m->cpu,
+                        (int64_t)(int32_t)0xFFFFA000u,
+                        INVALIDATE_VADDR);
+                    m->cpu->invalidate_translation_caches(m->cpu,
+                        (int64_t)(int32_t)0xFFFFB000u,
+                        INVALIDATE_VADDR);
+                    /* Wire 0-2 to protect from TLBWR */
+                    cp0r[COP0_WIRED] = 3;
+
+                    cp0r[COP0_ENTRYHI] = s_hi;
+                    cp0r[COP0_ENTRYLO0] = s_lo0;
+                    cp0r[COP0_ENTRYLO1] = s_lo1;
+                    cp0r[COP0_PAGEMASK] = s_mask;
+                    cp0r[COP0_INDEX] = s_idx;
+                }
+
                 fprintf(stderr,
                     "[COLD_BOOT] OAL block restored;"
-                    " TLB[1] even page will be fixed"
-                    " on each WAIT cycle\n");
+                    " TLB[1] even page fixed per-cycle,"
+                    " TLB[2] installed for 0xFFFFA/B000"
+                    " (Wired=3)\n");
                 if (!(m->wince.cold_boot_pc_probes_logged
                         & COLD_BOOT_PROBE_STACK_TLB_LOGGED)) {
                     m->wince.cold_boot_pc_probes_logged |=
