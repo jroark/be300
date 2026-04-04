@@ -48,10 +48,17 @@ enum {
     COLD_BOOT_PROBE_RESTORED_WAIT_LOGGED  = 0x00400000u,
     COLD_BOOT_PROBE_RESTORED_RA_LOGGED    = 0x00800000u,
     COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE = 0x01000000u,
+    COLD_BOOT_PROBE_RESTORED_SCHED_LOGGED = 0x02000000u,
 };
 
 #define COLD_BOOT_OAL_BLOCK_BASE  UINT32_C(0x800794C0)
 #define COLD_BOOT_OAL_BLOCK_WORDS 56u
+#define COLD_BOOT_REPLAY_ENTRY_SP UINT32_C(0xA0003800)
+#define COLD_BOOT_SCHED_CTX_SP    UINT32_C(0xFFFFD7B4)
+#define COLD_BOOT_SCHED_CTX_RA    UINT32_C(0x80096894)
+#define COLD_BOOT_SCHED_CTX_STATUS UINT32_C(0x00008400)
+#define COLD_BOOT_SCHED_CTX_EPC   UINT32_C(0x000117A8)
+#define COLD_BOOT_REPLAY_STATUS   UINT32_C(0x1000FF00)
 
 static uint32_t g_cold_boot_oal_block_saved[COLD_BOOT_OAL_BLOCK_WORDS];
 static bool g_cold_boot_oal_block_saved_valid = false;
@@ -158,6 +165,105 @@ static void be300_invalidate_all(machine_t *m)
         m->cpu->invalidate_translation_caches(m->cpu, 0, INVALIDATE_ALL);
     if (m->cpu->invalidate_code_translation)
         m->cpu->invalidate_code_translation(m->cpu, 0, INVALIDATE_ALL);
+}
+
+static uint64_t be300_pa_to_kseg0(uint32_t pa)
+{
+    return UINT64_C(0xffffffff80000000) | (uint64_t)pa;
+}
+
+static void be300_store_valid_resume_words(machine_t *m, uint32_t pa,
+    const uint32_t *words, const uint8_t *valid_words, uint32_t word_count)
+{
+    uint32_t i;
+
+    if (!m || !m->cpu || !words)
+        return;
+
+    for (i = 0; i < word_count; i++) {
+        if (valid_words != NULL && valid_words[i] == 0)
+            continue;
+        store_32bit_word(m->cpu, be300_pa_to_kseg0(pa + i * 4u), words[i]);
+    }
+}
+
+static void be300_store_resume_ctx_word(machine_t *m, uint32_t offset,
+    uint32_t value)
+{
+    if (!m || !m->cpu)
+        return;
+
+    store_32bit_word(m->cpu,
+        be300_pa_to_kseg0(UINT32_C(0x00002200) + offset), value);
+}
+
+static void be300_save_current_resume_ctx(machine_t *m)
+{
+    static const int gpr_map[] = {
+        1,2,3,4,5,6,7,
+        9,10,11,12,13,14,15,
+        16,17,18,19,20,21,22,23,
+        24,25,26,27,28,
+        29,30,31,
+    };
+    static const struct { int reg; int off; } cp0_map[] = {
+        {COP0_INDEX,0x80}, {COP0_RANDOM,0x84},
+        {COP0_ENTRYLO0,0x88}, {COP0_ENTRYLO1,0x8C},
+        {COP0_CONTEXT,0x90}, {COP0_PAGEMASK,0x94},
+        {COP0_WIRED,0x98}, {COP0_COUNT,0x9C},
+        {COP0_ENTRYHI,0xA0}, {COP0_COMPARE,0xA4},
+        {COP0_STATUS,0xA8}, {COP0_CAUSE,0xAC},
+        {COP0_EPC,0xB0}, {COP0_CONFIG,0xB4},
+    };
+    uint64_t *cp0r;
+    unsigned i;
+
+    if (!m || !m->cpu)
+        return;
+
+    for (i = 0; i < sizeof(gpr_map) / sizeof(gpr_map[0]); i++) {
+        be300_store_resume_ctx_word(m, i * 4u,
+            (uint32_t)m->cpu->cd.mips.gpr[gpr_map[i]]);
+    }
+    be300_store_resume_ctx_word(m, 0x78u, (uint32_t)m->cpu->cd.mips.hi);
+    be300_store_resume_ctx_word(m, 0x7Cu, (uint32_t)m->cpu->cd.mips.lo);
+
+    cp0r = m->cpu->cd.mips.coproc[0]->reg;
+    for (i = 0; i < sizeof(cp0_map) / sizeof(cp0_map[0]); i++) {
+        be300_store_resume_ctx_word(m, (uint32_t)cp0_map[i].off,
+            (uint32_t)cp0r[cp0_map[i].reg]);
+    }
+}
+
+static void be300_seed_cold_boot_low_sdram_windows(machine_t *m)
+{
+    if (!m || !m->cpu)
+        return;
+
+    store_buf(m->cpu, be300_pa_to_kseg0(UINT32_C(0x00001880)),
+        (const char *)wince_hw_seed_low_sdram_1880_data,
+        sizeof(wince_hw_seed_low_sdram_1880_data));
+    store_buf(m->cpu, be300_pa_to_kseg0(UINT32_C(0x00001AC0)),
+        (const char *)wince_hw_seed_low_sdram_1ac0_data,
+        sizeof(wince_hw_seed_low_sdram_1ac0_data));
+}
+
+static void be300_apply_cold_boot_scheduler_resume(machine_t *m)
+{
+    if (!m || !m->cpu)
+        return;
+
+    be300_seed_cold_boot_low_sdram_windows(m);
+    be300_store_resume_ctx_word(m, 0x6Cu, COLD_BOOT_SCHED_CTX_SP);
+    be300_store_resume_ctx_word(m, 0x74u, COLD_BOOT_SCHED_CTX_RA);
+    be300_store_resume_ctx_word(m, 0xA8u, COLD_BOOT_SCHED_CTX_STATUS);
+    be300_store_resume_ctx_word(m, 0xB0u, COLD_BOOT_SCHED_CTX_EPC);
+    be300_store_valid_resume_words(m, UINT32_C(0x00001770),
+        wince_resume_stack_frame_1770_words,
+        wince_resume_stack_frame_1770_valid,
+        sizeof(wince_resume_stack_frame_1770_words)
+            / sizeof(wince_resume_stack_frame_1770_words[0]));
+    be300_invalidate_all(m);
 }
 
 static bool be300_decode_tlb_match(machine_t *m, const struct mips_tlb *tlb,
@@ -2655,43 +2761,42 @@ static bool be300_run_batch(machine_t *m)
                     && wait_pc == UINT32_C(0x80079598)
                     && !(m->wince.cold_boot_pc_probes_logged
                         & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)) {
-                    uint32_t resume_target =
-                        wince_resume_replay_snapshot.resume_target_pc;
-                    uint32_t synthetic_ra =
-                        wince_resume_replay_snapshot.synthetic_ra;
-                    uint32_t slot_va =
-                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]
-                        + UINT32_C(0x24);
-                    uint32_t status =
-                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
-
-                    if (synthetic_ra != 0) {
-                        store_32bit_word(m->cpu,
-                            be300_va32_to_mips64(slot_va),
-                            synthetic_ra);
-                        m->cpu->cd.mips.gpr[MIPS_GPR_RA] = synthetic_ra;
-                    }
+                    be300_save_current_resume_ctx(m);
+                    be300_apply_cold_boot_scheduler_resume(m);
+                    m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                        (int32_t)COLD_BOOT_REPLAY_ENTRY_SP;
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] =
+                        COLD_BOOT_REPLAY_STATUS;
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE] = 0;
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED] = 0;
                     m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] =
-                        resume_target != 0
-                            ? resume_target
-                            : UINT32_C(0x800795B4);
-                    if ((status & UINT32_C(0x8001)) != UINT32_C(0x8001)) {
-                        status |= UINT32_C(0x8001);
-                        m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] = status;
-                    }
+                        COLD_BOOT_SCHED_CTX_EPC;
                     m->cpu->pc =
                         (int64_t)(int32_t)UINT32_C(0x800795B4);
                     m->cpu->is_halted = false;
                     m->wince.cold_boot_pc_probes_logged |=
                         COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE;
+                    if (!(m->wince.cold_boot_pc_probes_logged
+                            & COLD_BOOT_PROBE_RESTORED_SCHED_LOGGED)) {
+                        m->wince.cold_boot_pc_probes_logged |=
+                            COLD_BOOT_PROBE_RESTORED_SCHED_LOGGED;
+                        fprintf(stderr,
+                            "[COLD_BOOT] Restored OAL scheduler resume:"
+                            " entry_sp=0x%08X ctx_sp=0x%08X"
+                            " ctx_ra=0x%08X ctx_epc=0x%08X\n",
+                            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                            COLD_BOOT_SCHED_CTX_SP,
+                            COLD_BOOT_SCHED_CTX_RA,
+                            COLD_BOOT_SCHED_CTX_EPC);
+                    }
                     fprintf(stderr,
                         "[COLD_BOOT] Direct restored-WAIT handoff:"
                         " PC=0x800795B4 EPC=0x%08X"
-                        " RA=0x%08X stack[%08X]=0x%08X\n",
+                        " SP=0x%08X Status=0x%08X\n",
                         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
-                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
-                        slot_va,
-                        synthetic_ra);
+                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                        (uint32_t)m->cpu->cd.mips.coproc[0]
+                            ->reg[COP0_STATUS]);
                     return true;
                 }
                 /*
@@ -2718,94 +2823,33 @@ static bool be300_run_batch(machine_t *m)
                  *   CP0: 0x80-0xD0
                  */
                 {
-                    /* Save GPRs to resume_ctx (PA 0x2200).
-                     * Layout: packed, skips $t0 (reg 8). */
-                    static const int gpr_map[] = {
-                        1,2,3,4,5,6,7,  /* at-a3: offsets 0x00-0x18 */
-                        9,10,11,12,13,14,15, /* t1-t7: 0x1C-0x34 */
-                        16,17,18,19,20,21,22,23, /* s0-s7: 0x38-0x54 */
-                        24,25,26,27,28, /* t8-gp: 0x58-0x68 */
-                        29,30,31, /* sp,fp,ra: 0x6C-0x74 */
-                    };
-                    for (unsigned gi = 0;
-                         gi < sizeof(gpr_map)/sizeof(gpr_map[0]);
-                         gi++) {
-                        uint32_t val = (uint32_t)
-                            m->cpu->cd.mips.gpr[gpr_map[gi]];
-                        store_32bit_word(m->cpu,
-                            0xffffffffa0002200ULL + gi * 4, val);
-                    }
-                    /* HI, LO at offsets 0x78, 0x7C */
-                    store_32bit_word(m->cpu,
-                        0xffffffffa0002278ULL,
-                        (uint32_t)m->cpu->cd.mips.hi);
-                    store_32bit_word(m->cpu,
-                        0xffffffffa000227cULL,
-                        (uint32_t)m->cpu->cd.mips.lo);
-
-                    /* Save key CP0 regs (offsets 0x80-0xD0) */
-                    uint64_t *cp0r =
-                        m->cpu->cd.mips.coproc[0]->reg;
-                    static const struct { int reg; int off; } cp0_map[] = {
-                        {COP0_INDEX,0x80}, {COP0_RANDOM,0x84},
-                        {COP0_ENTRYLO0,0x88}, {COP0_ENTRYLO1,0x8C},
-                        {COP0_CONTEXT,0x90}, {COP0_PAGEMASK,0x94},
-                        {COP0_WIRED,0x98}, {COP0_COUNT,0x9C},
-                        {COP0_ENTRYHI,0xA0}, {COP0_COMPARE,0xA4},
-                        {COP0_STATUS,0xA8}, {COP0_CAUSE,0xAC},
-                        {COP0_EPC,0xB0}, {COP0_CONFIG,0xB4},
-                    };
-                    for (unsigned ci = 0;
-                         ci < sizeof(cp0_map)/sizeof(cp0_map[0]);
-                         ci++) {
-                        store_32bit_word(m->cpu,
-                            0xffffffffa0002200ULL + cp0_map[ci].off,
-                            (uint32_t)cp0r[cp0_map[ci].reg]);
-                    }
+                    be300_save_current_resume_ctx(m);
 
                     /*
                      * Once the original OAL block has been restored,
-                     * the idle WAIT at 0x80079598 must resume at the
-                     * post-WAIT continuation (0x800795B4), not back
-                     * into the PMU/DCU setup at RA=0x80079560.
+                     * the idle WAIT at 0x80079598 must switch over to
+                     * the scheduler-side resume bundle captured from a
+                     * warm replay. The OAL corridor runs on the
+                     * A0003800 stack, then 0x80079668 restores
+                     * RA/SP/EPC from resume_ctx and exits into
+                     * 0x80096894 instead of looping at 0x800795B4.
                      */
                     if (g_cold_boot_oal_block_restored
                         && wait_pc == UINT32_C(0x80079598)) {
-                        uint32_t resume_target =
-                            wince_resume_replay_snapshot.resume_target_pc;
-                        uint32_t synthetic_ra =
-                            wince_resume_replay_snapshot.synthetic_ra;
-                        uint32_t slot_va =
-                            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]
-                            + UINT32_C(0x24);
-
-                        store_32bit_word(m->cpu,
-                            0xffffffffa0002274ULL,
-                            UINT32_C(0x800795B4));
-                        store_32bit_word(m->cpu,
-                            0xffffffffa00022b0ULL,
-                            resume_target != 0
-                                ? resume_target
-                                : UINT32_C(0x800795B4));
-                        if (synthetic_ra != 0) {
-                            store_32bit_word(m->cpu,
-                                be300_va32_to_mips64(slot_va),
-                                synthetic_ra);
-                        }
+                        be300_apply_cold_boot_scheduler_resume(m);
                         if (!(m->wince.cold_boot_pc_probes_logged
                                 & COLD_BOOT_PROBE_RESTORED_RA_LOGGED)) {
                             m->wince.cold_boot_pc_probes_logged |=
                                 COLD_BOOT_PROBE_RESTORED_RA_LOGGED;
                             fprintf(stderr,
                                 "[COLD_BOOT] Restored OAL WAIT resume_ctx"
-                                " override: RA=0x800795B4"
-                                " EPC=0x%08X stack[%08X]=0x%08X"
-                                " (live RA=0x%08X)\n",
-                                resume_target != 0
-                                    ? resume_target
-                                    : UINT32_C(0x800795B4),
-                                slot_va,
-                                synthetic_ra,
+                                " scheduler bundle: SP=0x%08X"
+                                " RA=0x%08X EPC=0x%08X"
+                                " live_sp=0x%08X live_ra=0x%08X\n",
+                                COLD_BOOT_SCHED_CTX_SP,
+                                COLD_BOOT_SCHED_CTX_RA,
+                                COLD_BOOT_SCHED_CTX_EPC,
+                                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
                                 (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
                         }
                     }
