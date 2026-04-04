@@ -45,6 +45,7 @@ enum {
     COLD_BOOT_PROBE_D8XX_FAULT_LOGGED     = 0x00080000u,
     COLD_BOOT_PROBE_D8XX_HELPER_INSTALLED = 0x00100000u,
     COLD_BOOT_PROBE_LATE_LOOP_LOGGED      = 0x00200000u,
+    COLD_BOOT_PROBE_RESTORED_WAIT_LOGGED  = 0x00400000u,
 };
 
 #define COLD_BOOT_OAL_BLOCK_BASE  UINT32_C(0x800794C0)
@@ -1766,7 +1767,8 @@ static bool be300_run_batch(machine_t *m)
      * OAL block later once kernel init has populated its core state.
      */
     if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
-        && m->wince.cold_boot_wait_count < 50) {
+        && m->wince.cold_boot_wait_count < 50
+        && !g_cold_boot_oal_block_restored) {
         uint32_t pc32 = (uint32_t)m->cpu->pc;
         if (pc32 >= 0x80079480u && pc32 <= 0x800797E0u) {
             uint32_t sp = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP];
@@ -2613,6 +2615,35 @@ static bool be300_run_batch(machine_t *m)
                 if (ck_val == 0 &&
                     m->wince.cold_boot_wait_count < 50)
                     in_init_phase = true;
+
+                if (g_cold_boot_oal_block_restored
+                    && wait_pc >= UINT32_C(0x80079480)
+                    && wait_pc <= UINT32_C(0x800797E0)) {
+                    m->wince.cold_boot_late_oal_wait_seen = true;
+                    if (!(m->wince.cold_boot_pc_probes_logged
+                            & COLD_BOOT_PROBE_RESTORED_WAIT_LOGGED)) {
+                        m->wince.cold_boot_pc_probes_logged |=
+                            COLD_BOOT_PROBE_RESTORED_WAIT_LOGGED;
+                        fprintf(stderr,
+                            "[COLD_BOOT] Restored OAL WAIT reached:"
+                            " PC=0x%08X SP=0x%08X RA=0x%08X"
+                            " ready_ptr=0x%08X in_init_phase=%d"
+                            " wait_count=%u Status=0x%08X"
+                            " Cause=0x%08X EPC=0x%08X\n",
+                            wait_pc,
+                            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                            ck_val,
+                            in_init_phase ? 1 : 0,
+                            m->wince.cold_boot_wait_count,
+                            (uint32_t)m->cpu->cd.mips.coproc[0]
+                                ->reg[COP0_STATUS],
+                            (uint32_t)m->cpu->cd.mips.coproc[0]
+                                ->reg[COP0_CAUSE],
+                            (uint32_t)m->cpu->cd.mips.coproc[0]
+                                ->reg[COP0_EPC]);
+                    }
+                }
 
                 if (!in_init_phase)
                     be300_maybe_restore_cold_boot_oal_block(m, "halt");
