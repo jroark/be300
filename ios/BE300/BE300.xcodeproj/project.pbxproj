@@ -1,0 +1,473 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		7B43A5891FDB5839E9F34F03 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = B77190532D841FEA6B725BC4 /* App.swift */; };
+		D3BB0B65FFE37800A3F59CAD /* EmulatorEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DB076BB6A55DB089B391982 /* EmulatorEngine.swift */; };
+		F044A41B8665F028B45A6F3F /* MetalRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3417694906C6D2A7A0ECB08E /* MetalRenderer.swift */; };
+		906FC49833E7DC56EF3C426A /* InputOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1947BA498A00B5A9A05BCE3 /* InputOverlay.swift */; };
+		0D5AA589BB385FF043E18556 /* EmulatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4EF5342205ED0F7B6A00931 /* EmulatorView.swift */; };
+		8477786EC1795A6BF36AA9B8 /* machine_be300.c in Sources */ = {isa = PBXBuildFile; fileRef = C24A7B3E1C4D033DB9514989 /* machine_be300.c */; };
+		A2ACCC4E9C98A56B6816221C /* be300_devices.c in Sources */ = {isa = PBXBuildFile; fileRef = F7612349758122050CB10F79 /* be300_devices.c */; };
+		F7A49A7FFE7ACB94F155850F /* host_io.c in Sources */ = {isa = PBXBuildFile; fileRef = 313E8868C10B01DF050865B1 /* host_io.c */; };
+		870B1C3D019D35459FC8E476 /* loader.c in Sources */ = {isa = PBXBuildFile; fileRef = 42D562D4D7C48191D56D6DB2 /* loader.c */; };
+		4CABCE4D9E057707FAFB85F9 /* ui.c in Sources */ = {isa = PBXBuildFile; fileRef = 43111E1277C6BCEFEA39A48B /* ui.c */; };
+		0A75D580E0283328799486A4 /* wince_boot.c in Sources */ = {isa = PBXBuildFile; fileRef = F67610FA40F96F0C5F1BFA38 /* wince_boot.c */; };
+		4BEF73D55973C6D3731E8A14 /* bcu.c in Sources */ = {isa = PBXBuildFile; fileRef = 0DE8A5BA776098B59D6E4B57 /* bcu.c */; };
+		D002BD0C91A0C6CDC900EA61 /* cmu.c in Sources */ = {isa = PBXBuildFile; fileRef = 28E30C61D0C8FFC25D674B66 /* cmu.c */; };
+		DF748758DA6C5CB5AEDCF9EB /* pmu.c in Sources */ = {isa = PBXBuildFile; fileRef = 998EB357C4FB6C9E29031C10 /* pmu.c */; };
+		63A65D526CAB5F19DEE365FF /* icu.c in Sources */ = {isa = PBXBuildFile; fileRef = 21BAF76F1E1BABED8B9DFA42 /* icu.c */; };
+		5E08ECA38CED033EB2BD12EE /* siu.c in Sources */ = {isa = PBXBuildFile; fileRef = 8E1336A7371E32EEEB415852 /* siu.c */; };
+		43C535913DAFA7B3A1915DF0 /* rtc.c in Sources */ = {isa = PBXBuildFile; fileRef = 220466E97A7AAE7FD4BD0687 /* rtc.c */; };
+		9BF4274670989A76527B724B /* gpio.c in Sources */ = {isa = PBXBuildFile; fileRef = AD4DAC636AF680E2494222D5 /* gpio.c */; };
+		8A45D379B697213DB7839026 /* nand.c in Sources */ = {isa = PBXBuildFile; fileRef = 69A32735865A38B1CE79D7FB /* nand.c */; };
+		41A9D0755545BEF8C4A88094 /* cpu.c in Sources */ = {isa = PBXBuildFile; fileRef = 153AECC534A167AA8F3B2AC5 /* cpu.c */; };
+		3347FCD2F4533666D65B611C /* cpu_mips.c in Sources */ = {isa = PBXBuildFile; fileRef = C1A4EF4782A0EC14DE7F9122 /* cpu_mips.c */; };
+		2F8555B02947F98F78A34CAB /* cpu_mips16.c in Sources */ = {isa = PBXBuildFile; fileRef = 9346011B138F06A5B0C2AFDA /* cpu_mips16.c */; };
+		F54E7ADB9E4E9662DF60DB24 /* cpu_mips_coproc.c in Sources */ = {isa = PBXBuildFile; fileRef = 7CDC8431829B696D1DC67161 /* cpu_mips_coproc.c */; };
+		FEF4EC4C71AF3780C3694DC3 /* cpu_mips_instr_unaligned.c in Sources */ = {isa = PBXBuildFile; fileRef = DAC9B67754634E89372C4D8F /* cpu_mips_instr_unaligned.c */; };
+		8A434F3E91CF8F1D8CE661DE /* memory.c in Sources */ = {isa = PBXBuildFile; fileRef = 83AC31D799083B0D0BDCACEB /* memory.c */; };
+		81F9BA2023907172F8D341D3 /* interrupt.c in Sources */ = {isa = PBXBuildFile; fileRef = DA8E46960D2DF82BD680B5AB /* interrupt.c */; };
+		403604C302329CE2BF0D65DC /* timer.c in Sources */ = {isa = PBXBuildFile; fileRef = 1B690A462BF625001036BA14 /* timer.c */; };
+		8543A49634B5B40EAC698E3D /* settings.c in Sources */ = {isa = PBXBuildFile; fileRef = C3166B481E33CA77C121D0F1 /* settings.c */; };
+		8C7FCC3E3D3F62A0B1824E34 /* misc.c in Sources */ = {isa = PBXBuildFile; fileRef = BD51276713B85B2924CC63F6 /* misc.c */; };
+		F3C65066EC3186F146A0A474 /* debugmsg.c in Sources */ = {isa = PBXBuildFile; fileRef = 785AB9E955CF30E155CE92C9 /* debugmsg.c */; };
+		1D85FD6F1D303F8C54D40EE7 /* float_emul.c in Sources */ = {isa = PBXBuildFile; fileRef = C5903CF1A451C3864DF148D9 /* float_emul.c */; };
+		FECCC72BD94152EB21B21262 /* console.c in Sources */ = {isa = PBXBuildFile; fileRef = EC4AED65A58DFB7B7CACF08B /* console.c */; };
+		C085741BF4ACA4D82B46C719 /* device.c in Sources */ = {isa = PBXBuildFile; fileRef = 21CC3977D29F1D3A33041F1B /* device.c */; };
+		18F888BE4EBFE30FF20BC3D2 /* dev_vr41xx.c in Sources */ = {isa = PBXBuildFile; fileRef = 4A93079FE7B67DD6B7A28C78 /* dev_vr41xx.c */; };
+		A582754DBE36D8D2C28403EF /* dev_ram.c in Sources */ = {isa = PBXBuildFile; fileRef = 5D98925E7A7F004D977E571B /* dev_ram.c */; };
+		DA803D41248CF66912456509 /* dev_ns16550.c in Sources */ = {isa = PBXBuildFile; fileRef = DACF80AA50F5E18B41067A22 /* dev_ns16550.c */; };
+		3970DF8706F3340B20C1138C /* dev_fb.c in Sources */ = {isa = PBXBuildFile; fileRef = 49FF969FA6325829877348BF /* dev_fb.c */; };
+		26B23428E5314E01354078F0 /* symbol.c in Sources */ = {isa = PBXBuildFile; fileRef = 7525D58EC82AB50E5A2DAFBB /* symbol.c */; };
+		B791182E2AC265F2CB472F0F /* machine.c in Sources */ = {isa = PBXBuildFile; fileRef = F80E6508C7CC3D8C4D77DC2B /* machine.c */; };
+		49CA2EBA68A6C1D97AC9F058 /* machine_hpcmips.c in Sources */ = {isa = PBXBuildFile; fileRef = 009295B982D1D7A48CAB34CF /* machine_hpcmips.c */; };
+		87717B54E518B7A2280627E7 /* stubs.c in Sources */ = {isa = PBXBuildFile; fileRef = A3CBB388FA1F67C9CAA4002B /* stubs.c */; };
+		B8FA8CFC2DC93A158B85FA94 /* vmlinux-pgui-demo in Resources */ = {isa = PBXBuildFile; fileRef = F2644B81A69E9ECC197E0959 /* vmlinux-pgui-demo */; };
+		99810209AD4FE3320BC122AD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A8E322B9AD0FDA30220B81A1 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B77190532D841FEA6B725BC4 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BE300/App.swift"; sourceTree = "<group>"; };
+		4DB076BB6A55DB089B391982 /* EmulatorEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BE300/EmulatorEngine.swift"; sourceTree = "<group>"; };
+		3417694906C6D2A7A0ECB08E /* MetalRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BE300/MetalRenderer.swift"; sourceTree = "<group>"; };
+		C1947BA498A00B5A9A05BCE3 /* InputOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BE300/InputOverlay.swift"; sourceTree = "<group>"; };
+		A4EF5342205ED0F7B6A00931 /* EmulatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BE300/EmulatorView.swift"; sourceTree = "<group>"; };
+		C24A7B3E1C4D033DB9514989 /* machine_be300.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/machine_be300.c"; sourceTree = "<group>"; };
+		F7612349758122050CB10F79 /* be300_devices.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/be300_devices.c"; sourceTree = "<group>"; };
+		313E8868C10B01DF050865B1 /* host_io.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/host_io.c"; sourceTree = "<group>"; };
+		42D562D4D7C48191D56D6DB2 /* loader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/loader.c"; sourceTree = "<group>"; };
+		43111E1277C6BCEFEA39A48B /* ui.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/ui.c"; sourceTree = "<group>"; };
+		F67610FA40F96F0C5F1BFA38 /* wince_boot.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/wince_boot.c"; sourceTree = "<group>"; };
+		0DE8A5BA776098B59D6E4B57 /* bcu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/bcu.c"; sourceTree = "<group>"; };
+		28E30C61D0C8FFC25D674B66 /* cmu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/cmu.c"; sourceTree = "<group>"; };
+		998EB357C4FB6C9E29031C10 /* pmu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/pmu.c"; sourceTree = "<group>"; };
+		21BAF76F1E1BABED8B9DFA42 /* icu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/icu.c"; sourceTree = "<group>"; };
+		8E1336A7371E32EEEB415852 /* siu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/siu.c"; sourceTree = "<group>"; };
+		220466E97A7AAE7FD4BD0687 /* rtc.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/rtc.c"; sourceTree = "<group>"; };
+		AD4DAC636AF680E2494222D5 /* gpio.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/gpio.c"; sourceTree = "<group>"; };
+		69A32735865A38B1CE79D7FB /* nand.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/nand.c"; sourceTree = "<group>"; };
+		153AECC534A167AA8F3B2AC5 /* cpu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/cpus/cpu.c"; sourceTree = "<group>"; };
+		C1A4EF4782A0EC14DE7F9122 /* cpu_mips.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/cpus/cpu_mips.c"; sourceTree = "<group>"; };
+		9346011B138F06A5B0C2AFDA /* cpu_mips16.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/cpus/cpu_mips16.c"; sourceTree = "<group>"; };
+		7CDC8431829B696D1DC67161 /* cpu_mips_coproc.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/cpus/cpu_mips_coproc.c"; sourceTree = "<group>"; };
+		DAC9B67754634E89372C4D8F /* cpu_mips_instr_unaligned.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/cpus/cpu_mips_instr_unaligned.c"; sourceTree = "<group>"; };
+		83AC31D799083B0D0BDCACEB /* memory.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/core/memory.c"; sourceTree = "<group>"; };
+		DA8E46960D2DF82BD680B5AB /* interrupt.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/core/interrupt.c"; sourceTree = "<group>"; };
+		1B690A462BF625001036BA14 /* timer.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/core/timer.c"; sourceTree = "<group>"; };
+		C3166B481E33CA77C121D0F1 /* settings.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/core/settings.c"; sourceTree = "<group>"; };
+		BD51276713B85B2924CC63F6 /* misc.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/core/misc.c"; sourceTree = "<group>"; };
+		785AB9E955CF30E155CE92C9 /* debugmsg.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/core/debugmsg.c"; sourceTree = "<group>"; };
+		C5903CF1A451C3864DF148D9 /* float_emul.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/core/float_emul.c"; sourceTree = "<group>"; };
+		EC4AED65A58DFB7B7CACF08B /* console.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/console/console.c"; sourceTree = "<group>"; };
+		21CC3977D29F1D3A33041F1B /* device.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/devices/device.c"; sourceTree = "<group>"; };
+		4A93079FE7B67DD6B7A28C78 /* dev_vr41xx.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/devices/dev_vr41xx.c"; sourceTree = "<group>"; };
+		5D98925E7A7F004D977E571B /* dev_ram.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/devices/dev_ram.c"; sourceTree = "<group>"; };
+		DACF80AA50F5E18B41067A22 /* dev_ns16550.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/devices/dev_ns16550.c"; sourceTree = "<group>"; };
+		49FF969FA6325829877348BF /* dev_fb.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/devices/dev_fb.c"; sourceTree = "<group>"; };
+		7525D58EC82AB50E5A2DAFBB /* symbol.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/symbol/symbol.c"; sourceTree = "<group>"; };
+		F80E6508C7CC3D8C4D77DC2B /* machine.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/machines/machine.c"; sourceTree = "<group>"; };
+		009295B982D1D7A48CAB34CF /* machine_hpcmips.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/machines/machine_hpcmips.c"; sourceTree = "<group>"; };
+		A3CBB388FA1F67C9CAA4002B /* stubs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/stubs.c"; sourceTree = "<group>"; };
+		F2644B81A69E9ECC197E0959 /* vmlinux-pgui-demo */ = {isa = PBXFileReference; lastKnownFileType = file; path = "../../kernels/vmlinux-pgui-demo"; sourceTree = "<group>"; };
+		A8E322B9AD0FDA30220B81A1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = BE300/Assets.xcassets; sourceTree = "<group>"; };
+		B015712C977C235D0C570238 /* BE300-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BE300-Bridging-Header.h"; sourceTree = "<group>"; };
+		07198B23AF252C3674F23953 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = BE300/Info.plist; sourceTree = "<group>"; };
+		81918909E83595C8F4212CCC /* BE300.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BE300.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		8D3FC6DB5D0827F168A73277 = {
+			isa = PBXGroup;
+			children = (
+				6A2AB910E2E43A6AA2004668 /* Swift */,
+				6D3F128F47B25C246A835B69 /* BE300 C */,
+				2DB74510C4307E5448D8CC20 /* HW */,
+				6AEA51B9ADF2B81CB464F19D /* GXemul */,
+				DC01BA9E07F323C9FCA89BF3 /* Resources */,
+				1BADDC1D73C1A20F347483E1 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		6A2AB910E2E43A6AA2004668 /* Swift */ = {
+			isa = PBXGroup;
+			children = (
+				B77190532D841FEA6B725BC4 /* App.swift */,
+				4DB076BB6A55DB089B391982 /* EmulatorEngine.swift */,
+				3417694906C6D2A7A0ECB08E /* MetalRenderer.swift */,
+				C1947BA498A00B5A9A05BCE3 /* InputOverlay.swift */,
+				A4EF5342205ED0F7B6A00931 /* EmulatorView.swift */,
+			);
+			name = "Swift";
+			sourceTree = "<group>";
+		};
+		6D3F128F47B25C246A835B69 /* BE300 C */ = {
+			isa = PBXGroup;
+			children = (
+				C24A7B3E1C4D033DB9514989 /* machine_be300.c */,
+				F7612349758122050CB10F79 /* be300_devices.c */,
+				313E8868C10B01DF050865B1 /* host_io.c */,
+				42D562D4D7C48191D56D6DB2 /* loader.c */,
+				43111E1277C6BCEFEA39A48B /* ui.c */,
+				F67610FA40F96F0C5F1BFA38 /* wince_boot.c */,
+			);
+			name = "BE300 C";
+			sourceTree = "<group>";
+		};
+		2DB74510C4307E5448D8CC20 /* HW */ = {
+			isa = PBXGroup;
+			children = (
+				0DE8A5BA776098B59D6E4B57 /* bcu.c */,
+				28E30C61D0C8FFC25D674B66 /* cmu.c */,
+				998EB357C4FB6C9E29031C10 /* pmu.c */,
+				21BAF76F1E1BABED8B9DFA42 /* icu.c */,
+				8E1336A7371E32EEEB415852 /* siu.c */,
+				220466E97A7AAE7FD4BD0687 /* rtc.c */,
+				AD4DAC636AF680E2494222D5 /* gpio.c */,
+				69A32735865A38B1CE79D7FB /* nand.c */,
+			);
+			name = "HW";
+			sourceTree = "<group>";
+		};
+		6AEA51B9ADF2B81CB464F19D /* GXemul */ = {
+			isa = PBXGroup;
+			children = (
+				153AECC534A167AA8F3B2AC5 /* cpu.c */,
+				C1A4EF4782A0EC14DE7F9122 /* cpu_mips.c */,
+				9346011B138F06A5B0C2AFDA /* cpu_mips16.c */,
+				7CDC8431829B696D1DC67161 /* cpu_mips_coproc.c */,
+				DAC9B67754634E89372C4D8F /* cpu_mips_instr_unaligned.c */,
+				83AC31D799083B0D0BDCACEB /* memory.c */,
+				DA8E46960D2DF82BD680B5AB /* interrupt.c */,
+				1B690A462BF625001036BA14 /* timer.c */,
+				C3166B481E33CA77C121D0F1 /* settings.c */,
+				BD51276713B85B2924CC63F6 /* misc.c */,
+				785AB9E955CF30E155CE92C9 /* debugmsg.c */,
+				C5903CF1A451C3864DF148D9 /* float_emul.c */,
+				EC4AED65A58DFB7B7CACF08B /* console.c */,
+				21CC3977D29F1D3A33041F1B /* device.c */,
+				4A93079FE7B67DD6B7A28C78 /* dev_vr41xx.c */,
+				5D98925E7A7F004D977E571B /* dev_ram.c */,
+				DACF80AA50F5E18B41067A22 /* dev_ns16550.c */,
+				49FF969FA6325829877348BF /* dev_fb.c */,
+				7525D58EC82AB50E5A2DAFBB /* symbol.c */,
+				F80E6508C7CC3D8C4D77DC2B /* machine.c */,
+				009295B982D1D7A48CAB34CF /* machine_hpcmips.c */,
+				A3CBB388FA1F67C9CAA4002B /* stubs.c */,
+			);
+			name = "GXemul";
+			sourceTree = "<group>";
+		};
+		DC01BA9E07F323C9FCA89BF3 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A8E322B9AD0FDA30220B81A1 /* Assets.xcassets */,
+				F2644B81A69E9ECC197E0959 /* vmlinux-pgui-demo */,
+				B015712C977C235D0C570238 /* BE300-Bridging-Header.h */,
+				07198B23AF252C3674F23953 /* Info.plist */,
+			);
+			name = Resources;
+			sourceTree = "<group>";
+		};
+		1BADDC1D73C1A20F347483E1 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				81918909E83595C8F4212CCC /* BE300.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		88F56D6A2F90F79D5F551E46 /* BE300 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7C06E62466F2E7B4AF7DFAB0 /* Build configuration list for PBXNativeTarget "BE300" */;
+			buildPhases = (
+				FB34B210CD0D33F47ED4428C /* Sources */,
+				CF661788BB0B1EF44C27F2D9 /* Frameworks */,
+				EED9F2E42EEA807CEE377047 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BE300;
+			productName = BE300;
+			productReference = 81918909E83595C8F4212CCC /* BE300.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		46F86FAA6BBF9AC94A7E4595 /* Project object */ = {
+			isa = PBXProject;
+			buildConfigurationList = C085440347EF9F106FB6C3E3 /* Build configuration list for PBXProject "BE300" */;
+			compatibilityVersion = "Xcode 14.0";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 8D3FC6DB5D0827F168A73277;
+			productRefGroup = 1BADDC1D73C1A20F347483E1 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				88F56D6A2F90F79D5F551E46 /* BE300 */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		EED9F2E42EEA807CEE377047 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B8FA8CFC2DC93A158B85FA94 /* vmlinux-pgui-demo in Resources */,
+				99810209AD4FE3320BC122AD /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		FB34B210CD0D33F47ED4428C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7B43A5891FDB5839E9F34F03 /* App.swift in Sources */,
+				D3BB0B65FFE37800A3F59CAD /* EmulatorEngine.swift in Sources */,
+				F044A41B8665F028B45A6F3F /* MetalRenderer.swift in Sources */,
+				906FC49833E7DC56EF3C426A /* InputOverlay.swift in Sources */,
+				0D5AA589BB385FF043E18556 /* EmulatorView.swift in Sources */,
+				8477786EC1795A6BF36AA9B8 /* machine_be300.c in Sources */,
+				A2ACCC4E9C98A56B6816221C /* be300_devices.c in Sources */,
+				F7A49A7FFE7ACB94F155850F /* host_io.c in Sources */,
+				870B1C3D019D35459FC8E476 /* loader.c in Sources */,
+				4CABCE4D9E057707FAFB85F9 /* ui.c in Sources */,
+				0A75D580E0283328799486A4 /* wince_boot.c in Sources */,
+				4BEF73D55973C6D3731E8A14 /* bcu.c in Sources */,
+				D002BD0C91A0C6CDC900EA61 /* cmu.c in Sources */,
+				DF748758DA6C5CB5AEDCF9EB /* pmu.c in Sources */,
+				63A65D526CAB5F19DEE365FF /* icu.c in Sources */,
+				5E08ECA38CED033EB2BD12EE /* siu.c in Sources */,
+				43C535913DAFA7B3A1915DF0 /* rtc.c in Sources */,
+				9BF4274670989A76527B724B /* gpio.c in Sources */,
+				8A45D379B697213DB7839026 /* nand.c in Sources */,
+				41A9D0755545BEF8C4A88094 /* cpu.c in Sources */,
+				3347FCD2F4533666D65B611C /* cpu_mips.c in Sources */,
+				2F8555B02947F98F78A34CAB /* cpu_mips16.c in Sources */,
+				F54E7ADB9E4E9662DF60DB24 /* cpu_mips_coproc.c in Sources */,
+				FEF4EC4C71AF3780C3694DC3 /* cpu_mips_instr_unaligned.c in Sources */,
+				8A434F3E91CF8F1D8CE661DE /* memory.c in Sources */,
+				81F9BA2023907172F8D341D3 /* interrupt.c in Sources */,
+				403604C302329CE2BF0D65DC /* timer.c in Sources */,
+				8543A49634B5B40EAC698E3D /* settings.c in Sources */,
+				8C7FCC3E3D3F62A0B1824E34 /* misc.c in Sources */,
+				F3C65066EC3186F146A0A474 /* debugmsg.c in Sources */,
+				1D85FD6F1D303F8C54D40EE7 /* float_emul.c in Sources */,
+				FECCC72BD94152EB21B21262 /* console.c in Sources */,
+				C085741BF4ACA4D82B46C719 /* device.c in Sources */,
+				18F888BE4EBFE30FF20BC3D2 /* dev_vr41xx.c in Sources */,
+				A582754DBE36D8D2C28403EF /* dev_ram.c in Sources */,
+				DA803D41248CF66912456509 /* dev_ns16550.c in Sources */,
+				3970DF8706F3340B20C1138C /* dev_fb.c in Sources */,
+				26B23428E5314E01354078F0 /* symbol.c in Sources */,
+				B791182E2AC265F2CB472F0F /* machine.c in Sources */,
+				49CA2EBA68A6C1D97AC9F058 /* machine_hpcmips.c in Sources */,
+				87717B54E518B7A2280627E7 /* stubs.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		CF661788BB0B1EF44C27F2D9 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		7F0F4AE425D80CCAFFE43E6A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = c11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				OTHER_CFLAGS = (
+					"-Wno-unused-parameter",
+					"-Wno-unused-variable",
+					"-Wno-sign-compare",
+					"-Wno-missing-field-initializers",
+				);
+			};
+			name = Debug;
+		};
+		0F4738B3AC393615C10CC417 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = c11;
+				GCC_OPTIMIZATION_LEVEL = 2;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+				OTHER_CFLAGS = (
+					"-Wno-unused-parameter",
+					"-Wno-unused-variable",
+					"-Wno-sign-compare",
+					"-Wno-missing-field-initializers",
+				);
+			};
+			name = Release;
+		};
+		F11DE51347FB00239C068620 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BE300/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIStatusBarHidden = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.be300.emulator;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "BE300-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../src",
+					"$(SRCROOT)/../../gxemul/src/include",
+				);
+			};
+			name = Debug;
+		};
+		6A6061E48F8F4EE0DFBD042D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BE300/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIStatusBarHidden = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.be300.emulator;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "BE300-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../src",
+					"$(SRCROOT)/../../gxemul/src/include",
+				);
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C085440347EF9F106FB6C3E3 /* Build configuration list for PBXProject "BE300" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7F0F4AE425D80CCAFFE43E6A /* Debug */,
+				0F4738B3AC393615C10CC417 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7C06E62466F2E7B4AF7DFAB0 /* Build configuration list for PBXNativeTarget "BE300" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F11DE51347FB00239C068620 /* Debug */,
+				6A6061E48F8F4EE0DFBD042D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+}
