@@ -47,6 +47,7 @@ enum {
     COLD_BOOT_PROBE_LATE_LOOP_LOGGED      = 0x00200000u,
     COLD_BOOT_PROBE_RESTORED_WAIT_LOGGED  = 0x00400000u,
     COLD_BOOT_PROBE_RESTORED_RA_LOGGED    = 0x00800000u,
+    COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE = 0x01000000u,
 };
 
 #define COLD_BOOT_OAL_BLOCK_BASE  UINT32_C(0x800794C0)
@@ -2650,6 +2651,49 @@ static bool be300_run_batch(machine_t *m)
                     be300_maybe_restore_cold_boot_oal_block(m, "halt");
 
                 if (in_init_phase) {
+                if (g_cold_boot_oal_block_restored
+                    && wait_pc == UINT32_C(0x80079598)
+                    && !(m->wince.cold_boot_pc_probes_logged
+                        & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)) {
+                    uint32_t resume_target =
+                        wince_resume_replay_snapshot.resume_target_pc;
+                    uint32_t synthetic_ra =
+                        wince_resume_replay_snapshot.synthetic_ra;
+                    uint32_t slot_va =
+                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]
+                        + UINT32_C(0x24);
+                    uint32_t status =
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
+
+                    if (synthetic_ra != 0) {
+                        store_32bit_word(m->cpu,
+                            be300_va32_to_mips64(slot_va),
+                            synthetic_ra);
+                        m->cpu->cd.mips.gpr[MIPS_GPR_RA] = synthetic_ra;
+                    }
+                    m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] =
+                        resume_target != 0
+                            ? resume_target
+                            : UINT32_C(0x800795B4);
+                    if ((status & UINT32_C(0x8001)) != UINT32_C(0x8001)) {
+                        status |= UINT32_C(0x8001);
+                        m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] = status;
+                    }
+                    m->cpu->pc =
+                        (int64_t)(int32_t)UINT32_C(0x800795B4);
+                    m->cpu->is_halted = false;
+                    m->wince.cold_boot_pc_probes_logged |=
+                        COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE;
+                    fprintf(stderr,
+                        "[COLD_BOOT] Direct restored-WAIT handoff:"
+                        " PC=0x800795B4 EPC=0x%08X"
+                        " RA=0x%08X stack[%08X]=0x%08X\n",
+                        (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
+                        (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                        slot_va,
+                        synthetic_ra);
+                    return true;
+                }
                 /*
                  * WAIT during cold-start init phase.
                  *
