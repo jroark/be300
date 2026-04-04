@@ -355,31 +355,18 @@ machine_t *be300_create(const machine_config_t *cfg)
          * may call during initialization.  Captured from real
          * hardware via BEDiag (CRC32=0xFA3B5582).
          *
-         * Falls back to ERET stubs if the ROM file is not found.
          */
         {
-            const char *rom_paths[] = {
-                "be300_boot_rom.bin",
-                "../hardware_survey/be300_boot_rom.bin",
-                NULL
-            };
-            FILE *rom_fp = NULL;
-            for (int pi = 0; rom_paths[pi] && !rom_fp; pi++)
-                rom_fp = fopen(rom_paths[pi], "rb");
-
-            if (rom_fp) {
-                uint8_t rom_buf[0x4000];
-                size_t rom_read = fread(rom_buf, 1, sizeof(rom_buf), rom_fp);
-                fclose(rom_fp);
-                if (rom_read == sizeof(rom_buf)) {
+#include "boot_rom_embedded.h"
+            {
                     uint64_t base_va = 0xffffffffBFC00000ULL;
-                    for (size_t i = 0; i < sizeof(rom_buf); i += 4) {
-                        uint32_t w = rom_buf[i] | (rom_buf[i+1] << 8) |
-                                     (rom_buf[i+2] << 16) | (rom_buf[i+3] << 24);
+                    for (size_t i = 0; i < be300_boot_rom_len; i += 4) {
+                        uint32_t w = be300_boot_rom[i] | (be300_boot_rom[i+1] << 8) |
+                                     (be300_boot_rom[i+2] << 16) | (be300_boot_rom[i+3] << 24);
                         store_32bit_word(m->cpu, base_va + i, w);
                     }
-                    fprintf(stderr, "[BE300] Loaded real boot ROM"
-                        " (%zu bytes) at PA 0x1FC00000\n", rom_read);
+                    fprintf(stderr, "[BE300] Loaded embedded boot ROM"
+                        " (%u bytes) at PA 0x1FC00000\n", be300_boot_rom_len);
 
                     /*
                      * Patch the ROM's BEV exception vectors with MIPS32
@@ -592,27 +579,7 @@ machine_t *be300_create(const machine_config_t *cfg)
                             " (stub@+0x280),"
                             " boot code relocated +0x384->+0x394\n");
                     }
-                } else {
-                    fprintf(stderr, "[BE300] ROM file truncated"
-                        " (%zu bytes), using ERET stubs\n", rom_read);
-                    goto eret_stubs;
                 }
-            } else {
-eret_stubs:
-                ;
-                uint32_t eret = 0x42000018u;
-                static const uint32_t vec_offsets[] = {
-                    0x000, 0x080, 0x100, 0x180,
-                    0x200, 0x280, 0x300, 0x380
-                };
-                for (unsigned i = 0; i < sizeof(vec_offsets)/sizeof(vec_offsets[0]); i++) {
-                    uint64_t va = 0xffffffff80000000ULL |
-                                  (0x1FC00000ULL + vec_offsets[i]);
-                    store_32bit_word(m->cpu, va, eret);
-                }
-                fprintf(stderr, "[BE300] Boot ROM not found,"
-                    " using ERET stubs at PA 0x1FC00000\n");
-            }
         }
 
         /*
