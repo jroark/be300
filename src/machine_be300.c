@@ -17,8 +17,6 @@
 #include "loader.h"
 #include "ui.h"
 #include "wince_boot.h"
-#include "wince_resume_replay_data.h"
-#include "wince_hw_seed_data.h"
 
 /* GXemul headers */
 #include "interrupt.h"
@@ -53,13 +51,6 @@ enum {
 
 #define COLD_BOOT_OAL_BLOCK_BASE  UINT32_C(0x800794C0)
 #define COLD_BOOT_OAL_BLOCK_WORDS 56u
-#define COLD_BOOT_REPLAY_ENTRY_SP UINT32_C(0xA0003800)
-#define COLD_BOOT_SCHED_CTX_SP    UINT32_C(0xFFFFD7B4)
-#define COLD_BOOT_SCHED_CTX_RA    UINT32_C(0x80096894)
-#define COLD_BOOT_SCHED_CTX_STATUS UINT32_C(0x00008400)
-#define COLD_BOOT_SCHED_CTX_EPC   UINT32_C(0x000117A8)
-#define COLD_BOOT_REPLAY_STATUS   UINT32_C(0x1000FF00)
-
 static uint32_t g_cold_boot_oal_block_saved[COLD_BOOT_OAL_BLOCK_WORDS];
 static bool g_cold_boot_oal_block_saved_valid = false;
 static bool g_cold_boot_oal_block_restored = false;
@@ -172,21 +163,6 @@ static uint64_t be300_pa_to_kseg0(uint32_t pa)
     return UINT64_C(0xffffffff80000000) | (uint64_t)pa;
 }
 
-static void be300_store_valid_resume_words(machine_t *m, uint32_t pa,
-    const uint32_t *words, const uint8_t *valid_words, uint32_t word_count)
-{
-    uint32_t i;
-
-    if (!m || !m->cpu || !words)
-        return;
-
-    for (i = 0; i < word_count; i++) {
-        if (valid_words != NULL && valid_words[i] == 0)
-            continue;
-        store_32bit_word(m->cpu, be300_pa_to_kseg0(pa + i * 4u), words[i]);
-    }
-}
-
 static void be300_store_resume_ctx_word(machine_t *m, uint32_t offset,
     uint32_t value)
 {
@@ -233,40 +209,6 @@ static void be300_save_current_resume_ctx(machine_t *m)
         be300_store_resume_ctx_word(m, (uint32_t)cp0_map[i].off,
             (uint32_t)cp0r[cp0_map[i].reg]);
     }
-}
-
-static void be300_seed_cold_boot_low_sdram_windows(machine_t *m)
-{
-    if (!m || !m->cpu)
-        return;
-
-    store_buf(m->cpu, be300_pa_to_kseg0(UINT32_C(0x00001800)),
-        (const char *)wince_hw_seed_low_sdram_1800_data,
-        sizeof(wince_hw_seed_low_sdram_1800_data));
-    store_buf(m->cpu, be300_pa_to_kseg0(UINT32_C(0x00001880)),
-        (const char *)wince_hw_seed_low_sdram_1880_data,
-        sizeof(wince_hw_seed_low_sdram_1880_data));
-    store_buf(m->cpu, be300_pa_to_kseg0(UINT32_C(0x00001AC0)),
-        (const char *)wince_hw_seed_low_sdram_1ac0_data,
-        sizeof(wince_hw_seed_low_sdram_1ac0_data));
-}
-
-static void be300_apply_cold_boot_scheduler_resume(machine_t *m)
-{
-    if (!m || !m->cpu)
-        return;
-
-    be300_seed_cold_boot_low_sdram_windows(m);
-    be300_store_resume_ctx_word(m, 0x6Cu, COLD_BOOT_SCHED_CTX_SP);
-    be300_store_resume_ctx_word(m, 0x74u, COLD_BOOT_SCHED_CTX_RA);
-    be300_store_resume_ctx_word(m, 0xA8u, COLD_BOOT_SCHED_CTX_STATUS);
-    be300_store_resume_ctx_word(m, 0xB0u, COLD_BOOT_SCHED_CTX_EPC);
-    be300_store_valid_resume_words(m, UINT32_C(0x00001770),
-        wince_resume_stack_frame_1770_words,
-        wince_resume_stack_frame_1770_valid,
-        sizeof(wince_resume_stack_frame_1770_words)
-            / sizeof(wince_resume_stack_frame_1770_words[0]));
-    be300_invalidate_all(m);
 }
 
 static bool be300_decode_tlb_match(machine_t *m, const struct mips_tlb *tlb,
@@ -572,7 +514,7 @@ static void be300_maybe_restore_cold_boot_oal_block(machine_t *m,
     uint32_t ready_ptr = 0;
     char reason[80];
 
-    if (!m || !m->cpu || !m->cfg.wince_cold_boot
+    if (!m || !m->cpu
         || !m->wince.cold_boot_wait_logged
         || !g_cold_boot_oal_block_saved_valid
         || g_cold_boot_oal_block_restored) {
@@ -637,7 +579,7 @@ static void be300_log_cold_boot_late_loop(machine_t *m)
     bool tlb_odd = false;
     const char *tlb_mode = NULL;
 
-    if (!m || !m->cpu || !m->cfg.wince_cold_boot || !m->wince.log_stall)
+    if (!m || !m->cpu || !m->wince.log_stall)
         return;
     if ((m->wince.cold_boot_pc_probes_logged
         & COLD_BOOT_PROBE_LATE_LOOP_LOGGED) != 0) {
@@ -1373,48 +1315,26 @@ eret_stubs:
          *   tlbwr                # write TLB
          *   eret                 # return
          */
-        if (!cfg->wince_cold_boot) {
-            static const uint32_t tlb_handler[] = {
-                0x401B5000,  /* mfc0 $k1, EntryHi    */
-                0x001BD1C2,  /* srl  $k0, $k1, 7     */
-                0x375A001F,  /* ori  $k0, $k0, 0x1F  */
-                0x409A1000,  /* mtc0 $k0, EntryLo0   */
-                0x275B0040,  /* addiu $k1, $k0, 0x40 */
-                0x409B1800,  /* mtc0 $k1, EntryLo1   */
-                0x42000006,  /* tlbwr                 */
-                0x42000018,  /* eret                  */
-            };
-            wince_boot_install_synthetic_low_vectors(m, tlb_handler,
-                sizeof(tlb_handler) / sizeof(tlb_handler[0]),
-                "nand-setup");
-            fprintf(stderr, "[BE300] Installed TLB refill handler"
-                " at 0x80000000 + 0x80000180 (identity map)\n");
-        } else {
-            fprintf(stderr, "[BE300] Cold boot: skipping synthetic"
-                " TLB handler (kernel installs its own)\n");
-        }
+        fprintf(stderr, "[BE300] Cold boot: skipping synthetic"
+            " TLB handler (kernel installs its own)\n");
 
-        if (!cfg->wince_cold_boot) {
-            wince_boot_apply_initial_seed(m);
-        } else {
-            /*
-             * Seed the hibernate signature and flags so NK.exe's
-             * pre-WAIT init takes the state-save path.  On real
-             * hardware the ROM dispatcher populates these before
-             * NK.exe runs; without them resume_ctx stays zeroed
-             * and post-WAIT JR $ra crashes at address 0.
-             */
-            store_32bit_word(m->cpu, 0xffffffffa0002400ULL,
-                UINT32_C(0x03020100));
-            store_32bit_word(m->cpu, 0xffffffffa0002524ULL,
-                UINT32_C(0x32100000));
-            store_32bit_word(m->cpu, 0xffffffffa000254cULL,
-                UINT32_C(0x00000003));
-            fprintf(stderr, "[BE300] Cold boot: seeded hibernate"
-                " state (PA 0x2400=0x03020100,"
-                " PA 0x2524=0x32100000,"
-                " PA 0x254C=0x00000003)\n");
-        }
+        /*
+         * Seed the hibernate signature and flags so NK.exe's
+         * pre-WAIT init takes the state-save path.  On real
+         * hardware the ROM dispatcher populates these before
+         * NK.exe runs; without them resume_ctx stays zeroed
+         * and post-WAIT JR $ra crashes at address 0.
+         */
+        store_32bit_word(m->cpu, 0xffffffffa0002400ULL,
+            UINT32_C(0x03020100));
+        store_32bit_word(m->cpu, 0xffffffffa0002524ULL,
+            UINT32_C(0x32100000));
+        store_32bit_word(m->cpu, 0xffffffffa000254cULL,
+            UINT32_C(0x00000003));
+        fprintf(stderr, "[BE300] Cold boot: seeded hibernate"
+            " state (PA 0x2400=0x03020100,"
+            " PA 0x2524=0x32100000,"
+            " PA 0x254C=0x00000003)\n");
 
         /* Register VRC4173 latch (catch-all); pre-split to leave gaps for input device */
         extern void be300_register_vrc4173_latch(struct machine *, bool);
@@ -1556,7 +1476,6 @@ static bool be300_run_batch(machine_t *m)
      * specific page.
      */
     if (!m->cpu->is_halted
-        && m->cfg.wince_cold_boot
         && !g_cold_boot_oal_block_restored
         && (m->wince.cold_boot_pc_probes_logged
             & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)) {
@@ -1588,7 +1507,6 @@ static bool be300_run_batch(machine_t *m)
      * code-patching method.
      */
     if (!m->cpu->is_halted
-        && m->cfg.wince_cold_boot
         && g_cold_boot_oal_block_restored
         && (m->wince.cold_boot_pc_probes_logged
             & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)
@@ -1624,7 +1542,6 @@ static bool be300_run_batch(machine_t *m)
      * the normal WAIT/resume cycle should take over.
      */
     if (m->cpu->is_halted
-        && m->cfg.wince_cold_boot
         && g_cold_boot_oal_block_restored
         && (m->wince.cold_boot_pc_probes_logged
             & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)
@@ -1649,7 +1566,7 @@ static bool be300_run_batch(machine_t *m)
         /* Continue — don't return, let the batch run from $ra */
     }
     /* Sample 0x80669550 periodically during cold boot */
-    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
+    if (m->wince.cold_boot_wait_logged
         && m->loop_count % 5000 == 0 && m->loop_count > 20000) {
         uint32_t kinit_val = 0;
         be300_read_va_word(m, UINT32_C(0x80669550), &kinit_val);
@@ -1670,7 +1587,7 @@ static bool be300_run_batch(machine_t *m)
      * redirect to the remaining cold-start calls that create
      * processes and enter the scheduler.
      */
-    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
+    if (m->wince.cold_boot_wait_logged
         && !(m->wince.cold_boot_pc_probes_logged
             & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)) {
         uint32_t kinit_marker = 0;
@@ -1784,7 +1701,6 @@ static bool be300_run_batch(machine_t *m)
 
     /* One-shot diagnostic: dump copy-loop registers when stuck */
     if (g_cold_boot_oal_block_restored == false
-        && m->cfg.wince_cold_boot
         && m->wince.cold_boot_wait_logged
         && m->loop_count > 22000) {
         static int copy_loop_diag = 0;
@@ -1828,7 +1744,7 @@ static bool be300_run_batch(machine_t *m)
      * to PA 0x660000.  Without this, the kernel startup runs with
      * zeroed globals and silently fails to register OEMInit callbacks.
      */
-    if (m->cfg.wince_cold_boot && !m->wince.cold_boot_copy_done) {
+    if (!m->wince.cold_boot_copy_done) {
         uint32_t pc = (uint32_t)m->cpu->pc;
         uint32_t pa = pc & 0x1FFFFFFFu;
         /* Detect NK.exe executing: PC in PA 0x60000-0x100000 range.
@@ -1913,7 +1829,7 @@ static bool be300_run_batch(machine_t *m)
             (uint32_t)m->cpu->pc);
 
         /* Dump full CPU state at crash point */
-        if (m->cfg.wince_cold_boot) {
+        {
             uint32_t pc = (uint32_t)m->cpu->pc;
             fprintf(stderr, "[COLD_CRASH] PC=0x%08X\n", pc);
             fprintf(stderr, "[COLD_CRASH] CP0: Status=0x%08X"
@@ -2020,7 +1936,6 @@ static bool be300_run_batch(machine_t *m)
         return false;
     }
 
-    wince_boot_note_loop_observation(m);
     be300_log_cold_boot_late_loop(m);
     be300_maybe_restore_cold_boot_oal_block(m, "loop");
 
@@ -2040,7 +1955,7 @@ static bool be300_run_batch(machine_t *m)
     }
 
     /* Cold boot PC probes: one-shot logging and patches */
-    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged) {
+    if (m->wince.cold_boot_wait_logged) {
         uint32_t pc32 = (uint32_t)m->cpu->pc;
 
         static const struct { uint32_t addr; uint32_t bit; const char *name; } probes[] = {
@@ -2140,7 +2055,7 @@ static bool be300_run_batch(machine_t *m)
      * cold-start continuation (0x8007B57C), then restore the original
      * OAL block later once kernel init has populated its core state.
      */
-    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
+    if (m->wince.cold_boot_wait_logged
         && m->wince.cold_boot_wait_count < 50
         && !g_cold_boot_oal_block_restored) {
         uint32_t pc32 = (uint32_t)m->cpu->pc;
@@ -2359,7 +2274,7 @@ static bool be300_run_batch(machine_t *m)
         }
     }
 
-    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged) {
+    if (m->wince.cold_boot_wait_logged) {
         uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
         uint32_t badva = (uint32_t)cp0[COP0_BADVADDR];
         uint32_t badva_window = badva & UINT32_C(0xFFFFFFC0);
@@ -2422,8 +2337,7 @@ static bool be300_run_batch(machine_t *m)
     }
 
     if (m->cpu->is_halted) {
-        if (m->cfg.wince_cold_boot &&
-            m->wince.cold_boot_wait_logged &&
+        if (m->wince.cold_boot_wait_logged &&
             m->wince.cold_boot_wait_count < 3) {
             fprintf(stderr,
                 "[COLD_BOOT_HALT] PC=0x%08X norm=0x%08X"
@@ -2437,7 +2351,7 @@ static bool be300_run_batch(machine_t *m)
                 m->wince.cold_boot_copy_done,
                 m->wince.cold_boot_wait_count);
         }
-        if (m->cfg.wince_cold_boot) {
+        {
             uint32_t wait_pc = (uint32_t)m->cpu->pc;
             uint32_t norm = wait_pc & 0x1FFFFFFFu;
 
@@ -2676,74 +2590,6 @@ static bool be300_run_batch(machine_t *m)
                 store_32bit_word(m->cpu,
                     0xffffffffa000254cULL, 0x00000003u);
 
-                /* Inject ALL warm-boot replay regions.  The kernel
-                 * needs not just the OEMInit callback table but also
-                 * dispatch tables, bootctx stub, and stack frame data
-                 * to fully initialize.  The cold-start at 0x8007B398
-                 * zeros page tables and installs handlers first, then
-                 * kernel_init uses these data structures. */
-                {
-                    const wince_resume_region_t *regions =
-                        wince_resume_replay_regions;
-                    unsigned nregions = sizeof(wince_resume_replay_regions)
-                        / sizeof(wince_resume_replay_regions[0]);
-                    for (unsigned r = 0; r < nregions; r++) {
-                        const wince_resume_region_t *reg = &regions[r];
-                        for (unsigned i = 0; i < reg->word_count; i++) {
-                            if (reg->valid_words[i]) {
-                                uint64_t va = 0xffffffff80000000ULL
-                                    | reg->pa + i * 4;
-                                store_32bit_word(m->cpu, va,
-                                    reg->words[i]);
-                            }
-                        }
-                        fprintf(stderr,
-                            "[COLD_BOOT] Injected %s at PA 0x%06X"
-                            " (%u words)\n",
-                            reg->name, reg->pa, reg->word_count);
-                    }
-                }
-
-                /*
-                 * Seed resume_ctx at PA 0x2200 for the post-WAIT
-                 * resume path.  After kernel_init, the scheduler
-                 * enters idle → WAIT.  The post-WAIT OAL code at
-                 * 0x79668 restores GPRs/CP0 from resume_ctx and
-                 * JR $ra.  Without seeding, SP=0 and RA=0 → crash.
-                 *
-                 * Resume_ctx layout (PA 0x2200):
-                 *   GPR: 0x00-0x7C (packed, skips $t0)
-                 *     0x6C=SP, 0x70=$fp, 0x74=RA, 0x78=HI, 0x7C=LO
-                 *   CP0: 0x80-0xD0 (packed, skips some)
-                 *     0x80=Index, 0x84=Random, 0x88=EntryLo0,
-                 *     0x8C=EntryLo1, 0x90=Context, 0x94=PageMask,
-                 *     0x98=Wired, 0x9C=Count, 0xA0=EntryHi,
-                 *     0xA4=Compare, 0xA8=Status, 0xAC=Cause,
-                 *     0xB0=EPC, 0xB4=Config
-                 *
-                 * Critical: Wired MUST be 2 so TLB entries 0,1
-                 * (installed by cold-start) survive TLBWR eviction.
-                 * Values from BE300Probe_v1.txt PA 0x2280-0x22B4.
-                 */
-                /* GPR seeds */
-                store_32bit_word(m->cpu,
-                    0xffffffffa000226cULL, 0xA00017E0u); /* SP (kseg1, no TLB) */
-                store_32bit_word(m->cpu,
-                    0xffffffffa0002274ULL, 0x800794C8u); /* RA → OAL init */
-                /* CP0 seeds from hardware survey */
-                store_32bit_word(m->cpu,
-                    0xffffffffa0002290ULL, 0x00000220u); /* Context: PTEBase */
-                store_32bit_word(m->cpu,
-                    0xffffffffa0002294ULL, 0x00001800u); /* PageMask: 4KB pages */
-                store_32bit_word(m->cpu,
-                    0xffffffffa0002298ULL, 0x00000002u); /* Wired: protect entries 0,1 */
-                store_32bit_word(m->cpu,
-                    0xffffffffa00022a8ULL, 0x00008001u); /* Status: IE=1 IM7 KSU=0 */
-                store_32bit_word(m->cpu,
-                    0xffffffffa00022acULL, 0x00000000u); /* Cause: clear */
-                store_32bit_word(m->cpu,
-                    0xffffffffa00022b4ULL, 0x10135923u); /* Config: VR4131 hw value */
-
                 /*
                  * Cold boot later reaches the VR41xx low-power idle
                  * helpers at 0x80079990 / 0x800799F8. GXemul does not
@@ -2755,24 +2601,6 @@ static bool be300_run_batch(machine_t *m)
                     0xffffffff80079990ULL, 0x00000000u); /* suspend -> nop */
                 store_32bit_word(m->cpu,
                     0xffffffff800799F8ULL, 0x00000000u); /* standby -> nop */
-
-                /*
-                 * Inject TLB context at PA 0x2000 from hardware
-                 * survey (wince_hw_seed_ctx_tlb_data, 32 entries
-                 * × 16 bytes).  The TLB refill handler may use
-                 * this table to reload evicted entries.
-                 */
-                for (unsigned ci = 0;
-                     ci < sizeof(wince_hw_seed_ctx_tlb_data);
-                     ci += 4) {
-                    uint32_t w =
-                        (uint32_t)wince_hw_seed_ctx_tlb_data[ci]
-                        | ((uint32_t)wince_hw_seed_ctx_tlb_data[ci+1] << 8)
-                        | ((uint32_t)wince_hw_seed_ctx_tlb_data[ci+2] << 16)
-                        | ((uint32_t)wince_hw_seed_ctx_tlb_data[ci+3] << 24);
-                    store_32bit_word(m->cpu,
-                        0xffffffffa0002000ULL + ci, w);
-                }
 
                 /*
                  * Patch OAL init continuation at 0x800794C8 to
@@ -3333,7 +3161,6 @@ static bool be300_run_batch(machine_t *m)
                          * cold-start's natural resume_ctx (saved
                          * above) is the correct continuation.
                          */
-                        /* be300_apply_cold_boot_scheduler_resume(m); */
                         /*
                          * Fix TLB[1] even page on every WAIT cycle.
                          * OAL vtable init (0x78BC0, called in the
@@ -3375,12 +3202,7 @@ static bool be300_run_batch(machine_t *m)
                                 COLD_BOOT_PROBE_RESTORED_RA_LOGGED;
                             fprintf(stderr,
                                 "[COLD_BOOT] Restored OAL WAIT resume_ctx"
-                                " scheduler bundle: SP=0x%08X"
-                                " RA=0x%08X EPC=0x%08X"
                                 " live_sp=0x%08X live_ra=0x%08X\n",
-                                COLD_BOOT_SCHED_CTX_SP,
-                                COLD_BOOT_SCHED_CTX_RA,
-                                COLD_BOOT_SCHED_CTX_EPC,
                                 (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
                                 (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
                         }
@@ -3781,108 +3603,6 @@ static bool be300_run_batch(machine_t *m)
                 }
             }
             }  /* close outer else (cold-start phase check) */
-        } else if (m->wince.hibernate_redirect_count < 5) {
-            uint32_t norm = (uint32_t)m->cpu->pc & 0x1FFFFFFFu;
-            if (norm >= 0x00060000u && norm < 0x00100000u) {
-                uint64_t old_pc = m->cpu->pc;
-                static const uint32_t tlb_h[] = {
-                    0x401B5000, 0x001BD1C2, 0x375A001F,
-                    0x409A1000, 0x275B0040, 0x409B1800,
-                    0x42000006, 0x42000018,
-                };
-
-                wince_boot_install_synthetic_low_vectors(m, tlb_h,
-                    sizeof(tlb_h) / sizeof(tlb_h[0]),
-                    m->cfg.wince_resume_replay
-                        ? "resume-replay"
-                        : "cold-boot-redirect");
-
-                if (m->cfg.wince_resume_replay) {
-                    uint32_t target_pc = 0;
-                    uint32_t target_sp = 0;
-
-                    if (!wince_boot_prepare_resume_replay(m,
-                        (uint32_t)old_pc, &target_pc, &target_sp)) {
-                        wince_boot_note_fatal_stop(m,
-                            "resume-replay-prepare-failed");
-                        fprintf(stderr,
-                            "[BE300] Resume replay prepare failed"
-                            " at halt PC=0x%08" PRIx64 "\n",
-                            old_pc);
-                        return false;
-                    }
-
-                    m->cpu->pc = (uint64_t)(int32_t)target_pc;
-                    if (target_sp != 0)
-                        m->cpu->cd.mips.gpr[MIPS_GPR_SP] = target_sp;
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_EPC] =
-                        m->wince.replay_resume_target_pc != 0
-                            ? m->wince.replay_resume_target_pc
-                            : target_pc;
-                    m->cpu->is_halted = false;
-                    m->wince.hibernate_redirect_count++;
-
-                    fprintf(stderr,
-                        "[BE300] Resume replay: PC 0x%08" PRIx64
-                        " -> 0x%08X EPC=0x%08X SP=%s0x%08X\n",
-                        old_pc,
-                        target_pc,
-                        m->wince.replay_resume_target_pc != 0
-                            ? m->wince.replay_resume_target_pc
-                            : target_pc,
-                        target_sp != 0 ? "" : "(keep) ",
-                        target_sp);
-                    wince_boot_note_cold_boot_redirect(
-                        m, "hibernate-to-resume-replay");
-                    return true;
-                }
-
-                m->cpu->pc += 0x9C;
-                m->cpu->is_halted = false;
-                m->wince.hibernate_redirect_count++;
-                m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] = 0x1000FF00u;
-                m->cpu->cd.mips.coproc[0]->reg[COP0_WIRED] = 0;
-
-                fprintf(stderr,
-                    "[BE300] Cold boot: skip hibernate+resume,"
-                    " PC 0x%08" PRIx64 " → 0x%08" PRIx64
-                    " Status=0x%08X\n",
-                    old_pc, m->cpu->pc,
-                    (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
-
-                if (m->cfg.log_wince_stall
-                    && m->wince.hibernate_redirect_count == 1) {
-                    fprintf(stderr, "[COLD_INIT] Dumping 0x80079DF8:\n");
-                    for (int i = 0; i < 128; i++) {
-                        unsigned char buf[4];
-                        uint64_t addr = 0xffffffff80079DF8ULL + i * 4;
-                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                                addr, buf, 4, MEM_READ, CACHE_DATA)) {
-                            uint32_t w = buf[0] | (buf[1]<<8) |
-                                         (buf[2]<<16) | (buf[3]<<24);
-                            fprintf(stderr, "[COLD_INIT] 0x%08" PRIx64
-                                ": %08X\n", addr, w);
-                        }
-                    }
-                }
-
-                {
-                    static const uint32_t cp0_seed[] = {
-                        0x00000000, 0x00000007, 0x00000000, 0x00000000,
-                        0x00000000, 0x00001800, 0x00000000, 0x00000000,
-                        0x00000000, 0x00000000, 0x00000000, 0x00000000,
-                        0x1000FF00, 0x00000000, 0x00000000, 0x00000C80,
-                        0x00000000, 0x00000000, 0x00000000, 0x00000000,
-                    };
-                    uint64_t base = 0xffffffff80002280ULL;
-                    for (unsigned si = 0; si < sizeof(cp0_seed)/4; si++)
-                        store_32bit_word(m->cpu, base + si * 4,
-                            cp0_seed[si]);
-                }
-                wince_boot_apply_resume_seed(m);
-                wince_boot_note_cold_boot_redirect(
-                    m, "hibernate-to-cold-boot");
-            }
         }
     }
 
@@ -3932,10 +3652,6 @@ machine_t *be300_create_web(uint32_t sdram_mb, uint32_t target_mhz,
         .log_mmio = false,
         .sfb_5bit_green = sfb_5bit_green,
         .log_nand_legacy = false,
-        .log_wince_stall = false,
-        .wince_hw_seed = false,
-        .wince_resume_replay = false,
-        .wince_resume_replay_full = false,
         .rom_path = NULL,
         .kernel_path = NULL,
         .cmdline = NULL,

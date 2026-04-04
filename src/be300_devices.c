@@ -19,7 +19,6 @@
 
 #include "be300.h"
 #include "hw/nand.h"
-#include "wince_boot.h"
 
 /*
  *  VRC4173 NAND flash controller device.
@@ -136,8 +135,6 @@ DEVICE_ACCESS(be300_vrc4173)
         } else {
             memcpy(&d->bytes[off], data, len);
         }
-        wince_boot_note_mmio_access(cpu, VRC4173_LATCH_BASE + off,
-            writeflag, val, len);
         if (d->log_mmio)
             fprintf(stderr, "[VRC4173] W PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
                     (uint32_t)(VRC4173_LATCH_BASE + off), len,
@@ -161,12 +158,6 @@ DEVICE_ACCESS(be300_vrc4173)
             memcpy(data, &d->bytes[off], len);
             val = memory_readmax64(cpu, data, len);
         }
-        if (wince_boot_override_vrc4173_read(cpu,
-            (uint32_t)(VRC4173_LATCH_BASE + off), len, &val)) {
-            memory_writemax64(cpu, data, len, val);
-        }
-        wince_boot_note_mmio_access(cpu, VRC4173_LATCH_BASE + off,
-            writeflag, memory_readmax64(cpu, data, len), len);
         if (d->log_mmio)
             fprintf(stderr, "[VRC4173] R PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
                     (uint32_t)(VRC4173_LATCH_BASE + off), len,
@@ -203,8 +194,6 @@ DEVICE_ACCESS(be300_wince_aux)
             memcpy(&d->bytes[off], &idle, sizeof(idle));
         }
 
-        wince_boot_note_mmio_access(cpu, WINCE_AUX_BASE + off,
-            writeflag, val, len);
         if (d->log_mmio) {
             fprintf(stderr,
                 "[WINCE_AUX] W PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
@@ -224,8 +213,6 @@ DEVICE_ACCESS(be300_wince_aux)
             val = memory_readmax64(cpu, data, len);
         }
 
-        wince_boot_note_mmio_access(cpu, WINCE_AUX_BASE + off,
-            writeflag, memory_readmax64(cpu, data, len), len);
         if (d->log_mmio) {
             fprintf(stderr,
                 "[WINCE_AUX] R PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
