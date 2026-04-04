@@ -240,6 +240,9 @@ static void be300_seed_cold_boot_low_sdram_windows(machine_t *m)
     if (!m || !m->cpu)
         return;
 
+    store_buf(m->cpu, be300_pa_to_kseg0(UINT32_C(0x00001800)),
+        (const char *)wince_hw_seed_low_sdram_1800_data,
+        sizeof(wince_hw_seed_low_sdram_1800_data));
     store_buf(m->cpu, be300_pa_to_kseg0(UINT32_C(0x00001880)),
         (const char *)wince_hw_seed_low_sdram_1880_data,
         sizeof(wince_hw_seed_low_sdram_1880_data));

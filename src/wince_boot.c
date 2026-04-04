@@ -102,6 +102,7 @@ static void log_replay_pc_state(machine_t *m, const char *label, uint32_t pc);
 static void maybe_log_replay_dispatch_state(machine_t *m, uint32_t pc);
 static void log_dispatch_callback_state(machine_t *m, const char *label);
 static void log_va_probe(machine_t *m, const char *label, uint32_t va);
+static void log_low_slot_5800(machine_t *m, const char *label);
 static void maybe_log_replay_region_drift(machine_t *m);
 static void capture_replay_slot_1ac0_baseline(machine_t *m);
 static void capture_observed_low_vectors(machine_t *m);
@@ -293,6 +294,8 @@ static const wince_replay_exec_probe_desc_t wince_replay_exec_probes[] = {
     { UINT32_C(0x8009511C), "exec_8009511c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x80095264), "exec_80095264", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x800953D4), "exec_800953d4", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x80095428), "exec_80095428", -0x20, 0x80u, 0x60u },
+    { UINT32_C(0x8009547C), "exec_8009547c", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x80096C40), "exec_80096c40", -0x20, 0x80u, 0x60u },
     { UINT32_C(0x8008B8EC), "exec_8008b8ec", -0x20, 0x80u, 0x60u },
 };
@@ -2842,6 +2845,13 @@ static void log_replay_exec_probe(machine_t *m,
             log_slot_1ac0_aliases(m, probe->label);
         }
     }
+
+    if (pc == UINT32_C(0x800953D4)
+        || pc == UINT32_C(0x80095428)
+        || pc == UINT32_C(0x8009547C)
+        || pc == UINT32_C(0x8008B8EC)) {
+        log_low_slot_5800(m, probe->label);
+    }
 }
 
 static void maybe_log_late_exec_80000180(machine_t *m, uint32_t pc)
@@ -3359,6 +3369,8 @@ static bool allow_pa_seed_region(const char *name, bool resume_only)
         return false;
     if (strcmp(name, "low_sdram_0000") == 0)
         return true;
+    if (strcmp(name, "low_sdram_1800") == 0)
+        return true;
     if (strcmp(name, "low_sdram_1880") == 0)
         return true;
     if (strcmp(name, "low_sdram_1ac0") == 0)
@@ -3572,6 +3584,84 @@ static void log_va_probe(machine_t *m, const char *label, uint32_t va)
     fprintf(stderr, "\n");
 }
 
+static void log_low_slot_5800(machine_t *m, const char *label)
+{
+    const uint32_t slot_va = UINT32_C(0x00005800);
+    uint32_t slot_value = 0;
+    uint64_t slot_pa = 0;
+    uint32_t dir_off;
+    uint32_t pte_off;
+    uint32_t leaf_off;
+    uint32_t root_va;
+    uint32_t root_entry = 0;
+    uint32_t second_va = 0;
+    uint32_t second_entry = 0;
+    bool slot_mapped;
+    bool slot_ok;
+    bool root_ok;
+    bool second_ok = false;
+
+    if (!m || !m->wince.log_stall)
+        return;
+
+    slot_mapped = translate_va(m, slot_va, &slot_pa);
+    slot_ok = load_va_word(m, slot_va, &slot_value);
+    dir_off = (slot_va >> 23) & 0xFCu;
+    pte_off = (slot_va >> 14) & 0x7FCu;
+    leaf_off = (slot_va >> 10) & 0x3Cu;
+    root_va = UINT32_C(0xFFFFD8C0) + dir_off;
+    root_ok = load_va_word(m, root_va, &root_entry);
+    if (root_ok) {
+        second_va = root_entry + pte_off;
+        second_ok = load_va_word(m, second_va, &second_entry);
+    }
+
+    fprintf(stderr,
+        "[WINCE_LOW] label=%s slot_va=0x%08X mapped=%d",
+        label ? label : "-",
+        slot_va,
+        slot_mapped ? 1 : 0);
+    if (slot_mapped)
+        fprintf(stderr, " slot_pa=0x%08" PRIx64, slot_pa);
+    if (slot_ok)
+        fprintf(stderr, " slot_value=0x%08X", slot_value);
+    else
+        fprintf(stderr, " slot_value=????????");
+    fprintf(stderr,
+        " dir_off=0x%02X pte_off=0x%03X leaf_off=0x%02X"
+        " root_va=0x%08X root=%s second_va=0x%08X second=%s\n",
+        dir_off,
+        pte_off,
+        leaf_off,
+        root_va,
+        root_ok ? "ok" : "unreadable",
+        second_va,
+        second_ok ? "ok" : "unreadable");
+    if (root_ok)
+        fprintf(stderr, "[WINCE_LOW] root_entry=0x%08X\n", root_entry);
+    if (second_ok)
+        fprintf(stderr, "[WINCE_LOW] second_entry=0x%08X\n", second_entry);
+
+    dump_tlb_matches(m, "slot5800_va", slot_va);
+    log_va_probe(m, "slot5800_va", slot_va);
+    if (slot_mapped && slot_pa <= UINT32_MAX)
+        dump_pa_window(m, "slot5800_pa",
+            ((uint32_t)slot_pa) & ~UINT32_C(0x1F), 0x40u);
+    if (root_ok)
+        dump_va_window(m, "slot5800_root", root_va & ~UINT32_C(0x1F), 0x40u);
+    if (second_ok)
+        dump_va_window(m, "slot5800_second", second_va & ~UINT32_C(0x1F),
+            0x40u);
+
+    if (!slot_ok || slot_value == 0)
+        return;
+
+    log_va_probe(m, "slot5800_ptr", slot_value);
+    log_va_probe(m, "slot5800_p8", slot_value + UINT32_C(0x8));
+    dump_va_window(m, "slot5800_window", slot_value & ~UINT32_C(0x1F),
+        0x40u);
+}
+
 static bool fault_site_is_logged(machine_t *m,
     const wince_fault_site_desc_t *site)
 {
@@ -3709,6 +3799,9 @@ static void log_fault_site_pte_walk(machine_t *m,
     log_va_probe(m, "va_d8c0", 0xFFFFD8C0u);
     dump_va_window(m, "va_d880", 0xFFFFD880u, 0x30u);
     dump_va_window(m, "va_d8c0", 0xFFFFD8C0u, 0x40u);
+
+    if (fault_va < UINT32_C(0x1000))
+        log_low_slot_5800(m, site->label);
 }
 
 static void log_fault_site_null_d0(machine_t *m,
