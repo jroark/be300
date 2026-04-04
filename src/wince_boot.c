@@ -4350,6 +4350,17 @@ bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
 
     if (m->cfg.wince_cold_boot) {
         ready_ptr_valid = load_va_word(m, UINT32_C(0x80669554), &ready_ptr);
+        if (m->wince.cold_boot_late_oal_wait_seen) {
+            if (m->wince.log_stall && !m->wince.timer_release_logged) {
+                fprintf(stderr,
+                    "[WINCE_CKPT] timer_irq_gate released"
+                    " after_restored_oal_wait ready_ptr=%s0x%08X\n",
+                    ready_ptr_valid ? "" : "(unreadable) ",
+                    ready_ptr);
+                m->wince.timer_release_logged = true;
+            }
+            return true;
+        }
         if (!ready_ptr_valid || ready_ptr == 0) {
             if (m->wince.log_stall && !m->wince.timer_kernel_gate_logged) {
                 fprintf(stderr,
