@@ -448,6 +448,13 @@ static bool be300_cold_late_probe_match(uint32_t value)
         || (value >= UINT32_C(0x8007A3F0) && value <= UINT32_C(0x8007A6B0));
 }
 
+static bool be300_cold_copy_loop_match(uint32_t value)
+{
+    return (value >= UINT32_C(0x80078320) && value <= UINT32_C(0x8007835C))
+        || (value >= UINT32_C(0x80079560) && value <= UINT32_C(0x80079584))
+        || (value >= UINT32_C(0x800A7170) && value <= UINT32_C(0x800A71A8));
+}
+
 static void be300_log_cold_boot_late_loop(machine_t *m)
 {
     uint64_t translated_badva = 0;
@@ -566,6 +573,12 @@ static void be300_log_cold_boot_late_loop(machine_t *m)
         fprintf(stderr,
             "[COLD_BOOT_LATE] s1_window skipped for low s1=0x%08X\n",
             s1);
+
+    if (badva == 0
+        && (be300_cold_copy_loop_match(pc)
+            || be300_cold_copy_loop_match(epc))) {
+        be300_restore_cold_boot_oal_block(m, "late-kernel-copy-loop");
+    }
 }
 
 static void be300_handle_stop_signal(int signum)
