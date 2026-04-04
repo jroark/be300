@@ -1548,6 +1548,36 @@ static bool be300_run_batch(machine_t *m)
     }
 
     /*
+     * Cold-start completion check: when kernel main init finishes
+     * (0x80669550 != 0) and the OAL block is still NOP-patched,
+     * redirect to the remaining cold-start calls that create
+     * processes and enter the scheduler.
+     */
+    if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
+        && !g_cold_boot_oal_block_restored
+        && !(m->wince.cold_boot_pc_probes_logged
+            & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)) {
+        uint32_t kinit_marker = 0;
+        be300_read_va_word(m, UINT32_C(0x80669550), &kinit_marker);
+        if (kinit_marker != 0) {
+            m->wince.cold_boot_pc_probes_logged |=
+                COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE;
+            m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                (int32_t)UINT32_C(0xFFFFD7E0);
+            m->cpu->pc =
+                (int64_t)(int32_t)UINT32_C(0x8007B5AC);
+            m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] |=
+                UINT64_C(0x8801); /* IE + IM3 + IM7 */
+            m->cpu->is_halted = false;
+            fprintf(stderr,
+                "[COLD_BOOT] Kernel init done"
+                " (0x80669550=0x%08X), redirecting"
+                " to 0x8007B5AC\n",
+                kinit_marker);
+        }
+    }
+
+    /*
      * Persistent TLB[1] even page fix for cold boot.
      *
      * The kernel stack TLB[1] maps VPN2=0xFFFFC000 with the even
@@ -2055,10 +2085,27 @@ static bool be300_run_batch(machine_t *m)
                     be300_read_va_word(m, UINT32_C(0x80669550),
                         &kinit_done);
                     if (kinit_done != 0) {
-                        be300_restore_cold_boot_oal_block(m,
-                            "kernel init done (0x80669550 set)");
+                        /* Kernel main init done.  DON'T restore OAL
+                         * block yet — the remaining cold-start calls
+                         * (0x800A5C78, 0x800942B4, 0x800964FC) also
+                         * enter the OAL block.  Keep NOP patches so
+                         * these calls complete with JR_ra.  The block
+                         * will be restored after the scheduler starts. */
                         (void)found_resume_pc;
                         (void)resume_pc;
+                        m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                            (int32_t)UINT32_C(0xFFFFD7E0);
+                        /* Skip to 0x8007B5AC: MFC0 Status, then
+                         * JAL 0x800A5C78, JAL 0x800942B4,
+                         * JAL 0x800964FC, J 0x8008B21C. */
+                        m->cpu->pc =
+                            (int64_t)(int32_t)UINT32_C(0x8007B5AC);
+                        m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] |=
+                            UINT64_C(0x8801);
+                        fprintf(stderr,
+                            "[COLD_BOOT] Kernel init done,"
+                            " redirecting to 0x8007B5AC"
+                            " (skip vtable init, keep NOP patches)\n");
                     } else {
                         /* Kernel init not done yet — redirect back */
                         (void)found_resume_pc;
@@ -2694,6 +2741,29 @@ static bool be300_run_batch(machine_t *m)
                  */
                 dev_vr41xx_stop_rtcl1(m->gxe_machine);
                 m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE] = 0;
+
+                /*
+                 * Seed the copy-function completion flag at
+                 * VA 0x80660405 (PA 0x660405).  The copy function
+                 * at 0x80078330 polls this byte for bit 6 (0x40)
+                 * — normally set by the OAL idle path's PMU/DCU
+                 * writes.  With the OAL block NOP-patched, the
+                 * flag never gets set and the kernel init loops
+                 * forever.  Pre-seed it so the poll succeeds.
+                 */
+                {
+                    unsigned char flag = 0x40;
+                    unsigned char verify = 0;
+                    m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                        0xffffffff80660405ULL, &flag, 1,
+                        MEM_WRITE, CACHE_DATA);
+                    m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                        0xffffffff80660405ULL, &verify, 1,
+                        MEM_READ, CACHE_DATA);
+                    fprintf(stderr,
+                        "[COLD_BOOT] Seeded copy flag at"
+                        " VA 0x80660405 = 0x%02X\n", verify);
+                }
                 /*
                  * Push Compare far away so the Count/Compare
                  * timer doesn't reassert IP7 during cold-start.
@@ -3013,19 +3083,11 @@ static bool be300_run_batch(machine_t *m)
                      * with the remaining init calls that lead to
                      * the scheduler.
                      */
-                    m->cpu->pc =
-                        (int64_t)(int32_t)UINT32_C(0x8007B59C);
-                    m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
-                        (int32_t)UINT32_C(0xFFFFD7E0);
-                    m->cpu->is_halted = false;
-                    /* Enable IE so timer interrupts can drive
-                     * the scheduler after the remaining init. */
-                    m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] |=
-                        UINT64_C(0x8001); /* IE + IM7 */
+                    /* OAL block is NOT restored — this code
+                     * shouldn't run.  If it does, just log. */
                     fprintf(stderr,
-                        "[COLD_BOOT] Restored OAL WAIT:"
-                        " skipping vtable init loop,"
-                        " redirect to 0x8007B59C\n");
+                        "[COLD_BOOT] Unexpected restored WAIT"
+                        " during cold-start\n");
                     /* Fix TLB[1] even page */
                     {
                         struct mips_coproc *cpc =
