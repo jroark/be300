@@ -2727,20 +2727,41 @@ static bool be300_run_batch(machine_t *m)
                      */
                     if (g_cold_boot_oal_block_restored
                         && wait_pc == UINT32_C(0x80079598)) {
+                        uint32_t resume_target =
+                            wince_resume_replay_snapshot.resume_target_pc;
+                        uint32_t synthetic_ra =
+                            wince_resume_replay_snapshot.synthetic_ra;
+                        uint32_t slot_va =
+                            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]
+                            + UINT32_C(0x24);
+
                         store_32bit_word(m->cpu,
                             0xffffffffa0002274ULL,
                             UINT32_C(0x800795B4));
                         store_32bit_word(m->cpu,
                             0xffffffffa00022b0ULL,
-                            UINT32_C(0x800795B4));
+                            resume_target != 0
+                                ? resume_target
+                                : UINT32_C(0x800795B4));
+                        if (synthetic_ra != 0) {
+                            store_32bit_word(m->cpu,
+                                be300_va32_to_mips64(slot_va),
+                                synthetic_ra);
+                        }
                         if (!(m->wince.cold_boot_pc_probes_logged
                                 & COLD_BOOT_PROBE_RESTORED_RA_LOGGED)) {
                             m->wince.cold_boot_pc_probes_logged |=
                                 COLD_BOOT_PROBE_RESTORED_RA_LOGGED;
                             fprintf(stderr,
                                 "[COLD_BOOT] Restored OAL WAIT resume_ctx"
-                                " override: RA/EPC -> 0x800795B4"
+                                " override: RA=0x800795B4"
+                                " EPC=0x%08X stack[%08X]=0x%08X"
                                 " (live RA=0x%08X)\n",
+                                resume_target != 0
+                                    ? resume_target
+                                    : UINT32_C(0x800795B4),
+                                slot_va,
+                                synthetic_ra,
                                 (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
                         }
                     }
