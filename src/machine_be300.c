@@ -1546,6 +1546,105 @@ static bool be300_run_batch(machine_t *m)
         fprintf(stderr, "[BE300] Loop batch %d, PC=0x%08" PRIx64 "\n",
                 m->loop_count, m->cpu->pc);
     }
+
+    /*
+     * Scheduler entry detector: when PC reaches 0x8008B21C
+     * (J target from the end of cold-start at 0x8007B5EC),
+     * restore the OAL block.  The dyntrans IC cache needs
+     * to be flushed for the restored WAIT at 0x80079598 to
+     * take effect.  Use invalidate_code_translation on the
+     * specific page.
+     */
+    if (!m->cpu->is_halted
+        && m->cfg.wince_cold_boot
+        && !g_cold_boot_oal_block_restored
+        && (m->wince.cold_boot_pc_probes_logged
+            & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)) {
+        uint32_t pc32 = (uint32_t)m->cpu->pc;
+        if (pc32 == UINT32_C(0x8008B21C)
+            || pc32 == UINT32_C(0x800964FC)
+            || (pc32 >= UINT32_C(0x80096000)
+                && pc32 <= UINT32_C(0x80097000))) {
+            be300_restore_cold_boot_oal_block(m,
+                "scheduler entry detected");
+            be300_store_resume_ctx_word(m, 0xA8u, 0x00008801u);
+            fprintf(stderr,
+                "[COLD_BOOT] Scheduler detected at"
+                " PC=0x%08X, OAL block restored\n",
+                pc32);
+        }
+    }
+
+    /*
+     * Cold-start OAL block entry intercept (run-loop).
+     *
+     * After kernel init done + OAL block restored, intercept
+     * execution at 0x800794C0/C8 (OAL init entry points) and
+     * redirect to $ra.  This prevents the OAL init chain from
+     * running (which would clobber RA and enter WAIT/resume).
+     * The store_32bit_word approach doesn't work because the
+     * dyntrans IC cache has already translated the original
+     * instruction.  Run-loop interception is the only reliable
+     * code-patching method.
+     */
+    if (!m->cpu->is_halted
+        && m->cfg.wince_cold_boot
+        && g_cold_boot_oal_block_restored
+        && (m->wince.cold_boot_pc_probes_logged
+            & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)
+        && m->wince.cold_boot_wait_count < 200) {
+        uint32_t pc32 = (uint32_t)m->cpu->pc;
+        if (pc32 == UINT32_C(0x800794C0)
+            || pc32 == UINT32_C(0x800794C8)) {
+            uint32_t ra = (uint32_t)
+                m->cpu->cd.mips.gpr[MIPS_GPR_RA];
+            m->cpu->pc = (int64_t)(int32_t)ra;
+        }
+    }
+
+    /*
+     * Cold-start WAIT skip (highest priority).
+     *
+     * After kernel init completes and the OAL block is restored,
+     * the remaining cold-start calls (0x800A5C78, 0x800942B4,
+     * 0x800964FC) enter the OAL block → WAIT at 0x80079598.
+     * The post-WAIT continuation would hijack via resume_ctx to
+     * 0x800794C8, abandoning the cold-start.
+     *
+     * Fix: when halted at 0x80079598 during cold-start completion,
+     * return to $ra directly (skipping the post-WAIT continuation).
+     * The PMU/DCU/SDRAMU writes at 0x79560-0x79594 already executed
+     * before WAIT.  This runs at the TOP of be300_run_batch so it
+     * fires before the dyntrans WAIT unhalt or timer ISR delivery.
+     *
+     * After 200 skips, stop — the scheduler should be running and
+     * the normal WAIT/resume cycle should take over.
+     */
+    if (m->cpu->is_halted
+        && m->cfg.wince_cold_boot
+        && g_cold_boot_oal_block_restored
+        && (m->wince.cold_boot_pc_probes_logged
+            & COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE)
+        && ((uint32_t)m->cpu->pc == UINT32_C(0x80079598)
+            || ((uint32_t)m->cpu->pc & 0x1FFFFFFFu)
+                == UINT32_C(0x00079598))
+        && m->wince.cold_boot_wait_count < 200) {
+        uint32_t ra = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA];
+        m->wince.cold_boot_wait_count++;
+        m->cpu->pc = (int64_t)(int32_t)ra;
+        m->cpu->is_halted = false;
+        if (m->wince.cold_boot_wait_count <= 5
+            || m->wince.cold_boot_wait_count % 50 == 0) {
+            fprintf(stderr,
+                "[COLD_BOOT] Skip WAIT #%u: → RA=0x%08X"
+                " SP=0x%08X Status=0x%08X\n",
+                m->wince.cold_boot_wait_count, ra,
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)m->cpu->cd.mips.coproc[0]
+                    ->reg[COP0_STATUS]);
+        }
+        /* Continue — don't return, let the batch run from $ra */
+    }
     /* Sample 0x80669550 periodically during cold boot */
     if (m->cfg.wince_cold_boot && m->wince.cold_boot_wait_logged
         && m->loop_count % 5000 == 0 && m->loop_count > 20000) {
@@ -1578,18 +1677,23 @@ static bool be300_run_batch(machine_t *m)
                 COLD_BOOT_PROBE_RESTORED_HANDOFF_DONE;
             /* Restore the OAL block so WAIT works naturally
              * for the remaining cold-start calls. */
-            /* Restore the OAL block and let the natural
-             * WAIT/resume cycle take over.  With kernel init
-             * done (95 modules loaded, 0x80669550 set), the
-             * OEMInit callbacks should progress further.
-             * Seed resume_ctx Status with IM3+IM7+IE. */
-            be300_restore_cold_boot_oal_block(m,
-                "batch: kernel init done");
+            /* Keep NOP patches (JR $ra at OAL entry points).
+             * The remaining cold-start calls return immediately
+             * from OAL block calls.  The OAL block will be
+             * restored when the scheduler is entered (PC at
+             * 0x8008B21C, detected by a separate check). */
+            m->cpu->cd.mips.gpr[MIPS_GPR_SP] =
+                (int32_t)UINT32_C(0xFFFFD7E0);
+            m->cpu->pc =
+                (int64_t)(int32_t)UINT32_C(0x8007B5AC);
+            m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS] |=
+                UINT64_C(0x8801);
+            m->cpu->is_halted = false;
             be300_store_resume_ctx_word(m, 0xA8u, 0x00008801u);
             fprintf(stderr,
                 "[COLD_BOOT] Kernel init done"
                 " (0x80669550=0x%08X),"
-                " OAL restored, natural resume\n",
+                " redirect 0x8007B5AC (NOP patches kept)\n",
                 kinit_marker);
         }
     }
