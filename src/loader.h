@@ -23,7 +23,8 @@ int loader_load_elf_from_memory(machine_t *m, const void *data, size_t data_len,
                                 uint32_t *jiffies_pa_out);
 
 /*
- * Load a WinCE NAND image (B000FF-format SPL).
+ * Load a NAND image file into memory for the NAND controller.
+ * Does NOT parse B000FF or write to guest memory — just reads the file
+ * and stores the data in m->nand_data / m->nand_size.
  */
-int loader_load_nand(machine_t *m, const char *path,
-                     uint32_t *entry_va_out);
+int loader_load_nand_image(machine_t *m, const char *path);
