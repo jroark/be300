@@ -37,26 +37,6 @@
 extern volatile bool emul_shutdown;
 extern volatile bool emul_executing;
 
-static uint64_t be300_va32_to_mips64(uint32_t va)
-{
-    return (uint64_t)(int64_t)(int32_t)va;
-}
-
-static void be300_invalidate_all(machine_t *m)
-{
-    if (!m || !m->cpu)
-        return;
-    if (m->cpu->invalidate_translation_caches)
-        m->cpu->invalidate_translation_caches(m->cpu, 0, INVALIDATE_ALL);
-    if (m->cpu->invalidate_code_translation)
-        m->cpu->invalidate_code_translation(m->cpu, 0, INVALIDATE_ALL);
-}
-
-static uint64_t be300_pa_to_kseg0(uint32_t pa)
-{
-    return UINT64_C(0xffffffff80000000) | (uint64_t)pa;
-}
-
 static void be300_handle_stop_signal(int signum)
 {
     (void)signum;

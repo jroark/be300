@@ -21,7 +21,6 @@ typedef struct {
     bool first_exception_logged;
     bool fatal_exit_logged;
     bool timer_gate_logged;
-    bool timer_kernel_gate_logged;
     bool timer_release_logged;
     bool low_vector_guest_write_logged;
     bool first_fb_oob_logged;
@@ -31,9 +30,7 @@ typedef struct {
     bool low_vector_runtime_drift_logged;
 
     /* Cold boot state */
-    bool cold_boot_wait_logged;
     bool cold_boot_copy_done;
-    bool cold_boot_late_oal_wait_seen;
     uint32_t cold_boot_pc_probes_logged;
 
     /* Vector tracking */
