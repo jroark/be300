@@ -131,10 +131,20 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         fprintf(stderr, "[NAND] W%u offset=0x%04X val=0x%08" PRIX64 "\n",
                 size * 8, offset, value);
 
-    /* Control/timing registers — just latch */
+    /* Control/timing registers — latch + functional status */
     if (offset >= NAND_CTRL_BASE && offset < NAND_CTRL_END) {
         uint32_t idx = (offset - NAND_CTRL_BASE) >> 2;
         if (idx < 8) s->ctrl_regs[idx] = (uint32_t)value;
+
+        /* Write to NFCNT (0xA000) controls the status register (0xA008).
+         * On real hardware, enabling the controller sets NFSTAT to 0x2F9
+         * (ready). The ROM polls NFSTAT after writing NFCNT. */
+        if (offset == NAND_CTRL_BASE) {
+            if (value & 1u)
+                s->ctrl_regs[2] = 0x000002F9u;  /* ready (from HW dump) */
+            else
+                s->ctrl_regs[2] = 0;
+        }
         return;
     }
 
@@ -232,6 +242,96 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         s->enabled = (value & 1) != 0;
         if (log) fprintf(stderr, "[NAND] controller %s\n",
                          s->enabled ? "enabled" : "disabled");
+        return;
+    }
+
+    /* Direct I/O control register (D002): sets CLE/ALE mode for D000 */
+    if (offset == NAND_REG_DIO_CTRL) {
+        s->dio_mode = (uint8_t)(value & 0xFFu);
+        if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
+            fprintf(stderr, "[NAND_DIO] CTRL=0x%02X (%s) PC=0x%08X\n",
+                    s->dio_mode,
+                    (s->dio_mode & 0x80u) ? "CLE" :
+                    (s->dio_mode & 0x01u) ? "ALE" : "DATA",
+                    pc);
+            nand_idx_log_count++;
+        }
+        return;
+    }
+
+    /* Direct I/O data register (D000): routes to NAND cmd/addr/data */
+    if (offset == NAND_REG_DIO_DATA) {
+        uint8_t data_byte = (uint8_t)(value & 0xFFu);
+        s->dio_last_write = data_byte;  /* latch for echo-back reads */
+        if (s->dio_mode & 0x80u) {
+            /* CLE mode: data_byte is a NAND command */
+            if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
+                fprintf(stderr, "[NAND_DIO] CMD=0x%02X PC=0x%08X\n",
+                        data_byte, pc);
+                nand_idx_log_count++;
+            }
+            s->last_cmd    = data_byte;
+            s->addr_cycle  = 0;
+            s->xfer_cursor = 0;
+            s->ready       = false;
+            switch (data_byte) {
+            case NAND_CMD_READ0:
+                s->state  = NAND_STATE_READ_DATA;
+                s->column = 0;
+                break;
+            case NAND_CMD_READ1:
+                s->state  = NAND_STATE_READ_DATA;
+                s->column = 256;
+                break;
+            case NAND_CMD_READOOB:
+                s->state = NAND_STATE_READ_OOB;
+                break;
+            case NAND_CMD_READID:
+                s->state = NAND_STATE_READ_ID;
+                nand_setup_transfer(s);
+                s->ready = true;
+                break;
+            case NAND_CMD_RESET:
+                s->state = NAND_STATE_IDLE;
+                s->ready = true;
+                break;
+            default:
+                /* Unknown command — latch for echo-back via DIO read.
+                 * The ROM writes a test byte (0x43) to D000 and reads it
+                 * back to verify the NAND I/O path is functional. */
+                s->state = NAND_STATE_IDLE;
+                s->dio_last_write = data_byte;
+                s->ready = true;
+                break;
+            }
+        } else if (s->dio_mode & 0x01u) {
+            /* ALE mode: data_byte is an address byte */
+            if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
+                fprintf(stderr, "[NAND_DIO] ADDR[%u]=0x%02X PC=0x%08X\n",
+                        s->addr_cycle, data_byte, pc);
+                nand_idx_log_count++;
+            }
+            switch (s->addr_cycle) {
+            case 0:
+                if (s->state == NAND_STATE_READ_DATA)
+                    s->column = (s->column & ~0xFFu) | data_byte;
+                break;
+            case 1:
+                s->page_addr = (s->page_addr & ~0xFFu) | data_byte;
+                break;
+            case 2:
+                s->page_addr = (s->page_addr & ~0xFF00u) | ((uint32_t)data_byte << 8);
+                break;
+            case 3:
+                s->page_addr = (s->page_addr & ~0xFF0000u) | ((uint32_t)data_byte << 16);
+                break;
+            }
+            s->addr_cycle++;
+            if (s->addr_cycle >= 3 && s->state != NAND_STATE_READ_ID) {
+                nand_setup_transfer(s);
+                s->ready = true;
+            }
+        }
         return;
     }
 
@@ -425,6 +525,58 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
         goto out;
     }
 
+    /* Direct I/O data register (D000): read NAND data or status */
+    if (offset == NAND_REG_DIO_DATA) {
+        if (s->dio_last_write != 0) {
+            /* Echo-back: ROM writes a test byte and reads it back to
+             * verify the NAND controller I/O path is functional. */
+            val = s->dio_last_write;
+            s->dio_last_write = 0;
+            if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
+                fprintf(stderr, "[NAND_DIO] R echo=0x%02X PC=0x%08X\n",
+                        (unsigned)(val & 0xFF), pc);
+                nand_idx_log_count++;
+            }
+            goto out;
+        }
+        if (s->state == NAND_STATE_READ_DATA ||
+            s->state == NAND_STATE_READ_OOB ||
+            s->state == NAND_STATE_READ_ID) {
+            if (s->xfer_length > 0 && s->image && s->xfer_cursor < s->xfer_length) {
+                if (s->state == NAND_STATE_READ_ID) {
+                    /* NAND ID bytes: maker=0xEC (Samsung), device=0x73 (K9F2808U0B 16MB) */
+                    static const uint8_t id_bytes[] = {0xEC, 0x73};
+                    val = (s->xfer_cursor < 4) ? id_bytes[s->xfer_cursor] : 0xFF;
+                    s->xfer_cursor++;
+                } else if (s->state == NAND_STATE_READ_OOB) {
+                    val = nand_stream_oob_byte(s, s->page_addr,
+                                               s->xfer_cursor);
+                    s->xfer_cursor++;
+                } else {
+                    uint32_t img_off = (s->page_addr * NAND_PAGE_DATA) + s->column + s->xfer_cursor;
+                    val = nand_image_byte(s, img_off);
+                    s->xfer_cursor++;
+                }
+            } else {
+                val = 0xFF;
+            }
+        } else {
+            val = 0xFF;
+        }
+        if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
+            fprintf(stderr, "[NAND_DIO] R data=0x%02X cursor=%u PC=0x%08X\n",
+                    (unsigned)(val & 0xFF), s->xfer_cursor, pc);
+            nand_idx_log_count++;
+        }
+        goto out;
+    }
+
+    /* Direct I/O control register (D002): return latched mode */
+    if (offset == NAND_REG_DIO_CTRL) {
+        val = s->dio_mode;
+        goto out;
+    }
+
     /* Enable register */
     if (offset >= NAND_ENABLE_BASE && offset < NAND_ENABLE_END) {
         val = s->enabled ? 1 : 0;
@@ -443,9 +595,9 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
         goto out;
     }
 
-    /* Device ID */
+    /* Device ID: Samsung K9F2808U0B (16MB, 3.3V) = maker 0xEC, device 0x73 */
     if (offset == NAND_REG_DEVID) {
-        val = 0xF237u;
+        val = 0x73ECu;  /* little-endian: maker=0xEC, device=0x73 */
         goto out;
     }
 
