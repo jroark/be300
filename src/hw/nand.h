@@ -39,9 +39,12 @@
 #define NAND_REG_STATUS   0xD7FEu   /* Status */
 
 /* Command/status registers */
+#define NAND_REG_NFSTAT   0xA008u   /* NAND Flash Status (read-only, ready bits) */
 #define NAND_REG_CMD      0xAC00u   /* Command opcode */
 #define NAND_REG_ADDR     0xAC04u   /* Address byte */
 #define NAND_REG_READY    0xAC48u   /* Ready/status (bit 0) */
+#define NAND_REG_DIO_DATA 0xD000u   /* NAND Direct I/O data port */
+#define NAND_REG_DIO_CTRL 0xD002u   /* NAND Direct I/O control (CLE/ALE) */
 
 /* NAND geometry: 512B pages + 16B OOB = 528B per raw page */
 #define NAND_PAGE_DATA    512u
@@ -102,6 +105,8 @@ typedef struct {
     uint8_t  xfer_buffer[16];              /* WinCE mode-4 data buffer (0xA4A0-0xA4AC) */
     bool     xfer_buffer_valid;            /* true after mode-4/MISC populates buffer */
     bool     wince_mode;                   /* true after NK.exe loads (enables STATUS2/buffer) */
+    uint8_t  dio_mode;                     /* D002 control: 0x80=CLE, 0x01=ALE, 0=data */
+    uint8_t  dio_last_write;              /* last byte written to D000 (for echo-back) */
 } nand_state_t;
 
 void     nand_init(nand_state_t *s, const uint8_t *image, size_t size);
