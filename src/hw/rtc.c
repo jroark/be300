@@ -64,10 +64,19 @@ static void rtc_write_48bit(uint64_t *target, uint32_t offset, unsigned size,
 void rtc_init(rtc_state_t *s)
 {
     /*
-     * Warm-state seed from hardware_survey/HardwareDump6.txt:
-     * ETIMEH/ETIMEM/ETIMEL = 0xA5B3/0x5149/0xBB10.
+     * WORKAROUND: Seed RTC elapsed-time counter from a warm-state
+     * hardware dump (hardware_survey/HardwareDump6.txt).
+     *
+     * On real hardware after a cold boot the RTC elapsed-time counter
+     * holds whatever value it accumulated before power was removed
+     * (the RTC is battery-backed and keeps running).  A truly cold
+     * device (battery removed for hours) would have a low or wrapped
+     * ETIME.  We seed with a mid-range value observed from a running
+     * device so that the kernel's elapsed-time driver doesn't see
+     * an extreme value.  The specific value chosen is:
+     *   ETIMEH=0xA5B3  ETIMEM=0x5149  ETIMEL=0xBB10
      */
-    s->etime = UINT64_C(0xA5B35149BB10);
+    s->etime = UINT64_C(0xA5B35149BB10);  /* WORKAROUND: warm-state seed */
     s->etime_latched = s->etime;
     /*
      * Initialise ECMP above the starting ETIME so the elapsed-time
@@ -77,14 +86,19 @@ void rtc_init(rtc_state_t *s)
      */
     s->ecmp  = s->etime + UINT64_C(0x100000000);
     /*
-     * Stable low-half warm-state survey values at 0x0F000110:
-     *   RTCL1LREG = 0x0021
-     *   RTCL2LREG = 0xFFFF
-     * The counter halves vary across captures, so leave those derived
-     * from ETIME instead of seeding a fixed value.
+     * WORKAROUND: Seed RTCL1/RTCL2 from warm-state survey values
+     * at VR4131 address 0x0F000110.
+     *
+     *   RTCL1LREG = 0x0021 (timer interval, stable across captures)
+     *   RTCL2LREG = 0xFFFF (timer interval, stable across captures)
+     *
+     * The counter halves vary across captures, so those are derived
+     * from ETIME at runtime rather than seeded with a fixed value.
+     * On a truly cold boot these would be 0 until programmed by the
+     * kernel.
      */
-    s->rtcl1 = 0x00000021u;
-    s->rtcl2 = 0x0000FFFFu;
+    s->rtcl1 = 0x00000021u;  /* WORKAROUND: warm-state seed */
+    s->rtcl2 = 0x0000FFFFu;  /* WORKAROUND: warm-state seed */
     s->tclock = 0;
     s->rtcint = 0;
     s->elapsed_compare_fired = 0;

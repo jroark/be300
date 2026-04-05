@@ -574,15 +574,33 @@ machine_t *be300_create(const machine_config_t *cfg)
                         store_32bit_word(m->cpu, rom_va + 0x3F8,
                             0x00000000); /* nop */
 
-                        /* Patch delay loop SUB->SUBU at +0x51C/+0x520.
-                         * The delay function uses SUB (traps on overflow)
-                         * to compute elapsed Count ticks. In the emulator,
-                         * Count can wrap past 0x80000000, causing signed
-                         * overflow. SUBU is safe (same arithmetic, no trap). */
+                        /*
+                         * WORKAROUND: Patch delay-loop SUB→SUBU at
+                         * ROM +0x51C and +0x520.
+                         *
+                         * The ROM's MIPS32 delay function at offset
+                         * 0x534 reads CP0 Count, subtracts a base
+                         * value, and compares against a threshold.
+                         * It uses SUB (which traps on signed overflow)
+                         * rather than SUBU (which wraps silently).
+                         *
+                         * In the emulator, CP0 Count can wrap past
+                         * 0x80000000 between reads because we reset
+                         * Count to 0 on DMA triggers (another
+                         * workaround).  The SUB then computes a
+                         * negative difference that exceeds the signed
+                         * range, triggering an Integer Overflow
+                         * exception.  On real hardware, Count
+                         * increments monotonically and the difference
+                         * stays small, so the overflow never occurs.
+                         *
+                         * SUBU produces the same arithmetic result
+                         * without trapping.
+                         */
                         store_32bit_word(m->cpu, rom_va + 0x51C,
-                            0x00C53023); /* subu a2,a2,a1 (was sub) */
+                            0x00C53023); /* WORKAROUND: subu a2,a2,a1 */
                         store_32bit_word(m->cpu, rom_va + 0x520,
-                            0x00461023); /* subu v0,v0,a2 (was sub) */
+                            0x00461023); /* WORKAROUND: subu v0,v0,a2 */
 
                         fprintf(stderr, "[BE300] Patched ROM BEV"
                             " vectors: TLB@+0x200, GenExc@+0x2300"

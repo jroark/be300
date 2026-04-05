@@ -46,18 +46,37 @@ DEVICE_ACCESS(be300_nand)
         uint64_t val = memory_readmax64(cpu, data, len);
         nand_write(d->nand, offset, (unsigned)len, val, d->log_mmio, pc);
 
-        /* Simulate DMA completion interrupt effects:
-         * - Reset CP0 Count (ROM uses hardcoded timing constants)
-         * - Set $s3 ($19) = 1 (DMA poll at 0x1434 checks s3==1 to exit)
-         * Note: s3=1 also becomes the loop count at 0x1164 (MOVR32 a3=s3),
-         * limiting the callback table setup to 1 iteration. On real HW the
-         * DMA interrupt handler sets s3=1; we set it on DMA trigger.
-         * Trigger on both ACK (0xC376) and 0xEC command (0xC177). */
+        /*
+         *  WORKAROUND: Simulate DMA completion interrupt effects.
+         *
+         *  On real hardware, the VRC4173 NAND DMA controller raises an
+         *  interrupt when a page transfer completes.  The ROM's interrupt
+         *  handler (which we don't have) does two things:
+         *    1. Resets CP0 Count so the ROM's hardcoded timeout loops
+         *       (which compare Count against fixed thresholds) don't
+         *       expire prematurely.
+         *    2. Sets $s3 (GPR 19) = 1 to signal "page read complete".
+         *       The ROM's DMA poll loop at offset 0x1434 checks s3==1
+         *       to know it can stop polling.
+         *
+         *  Since the emulator doesn't implement the NAND DMA interrupt,
+         *  we perform both effects synchronously on the DMA trigger
+         *  write (ACK at 0xC376 or command byte 0xEC at 0xC177).
+         *
+         *  Known side-effect: $s3 is a callee-saved register.  At ROM
+         *  offset 0x1164 the boot dispatcher does MOVR32 $a3 = $s3,
+         *  using s3 as the iteration count for the callback-table setup
+         *  loop.  Setting s3=1 here limits that loop to a single
+         *  iteration, which may be insufficient.  On real hardware s3
+         *  would be set to 1 only by the interrupt handler, so the
+         *  value seen at 0x1164 depends on whether any interrupt fired
+         *  between the last s3 restore and the MOVR32.
+         */
         if (offset == NAND_DMA_CTRL ||
             (offset >= NAND_DMA_BASE && offset < NAND_DMA_END &&
              d->nand->dma_cmd[7] == 0xECu)) {
-            cpu->cd.mips.coproc[0]->reg[COP0_COUNT] = 0;
-            cpu->cd.mips.gpr[19] = 1;  /* $s3 = DMA complete */
+            cpu->cd.mips.coproc[0]->reg[COP0_COUNT] = 0; /* WORKAROUND */
+            cpu->cd.mips.gpr[19] = 1;  /* WORKAROUND: $s3 = DMA complete */
         }
     } else {
         uint64_t val = nand_read(d->nand, offset, (unsigned)len, d->log_mmio, pc);
@@ -137,16 +156,23 @@ DEVICE_ACCESS(be300_vrc4173)
             for (size_t i = 0; i < len && (off + i) < VRC4173_LATCH_SIZE; i++)
                 d->bytes[off + i] &= ~data[i];
             /*
-             * After clearing peripheral interrupt registers, also
-             * zero SYSINT1REG (0x060) to reflect "no pending VRC4173
-             * interrupts".  On real hardware SYSINT1REG is auto-
-             * updated from peripheral lines; in our latch it holds
-             * stale seed data that causes the ISR to keep setting
-             * software interrupt flags.
+             * WORKAROUND: Zero SYSINT1REG (0x060) after any W1C write
+             * to peripheral interrupt registers.
+             *
+             * On real hardware, SYSINT1REG is a read-only aggregate
+             * that reflects the OR of all peripheral interrupt lines.
+             * In our latch-based emulation, SYSINT1REG is just memory
+             * that retains whatever was last written or initialized.
+             * Without this workaround, stale non-zero bits in
+             * SYSINT1REG cause WinCE's ISR to keep setting software
+             * interrupt flags in an infinite loop, because the ISR
+             * reads SYSINT1REG, sees pending interrupts, and never
+             * clears them (the real hardware would auto-clear when the
+             * peripheral source is serviced).
              */
             if (off != 0x060) {
-                d->bytes[0x060] = 0;
-                d->bytes[0x061] = 0;
+                d->bytes[0x060] = 0;  /* WORKAROUND */
+                d->bytes[0x061] = 0;  /* WORKAROUND */
             }
         } else {
             memcpy(&d->bytes[off], data, len);
@@ -157,16 +183,24 @@ DEVICE_ACCESS(be300_vrc4173)
                     (unsigned long long)val, (uint32_t)cpu->pc);
     } else {
         /*
-         * ScCmcu registers (Casio-specific, PA 0x0A007800-0x0A00783F):
-         * The ROM MIPS16 boot dispatcher at 0x9FC00C20 writes a command
-         * byte (e.g. 0x35) to 0x7834, then polls it until the value
-         * drops below 3 (command complete).  On real hardware the
-         * companion MCU processes the command and clears the register.
-         * Simulate this by returning 0 on reads (instant completion).
-         * Register 0x7800 gets the same treatment (command 0x5C).
+         * WORKAROUND: ScCmcu registers (Casio companion MCU,
+         * PA 0x0A007800-0x0A00783F).
+         *
+         * The ROM MIPS16 boot dispatcher at 0x9FC00C20 writes a
+         * command byte (e.g. 0x35) to register 0x7834, then polls
+         * it until the value drops below 3 (meaning "command
+         * complete").  Register 0x7800 follows the same pattern
+         * with command 0x5C.
+         *
+         * On real hardware, a companion microcontroller receives
+         * the command, processes it (e.g. power sequencing, battery
+         * check), and clears the register when done.  We don't
+         * emulate the companion MCU, so we return 0 on all reads
+         * to simulate instant completion.  Without this, the ROM
+         * poll loop spins forever waiting for the MCU to respond.
          */
         if (off >= 0x7800 && off < 0x7840) {
-            memset(data, 0, len);
+            memset(data, 0, len);  /* WORKAROUND: instant MCU completion */
         } else {
             memcpy(data, &d->bytes[off], len);
         }
