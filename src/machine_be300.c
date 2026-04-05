@@ -439,9 +439,11 @@ machine_t *be300_create(const machine_config_t *cfg)
                             /* but at least we return cleanly)       */
                             0x42000018, /* eret                     */
                             0x00000000, /* nop                      */
-                            /* handle_tlb: map with addr mask        */
-                            /* (same as +0x200 handler: mask PFN    */
-                            /* with 0x1FFFFF to keep within SDRAM)  */
+                            /* handle_tlb: map with addr mask.       */
+                            /* Uses tlbp+tlbwi to overwrite existing */
+                            /* invalid entries (e.g. zero-initialized*/
+                            /* TLB entries matching VPN2=0 with V=0).*/
+                            /* Falls back to tlbwr if no match found.*/
                             0x401B5000, /* mfc0 $k1, EntryHi       */
                             0x001BD1C2, /* srl  $k0, $k1, 7        */
                             0x3C1B1FFF, /* lui  $k1, 0x1FFF        */
@@ -451,7 +453,14 @@ machine_t *be300_create(const machine_config_t *cfg)
                             0x409A1000, /* mtc0 $k0, EntryLo0      */
                             0x275B0040, /* addiu $k1, $k0, 0x40    */
                             0x409B1800, /* mtc0 $k1, EntryLo1      */
-                            0x42000006, /* tlbwr                    */
+                            0x42000002, /* tlbp                     */
+                            0x401A0000, /* mfc0 $k0, Index         */
+                            0x07400003, /* bgez $k0, +3 (found)    */
+                            0x00000000, /* nop (delay slot)        */
+                            0x42000006, /* tlbwr (no match: random)*/
+                            0x42000018, /* eret                     */
+                            /* found: overwrite existing entry      */
+                            0x42000002, /* tlbwi                    */
                             0x42000018, /* eret                     */
                         };
                         /*
