@@ -822,6 +822,20 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
         uint32_t reg_off = offset - NAND_DMA_BASE;
         if (reg_off == 0 && s->dma_active) {
             /* FIFO data port: return sequential NAND page data */
+            {
+                static int fifo_read_count = 0;
+                if (fifo_read_count < 5 || (fifo_read_count % 100 == 0)) {
+                    fprintf(stderr, "[NAND_FIFO] read #%d: cursor=%u"
+                        " total=%u addr=0x%06X size=%u"
+                        " PC=0x%08X byte=0x%02X\n",
+                        fifo_read_count, s->dma_cursor,
+                        s->dma_total_bytes, s->dma_nand_addr,
+                        (unsigned)size, pc,
+                        nand_image_byte(s, s->dma_nand_addr +
+                        s->dma_cursor));
+                }
+                fifo_read_count++;
+            }
             val = 0;
             for (unsigned i = 0; i < size; i++) {
                 uint8_t byte;
