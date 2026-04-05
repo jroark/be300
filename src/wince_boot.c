@@ -651,6 +651,88 @@ void wince_boot_install_synthetic_low_vectors(machine_t *m,
             reason);
 }
 
+/*
+ *  ROM DMA polling function intercept.
+ *
+ *  The ROM's MIPS16 function at 0x9FC013F0 polls the DMA controller for
+ *  completion.  On real hardware, the VRC4173 DMA autonomously transfers
+ *  NAND page data to a RAM buffer.  Our emulator only supports CPU-mediated
+ *  FIFO reads, so we simulate the autonomous transfer by copying the current
+ *  NAND page directly to the buffer address passed in $a0.
+ *
+ *  This fires on every call to 0x13F0, including the first call (where the
+ *  ROM also reads via FIFO).  The FIFO read will overwrite our copy with
+ *  identical data, so there's no conflict.
+ */
+#define ROM_DMA_POLL_PC  0x9FC013F0u
+#define DMA_AUTOCOPY_MAX 20
+static int dma_autocopy_count = 0;
+
+static void maybe_dma_autocopy(machine_t *m, struct cpu *cpu)
+{
+    uint32_t pc32 = (uint32_t)cpu->pc;
+    if (pc32 != ROM_DMA_POLL_PC)
+        return;
+
+    /* The DMA autocopy approach was investigated and found to be wrong.
+     * The delay slot of the JAL to 0x13F0 overwrites $a0 with $s0,
+     * so all three calls use buffer 0x80010060 (not 0x80008084).
+     * The callback table at 0x80008080 is populated by the processing
+     * code at 0x1160-0x11A6, not by DMA transfer.
+     * Keeping the function entry detection for future diagnostics. */
+    return; /* autocopy disabled — wrong approach */
+
+    if (!m->nand.dma_active)
+        return;
+    uint32_t buf_va = (uint32_t)cpu->cd.mips.gpr[4];
+    uint32_t buf_pa = buf_va & 0x1FFFFFFFu;
+    if (buf_pa < 0x8000u || buf_pa >= 0x9000u)
+        return;
+    if (dma_autocopy_count >= DMA_AUTOCOPY_MAX)
+        return;
+    dma_autocopy_count++;
+
+    uint32_t nand_addr = m->nand.dma_nand_addr;
+    uint32_t nbytes = m->nand.dma_total_bytes;
+    if (nbytes > 2048) nbytes = 2048;  /* sanity cap */
+
+    fprintf(stderr,
+        "[DMA_AUTOCOPY] PC=0x%08X buf=0x%08X nand=0x%06X len=%u"
+        " cursor=%u/%u #%d\n",
+        pc32, buf_va, nand_addr, nbytes,
+        m->nand.dma_cursor, m->nand.dma_total_bytes,
+        dma_autocopy_count);
+
+    /* Copy NAND data to the CPU-visible buffer.
+     * This simulates autonomous DMA transfer — the hardware copies
+     * NAND page data to RAM without CPU intervention.
+     * We do NOT change dma_cursor so that FIFO-based reads (used by
+     * the first DMA call) continue to work normally. */
+    for (uint32_t i = 0; i < nbytes; i++) {
+        uint8_t byte;
+        if (m->nand.image && (nand_addr + i) < m->nand.image_size)
+            byte = m->nand.image[nand_addr + i];
+        else
+            byte = 0xFFu;
+        cpu->memory_rw(cpu, cpu->mem,
+            (uint64_t)(buf_va + i), &byte, 1,
+            MEM_WRITE, CACHE_DATA);
+    }
+}
+
+/*
+ *  Called from the MIPS16 slow interpreter on every ROM instruction.
+ *  Checks if we're at the DMA polling function entry and performs
+ *  the autonomous DMA copy if needed.
+ */
+void wince_boot_check_dma_autocopy(struct cpu *cpu)
+{
+    machine_t *m = g_active_wince_machine;
+    if (!m || !m->wince.active)
+        return;
+    maybe_dma_autocopy(m, cpu);
+}
+
 void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
 {
     machine_t *m = wince_boot_from_gx(gxm);

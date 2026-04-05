@@ -24,3 +24,4 @@ bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu);
 void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
     size_t len);
 void wince_boot_note_fb_oob(struct cpu *cpu, uint64_t paddr, size_t len);
+void wince_boot_check_dma_autocopy(struct cpu *cpu);
