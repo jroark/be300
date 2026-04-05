@@ -4,10 +4,21 @@
 void cmu_init(cmu_state_t *s)
 {
     /*
-     * Warm-state seed from hardware_survey/HardwareDump6.txt:
-     * CMUCLKMSK observed at PA 0x0F000060 as 0x0902.
+     * WORKAROUND: Seed CMU clock mask from warm-state hardware survey.
+     *
+     * On real hardware CMUCLKMSK at PA 0x0F000060 was observed as
+     * 0x0902 across multiple warm-state dumps (HardwareDump6.txt).
+     * The VR4131 datasheet POR default for CMUCLKMSK is not clearly
+     * documented.  On a truly cold boot the register might be 0 or
+     * a chip-specific default.
+     *
+     * The sticky_bits mechanism preserves these bits across writes:
+     * WinCE's resume path writes 0 to CMUCLKMSK before later OR-ing
+     * in 0x0800.  Without the sticky bits, the register would
+     * collapse to 0, potentially disabling clocks that the ROM or
+     * SPL expects to be running.
      */
-    s->sticky_bits = 0x0902;
+    s->sticky_bits = 0x0902;  /* WORKAROUND: warm-state seed */
     s->clkmsk = s->sticky_bits;
 }
 
@@ -28,12 +39,17 @@ void cmu_write(cmu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     (void)size;
     if (offset == CMU_CMUCLKMSK || offset == CMU_CMUCLKMSK + 0x2u) {
         /*
-         * The BE-300 warm-state surveys keep 0x0902 latched across runs.
-         * WinCE's resume path writes 0 here before later OR-ing in 0x0800;
-         * preserving the stable warm-state bits matches the observed page
-         * pattern and avoids collapsing the register to zero.
+         * WORKAROUND: OR in the warm-state sticky bits on every write.
+         *
+         * WinCE's resume path writes 0 to CMUCLKMSK before later
+         * OR-ing in the bits it needs.  Without preserving the
+         * sticky bits, the intermediate 0 write would disable
+         * clocks that the ROM assumed were running.  On real
+         * hardware the clock enable bits might be latched or have
+         * hardware-enforced minimums that prevent a full collapse
+         * to zero.
          */
-        s->clkmsk = (uint16_t)val | s->sticky_bits;
+        s->clkmsk = (uint16_t)val | s->sticky_bits;  /* WORKAROUND */
     } else {
         fprintf(stderr, "[CMU] Unhandled write offset 0x%02X = 0x%04X\n",
                 offset, val);
