@@ -387,16 +387,26 @@ machine_t *be300_create(const machine_config_t *cfg)
                          * the upper address bits.  The ROM's MIPS16 dispatcher
                          * uses stack at 0xFF10xxxx which needs to map to
                          * PA 0x00F0xxxx.  Uses VPN2 & 0x1FFFFF as PFN. */
+                        /* Use 4KB pages (PageMask=0x1800) to
+                         * avoid GXemul's INVALIDATE_ALL on 1KB
+                         * TLB writes (R4100 default page size).
+                         * EntryLo bits: PFN[25:6] V D G C[5:3]
+                         * 0x3F = PFN=0, V=1, D=1, C=3, G=1
+                         * Odd page offset: +0x100 (4 x 1KB PFNs
+                         * = one 4KB page step in EntryLo PFN). */
                         static const uint32_t tlb_refill[] = {
                             0x401B5000, /* mfc0 $k1, EntryHi    */
                             0x001BD1C2, /* srl  $k0, $k1, 7     */
                             0x3C1B0003, /* lui  $k1, 0x0003     */
                             0x377BFFFF, /* ori  $k1, 0xFFFF     */
                             0x035BD024, /* and  $k0, $k0, $k1   */
-                            0x375A001F, /* ori  $k0, $k0, 0x1F  */
+                            0x375A003F, /* ori  $k0, $k0, 0x3F  */
                             0x409A1000, /* mtc0 $k0, EntryLo0   */
-                            0x275B0040, /* addiu $k1, $k0, 0x40 */
+                            0x275B0100, /* addiu $k1,$k0, 0x100 */
                             0x409B1800, /* mtc0 $k1, EntryLo1   */
+                            0x3C1B0000, /* lui  $k1, 0           */
+                            0x377B1800, /* ori  $k1, 0x1800      */
+                            0x409B2800, /* mtc0 $k1, PageMask    */
                             0x42000006, /* tlbwr                 */
                             0x42000018, /* eret                  */
                         };
@@ -443,24 +453,26 @@ machine_t *be300_create(const machine_config_t *cfg)
                             /* Uses tlbp+tlbwi to overwrite existing */
                             /* invalid entries (e.g. zero-initialized*/
                             /* TLB entries matching VPN2=0 with V=0).*/
-                            /* Falls back to tlbwr if no match found.*/
+                            /* Uses 4KB pages (PageMask=0x1800) and
+                             * TLBWR (write random) to avoid both:
+                             * - overwriting wired entries 0-1
+                             *   (TLBWR skips entries below Wired)
+                             * - GXemul's INVALIDATE_ALL on 1KB TLB
+                             *   writes (which destroys the handler's
+                             *   own IC page, preventing ERET)       */
                             0x401B5000, /* mfc0 $k1, EntryHi       */
                             0x001BD1C2, /* srl  $k0, $k1, 7        */
                             0x3C1B1FFF, /* lui  $k1, 0x1FFF        */
                             0x377BFFFF, /* ori  $k1, 0xFFFF        */
                             0x035BD024, /* and  $k0, $k0, $k1      */
-                            0x375A001F, /* ori  $k0, $k0, 0x1F     */
+                            0x375A003F, /* ori  $k0, $k0, 0x3F     */
                             0x409A1000, /* mtc0 $k0, EntryLo0      */
-                            0x275B0040, /* addiu $k1, $k0, 0x40    */
+                            0x275B0100, /* addiu $k1, $k0, 0x100   */
                             0x409B1800, /* mtc0 $k1, EntryLo1      */
-                            0x42000002, /* tlbp                     */
-                            0x401A0000, /* mfc0 $k0, Index         */
-                            0x07400003, /* bgez $k0, +3 (found)    */
-                            0x00000000, /* nop (delay slot)        */
-                            0x42000006, /* tlbwr (no match: random)*/
-                            0x42000018, /* eret                     */
-                            /* found: overwrite existing entry      */
-                            0x42000002, /* tlbwi                    */
+                            0x3C1B0000, /* lui  $k1, 0x0000        */
+                            0x377B1800, /* ori  $k1, $k1, 0x1800   */
+                            0x409B2800, /* mtc0 $k1, PageMask      */
+                            0x42000006, /* tlbwr                    */
                             0x42000018, /* eret                     */
                         };
                         /*
@@ -631,8 +643,10 @@ machine_t *be300_create(const machine_config_t *cfg)
         {
             uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
 
-            /* TLB 0: VA 0xFF100000 -> PA 0x09100000 (stack) */
-            cp0[COP0_PAGEMASK] = 0x0000;  /* 4KB pages */
+            /* TLB 0: VA 0xFF100000 -> PA 0x09100000 (stack)
+             * Use 4KB pages (PageMask=0x1800) to avoid GXemul's
+             * INVALIDATE_ALL on R4100 1KB TLB entries.           */
+            cp0[COP0_PAGEMASK] = 0x1800;  /* 4KB pages (R4100) */
             cp0[COP0_ENTRYHI]  = 0xFF100000ULL;
             cp0[COP0_ENTRYLO0] = (0x09100000u >> 12) << 6 | 0x17;
             cp0[COP0_ENTRYLO1] = (0x09101000u >> 12) << 6 | 0x17;
