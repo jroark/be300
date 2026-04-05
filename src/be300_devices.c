@@ -47,34 +47,17 @@ DEVICE_ACCESS(be300_nand)
         nand_write(d->nand, offset, (unsigned)len, val, d->log_mmio, pc);
 
         /*
-         *  WORKAROUND: Simulate DMA completion interrupt effects.
+         *  WORKAROUND: Simulate the DMA-complete interrupt side effect.
          *
-         *  On real hardware, the VRC4173 NAND DMA controller raises an
-         *  interrupt when a page transfer completes.  The ROM's interrupt
-         *  handler (which we don't have) does two things:
-         *    1. Resets CP0 Count so the ROM's hardcoded timeout loops
-         *       (which compare Count against fixed thresholds) don't
-         *       expire prematurely.
-         *    2. Sets $s3 (GPR 19) = 1 to signal "page read complete".
-         *       The ROM's DMA poll loop at offset 0x1434 checks s3==1
-         *       to know it can stop polling.
-         *
-         *  Since the emulator doesn't implement the NAND DMA interrupt,
-         *  we perform both effects synchronously on the DMA trigger
-         *  write (ACK at 0xC376 or command byte 0xEC at 0xC177).
-         *
-         *  Known side-effect: $s3 is a callee-saved register.  At ROM
-         *  offset 0x1164 the boot dispatcher does MOVR32 $a3 = $s3,
-         *  using s3 as the iteration count for the callback-table setup
-         *  loop.  Setting s3=1 here limits that loop to a single
-         *  iteration, which may be insufficient.  On real hardware s3
-         *  would be set to 1 only by the interrupt handler, so the
-         *  value seen at 0x1164 depends on whether any interrupt fired
-         *  between the last s3 restore and the MOVR32.
+         *  The ROM's MIPS16 path writes 0 to 0xC376 as a clear-to-idle
+         *  step before it issues the actual read trigger through cmd byte 7
+         *  = 0xEC.  So only the 0xEC trigger should synthesize the old
+         *  Count/$s3 side effects; doing it on 0xC376 corrupts the control
+         *  flow we just recovered from Ghidra.
          */
-        if (offset == NAND_DMA_CTRL ||
-            (offset >= NAND_DMA_BASE && offset < NAND_DMA_END &&
-             d->nand->dma_cmd[7] == 0xECu)) {
+        if (offset >= NAND_DMA_BASE && offset < NAND_DMA_END &&
+            ((offset - NAND_DMA_BASE) + len - 1) >= 7 &&
+            d->nand->dma_cmd[7] == 0xECu) {
             cpu->cd.mips.coproc[0]->reg[COP0_COUNT] = 0; /* WORKAROUND */
             cpu->cd.mips.gpr[19] = 1;  /* WORKAROUND: $s3 = DMA complete */
         }

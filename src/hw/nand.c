@@ -290,21 +290,30 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         return;
     }
 
-    /* DMA control/acknowledge (0xC376) */
+    /* DMA control/acknowledge (0xC376)
+     *
+     * The ROM MIPS16 init path writes 0 here and then waits for status
+     * bit 6 ("idle") to become true before issuing the real read trigger
+     * via cmd byte 7 = 0xEC.  So 0xC376 is not itself the page-start
+     * trigger; treating every write as "start DMA now" leaves status at
+     * 0xD8 forever and wedges FUN_9fc013f0 in its pre-transfer wait. */
     if (offset == NAND_DMA_CTRL) {
-        /* ACK activates DMA for the next page read.  On real hardware,
-         * the DMA controller reads the next NAND page and fires a
-         * completion interrupt.  We activate immediately with the
-         * current NAND address and advance the address for the next ACK. */
-        /* If a previous transfer was active, advance past it */
-        if (s->dma_active && s->dma_cursor > 0)
-            s->dma_nand_addr += s->dma_total_bytes;
-        s->dma_cursor = 0;
-        s->dma_total_bytes = NAND_PAGE_DATA;
-        s->dma_active = true;
-        if (log)
-            fprintf(stderr, "[NAND_DMA] ACK → page at 0x%06X (%u bytes) PC=0x%08X\n",
-                    s->dma_nand_addr, s->dma_total_bytes, pc);
+        uint8_t ctrl = (uint8_t)(value & 0xFFu);
+
+        if (ctrl == 0) {
+            s->dma_active = false;
+            s->dma_cursor = 0;
+            s->dma_total_bytes = 0;
+            if (log)
+                fprintf(stderr,
+                        "[NAND_DMA] CTRL clear → idle PC=0x%08X\n",
+                        pc);
+        } else if (log) {
+            fprintf(stderr,
+                    "[NAND_DMA] CTRL=0x%02X (latched, no transfer trigger)"
+                    " PC=0x%08X\n",
+                    ctrl, pc);
+        }
         return;
     }
 
@@ -865,7 +874,7 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                 if (!s->dma_active) {
                     byte = 0x50u;        /* idle: no transfer in progress */
                 } else if (s->dma_cursor < s->dma_total_bytes) {
-                    byte = 0xD8u;        /* busy: data available, bit 7 set */
+                    byte = 0x58u;        /* busy: data available */
                 } else {
                     byte = 0x5Fu;        /* complete: all data read */
                 }
