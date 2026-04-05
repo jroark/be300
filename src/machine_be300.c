@@ -430,7 +430,7 @@ machine_t *be300_create(const machine_config_t *cfg)
                             0x2F7B0008, /* sltiu $k1, $k1, 8      */
                             /* k1=1 if exccode<<2 is 8..15         */
                             /* i.e. ExcCode 2 or 3 (TLBL/TLBS)     */
-                            0x17600008, /* bne $k1, $zero, tlb (+8)*/
+                            0x17600005, /* bne $k1, $zero, tlb (+5)*/
                             0x00000000, /* nop                      */
                             /* Other: just ERET                     */
                             0x42000018, /* eret                     */
@@ -484,18 +484,28 @@ machine_t *be300_create(const machine_config_t *cfg)
 
                         /*
                          * +0x380: Patch the BEV general exception entry.
-                         * Original is boot code (`li $a0, 0` = delay slot
-                         * of JAL at +0x37C).  We can't change +0x380
-                         * (delay slot) but we CAN change +0x37C to call
-                         * our wrapper, and put a check at +0x384.
                          *
-                         * Simpler: just redirect +0x380 area. The boot
-                         * code flow via the reset vector reaches +0x37C
-                         * which has a JAL with delay slot at +0x380.
-                         * We preserve the delay slot, but patch +0x384
-                         * to check EXL and branch to our handler.
+                         * The original ROM has boot continuation code
+                         * at +0x37C (JAL) with delay slot at +0x380
+                         * (`li $a0, 0`).  When an exception fires, the
+                         * CPU jumps to +0x380 and the `li $a0, 0`
+                         * executes as the FIRST instruction of the
+                         * exception handler — clobbering $a0 on every
+                         * general exception.
+                         *
+                         * Since the boot code was relocated to +0x394,
+                         * +0x380 is dead code in the normal boot flow.
+                         * We replace it with NOP to prevent the $a0
+                         * clobber.  The EXL check at +0x384 dispatches
+                         * to our handler at +0x280 when an exception
+                         * is active, or falls through to the relocated
+                         * boot code at +0x394 for normal boot flow.
                          */
-                        /* At +0x384 (after delay slot): check EXL */
+                        /* +0x380: NOP (was `li $a0, 0` — clobbered $a0
+                         * on every exception entry) */
+                        store_32bit_word(m->cpu, rom_va + 0x380,
+                            0x00000000); /* nop */
+                        /* At +0x384: check EXL */
                         /* Original: lui $a1, 0x8001 (0x3c058001)  */
                         /* Calculate branch offset: from +0x38C to +0x280
                            offset = (0x280 - 0x390) / 4 = -0x110/4 = -68
