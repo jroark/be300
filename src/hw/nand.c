@@ -11,6 +11,22 @@ static uint8_t nand_image_byte(const nand_state_t *s, uint32_t off)
     return s->image[off];
 }
 
+static uint8_t nand_dma_byte(const nand_state_t *s, uint32_t dma_off)
+{
+    /*
+     * The ROM's byte-wide DMA path is not reading from raw NAND offset 0.
+     * On the BE-300 restore images, the logical NAND Disk exposed through the
+     * ROM FAT probe starts at the filesystem boot sector, which sits at raw
+     * image offset 0x003B4000. Sector 0 on the DMA path must therefore map
+     * to that FAT boot sector rather than to the all-0xFF boot metadata area.
+     *
+     * This leaves the earlier SPL/XFER engine paths untouched: they still use
+     * the raw image layout with the SPL at 0x4000 and the NK wrapper at
+     * 0x14000.
+     */
+    return nand_image_byte(s, UINT32_C(0x003B4000) + dma_off);
+}
+
 static uint8_t nand_stream_oob_byte(const nand_state_t *s,
                                     uint32_t page, uint32_t oob_idx)
 {
@@ -123,6 +139,10 @@ static int nand_idx_log_count = 0;
 static int nand_stream_start_log_count = 0;
 static int nand_stream_first_log_count = 0;
 #define NAND_STREAM_LOG_MAX 8192
+static int nand_dma_status_diag_count = 0;
+#define NAND_DMA_STATUS_DIAG_MAX 64
+static int nand_dma_write_diag_count = 0;
+#define NAND_DMA_WRITE_DIAG_MAX 96
 
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 uint64_t value, bool log, uint32_t pc)
@@ -247,18 +267,40 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
 
     /* DMA command block (0xC170-0xC177): ROM writes address + command */
     if (offset >= NAND_DMA_BASE && offset < NAND_DMA_END) {
+        uint32_t old_cursor = s->dma_cursor;
+        uint32_t old_total = s->dma_total_bytes;
+        uint32_t old_addr = s->dma_nand_addr;
+        bool old_active = s->dma_active;
         for (unsigned i = 0; i < size; i++) {
             uint32_t idx = (offset - NAND_DMA_BASE) + i;
             if (idx < 8)
                 s->dma_cmd[idx] = (uint8_t)((value >> (8u * i)) & 0xFFu);
         }
+        if ((pc >= UINT32_C(0x9FC010EC) && pc <= UINT32_C(0x9FC01360)) &&
+            nand_dma_write_diag_count < NAND_DMA_WRITE_DIAG_MAX) {
+            nand_dma_write_diag_count++;
+            fprintf(stderr,
+                    "[NAND_DMA_WR] pc=0x%08X off=0x%X size=%u val=0x%08" PRIX64
+                    " cmd=[%02X %02X %02X %02X %02X %02X %02X %02X]"
+                    " before={active=%d cursor=%u total=%u addr=0x%06X} #%d\n",
+                    pc, offset - NAND_DMA_BASE, size, value,
+                    s->dma_cmd[0], s->dma_cmd[1], s->dma_cmd[2], s->dma_cmd[3],
+                    s->dma_cmd[4], s->dma_cmd[5], s->dma_cmd[6], s->dma_cmd[7],
+                    old_active ? 1 : 0, old_cursor, old_total, old_addr,
+                    nand_dma_write_diag_count);
+        }
         /* Byte 7 write triggers transfer setup.
-         * First write (block_size, e.g. 32): latch command block.
-         * Second write (0xEC = read trigger): activate DMA. */
+         * The ROM uses at least two command-byte values here:
+         *   0x20 = main sector-read path used by FUN_9fc010ec
+         *   0xEC = scratch-buffer read path used by FUN_9fc01360
+         * Both need to activate the FIFO over the already-latched
+         * page-count/address block. Treating only 0xEC as the trigger
+         * leaves the scratch helper with the only live transfer and the
+         * later parser sees zeros from 0xAA00C170. */
         uint32_t last_byte = (offset - NAND_DMA_BASE) + size - 1;
         if (last_byte >= 7) {
             uint8_t cmd7 = s->dma_cmd[7];
-            if (cmd7 == 0xECu) {
+            if (cmd7 == 0x20u || cmd7 == 0xECu) {
                 /* Read trigger: decode address and activate FIFO */
                 uint32_t addr = (uint32_t)s->dma_cmd[3]
                               | ((uint32_t)s->dma_cmd[4] << 8)
@@ -271,10 +313,14 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 s->dma_total_bytes = pages * NAND_PAGE_DATA;
                 s->dma_cursor = 0;
                 s->dma_active = true;
-                if (log)
-                    fprintf(stderr, "[NAND_DMA] READ trigger: addr=0x%06X"
-                            " pages=%u total=%u PC=0x%08X\n",
-                            addr, pages, s->dma_total_bytes, pc);
+                if (log || ((pc >= UINT32_C(0x9FC010EC) &&
+                             pc <= UINT32_C(0x9FC01360)) &&
+                            nand_dma_write_diag_count <= NAND_DMA_WRITE_DIAG_MAX))
+                    fprintf(stderr, "[NAND_DMA] READ trigger cmd7=0x%02X:"
+                            " addr=0x%06X pages=%u total=%u PC=0x%08X"
+                            " before={active=%d cursor=%u total=%u addr=0x%06X}\n",
+                            cmd7, addr, pages, s->dma_total_bytes, pc,
+                            old_active ? 1 : 0, old_cursor, old_total, old_addr);
             } else {
                 /* Command latch (block_size etc.) — just record */
                 if (log)
@@ -840,7 +886,7 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                         fifo_read_count, s->dma_cursor,
                         s->dma_total_bytes, s->dma_nand_addr,
                         (unsigned)size, pc,
-                        nand_image_byte(s, s->dma_nand_addr +
+                        nand_dma_byte(s, s->dma_nand_addr +
                         s->dma_cursor));
                 }
                 fifo_read_count++;
@@ -849,12 +895,29 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
             for (unsigned i = 0; i < size; i++) {
                 uint8_t byte;
                 if (s->dma_cursor < s->dma_total_bytes)
-                    byte = nand_image_byte(s, s->dma_nand_addr + s->dma_cursor);
+                    byte = nand_dma_byte(s, s->dma_nand_addr + s->dma_cursor);
                 else
                     byte = 0xFFu;
                 val |= (uint64_t)byte << (8u * i);
                 s->dma_cursor++;
             }
+            /*
+             * Once the final FIFO byte has been consumed, transition back to
+             * the ROM's idle state. Returning a sticky synthetic "complete"
+             * status causes the ROM to recurse back through 0x9FC003DC and
+             * leak stack frames until execution falls into low RAM.
+             */
+            if (s->dma_cursor >= s->dma_total_bytes)
+                if (nand_dma_status_diag_count < NAND_DMA_STATUS_DIAG_MAX) {
+                    nand_dma_status_diag_count++;
+                    fprintf(stderr,
+                        "[NAND_DMA_DONE] pc=0x%08X cursor=%u total=%u"
+                        " active->0 addr=0x%06X #%d\n",
+                        pc, s->dma_cursor, s->dma_total_bytes,
+                        s->dma_nand_addr, nand_dma_status_diag_count);
+                }
+            if (s->dma_cursor >= s->dma_total_bytes)
+                s->dma_active = false;
             goto out;
         }
         /* Status and command block readback */
@@ -863,20 +926,29 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
             uint8_t byte;
             if ((reg_off + i) == 7) {
                 /* Status byte at offset 7 (0xC177):
-                 * ROM checks (status & 0x0F) == 0x0F at multiple points:
-                 *   lower nibble 0xF → "DMA idle/complete" → restart
-                 *   lower nibble ≠ 0xF → "DMA active" → proceed
+                 *   !dma_active             -> 0x50 (idle / transfer drained)
+                 *   dma_active             -> 0x58 (busy, data available)
                  *
-                 * State machine:
-                 *   !dma_active → 0x50 (idle, proceed to start DMA)
-                 *   dma_active && cursor < total → 0x58 (busy, data available)
-                 *   dma_active && cursor >= total → 0x5F (complete) */
+                 * The old sticky 0x5F "complete" state was wrong for the ROM
+                 * path: bit0 and low nibble 0xF make the MIPS16 dispatcher
+                 * re-enter 0x9FC003DC, which accumulates recursive frames.
+                 * Clearing dma_active when the FIFO drains makes subsequent
+                 * status reads collapse back to 0x50 instead. */
                 if (!s->dma_active) {
                     byte = 0x50u;        /* idle: no transfer in progress */
-                } else if (s->dma_cursor < s->dma_total_bytes) {
-                    byte = 0x58u;        /* busy: data available */
                 } else {
-                    byte = 0x5Fu;        /* complete: all data read */
+                    byte = 0x58u;        /* busy: data available */
+                }
+                if ((pc >= UINT32_C(0x9FC013B8) &&
+                     pc <= UINT32_C(0x9FC0141A)) &&
+                    nand_dma_status_diag_count < NAND_DMA_STATUS_DIAG_MAX) {
+                    nand_dma_status_diag_count++;
+                    fprintf(stderr,
+                        "[NAND_DMA_ST] pc=0x%08X byte=0x%02X"
+                        " active=%d cursor=%u total=%u addr=0x%06X #%d\n",
+                        pc, byte, s->dma_active ? 1 : 0,
+                        s->dma_cursor, s->dma_total_bytes,
+                        s->dma_nand_addr, nand_dma_status_diag_count);
                 }
             } else {
                 byte = s->dma_cmd[reg_off + i];
