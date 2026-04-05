@@ -464,3 +464,53 @@ Open:
   image, and where does that value land in the logical decoded NK stream?
 - What exact outer wrapper/compression grammar turns the on-NAND NK bytes at
   `0x14001` into the logical stream consumed by `0x80F0A160`?
+
+## Appendix: Interpreting `docs/be300_boot_rom.dis`
+
+The checked-in file [`be300_boot_rom.dis`](/Users/jroark/src/be300-framebuffer/docs/be300_boot_rom.dis)
+does not appear to be a directly correct ROM disassembly, but it is still
+useful as a transformed view of the raw ROM bytes.
+
+Confirmed from inspection:
+
+- it covers exactly `4096` 32-bit words, i.e. one `16 KB` ROM image
+- its displayed address range is `0x80001000..0x80004FFC`
+- the mnemonics are not trustworthy as-is
+
+The file makes sense if interpreted this way:
+
+- `0x80001000 + N` corresponds to real ROM VA `0x9FC00000 + N`
+- each printed 32-bit word must be byte-swapped before interpreting it as a
+  MIPS instruction or pointer
+
+Examples:
+
+```text
+dis file: 80001004: c0bf1a3c
+byte-swap -> 0x3C1ABFC0 = lui k0,0xBFC0
+real VA    -> 0x9FC00004
+```
+
+```text
+dis file: 80001008: f0025a37
+byte-swap -> 0x375A02F0 = ori k0,k0,0x02F0
+real VA    -> 0x9FC00008
+```
+
+```text
+dis file: 800031C0: 210cc09f
+byte-swap -> 0x9FC00C21
+real VA    -> 0x9FC021C0
+```
+
+That last example is especially useful because it matches the confirmed ROM
+function metadata table discussed above.
+
+Practical conclusion:
+
+- the file is a usable hex/index view of the ROM if you remap addresses and
+  byte-swap each 32-bit word
+- it is not a trustworthy source of instruction mnemonics
+- it does not solve the MIPS16 problem by itself, because the MIPS16 library
+  region still appears as nonsense or `illegal` instructions after this
+  correction model
