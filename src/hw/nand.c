@@ -528,15 +528,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         return;
     }
 
-    /* Catch-all: log unhandled writes (temporary debug) */
-    if (log) {
-        static int unhandled_w_count = 0;
-        if (unhandled_w_count < 100) {
-            fprintf(stderr, "[NAND_UNHANDLED] W%u offset=0x%04X val=0x%08" PRIX64
-                    " PC=0x%08X\n", size*8, offset, value, pc);
-            unhandled_w_count++;
-        }
-    }
 }
 
 uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, uint32_t pc)
