@@ -841,7 +841,10 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
             uint8_t byte;
             if ((reg_off + i) == 7) {
                 /* Status byte: bits 3,4,6 = ready/complete */
-                byte = 0x58u;
+                /* Status bits: 0x5F = bits 0-3 (ready/complete nibble) +
+                 * bit 4 + bit 6 (transfer complete).
+                 * ROM checks (status & 0x0F) == 0x0F before proceeding. */
+                byte = 0x5Fu;
             } else {
                 byte = s->dma_cmd[reg_off + i];
             }
