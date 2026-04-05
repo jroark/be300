@@ -245,6 +245,61 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         return;
     }
 
+    /* DMA command block (0xC170-0xC177): ROM writes address + command */
+    if (offset >= NAND_DMA_BASE && offset < NAND_DMA_END) {
+        for (unsigned i = 0; i < size; i++) {
+            uint32_t idx = (offset - NAND_DMA_BASE) + i;
+            if (idx < 8)
+                s->dma_cmd[idx] = (uint8_t)((value >> (8u * i)) & 0xFFu);
+        }
+        /* Byte 7 write triggers transfer setup.
+         * First write (block_size, e.g. 32): latch command block.
+         * Second write (0xEC = read trigger): activate DMA. */
+        uint32_t last_byte = (offset - NAND_DMA_BASE) + size - 1;
+        if (last_byte >= 7) {
+            uint8_t cmd7 = s->dma_cmd[7];
+            if (cmd7 == 0xECu) {
+                /* Read trigger: decode address and activate FIFO */
+                uint32_t addr = (uint32_t)s->dma_cmd[3]
+                              | ((uint32_t)s->dma_cmd[4] << 8)
+                              | ((uint32_t)s->dma_cmd[5] << 16)
+                              | ((uint32_t)(s->dma_cmd[6] & 0x1Fu) << 24);
+                uint32_t pages = s->dma_cmd[2];
+                if (pages == 0) pages = 1;
+                s->dma_nand_addr = addr;
+                s->dma_page_count = pages;
+                s->dma_total_bytes = pages * NAND_PAGE_DATA;
+                s->dma_cursor = 0;
+                s->dma_active = true;
+                if (log)
+                    fprintf(stderr, "[NAND_DMA] READ trigger: addr=0x%06X"
+                            " pages=%u total=%u PC=0x%08X\n",
+                            addr, pages, s->dma_total_bytes, pc);
+            } else {
+                /* Command latch (block_size etc.) — just record */
+                if (log)
+                    fprintf(stderr, "[NAND_DMA] CMD byte7=0x%02X"
+                            " cmd=[%02X %02X %02X %02X %02X %02X %02X %02X]"
+                            " PC=0x%08X\n",
+                            cmd7,
+                            s->dma_cmd[0], s->dma_cmd[1], s->dma_cmd[2],
+                            s->dma_cmd[3], s->dma_cmd[4], s->dma_cmd[5],
+                            s->dma_cmd[6], s->dma_cmd[7], pc);
+            }
+        }
+        return;
+    }
+
+    /* DMA control/acknowledge (0xC376) */
+    if (offset == NAND_DMA_CTRL) {
+        /* Writing 0 acknowledges/resets the current transfer */
+        s->dma_active = false;
+        s->dma_cursor = 0;
+        if (log)
+            fprintf(stderr, "[NAND_DMA] ACK (reset) PC=0x%08X\n", pc);
+        return;
+    }
+
     /* Direct I/O control register (D002): sets CLE/ALE mode for D000 */
     if (offset == NAND_REG_DIO_CTRL) {
         s->dio_mode = (uint8_t)(value & 0xFFu);
@@ -471,6 +526,16 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
     /* Status/ready register write — some controllers allow clearing */
     if (offset == NAND_REG_READY) {
         return;
+    }
+
+    /* Catch-all: log unhandled writes (temporary debug) */
+    if (log) {
+        static int unhandled_w_count = 0;
+        if (unhandled_w_count < 100) {
+            fprintf(stderr, "[NAND_UNHANDLED] W%u offset=0x%04X val=0x%08" PRIX64
+                    " PC=0x%08X\n", size*8, offset, value, pc);
+            unhandled_w_count++;
+        }
     }
 }
 
@@ -750,21 +815,38 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
         goto out;
     }
 
-    /* NAND transfer status register (0xC170-0xC177).
-     * HW dump: 0xC170=varies (DMA data), 0xC174=0x50E00113.
-     * Byte 7 (0xC177): bit 6 = transfer complete, bit 3 = data ready.
-     * ROM polls bits 3 and 6 in different call modes. Return all
-     * ready bits immediately since we don't emulate transfer timing. */
-    if (offset >= 0xC170u && offset < 0xC178u) {
-        static const uint8_t xfer_status[] = {
-            0x00, 0x00, 0x00, 0x00,
-            /* 0xC174-0xC177: status with bits 3,4,6 set = 0x58 */
-            0x13, 0x01, 0xE0, 0x58
-        };
-        uint32_t idx = offset - 0xC170u;
+    /* DMA command/status/FIFO registers (0xC170-0xC177).
+     * Offset 0 (0xC170): FIFO data port — sequential NAND page reads.
+     * Offset 7 (0xC177): Status byte — bit 6=idle/complete, bit 3=data ready.
+     * Other offsets: return latched command block bytes. */
+    if (offset >= NAND_DMA_BASE && offset < NAND_DMA_END) {
+        uint32_t reg_off = offset - NAND_DMA_BASE;
+        if (reg_off == 0 && s->dma_active) {
+            /* FIFO data port: return sequential NAND page data */
+            val = 0;
+            for (unsigned i = 0; i < size; i++) {
+                uint8_t byte;
+                if (s->dma_cursor < s->dma_total_bytes)
+                    byte = nand_image_byte(s, s->dma_nand_addr + s->dma_cursor);
+                else
+                    byte = 0xFFu;
+                val |= (uint64_t)byte << (8u * i);
+                s->dma_cursor++;
+            }
+            goto out;
+        }
+        /* Status and command block readback */
         val = 0;
-        for (unsigned i = 0; i < size && (idx + i) < sizeof(xfer_status); i++)
-            val |= (uint64_t)xfer_status[idx + i] << (i * 8);
+        for (unsigned i = 0; i < size && (reg_off + i) < 8; i++) {
+            uint8_t byte;
+            if ((reg_off + i) == 7) {
+                /* Status byte: bits 3,4,6 = ready/complete */
+                byte = 0x58u;
+            } else {
+                byte = s->dma_cmd[reg_off + i];
+            }
+            val |= (uint64_t)byte << (8u * i);
+        }
         goto out;
     }
 
