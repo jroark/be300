@@ -298,11 +298,16 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         if (last_byte >= 7) {
             uint8_t cmd7 = s->dma_cmd[7];
             if (cmd7 == 0x20u || cmd7 == 0xECu) {
-                /* Read trigger: decode address and activate FIFO */
+                /* Read trigger: decode page number and activate FIFO.
+                 *
+                 * FUN_9fc01318 splits a 32-bit page number across
+                 * cmd[3..6], with 0xE0 OR'd into cmd[6] (ATA drive/head
+                 * convention).  The page number × 512 gives the byte
+                 * offset into the NAND image. */
                 uint32_t page = (uint32_t)s->dma_cmd[3]
                               | ((uint32_t)s->dma_cmd[4] << 8)
                               | ((uint32_t)s->dma_cmd[5] << 16)
-                              | ((uint32_t)(s->dma_cmd[6] & 0x1Fu) << 24);
+                              | ((uint32_t)(s->dma_cmd[6] & 0x0Fu) << 24);
                 uint32_t pages = s->dma_cmd[2];
                 if (pages == 0) pages = 1;
                 s->dma_nand_addr = page * NAND_PAGE_DATA;
@@ -314,11 +319,11 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                              pc <= UINT32_C(0x9FC01360)) &&
                             nand_dma_write_diag_count <= NAND_DMA_WRITE_DIAG_MAX))
                     fprintf(stderr, "[NAND_DMA] READ trigger cmd7=0x%02X:"
-                            " page=0x%06X byte_off=0x%06X pages=%u total=%u"
-                            " PC=0x%08X"
+                            " page=0x%06X byte_off=0x%06X"
+                            " pages=%u total=%u PC=0x%08X"
                             " before={active=%d cursor=%u total=%u addr=0x%06X}\n",
-                            cmd7, page, s->dma_nand_addr, pages,
-                            s->dma_total_bytes, pc,
+                            cmd7, page, s->dma_nand_addr,
+                            pages, s->dma_total_bytes, pc,
                             old_active ? 1 : 0, old_cursor, old_total, old_addr);
             } else {
                 /* Command latch (block_size etc.) — just record */
