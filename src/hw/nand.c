@@ -292,11 +292,34 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
 
     /* DMA control/acknowledge (0xC376) */
     if (offset == NAND_DMA_CTRL) {
-        /* Writing 0 acknowledges/resets the current transfer */
-        s->dma_active = false;
-        s->dma_cursor = 0;
-        if (log)
-            fprintf(stderr, "[NAND_DMA] ACK (reset) PC=0x%08X\n", pc);
+        /* The ROM writes ACK to start/acknowledge a DMA transfer.
+         * On real hardware, the DMA controller reads the next NAND page
+         * into the FIFO buffer.  Set dma_active so the status at 0xC177
+         * returns 0x5F (complete) and the FIFO at 0xC170 yields data.
+         *
+         * The DMA address starts at the beginning of the NAND image
+         * on the first ACK, then advances sequentially.  The ROM reads
+         * NAND pages in order for the SPL/NK loader. */
+        if (!s->dma_active) {
+            /* First activation: start from current dma_nand_addr (set by
+             * prior command writes, or 0 for boot) */
+            s->dma_active = true;
+            s->dma_cursor = 0;
+            s->dma_total_bytes = NAND_PAGE_RAW;   /* one page = 528 bytes */
+            if (log)
+                fprintf(stderr,
+                    "[NAND_DMA] ACK → activate addr=0x%08X total=%u PC=0x%08X\n",
+                    s->dma_nand_addr, s->dma_total_bytes, pc);
+        } else {
+            /* Subsequent ACK: advance to next page */
+            s->dma_nand_addr += NAND_PAGE_RAW;
+            s->dma_cursor = 0;
+            s->dma_total_bytes = NAND_PAGE_RAW;
+            if (log)
+                fprintf(stderr,
+                    "[NAND_DMA] ACK → next page addr=0x%08X PC=0x%08X\n",
+                    s->dma_nand_addr, pc);
+        }
         return;
     }
 
@@ -831,11 +854,22 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
         for (unsigned i = 0; i < size && (reg_off + i) < 8; i++) {
             uint8_t byte;
             if ((reg_off + i) == 7) {
-                /* Status byte: bits 3,4,6 = ready/complete */
-                /* Status bits: 0x5F = bits 0-3 (ready/complete nibble) +
-                 * bit 4 + bit 6 (transfer complete).
-                 * ROM checks (status & 0x0F) == 0x0F before proceeding. */
-                byte = 0x5Fu;
+                /* Status byte at offset 7 (0xC177):
+                 * ROM checks (status & 0x0F) == 0x0F at multiple points:
+                 *   lower nibble 0xF → "DMA idle/complete" → restart
+                 *   lower nibble ≠ 0xF → "DMA active" → proceed
+                 *
+                 * State machine:
+                 *   !dma_active → 0x50 (idle, proceed to start DMA)
+                 *   dma_active && cursor < total → 0x58 (busy, data available)
+                 *   dma_active && cursor >= total → 0x5F (complete) */
+                if (!s->dma_active) {
+                    byte = 0x50u;        /* idle: no transfer in progress */
+                } else if (s->dma_cursor < s->dma_total_bytes) {
+                    byte = 0x58u;        /* busy: data available in FIFO */
+                } else {
+                    byte = 0x5Fu;        /* complete: all data read */
+                }
             } else {
                 byte = s->dma_cmd[reg_off + i];
             }

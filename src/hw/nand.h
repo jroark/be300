@@ -46,8 +46,8 @@
 #define NAND_DMA_BASE     0xC170u   /* DMA command/status/FIFO base */
 #define NAND_DMA_END      0xC178u   /* End of DMA command block */
 #define NAND_DMA_CTRL     0xC376u   /* DMA control/acknowledge */
-#define NAND_REG_DIO_DATA 0xD000u   /* NAND Direct I/O data port */
-#define NAND_REG_DIO_CTRL 0xD002u   /* NAND Direct I/O control (CLE/ALE) */
+#define NAND_REG_DIO_DATA 0xD200u   /* NAND Direct I/O data port */
+#define NAND_REG_DIO_CTRL 0xD202u   /* NAND Direct I/O control (CLE/ALE) */
 
 /* NAND geometry: 512B pages + 16B OOB = 528B per raw page */
 #define NAND_PAGE_DATA    512u
