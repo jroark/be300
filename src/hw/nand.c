@@ -292,34 +292,19 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
 
     /* DMA control/acknowledge (0xC376) */
     if (offset == NAND_DMA_CTRL) {
-        /* The ROM writes ACK to start/acknowledge a DMA transfer.
-         * On real hardware, the DMA controller reads the next NAND page
-         * into the FIFO buffer.  Set dma_active so the status at 0xC177
-         * returns 0x5F (complete) and the FIFO at 0xC170 yields data.
-         *
-         * The DMA address starts at the beginning of the NAND image
-         * on the first ACK, then advances sequentially.  The ROM reads
-         * NAND pages in order for the SPL/NK loader. */
-        if (!s->dma_active) {
-            /* First activation: start from current dma_nand_addr (set by
-             * prior command writes, or 0 for boot) */
-            s->dma_active = true;
-            s->dma_cursor = 0;
-            s->dma_total_bytes = NAND_PAGE_RAW;   /* one page = 528 bytes */
-            if (log)
-                fprintf(stderr,
-                    "[NAND_DMA] ACK → activate addr=0x%08X total=%u PC=0x%08X\n",
+        /* ACK activates DMA for the next page read.  On real hardware,
+         * the DMA controller reads the next NAND page and fires a
+         * completion interrupt.  We activate immediately with the
+         * current NAND address and advance the address for the next ACK. */
+        /* If a previous transfer was active, advance past it */
+        if (s->dma_active && s->dma_cursor > 0)
+            s->dma_nand_addr += s->dma_total_bytes;
+        s->dma_cursor = 0;
+        s->dma_total_bytes = NAND_PAGE_DATA;
+        s->dma_active = true;
+        if (log)
+            fprintf(stderr, "[NAND_DMA] ACK → page at 0x%06X (%u bytes) PC=0x%08X\n",
                     s->dma_nand_addr, s->dma_total_bytes, pc);
-        } else {
-            /* Subsequent ACK: advance to next page */
-            s->dma_nand_addr += NAND_PAGE_RAW;
-            s->dma_cursor = 0;
-            s->dma_total_bytes = NAND_PAGE_RAW;
-            if (log)
-                fprintf(stderr,
-                    "[NAND_DMA] ACK → next page addr=0x%08X PC=0x%08X\n",
-                    s->dma_nand_addr, pc);
-        }
         return;
     }
 
