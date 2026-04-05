@@ -48,13 +48,16 @@ DEVICE_ACCESS(be300_nand)
 
         /* Simulate DMA completion interrupt effects:
          * - Reset CP0 Count (ROM uses hardcoded timing constants)
-         * - Set $s3 ($19) = 1 (ROM polls for page-read-complete)
+         * - Set $s3 ($19) = 1 (DMA poll at 0x1434 checks s3==1 to exit)
+         * Note: s3=1 also becomes the loop count at 0x1164 (MOVR32 a3=s3),
+         * limiting the callback table setup to 1 iteration. On real HW the
+         * DMA interrupt handler sets s3=1; we set it on DMA trigger.
          * Trigger on both ACK (0xC376) and 0xEC command (0xC177). */
         if (offset == NAND_DMA_CTRL ||
             (offset >= NAND_DMA_BASE && offset < NAND_DMA_END &&
              d->nand->dma_cmd[7] == 0xECu)) {
             cpu->cd.mips.coproc[0]->reg[COP0_COUNT] = 0;
-            cpu->cd.mips.gpr[19] = 1;  /* $s3 = page complete */
+            cpu->cd.mips.gpr[19] = 1;  /* $s3 = DMA complete */
         }
     } else {
         uint64_t val = nand_read(d->nand, offset, (unsigned)len, d->log_mmio, pc);
