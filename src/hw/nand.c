@@ -750,6 +750,24 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
         goto out;
     }
 
+    /* NAND transfer status register (0xC170-0xC177).
+     * HW dump: 0xC170=varies (DMA data), 0xC174=0x50E00113.
+     * Byte 7 (0xC177): bit 6 = transfer complete, bit 3 = data ready.
+     * ROM polls bits 3 and 6 in different call modes. Return all
+     * ready bits immediately since we don't emulate transfer timing. */
+    if (offset >= 0xC170u && offset < 0xC178u) {
+        static const uint8_t xfer_status[] = {
+            0x00, 0x00, 0x00, 0x00,
+            /* 0xC174-0xC177: status with bits 3,4,6 set = 0x58 */
+            0x13, 0x01, 0xE0, 0x58
+        };
+        uint32_t idx = offset - 0xC170u;
+        val = 0;
+        for (unsigned i = 0; i < size && (idx + i) < sizeof(xfer_status); i++)
+            val |= (uint64_t)xfer_status[idx + i] << (i * 8);
+        goto out;
+    }
+
     /* Command/address range reads — return 0 */
     if (offset >= NAND_CMD_BASE && offset < NAND_CMD_END) {
         val = 0;

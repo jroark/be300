@@ -759,6 +759,8 @@ static bool be300_run_batch(machine_t *m)
         }
     }
 
+    /* (debug instrumentation removed) */
+
     /*
      * Detect NK.exe entry and dump decompressed binary for analysis.
      * The SPL decompresses NK.exe to PA 0x60000 and jumps to
