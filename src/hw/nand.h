@@ -113,7 +113,7 @@ typedef struct {
 
     /* DMA transfer engine state (0xC170-0xC377 path used by ROM) */
     uint8_t  dma_cmd[8];                  /* command block at 0xC170-0xC177 */
-    uint32_t dma_nand_addr;               /* decoded NAND byte offset from cmd bytes 3-6 */
+    uint32_t dma_nand_addr;               /* decoded NAND byte offset (page from cmd[3..6] × 512) */
     uint32_t dma_page_count;              /* pages to transfer (cmd byte 2) */
     uint32_t dma_cursor;                  /* byte cursor into current FIFO transfer */
     uint32_t dma_total_bytes;             /* total bytes available for FIFO reads */

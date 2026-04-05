@@ -11,20 +11,17 @@ static uint8_t nand_image_byte(const nand_state_t *s, uint32_t off)
     return s->image[off];
 }
 
-static uint8_t nand_dma_byte(const nand_state_t *s, uint32_t dma_off)
+static uint8_t nand_dma_byte(const nand_state_t *s, uint32_t byte_off)
 {
     /*
-     * The ROM's byte-wide DMA path is not reading from raw NAND offset 0.
-     * On the BE-300 restore images, the logical NAND Disk exposed through the
-     * ROM FAT probe starts at the filesystem boot sector, which sits at raw
-     * image offset 0x003B4000. Sector 0 on the DMA path must therefore map
-     * to that FAT boot sector rather than to the all-0xFF boot metadata area.
+     * DMA FIFO data read.  The caller supplies a fully resolved byte offset
+     * into the NAND image (dma_nand_addr + dma_cursor), where dma_nand_addr
+     * was converted from the page number in cmd[3..6] at trigger time.
      *
-     * This leaves the earlier SPL/XFER engine paths untouched: they still use
-     * the raw image layout with the SPL at 0x4000 and the NK wrapper at
-     * 0x14000.
+     * The ROM uses this path for ALL NAND regions: partition table (page 0),
+     * SPL (page 0x20 = offset 0x4000), and later the FAT filesystem.
      */
-    return nand_image_byte(s, UINT32_C(0x003B4000) + dma_off);
+    return nand_image_byte(s, byte_off);
 }
 
 static uint8_t nand_stream_oob_byte(const nand_state_t *s,
@@ -302,13 +299,13 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             uint8_t cmd7 = s->dma_cmd[7];
             if (cmd7 == 0x20u || cmd7 == 0xECu) {
                 /* Read trigger: decode address and activate FIFO */
-                uint32_t addr = (uint32_t)s->dma_cmd[3]
+                uint32_t page = (uint32_t)s->dma_cmd[3]
                               | ((uint32_t)s->dma_cmd[4] << 8)
                               | ((uint32_t)s->dma_cmd[5] << 16)
                               | ((uint32_t)(s->dma_cmd[6] & 0x1Fu) << 24);
                 uint32_t pages = s->dma_cmd[2];
                 if (pages == 0) pages = 1;
-                s->dma_nand_addr = addr;
+                s->dma_nand_addr = page * NAND_PAGE_DATA;
                 s->dma_page_count = pages;
                 s->dma_total_bytes = pages * NAND_PAGE_DATA;
                 s->dma_cursor = 0;
@@ -317,9 +314,11 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                              pc <= UINT32_C(0x9FC01360)) &&
                             nand_dma_write_diag_count <= NAND_DMA_WRITE_DIAG_MAX))
                     fprintf(stderr, "[NAND_DMA] READ trigger cmd7=0x%02X:"
-                            " addr=0x%06X pages=%u total=%u PC=0x%08X"
+                            " page=0x%06X byte_off=0x%06X pages=%u total=%u"
+                            " PC=0x%08X"
                             " before={active=%d cursor=%u total=%u addr=0x%06X}\n",
-                            cmd7, addr, pages, s->dma_total_bytes, pc,
+                            cmd7, page, s->dma_nand_addr, pages,
+                            s->dma_total_bytes, pc,
                             old_active ? 1 : 0, old_cursor, old_total, old_addr);
             } else {
                 /* Command latch (block_size etc.) — just record */
