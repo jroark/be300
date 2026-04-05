@@ -3,13 +3,13 @@
 ## Reference & Documentation
 I have access to real be300 hardware and a Virtual machine with eMbedded Visual C++ 3.0 (with the be300 SDK).
 I also have another VM with Platform Builder 3.0.
-- docs/Vr4131-um_200203.pdf - NEC vr4131 SOC Users Manual
-- docs/U14579EJ2V0UM00.pdf - NEC vrc4173 Companion Chip Users Manual
-- docs/hardware.txt - notes from Linux4be project developers
-- docs/hw_dump_combined.txt - real hardware memory/register dumps from BEDiag tool
-- docs/BE300BootROM_v1.txt - full 16KB ROM dump (PA 0x1FC00000, CRC32=0xFA3B5582)
-- docs/be300_boot_rom.bin - extracted ROM binary (embedded in emulator at build time via xxd)
-- ce/bediag/ - BEDiag diagnostic tool source and output
+- `docs/Vr4131-um_200203.pdf` - NEC vr4131 SOC Users Manual
+- `docs/U14579EJ2V0UM00.pdf` - NEC vrc4173 Companion Chip Users Manual
+- `docs/hardware.txt` - notes from Linux4be project developers
+- `docs/hw_dump_combined.txt` - real hardware memory/register dumps from BEDiag tool
+- `docs/BE300BootROM_v1.txt` - full 16KB ROM dump (PA 0x1FC00000, CRC32=0xFA3B5582)
+- `docs/be300_boot_rom.bin` - extracted ROM binary (embedded in emulator at build time via xxd)
+- `ce/bediag/` - BEDiag diagnostic tool source and output
 
 ## Source Code Layout
 
