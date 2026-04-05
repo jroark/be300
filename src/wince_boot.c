@@ -731,6 +731,58 @@ void wince_boot_check_dma_autocopy(struct cpu *cpu)
     if (!m || !m->wince.active)
         return;
     maybe_dma_autocopy(m, cpu);
+
+    /*
+     *  Callback table frame copy:
+     *
+     *  ROM function 0x10EC deliberately changes SP from the normal stack
+     *  (0xA0007Cxx) to the callback table area (0x80008080).  When it
+     *  calls the epilogue at 0xAD0, the epilogue reads the saved register
+     *  frame from SP+16 = 0x80008090.  But the prologue at 0xA98 saved
+     *  the registers at the OLD stack (0xA0007C60).  The processing code
+     *  should copy the frame, but it fails because $s6/$s7 (which become
+     *  $a2/$a0 via MOVR32) are not properly initialized.
+     *
+     *  Fix: when the JALX to epilogue 0xAD0 is about to fire from the
+     *  callback setup function (SP=0x80008080), copy the saved frame from
+     *  the old stack to the callback table area.
+     */
+    #define EPILOGUE_0AD0_PC    0x9FC00AD0u
+    #define CALLBACK_TABLE_SP   0x80008080u
+    #define OLD_STACK_FRAME     0xA0007C60u  /* prologue saved here */
+    {
+        static int frame_copy_done = 0;
+        uint32_t pc32 = (uint32_t)cpu->pc;
+        /* Detect: we're in the JALX delay slot targeting 0xAD0,
+         * and SP is the callback table address. The delay slot
+         * at 0x11AC (LI a0, 16) hasn't executed yet when the
+         * JALX delay mechanism fires. Check for the instruction
+         * just before: 0x11A8 is the JAL, delay slot is 0x11AC. */
+        if (!frame_copy_done &&
+            (pc32 & 0x3FFF) == 0x11ACu &&
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] ==
+            CALLBACK_TABLE_SP) {
+            frame_copy_done = 1;
+            /* Copy 40-byte frame: prologue 0xA98 saves 40 bytes
+             * (s0-s7, s8, v0 at offsets 0-36).
+             * Epilogue reads from SP+a0 where a0=16 (delay slot).
+             * So write to 0x80008080+16 = 0x80008090. */
+            uint32_t dst_va = CALLBACK_TABLE_SP + 16;
+            uint32_t src_va = OLD_STACK_FRAME;
+            fprintf(stderr,
+                "[FRAME_COPY] copying 40 bytes from 0x%08X"
+                " to 0x%08X\n", src_va, dst_va);
+            for (int i = 0; i < 40; i += 4) {
+                uint8_t buf[4];
+                cpu->memory_rw(cpu, cpu->mem,
+                    (uint64_t)(src_va + i), buf, 4,
+                    MEM_READ, CACHE_DATA);
+                cpu->memory_rw(cpu, cpu->mem,
+                    (uint64_t)(dst_va + i), buf, 4,
+                    MEM_WRITE, CACHE_DATA);
+            }
+        }
+    }
 }
 
 void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
