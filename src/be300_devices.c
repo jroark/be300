@@ -46,22 +46,15 @@ DEVICE_ACCESS(be300_nand)
         uint64_t val = memory_readmax64(cpu, data, len);
         nand_write(d->nand, offset, (unsigned)len, val, d->log_mmio, pc);
 
-        /* When DMA ACK is written, simulate the effects that real
-         * hardware's DMA completion interrupt handler would produce:
-         *
-         * 1. Reset CP0 Count — the ROM's MIPS16 NAND code uses
-         *    Count-based timing with hardcoded constants calibrated
-         *    to real hardware cycle counts. GXemul increments Count
-         *    per-instruction, making it ~10x too large.
-         *
-         * 2. Set $s3 ($19) = 1 — the ROM's DMA polling loop at
-         *    0x142A checks ($s3 & 0xFF) == 1 to detect "page read
-         *    complete." On real hardware, the DMA completion interrupt
-         *    handler sets this. Without it, the polling loop runs
-         *    forever. */
-        if (offset == NAND_DMA_CTRL) {
+        /* Simulate DMA completion interrupt effects:
+         * - Reset CP0 Count (ROM uses hardcoded timing constants)
+         * - Set $s3 ($19) = 1 (ROM polls for page-read-complete)
+         * Trigger on both ACK (0xC376) and 0xEC command (0xC177). */
+        if (offset == NAND_DMA_CTRL ||
+            (offset >= NAND_DMA_BASE && offset < NAND_DMA_END &&
+             d->nand->dma_cmd[7] == 0xECu)) {
             cpu->cd.mips.coproc[0]->reg[COP0_COUNT] = 0;
-            cpu->cd.mips.gpr[19] = 1;  /* $s3 = 1 (page complete) */
+            cpu->cd.mips.gpr[19] = 1;  /* $s3 = page complete */
         }
     } else {
         uint64_t val = nand_read(d->nand, offset, (unsigned)len, d->log_mmio, pc);
