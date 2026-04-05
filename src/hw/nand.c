@@ -866,7 +866,7 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                 if (!s->dma_active) {
                     byte = 0x50u;        /* idle: no transfer in progress */
                 } else if (s->dma_cursor < s->dma_total_bytes) {
-                    byte = 0x58u;        /* busy: data available in FIFO */
+                    byte = 0xD8u;        /* busy: data available, bit 7 set */
                 } else {
                     byte = 0x5Fu;        /* complete: all data read */
                 }
