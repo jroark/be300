@@ -13,6 +13,8 @@
 #include <string.h>
 
 #include "cpu.h"
+#include "cop0.h"
+#include "cpu_mips.h"
 #include "machine.h"
 #include "memory.h"
 #include "misc.h"
@@ -43,6 +45,16 @@ DEVICE_ACCESS(be300_nand)
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
         nand_write(d->nand, offset, (unsigned)len, val, d->log_mmio, pc);
+
+        /* Reset CP0 Count when DMA ACK is written.
+         * The ROM's MIPS16 NAND code uses Count-based timing with
+         * hardcoded constants calibrated to real hardware cycle timing.
+         * GXemul increments Count per-instruction instead of per-cycle,
+         * making Count much larger than real hardware at the same point.
+         * Resetting Count here aligns the emulated timing with the ROM's
+         * expectations for the DMA polling loops. */
+        if (offset == NAND_DMA_CTRL)
+            cpu->cd.mips.coproc[0]->reg[COP0_COUNT] = 0;
     } else {
         uint64_t val = nand_read(d->nand, offset, (unsigned)len, d->log_mmio, pc);
         memory_writemax64(cpu, data, len, val);
