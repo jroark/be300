@@ -43,6 +43,9 @@
 #define NAND_REG_CMD      0xAC00u   /* Command opcode */
 #define NAND_REG_ADDR     0xAC04u   /* Address byte */
 #define NAND_REG_READY    0xAC48u   /* Ready/status (bit 0) */
+#define NAND_DMA_BASE     0xC170u   /* DMA command/status/FIFO base */
+#define NAND_DMA_END      0xC178u   /* End of DMA command block */
+#define NAND_DMA_CTRL     0xC376u   /* DMA control/acknowledge */
 #define NAND_REG_DIO_DATA 0xD000u   /* NAND Direct I/O data port */
 #define NAND_REG_DIO_CTRL 0xD002u   /* NAND Direct I/O control (CLE/ALE) */
 
@@ -107,6 +110,14 @@ typedef struct {
     bool     wince_mode;                   /* true after NK.exe loads (enables STATUS2/buffer) */
     uint8_t  dio_mode;                     /* D002 control: 0x80=CLE, 0x01=ALE, 0=data */
     uint8_t  dio_last_write;              /* last byte written to D000 (for echo-back) */
+
+    /* DMA transfer engine state (0xC170-0xC377 path used by ROM) */
+    uint8_t  dma_cmd[8];                  /* command block at 0xC170-0xC177 */
+    uint32_t dma_nand_addr;               /* decoded NAND byte offset from cmd bytes 3-6 */
+    uint32_t dma_page_count;              /* pages to transfer (cmd byte 2) */
+    uint32_t dma_cursor;                  /* byte cursor into current FIFO transfer */
+    uint32_t dma_total_bytes;             /* total bytes available for FIFO reads */
+    bool     dma_active;                  /* true when data is available for FIFO reads */
 } nand_state_t;
 
 void     nand_init(nand_state_t *s, const uint8_t *image, size_t size);
