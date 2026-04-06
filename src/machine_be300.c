@@ -573,13 +573,27 @@ machine_t *be300_create(const machine_config_t *cfg)
                             0x1040FFF7); /* beq v0, zero, 0x3B0 */
                         store_32bit_word(m->cpu, rom_va + 0x3D4,
                             0x00000000); /* nop (delay slot) */
-                        /* FUN_9fc003dc (recursive DMA dispatcher) at
-                         * +0x3DC has `j 0x3A0` at +0x3E4.  After the
-                         * relocation, +0x3A0 is the section copier
-                         * setup, not the boot dispatcher.  Update the
-                         * J target to +0x3B0 (boot dispatcher) so the
-                         * recursive path skips the section copier and
-                         * goes directly to the boot retry loop. */
+                        /* Entry point load + jump to SPL/NK: the original
+                         * code at +0x3C8-0x3D4 (lui/addiu/lw/jr loading
+                         * PA 0x24FC and jumping) was overwritten by the
+                         * relocation.
+                         *
+                         * FUN_9fc00488 leaves $t0 = 0xA00024FC as a side
+                         * effect.  Use the BEQ delay slot to dereference
+                         * it (load entry point), then JR on fall-through.
+                         *
+                         * +0x3DC (FUN_9fc003dc) is clobbered by the NOP
+                         * delay slot, but the MIPS16 JALX to +0x3DC will
+                         * hit NOP → fall through to +0x3E0 (li $a0,4) →
+                         * +0x3E4 (j boot_loop), which still retries. */
+                        store_32bit_word(m->cpu, rom_va + 0x3D4,
+                            0x8D080000); /* lw $t0, 0($t0) — BEQ delay slot */
+                        store_32bit_word(m->cpu, rom_va + 0x3D8,
+                            0x01000008); /* jr $t0 — jump to entry point */
+                        store_32bit_word(m->cpu, rom_va + 0x3DC,
+                            0x00000000); /* nop — JR delay slot */
+                        /* +0x3E4: patch original J target to boot loop
+                         * (was j +0x3A0, needs j +0x3B0 after relocation) */
                         store_32bit_word(m->cpu, rom_va + 0x3E4,
                             0x0BF000EC); /* j 0x9FC003B0 */
                         /* NK.exe jump trampoline at +0x2360 (after
@@ -598,7 +612,7 @@ machine_t *be300_create(const machine_config_t *cfg)
                         store_32bit_word(m->cpu, rom_va + 0x3F0,
                             0x24040004); /* li $a0, 4 (was +0x3E0) */
                         store_32bit_word(m->cpu, rom_va + 0x3F4,
-                            0x0BF000E8); /* j 0xFC003A0 -> +0x3B0 relocated */
+                            0x0BF000EC); /* j 0x9FC003B0 (boot loop) */
                         store_32bit_word(m->cpu, rom_va + 0x3F8,
                             0x00000000); /* nop */
 
@@ -630,6 +644,20 @@ machine_t *be300_create(const machine_config_t *cfg)
                         store_32bit_word(m->cpu, rom_va + 0x520,
                             0x00461023); /* WORKAROUND: subu v0,v0,a2 */
 
+                        /* Verify entry point jump patch */
+                        {
+                            uint8_t vb[4]; uint32_t iv[4];
+                            for (int vi=0; vi<4; vi++) {
+                                m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    rom_va + 0x3D0 + vi*4, vb, 4,
+                                    MEM_READ, CACHE_DATA);
+                                iv[vi] = vb[0]|(vb[1]<<8)|(vb[2]<<16)|(vb[3]<<24);
+                            }
+                            fprintf(stderr,
+                                "[BE300] ROM verify: +3D0=%08X +3D4=%08X"
+                                " +3D8=%08X +3DC=%08X\n",
+                                iv[0], iv[1], iv[2], iv[3]);
+                        }
                         fprintf(stderr, "[BE300] Patched ROM BEV"
                             " vectors: TLB@+0x200, GenExc@+0x2300"
                             " (stub@+0x280),"
@@ -833,7 +861,18 @@ static bool be300_run_batch(machine_t *m)
         static int spl_probe_done = 0;
         uint32_t pc = (uint32_t)m->cpu->pc;
         uint32_t pa = pc & 0x1FFFFFFFu;
-        if (!spl_entry_logged && pa >= 0xF00000u && pa < 0xF10000u) {
+        /* Also detect exceptions (BEV handler entry) */
+        if (pa == 0x1FC00200u || pa == 0x1FC00280u || pa == 0x1FC00380u) {
+            static int exc_logged = 0;
+            if (exc_logged < 5) {
+                uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
+                fprintf(stderr,
+                    "[BE300] *** BEV EXCEPTION at PA=0x%08X EPC=0x%08X Cause=0x%08X ***\n",
+                    pa, (uint32_t)cp0[COP0_EPC], (uint32_t)cp0[COP0_CAUSE]);
+                exc_logged++;
+            }
+        }
+        if (!spl_entry_logged && pa >= 0xF00000u && pa < 0x1000000u) {
             fprintf(stderr,
                     "[BE300] *** SPL ENTRY DETECTED: PC=0x%08X PA=0x%08X batch=%d ***\n",
                     pc, pa, m->loop_count);
@@ -854,12 +893,28 @@ static bool be300_run_batch(machine_t *m)
             } else {
                 fprintf(stderr, "[BE300] SPL PROBE PA=0xF00000: memory_rw FAILED\n");
             }
-            /* Also probe the entry point at 0x80F00004 */
+            /* Also probe the entry point at 0x80F00004 and JR target 0x80F02404 */
             spl_va = 0xffffffff80F00004ULL;
             if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
                     spl_va, buf, 4, MEM_READ, CACHE_DATA)) {
                 uint32_t instr = buf[0] | (buf[1]<<8) | (buf[2]<<16) | (buf[3]<<24);
                 fprintf(stderr, "[BE300] SPL PROBE PA=0xF00004: instruction=0x%08X\n", instr);
+            }
+            /* Probe 0x80F02404 (SPL main code) */
+            {
+                uint8_t spl_code[16];
+                spl_va = 0xffffffff80F02404ULL;
+                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                        spl_va, spl_code, 16, MEM_READ, CACHE_DATA)) {
+                    fprintf(stderr,
+                            "[BE300] SPL PROBE PA=0xF02404: "
+                            "%02X%02X%02X%02X %02X%02X%02X%02X "
+                            "%02X%02X%02X%02X %02X%02X%02X%02X\n",
+                            spl_code[0],spl_code[1],spl_code[2],spl_code[3],
+                            spl_code[4],spl_code[5],spl_code[6],spl_code[7],
+                            spl_code[8],spl_code[9],spl_code[10],spl_code[11],
+                            spl_code[12],spl_code[13],spl_code[14],spl_code[15]);
+                }
             }
             /* Probe PA 0x24FC */
             spl_va = 0xffffffffA00024FCULL;
