@@ -564,18 +564,24 @@ machine_t *be300_create(const machine_config_t *cfg)
                             0x0FF00122); /* jal 0xFC00488 (was +0x3B8) */
                         store_32bit_word(m->cpu, rom_va + 0x3CC,
                             0x00000000); /* nop (was +0x3BC) */
-                        /* beqz loop: was `beqz v0, 0x3A0` from +0x3C0.
-                           Now relocated to +0x3D0, target is +0x3B0.
-                           offset = (0x3B0 - 0x3D4) / 4 = -0x24/4 = -9
-                           = 0xFFF7 */
-                        /* NOP out BEQ loop, then J to NK.exe entry
-                         * in unused ROM space.  MUST NOT overwrite
-                         * 0x3DC+ (serial init, called via JALX from
-                         * MIPS16 function library at 0x1232). */
+                        /* beq loop: was `beq v0, zero, 0x3A0` at +0x3C0.
+                           Now relocated to +0x3D0, target is +0x3B0
+                           (the boot dispatcher, NOT the section copier
+                           at +0x3A0).
+                           offset = (0x3B0 - 0x3D4) / 4 = -9 = 0xFFF7 */
                         store_32bit_word(m->cpu, rom_va + 0x3D0,
-                            0x0BF008D8); /* j 0xBFC02360 */
+                            0x1040FFF7); /* beq v0, zero, 0x3B0 */
                         store_32bit_word(m->cpu, rom_va + 0x3D4,
                             0x00000000); /* nop (delay slot) */
+                        /* FUN_9fc003dc (recursive DMA dispatcher) at
+                         * +0x3DC has `j 0x3A0` at +0x3E4.  After the
+                         * relocation, +0x3A0 is the section copier
+                         * setup, not the boot dispatcher.  Update the
+                         * J target to +0x3B0 (boot dispatcher) so the
+                         * recursive path skips the section copier and
+                         * goes directly to the boot retry loop. */
+                        store_32bit_word(m->cpu, rom_va + 0x3E4,
+                            0x0BF000EC); /* j 0x9FC003B0 */
                         /* NK.exe jump trampoline at +0x2360 (after
                          * gen_handler which ends at +0x235C) */
                         store_32bit_word(m->cpu, rom_va + 0x2360,
