@@ -118,11 +118,91 @@ static uint64_t nand_stream_read(nand_state_t *s, unsigned size)
     uint64_t val = 0;
 
     for (unsigned i = 0; i < size; i++) {
-        uint8_t byte = nand_stream_byte(s, s->stream_cursor + i);
+        uint8_t byte;
+
+        if (s->stream_limit != 0 && (s->stream_cursor + i) >= s->stream_limit)
+            byte = 0xFFu;
+        else
+            byte = nand_stream_byte(s, s->stream_cursor + i);
         val |= ((uint64_t)byte) << (8u * i);
     }
     s->stream_cursor += size;
     return val;
+}
+
+static void nand_boot_reset(nand_state_t *s)
+{
+    s->boot_ready = false;
+    s->boot_mode = 0;
+    s->boot_addr_count = 0;
+    s->boot_ecc_count = 0;
+    s->stream_active = false;
+    s->stream_limit = 0;
+    s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 0;
+    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
+}
+
+static void nand_boot_latch_addr(nand_state_t *s, uint8_t data_byte)
+{
+    if (s->boot_addr_count < sizeof(s->boot_addr_bytes)) {
+        s->boot_addr_bytes[s->boot_addr_count++] = data_byte;
+    } else {
+        memmove(s->boot_addr_bytes, s->boot_addr_bytes + 1,
+                sizeof(s->boot_addr_bytes) - 1);
+        s->boot_addr_bytes[sizeof(s->boot_addr_bytes) - 1] = data_byte;
+    }
+}
+
+static void nand_boot_start_stream(nand_state_t *s)
+{
+    uint32_t page;
+    uint32_t col;
+
+    col = s->boot_addr_bytes[0];
+    page = (uint32_t)s->boot_addr_bytes[1]
+         | ((uint32_t)(s->boot_addr_bytes[2] & 0x7Fu) << 8);
+
+    s->stream_page = page;
+    s->stream_col = col;
+    s->stream_base = page * NAND_PAGE_RAW + col;
+    s->stream_cursor = 0;
+    s->stream_limit = NAND_PAGE_RAW - col;
+    s->stream_active = true;
+    s->boot_ready = true;
+    s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 1;
+    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
+}
+
+static void nand_boot_finish_ecc_input(nand_state_t *s)
+{
+    uint16_t w0, w1, w2, w3, w4, w5;
+    uint8_t b0, b1, b2, b3, b4, b5, b6, b7;
+
+    w0 = s->boot_ecc_words[0];
+    w1 = s->boot_ecc_words[1];
+    w2 = s->boot_ecc_words[2];
+    w3 = s->boot_ecc_words[3];
+    w4 = s->boot_ecc_words[4];
+    w5 = s->boot_ecc_words[5];
+
+    b0 = (uint8_t)(w5 & 0xFFu);
+    b1 = (uint8_t)(((w5 >> 8) & 0x03u) | ((w4 & 0x3Fu) << 2));
+    b2 = (uint8_t)(((w4 >> 6) & 0x0Fu) | ((w3 & 0x0Fu) << 4));
+    b3 = (uint8_t)(((w3 >> 4) & 0x3Fu) | ((w2 & 0x03u) << 6));
+    b4 = (uint8_t)((w2 >> 2) & 0xFFu);
+    b5 = (uint8_t)(w1 & 0xFFu);
+    b6 = (uint8_t)(((w1 >> 8) & 0x03u) | ((w0 & 0x3Fu) << 2));
+    b7 = (uint8_t)((w0 >> 6) & 0x0Fu);
+
+    s->boot_regs[(NAND_REG_BOOT_ECC_OUT_BASE - NAND_BOOT_BASE) >> 2] =
+        (uint32_t)b0 | ((uint32_t)b1 << 8);
+    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x04u) - NAND_BOOT_BASE) >> 2] =
+        (uint32_t)b2 | ((uint32_t)b3 << 8);
+    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x08u) - NAND_BOOT_BASE) >> 2] =
+        (uint32_t)b4 | ((uint32_t)b5 << 8);
+    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x0Cu) - NAND_BOOT_BASE) >> 2] =
+        (uint32_t)b6 | ((uint32_t)(b7 & 0x0Fu) << 8);
+    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
 }
 
 /* Rate-limited indexed register logging */
@@ -234,6 +314,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 s->stream_col = col;
                 s->stream_base = row * NAND_PAGE_DATA + col;
                 s->stream_cursor = 0;
+                s->stream_limit = NAND_PAGE_DATA - col;
                 s->stream_active = true;
                 if (log && nand_stream_start_log_count < NAND_STREAM_LOG_MAX) {
                     fprintf(stderr,
@@ -250,6 +331,50 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 }
             }
             s->ready = true;
+        }
+        return;
+    }
+
+    /* ROM transfer engine registers (0xC000-0xC0FF). */
+    if (offset >= NAND_BOOT_BASE && offset < NAND_BOOT_END) {
+        uint32_t idx = (offset - NAND_BOOT_BASE) >> 2;
+        uint8_t data_byte = (uint8_t)(value & 0xFFu);
+
+        if (idx < (sizeof(s->boot_regs) / sizeof(s->boot_regs[0])))
+            s->boot_regs[idx] = (uint32_t)value;
+
+        if (offset == NAND_REG_BOOT_CTRL) {
+            if ((value & 1u) == 0)
+                nand_boot_reset(s);
+        } else if (offset == NAND_REG_BOOT_CMD) {
+            if (data_byte == 0x03u || data_byte == 0x06u)
+                s->boot_addr_count = 0;
+            else if (data_byte == 0x00u)
+                nand_boot_reset(s);
+        } else if (offset == NAND_REG_BOOT_ADDR) {
+            nand_boot_latch_addr(s, data_byte);
+        } else if (offset == NAND_REG_BOOT_KICK) {
+            s->boot_ready = false;
+            s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 0;
+        } else if (offset == NAND_REG_BOOT_MODE) {
+            s->boot_mode = data_byte;
+            if (data_byte == 0x05u && s->boot_addr_count >= 3) {
+                nand_boot_start_stream(s);
+            } else if (data_byte == 0x04u) {
+                s->boot_ready = true;
+                s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 1;
+            } else if (data_byte == 0x00u || data_byte == 0x01u) {
+                s->boot_ecc_count = 0;
+                if (data_byte == 0x00u) {
+                    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
+                }
+            }
+        } else if (offset == NAND_REG_BOOT_ECC_IN) {
+            if (s->boot_mode == 0x01u && s->boot_ecc_count < 6) {
+                s->boot_ecc_words[s->boot_ecc_count++] = (uint16_t)(value & 0x03FFu);
+                if (s->boot_ecc_count == 6)
+                    nand_boot_finish_ecc_input(s);
+            }
         }
         return;
     }
@@ -623,6 +748,19 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                 val |= (uint64_t)s->xfer_buffer[buf_off + i] << (i * 8);
         } else if (idx < (sizeof(s->xfer_regs) / sizeof(s->xfer_regs[0]))) {
             val = s->xfer_regs[idx];
+        } else {
+            val = 0;
+        }
+        goto out;
+    }
+
+    /* ROM transfer engine registers (0xC000-0xC0FF). */
+    if (offset >= NAND_BOOT_BASE && offset < NAND_BOOT_END) {
+        uint32_t idx = (offset - NAND_BOOT_BASE) >> 2;
+        if (offset == NAND_REG_BOOT_STATUS) {
+            val = s->boot_ready ? 0x00000001u : 0u;
+        } else if (idx < (sizeof(s->boot_regs) / sizeof(s->boot_regs[0]))) {
+            val = s->boot_regs[idx];
         } else {
             val = 0;
         }
