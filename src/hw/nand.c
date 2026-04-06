@@ -261,6 +261,9 @@ static void nand_boot_latch_addr(nand_state_t *s, uint8_t data_byte)
     }
 }
 
+static int nand_boot_stream_count = 0;
+static uint32_t nand_boot_stream_max_page = 0;
+
 static void nand_boot_start_stream(nand_state_t *s)
 {
     uint32_t page;
@@ -269,6 +272,17 @@ static void nand_boot_start_stream(nand_state_t *s)
     col = s->boot_addr_bytes[0];
     page = (uint32_t)s->boot_addr_bytes[1]
          | ((uint32_t)(s->boot_addr_bytes[2] & 0x7Fu) << 8);
+
+    nand_boot_stream_count++;
+    if (page > nand_boot_stream_max_page)
+        nand_boot_stream_max_page = page;
+    if ((nand_boot_stream_count & (nand_boot_stream_count - 1)) == 0 ||
+        nand_boot_stream_count <= 16) {
+        fprintf(stderr,
+                "[NAND_BOOT_STREAM] #%d page=0x%04X col=0x%02X max_page=0x%04X block=%u\n",
+                nand_boot_stream_count, page, col,
+                nand_boot_stream_max_page, page / NAND_BLOCK_PAGES);
+    }
 
     s->stream_page = page;
     s->stream_col = col;
