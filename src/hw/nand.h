@@ -9,6 +9,8 @@
 #define NAND_CTRL_END     0xA020u
 #define NAND_XFER_BASE    0xA400u   /* SPL transfer engine control/status */
 #define NAND_XFER_END     0xA500u
+#define NAND_BOOT_BASE    0xC000u   /* ROM-era transfer engine control/status */
+#define NAND_BOOT_END     0xC100u
 #define NAND_CMD_BASE     0xAC00u   /* Legacy command/address registers */
 #define NAND_CMD_END      0xAC50u
 #define NAND_ENABLE_BASE  0xB100u   /* Legacy enable registers */
@@ -31,6 +33,19 @@
 #define NAND_REG_BUFFER_END    0xA4B0u
 #define NAND_REG_XFER_STATUS2  0xA4C0u   /* Alternate status (same as 0xA440) */
 #define NAND_REG_STREAM_DATA   0xB000u
+
+/* ROM transfer-engine registers */
+#define NAND_REG_BOOT_CTRL         0xC010u
+#define NAND_REG_BOOT_CMD          0xC014u
+#define NAND_REG_BOOT_ADDR         0xC020u
+#define NAND_REG_BOOT_ACK          0xC030u
+#define NAND_REG_BOOT_STATUS       0xC040u
+#define NAND_REG_BOOT_KICK         0xC060u
+#define NAND_REG_BOOT_MODE         0xC064u
+#define NAND_REG_BOOT_ECC_IN       0xC068u
+#define NAND_REG_BOOT_ECC_OUT_BASE 0xC0A0u
+#define NAND_REG_BOOT_ECC_OUT_END  0xC0B0u
+#define NAND_REG_BOOT_STATUS2      0xC0C0u
 
 /* Individual legacy data-port registers */
 #define NAND_REG_PORTCTL  0xD7F8u   /* Port control / command latch */
@@ -98,7 +113,15 @@ typedef struct {
     uint32_t stream_col;
     uint32_t stream_base;
     uint32_t stream_cursor;
+    uint32_t stream_limit;
     bool     stream_active;
+    uint32_t boot_regs[64];      /* 0xC000-0xC0FC */
+    uint8_t  boot_addr_bytes[4];
+    uint8_t  boot_addr_count;
+    uint16_t boot_ecc_words[6];
+    uint8_t  boot_ecc_count;
+    uint8_t  boot_mode;
+    bool     boot_ready;
     uint16_t portctl;
     uint8_t  legacy_regs[256];
     bool     legacy_dirty[256];             /* per-index: write since last full ack */
