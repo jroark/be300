@@ -415,6 +415,16 @@ It does NOT run during cold boot — resume_ctx is populated by the ROM dispatch
 - Interrupt status registers in ranges 0x060-0x077, 0x1100-0x113F, 0x1B00-0x1B2F use **write-1-to-clear** semantics in the emulator
 - MSYSINT1 in dev_vr41xx.c must NOT force-enable ETIMER (bit 3) — prevents WinCE from controlling its own timer mask
 - The NAND controller has phase-aware behavior (`wince_mode` flag in nand_state_t): buffer registers 0xA4A0-0xA4AC and STATUS2 at 0xA4C0 return 0 during SPL (to avoid ECC errors), active data after NK.exe loads
+- The ROM-era NAND HW ECC engine (BOOT_ECC_IN at 0xC068 / BOOT_ECC_OUT at 0xC0A0-0xC0AC) outputs zero syndromes — correct for bit-perfect emulated NAND data. The real HW computes syndrome = stored_ECC XOR computed_ECC; since there are no bit errors, syndrome is zero. Previously echoing input ECC caused the ROM's software ECC (FUN_9fc01828) to corrupt data.
+
+**ROM NAND Boot Functions (MIPS16, Ghidra labels):**
+- FUN_9fc015f4: high-level multi-page reader — converts page addresses to logical blocks, caches last block
+- FUN_9fc01710: block translation layer — linear search of physical blocks, checks OOB metadata (0x55AA + 0x0F + block ID), majority votes across 5 pages per block, software ECC post-search
+- FUN_9fc019fc: reads 32 pages (one block) via FUN_9fc01a4c, sets success flag
+- FUN_9fc01a4c: single page read — chip enable (0xC010), cmd via 0xC014/0xC020, 3-byte address via 0xC020, kick (0xC060), mode=5 (0xC064) starts stream, reads 520+8 bytes from 0xB000, feeds ECC to HW (0xC068), reads STATUS2 (0xC0C0), reads corrected ECC from 0xC0A0-0xC0AC
+- FUN_9fc01828: software ECC correction — bit-permutes 8 ECC bytes (FUN_9fc01980), unpacks to 10-bit syndromes, Reed-Solomon correction (FUN_9fc01c30/FUN_9fc01ca0)
+- FUN_9fc016b4: reads partition descriptor (page 0), extracts boot entry by index
+- FUN_9fc015dc: reads partition descriptor entry 1 (SPL location) — called from ROM dispatcher 0x9FC00C21
 
 **NK.exe Analysis Tools:**
 - Emulator dumps decompressed NK.exe to `nk_decompressed.bin` when PC enters NK.exe range (6.2MB)
