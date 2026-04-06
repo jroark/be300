@@ -827,6 +827,50 @@ static bool be300_run_batch(machine_t *m)
 
     /* (debug instrumentation removed) */
 
+    /* Detect SPL entry: PC in range 0x80F00000-0x80F0FFFF (PA 0xF00000) */
+    {
+        static int spl_entry_logged = 0;
+        static int spl_probe_done = 0;
+        uint32_t pc = (uint32_t)m->cpu->pc;
+        uint32_t pa = pc & 0x1FFFFFFFu;
+        if (!spl_entry_logged && pa >= 0xF00000u && pa < 0xF10000u) {
+            fprintf(stderr,
+                    "[BE300] *** SPL ENTRY DETECTED: PC=0x%08X PA=0x%08X batch=%d ***\n",
+                    pc, pa, m->loop_count);
+            spl_entry_logged = 1;
+        }
+        /* Periodically probe SPL memory to check if B000FF loaded */
+        if (m->loop_count > 0 && m->loop_count % 10000 == 0 && m->loop_count <= 100000) {
+            uint8_t buf[16];
+            uint64_t spl_va = 0xffffffff80F00000ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                    spl_va, buf, 16, MEM_READ, CACHE_DATA)) {
+                fprintf(stderr,
+                        "[BE300] SPL PROBE PA=0xF00000: "
+                        "%02X %02X %02X %02X %02X %02X %02X %02X "
+                        "%02X %02X %02X %02X %02X %02X %02X %02X\n",
+                        buf[0],buf[1],buf[2],buf[3],buf[4],buf[5],buf[6],buf[7],
+                        buf[8],buf[9],buf[10],buf[11],buf[12],buf[13],buf[14],buf[15]);
+            } else {
+                fprintf(stderr, "[BE300] SPL PROBE PA=0xF00000: memory_rw FAILED\n");
+            }
+            /* Also probe the entry point at 0x80F00004 */
+            spl_va = 0xffffffff80F00004ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                    spl_va, buf, 4, MEM_READ, CACHE_DATA)) {
+                uint32_t instr = buf[0] | (buf[1]<<8) | (buf[2]<<16) | (buf[3]<<24);
+                fprintf(stderr, "[BE300] SPL PROBE PA=0xF00004: instruction=0x%08X\n", instr);
+            }
+            /* Probe PA 0x24FC */
+            spl_va = 0xffffffffA00024FCULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                    spl_va, buf, 4, MEM_READ, CACHE_DATA)) {
+                uint32_t val = buf[0] | (buf[1]<<8) | (buf[2]<<16) | (buf[3]<<24);
+                fprintf(stderr, "[BE300] ENTRY PROBE PA=0x24FC: val=0x%08X\n", val);
+            }
+        }
+    }
+
     /*
      * Detect NK.exe entry and dump decompressed binary for analysis.
      * The SPL decompresses NK.exe to PA 0x60000 and jumps to
@@ -949,14 +993,29 @@ static bool be300_run_batch(machine_t *m)
         fprintf(stderr, "[BE300] Progress: %" PRIi64 "M instrs,"
             " PC=0x%08" PRIx64
             " Status=0x%08X Cause=0x%08X EPC=0x%08X"
-            " BadVA=0x%08X SP=0x%08X\n",
+            " BadVA=0x%08X SP=0x%08X RA=0x%08X\n",
             m->cpu->ninstrs / 1000000LL, m->cpu->pc,
             (uint32_t)cp0[COP0_STATUS],
             (uint32_t)cp0[COP0_CAUSE],
             (uint32_t)cp0[COP0_EPC],
             (uint32_t)cp0[COP0_BADVADDR],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]);
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
         m->last_report = m->cpu->ninstrs;
+
+        /* Check PA 0x24FC and version at PA 0x2400 */
+        {
+            uint8_t buf[4];
+            uint64_t va;
+            va = 0xffffffffA0002400ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4, MEM_READ, CACHE_DATA)) {
+                uint32_t ver = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                va = 0xffffffffA00024FCULL;
+                m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4, MEM_READ, CACHE_DATA);
+                uint32_t ep = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+                fprintf(stderr, "[BE300]   PA_2400=0x%08X PA_24FC=0x%08X\n", ver, ep);
+            }
+        }
     }
 
     if (++m->loop_count % 100 == 0) {
