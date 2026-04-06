@@ -878,7 +878,16 @@ static bool be300_run_batch(machine_t *m)
                     pc, pa, m->loop_count);
             spl_entry_logged = 1;
         }
-        /* Periodically probe SPL memory to check if B000FF loaded */
+        /* Periodically probe boot state */
+        if (m->loop_count > 0 && m->loop_count % 50000 == 0 && m->loop_count <= 200000) {
+            /* Read descriptor counter at PA 0x10034 */
+            uint8_t cbuf[1];
+            uint64_t cva = 0xffffffff80010034ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, cva, cbuf, 1, MEM_READ, CACHE_DATA)) {
+                fprintf(stderr, "[BE300] DESC_COUNTER PA=0x10034: %d batch=%d\n",
+                        cbuf[0], m->loop_count);
+            }
+        }
         if (m->loop_count > 0 && m->loop_count % 10000 == 0 && m->loop_count <= 100000) {
             uint8_t buf[16];
             uint64_t spl_va = 0xffffffff80F00000ULL;
