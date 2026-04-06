@@ -11,8 +11,115 @@ static uint8_t nand_image_byte(const nand_state_t *s, uint32_t off)
     return s->image[off];
 }
 
-static uint8_t nand_dma_byte(const nand_state_t *s, uint32_t byte_off)
+static bool nand_sector_has_fat16_bpb(const nand_state_t *s, uint32_t sector)
 {
+    uint32_t off = sector * NAND_PAGE_DATA;
+
+    if (!s->image || off > s->image_size || s->image_size - off < NAND_PAGE_DATA)
+        return false;
+
+    return nand_image_byte(s, off + 0x1FEu) == 0x55u &&
+           nand_image_byte(s, off + 0x1FFu) == 0xAAu &&
+           nand_image_byte(s, off + 0x36u) == 'F' &&
+           nand_image_byte(s, off + 0x37u) == 'A' &&
+           nand_image_byte(s, off + 0x38u) == 'T' &&
+           nand_image_byte(s, off + 0x39u) == '1' &&
+           nand_image_byte(s, off + 0x3Au) == '6';
+}
+
+static bool nand_build_sector0_mbr(const nand_state_t *s,
+                                   uint8_t out[NAND_PAGE_DATA],
+                                   uint32_t *part_lba_out,
+                                   uint32_t *part_size_out)
+{
+    uint32_t part_lba = 0;
+    uint32_t part_size = 0;
+
+    if (!s->image || s->image_size < NAND_PAGE_DATA)
+        return false;
+
+    if (nand_image_byte(s, 0x1FEu) == 0x55u &&
+        nand_image_byte(s, 0x1FFu) == 0xAAu) {
+        return false;
+    }
+
+    for (uint32_t off = 0; off + 8 <= 0x40u; off += 4) {
+        uint32_t start;
+        uint32_t size;
+        uint64_t end_off;
+
+        start = (uint32_t)nand_image_byte(s, off) |
+                ((uint32_t)nand_image_byte(s, off + 1) << 8) |
+                ((uint32_t)nand_image_byte(s, off + 2) << 16) |
+                ((uint32_t)nand_image_byte(s, off + 3) << 24);
+        size = (uint32_t)nand_image_byte(s, off + 4) |
+               ((uint32_t)nand_image_byte(s, off + 5) << 8) |
+               ((uint32_t)nand_image_byte(s, off + 6) << 16) |
+               ((uint32_t)nand_image_byte(s, off + 7) << 24);
+
+        if (start == 0 || size == 0 || start == 0xFFFFFFFFu || size == 0xFFFFFFFFu)
+            continue;
+
+        end_off = ((uint64_t)start + (uint64_t)size) * NAND_PAGE_DATA;
+        if (end_off > s->image_size)
+            continue;
+
+        if (!nand_sector_has_fat16_bpb(s, start))
+            continue;
+
+        part_lba = start;
+        part_size = size;
+        break;
+    }
+
+    if (part_lba == 0 || part_size == 0)
+        return false;
+
+    memset(out, 0, NAND_PAGE_DATA);
+    out[0x1BEu + 0] = 0x80u;  /* active partition */
+    out[0x1BEu + 1] = 0xFFu;  /* CHS start (unused by ROM) */
+    out[0x1BEu + 2] = 0xFFu;
+    out[0x1BEu + 3] = 0xFFu;
+    out[0x1BEu + 4] = 0x06u;  /* FAT16 */
+    out[0x1BEu + 5] = 0xFFu;  /* CHS end */
+    out[0x1BEu + 6] = 0xFFu;
+    out[0x1BEu + 7] = 0xFFu;
+    out[0x1BEu + 8] = (uint8_t)(part_lba & 0xFFu);
+    out[0x1BEu + 9] = (uint8_t)((part_lba >> 8) & 0xFFu);
+    out[0x1BEu + 10] = (uint8_t)((part_lba >> 16) & 0xFFu);
+    out[0x1BEu + 11] = (uint8_t)((part_lba >> 24) & 0xFFu);
+    out[0x1BEu + 12] = (uint8_t)(part_size & 0xFFu);
+    out[0x1BEu + 13] = (uint8_t)((part_size >> 8) & 0xFFu);
+    out[0x1BEu + 14] = (uint8_t)((part_size >> 16) & 0xFFu);
+    out[0x1BEu + 15] = (uint8_t)((part_size >> 24) & 0xFFu);
+    out[0x1FEu] = 0x55u;
+    out[0x1FFu] = 0xAAu;
+
+    if (part_lba_out)
+        *part_lba_out = part_lba;
+    if (part_size_out)
+        *part_size_out = part_size;
+    return true;
+}
+
+static bool nand_pc_in_boot_rom(uint32_t pc)
+{
+    uint32_t norm_pc = pc & ~UINT32_C(0x20000000);
+
+    return norm_pc >= UINT32_C(0x9FC00000) &&
+           norm_pc < UINT32_C(0x9FC04000);
+}
+
+static uint8_t nand_dma_byte(const nand_state_t *s, uint32_t byte_off,
+                             uint32_t pc)
+{
+    if (byte_off < NAND_PAGE_DATA && !nand_pc_in_boot_rom(pc)) {
+        uint8_t mbr[NAND_PAGE_DATA];
+
+        if (nand_build_sector0_mbr(s, mbr, NULL, NULL))
+            return mbr[byte_off];
+    }
+
     /*
      * DMA FIFO data read.  The caller supplies a fully resolved byte offset
      * into the NAND image (dma_nand_addr + dma_cursor), where dma_nand_addr
@@ -35,12 +142,13 @@ static uint8_t nand_stream_oob_byte(const nand_state_t *s,
 
     /*
      * The restore images are data-only dumps (no physical OOB bytes).
-     * Synthesize minimal per-block metadata on page 0 so SPL ReadLogBlock()
-     * validation can build a straightforward logical->physical map:
+     * The ROM/SPL logical-block mapper votes across the first five pages of a
+     * block and expects the same tag on at least three of them, so mirror the
+     * synthetic block metadata across that opening page set:
      *   OOB[0..1] = 0x55AA (little-endian: AA 55),
      *   OOB[2] = 0x0F, OOB[4..7] = logical block id.
      */
-    if (page_in_block == 0 && block < NAND_BLOCK_COUNT) {
+    if (page_in_block < 5 && block < NAND_BLOCK_COUNT) {
         switch (oob_idx) {
         case 0: return 0xAAu;
         case 1: return 0x55u;
@@ -1029,7 +1137,7 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                         s->dma_total_bytes, s->dma_nand_addr,
                         (unsigned)size, pc,
                         nand_dma_byte(s, s->dma_nand_addr +
-                        s->dma_cursor));
+                        s->dma_cursor, pc));
                 }
                 fifo_read_count++;
             }
@@ -1037,7 +1145,8 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
             for (unsigned i = 0; i < size; i++) {
                 uint8_t byte;
                 if (s->dma_cursor < s->dma_total_bytes)
-                    byte = nand_dma_byte(s, s->dma_nand_addr + s->dma_cursor);
+                    byte = nand_dma_byte(s, s->dma_nand_addr + s->dma_cursor,
+                                         pc);
                 else
                     byte = 0xFFu;
                 val |= (uint64_t)byte << (8u * i);
