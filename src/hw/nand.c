@@ -283,33 +283,17 @@ static void nand_boot_start_stream(nand_state_t *s)
 
 static void nand_boot_finish_ecc_input(nand_state_t *s)
 {
-    uint16_t w0, w1, w2, w3, w4, w5;
-    uint8_t b0, b1, b2, b3, b4, b5, b6, b7;
-
-    w0 = s->boot_ecc_words[0];
-    w1 = s->boot_ecc_words[1];
-    w2 = s->boot_ecc_words[2];
-    w3 = s->boot_ecc_words[3];
-    w4 = s->boot_ecc_words[4];
-    w5 = s->boot_ecc_words[5];
-
-    b0 = (uint8_t)(w5 & 0xFFu);
-    b1 = (uint8_t)(((w5 >> 8) & 0x03u) | ((w4 & 0x3Fu) << 2));
-    b2 = (uint8_t)(((w4 >> 6) & 0x0Fu) | ((w3 & 0x0Fu) << 4));
-    b3 = (uint8_t)(((w3 >> 4) & 0x3Fu) | ((w2 & 0x03u) << 6));
-    b4 = (uint8_t)((w2 >> 2) & 0xFFu);
-    b5 = (uint8_t)(w1 & 0xFFu);
-    b6 = (uint8_t)(((w1 >> 8) & 0x03u) | ((w0 & 0x3Fu) << 2));
-    b7 = (uint8_t)((w0 >> 6) & 0x0Fu);
-
-    s->boot_regs[(NAND_REG_BOOT_ECC_OUT_BASE - NAND_BOOT_BASE) >> 2] =
-        (uint32_t)b0 | ((uint32_t)b1 << 8);
-    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x04u) - NAND_BOOT_BASE) >> 2] =
-        (uint32_t)b2 | ((uint32_t)b3 << 8);
-    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x08u) - NAND_BOOT_BASE) >> 2] =
-        (uint32_t)b4 | ((uint32_t)b5 << 8);
-    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x0Cu) - NAND_BOOT_BASE) >> 2] =
-        (uint32_t)b6 | ((uint32_t)(b7 & 0x0Fu) << 8);
+    /*
+     * The real HW ECC engine computes syndrome = stored_ECC XOR computed_ECC.
+     * Since the emulated NAND data is bit-perfect (no flash degradation),
+     * the correct syndrome is always zero.  Output all zeros so the ROM's
+     * software ECC correction (FUN_9fc01828) finds no errors and leaves the
+     * data untouched.
+     */
+    s->boot_regs[(NAND_REG_BOOT_ECC_OUT_BASE - NAND_BOOT_BASE) >> 2] = 0;
+    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x04u) - NAND_BOOT_BASE) >> 2] = 0;
+    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x08u) - NAND_BOOT_BASE) >> 2] = 0;
+    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x0Cu) - NAND_BOOT_BASE) >> 2] = 0;
     s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
 }
 
