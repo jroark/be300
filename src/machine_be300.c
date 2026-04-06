@@ -635,6 +635,15 @@ machine_t *be300_create(const machine_config_t *cfg)
                             " (stub@+0x280),"
                             " boot code relocated +0x384->+0x394\n");
                     }
+
+                    /*
+                     * NOTE: The NAND device descriptor base pointer at
+                     * PA 0x10030 (VA 0x80010030) is needed by device 2's
+                     * init function.  It must be set AFTER the SDRAM test
+                     * and device 1 init populate the table at 0x80010040.
+                     * This is handled by a PC-gated fixup in the MIPS16
+                     * interpreter (cpu_mips16.c) when FUN_9fc019d4 runs.
+                     */
                 }
         }
 
