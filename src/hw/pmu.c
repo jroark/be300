@@ -1,18 +1,23 @@
 #include <stdio.h>
 #include "pmu.h"
 
-void pmu_init(pmu_state_t *s)
+void pmu_init(pmu_state_t *s, bool warm)
 {
-    /*
-     * Cold boot: PMU registers at hardware-reset defaults (zero).
-     * The kernel programs them during initialization.
-     */
-    s->pmuintreg     = 0;
-    s->pmucntreg     = 0;
-    s->pmutclkdivreg = 0;
-    s->pmuintreg2    = 0;
-    s->pmuwaitreg    = 0;
-    s->pmudivreg     = 0;
+    if (warm) {
+        s->pmuintreg     = 0x0400;
+        s->pmucntreg     = 0x1006;
+        s->pmutclkdivreg = 0x0000;
+        s->pmuintreg2    = 0x0000;
+        s->pmuwaitreg    = 0x0148;
+        s->pmudivreg     = 0x0002;
+    } else {
+        s->pmuintreg     = 0;
+        s->pmucntreg     = 0;
+        s->pmutclkdivreg = 0;
+        s->pmuintreg2    = 0;
+        s->pmuwaitreg    = 0;
+        s->pmudivreg     = 0;
+    }
 }
 
 uint32_t pmu_read(pmu_state_t *s, uint32_t offset, unsigned size)

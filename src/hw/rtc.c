@@ -61,23 +61,27 @@ static void rtc_write_48bit(uint64_t *target, uint32_t offset, unsigned size,
     *target = reg & rtc_48bit_mask();
 }
 
-void rtc_init(rtc_state_t *s)
+void rtc_init(rtc_state_t *s, bool warm)
 {
-    /*
-     * Cold boot: all RTC registers start at zero.
-     *
-     * The BE-300 has no battery-backed RTC.  After a cold boot
-     * (battery removed), ETIME, RTCL1, RTCL2, and ECMP are all zero.
-     * The kernel programs them during initialization.
-     */
-    s->etime = 0;
-    s->etime_latched = 0;
-    s->ecmp  = 0;
-    s->rtcl1 = 0;
-    s->rtcl2 = 0;
     s->tclock = 0;
     s->rtcint = 0;
     s->elapsed_compare_fired = 0;
+
+    if (warm) {
+        /* Warm start (Linux): seed from hardware survey */
+        s->etime = UINT64_C(0xA5B35149BB10);
+        s->etime_latched = s->etime;
+        s->ecmp  = s->etime + UINT64_C(0x100000000);
+        s->rtcl1 = 0x00000021u;
+        s->rtcl2 = 0x0000FFFFu;
+    } else {
+        /* Cold boot: no battery-backed RTC, all zero */
+        s->etime = 0;
+        s->etime_latched = 0;
+        s->ecmp  = 0;
+        s->rtcl1 = 0;
+        s->rtcl2 = 0;
+    }
 }
 
 uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
