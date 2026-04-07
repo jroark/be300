@@ -853,42 +853,44 @@ static bool be300_run_batch(machine_t *m)
         }
     }
 
-    /* Detect STANDBY exit: CPU was at 0xA0079598 (STANDBY) and moved */
-    {
-        static int standby_exit_logged = 0;
-        static int was_at_standby = 0;
-        uint32_t pc32 = (uint32_t)m->cpu->pc;
-        if (pc32 == 0xA0079598u && !was_at_standby)
-            was_at_standby = 1;
-        if (was_at_standby && pc32 != 0xA0079598u && !standby_exit_logged) {
-            uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
-            fprintf(stderr,
-                "[BE300] *** STANDBY EXIT: PC=0x%08X"
-                " Status=0x%08X Cause=0x%08X"
-                " t0=0x%08X sp=0x%08X ra=0x%08X ***\n",
-                pc32,
-                (uint32_t)cp0[COP0_STATUS],
-                (uint32_t)cp0[COP0_CAUSE],
-                (uint32_t)m->cpu->cd.mips.gpr[8],
-                (uint32_t)m->cpu->cd.mips.gpr[29],
-                (uint32_t)m->cpu->cd.mips.gpr[31]);
-            /* Dump resume_ctx at PA 0x2200 */
-            {
-                uint8_t ctx[16];
-                uint64_t ctx_va = 0xffffffffA0002200ULL;
-                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                        ctx_va, ctx, 16, MEM_READ, CACHE_NONE)) {
-                    fprintf(stderr,
-                        "[BE300] resume_ctx[0-15]:"
-                        " %02X%02X%02X%02X %02X%02X%02X%02X"
-                        " %02X%02X%02X%02X %02X%02X%02X%02X\n",
-                        ctx[0],ctx[1],ctx[2],ctx[3],
-                        ctx[4],ctx[5],ctx[6],ctx[7],
-                        ctx[8],ctx[9],ctx[10],ctx[11],
-                        ctx[12],ctx[13],ctx[14],ctx[15]);
-                }
+    /*
+     * Cold boot: patch STANDBY → J cold-start entry BEFORE NK.exe runs.
+     *
+     * Poll PA 0x24FC for the NK.exe entry point (set by SPL after
+     * decompression).  Once detected, patch the STANDBY instruction at
+     * VA 0x80079598 with a J to 0x8007B398 (kernel cold-start entry).
+     * This must happen before dyntrans compiles the STANDBY page.
+     */
+    if (!m->wince.cold_boot_redirected && m->nand_data) {
+        uint8_t buf24fc[4];
+        uint64_t va24fc = 0xffffffffA00024FCULL;
+        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                va24fc, buf24fc, 4, MEM_READ, CACHE_NONE)) {
+            uint32_t entry = buf24fc[0] | (buf24fc[1]<<8)
+                | (buf24fc[2]<<16) | (buf24fc[3]<<24);
+            uint32_t entry_pa = entry & 0x1FFFFFFFu;
+            if (entry_pa >= 0x60000u && entry_pa < 0x100000u) {
+                /* NK.exe entry detected — patch STANDBY */
+                uint32_t j_cold = 0x0801ECE6u;  /* J 0x8007B398 */
+                uint8_t jpatch[4];
+                jpatch[0] = (j_cold >>  0) & 0xFF;
+                jpatch[1] = (j_cold >>  8) & 0xFF;
+                jpatch[2] = (j_cold >> 16) & 0xFF;
+                jpatch[3] = (j_cold >> 24) & 0xFF;
+                uint64_t standby_va = 0xffffffff80079598ULL;
+                m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                    standby_va, jpatch, 4, MEM_WRITE, CACHE_NONE);
+                m->cpu->invalidate_translation_caches(
+                    m->cpu, 0x79000, INVALIDATE_PADDR);
+                m->wince.cold_boot_copy_done = true;
+                m->nand.wince_mode = true;
+                fprintf(stderr,
+                    "[BE300] *** COLD START PATCH:"
+                    " PA_24FC=0x%08X → STANDBY patched"
+                    " → J 0x8007B398 ***\n", entry);
+                wince_boot_note_cold_boot_redirect(
+                    m, "standby-patched-to-cold-start");
             }
-            standby_exit_logged = 1;
         }
     }
 
@@ -983,6 +985,34 @@ static bool be300_run_batch(machine_t *m)
         if (pa >= 0x60000u && pa < 0x100000u) {
             m->wince.cold_boot_copy_done = true;
             m->nand.wince_mode = true;
+
+            /*
+             * Patch STANDBY at VA 0x80079598 → J 0x8007B398
+             *
+             * NK.exe enters STANDBY after "Initializing..." splash.
+             * The post-STANDBY warm path restores from resume_ctx
+             * (PA 0x2200) which is empty on cold boot.  Patch to
+             * jump directly to the kernel cold-start entry which
+             * builds everything from scratch.
+             */
+            {
+                uint32_t j_cold = 0x0801ECE6u;  /* J 0x8007B398 */
+                uint8_t jpatch[4];
+                jpatch[0] = (j_cold >>  0) & 0xFF;
+                jpatch[1] = (j_cold >>  8) & 0xFF;
+                jpatch[2] = (j_cold >> 16) & 0xFF;
+                jpatch[3] = (j_cold >> 24) & 0xFF;
+                uint64_t standby_va = 0xffffffff80079598ULL;
+                m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                    standby_va, jpatch, 4, MEM_WRITE, CACHE_NONE);
+                m->cpu->invalidate_translation_caches(
+                    m->cpu, 0x79000, INVALIDATE_PADDR);
+                fprintf(stderr,
+                    "[BE300] *** COLD START PATCH:"
+                    " STANDBY at 0x80079598 → J 0x8007B398 ***\n");
+                wince_boot_note_cold_boot_redirect(
+                    m, "standby-patched-to-cold-start");
+            }
 
             /* Dump decompressed NK.exe binary for analysis */
             {
