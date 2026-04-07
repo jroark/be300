@@ -1,5 +1,4 @@
 #pragma once
-#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -17,6 +16,6 @@ typedef struct {
     uint16_t sticky_bits;
 } cmu_state_t;
 
-void     cmu_init (cmu_state_t *s, bool warm);
+void     cmu_init (cmu_state_t *s);
 uint32_t cmu_read (cmu_state_t *s, uint32_t offset, unsigned size);
 void     cmu_write(cmu_state_t *s, uint32_t offset, unsigned size, uint32_t val);
