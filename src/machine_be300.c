@@ -853,7 +853,44 @@ static bool be300_run_batch(machine_t *m)
         }
     }
 
-    /* (debug instrumentation removed) */
+    /* Detect STANDBY exit: CPU was at 0xA0079598 (STANDBY) and moved */
+    {
+        static int standby_exit_logged = 0;
+        static int was_at_standby = 0;
+        uint32_t pc32 = (uint32_t)m->cpu->pc;
+        if (pc32 == 0xA0079598u && !was_at_standby)
+            was_at_standby = 1;
+        if (was_at_standby && pc32 != 0xA0079598u && !standby_exit_logged) {
+            uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
+            fprintf(stderr,
+                "[BE300] *** STANDBY EXIT: PC=0x%08X"
+                " Status=0x%08X Cause=0x%08X"
+                " t0=0x%08X sp=0x%08X ra=0x%08X ***\n",
+                pc32,
+                (uint32_t)cp0[COP0_STATUS],
+                (uint32_t)cp0[COP0_CAUSE],
+                (uint32_t)m->cpu->cd.mips.gpr[8],
+                (uint32_t)m->cpu->cd.mips.gpr[29],
+                (uint32_t)m->cpu->cd.mips.gpr[31]);
+            /* Dump resume_ctx at PA 0x2200 */
+            {
+                uint8_t ctx[16];
+                uint64_t ctx_va = 0xffffffffA0002200ULL;
+                if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                        ctx_va, ctx, 16, MEM_READ, CACHE_NONE)) {
+                    fprintf(stderr,
+                        "[BE300] resume_ctx[0-15]:"
+                        " %02X%02X%02X%02X %02X%02X%02X%02X"
+                        " %02X%02X%02X%02X %02X%02X%02X%02X\n",
+                        ctx[0],ctx[1],ctx[2],ctx[3],
+                        ctx[4],ctx[5],ctx[6],ctx[7],
+                        ctx[8],ctx[9],ctx[10],ctx[11],
+                        ctx[12],ctx[13],ctx[14],ctx[15]);
+                }
+            }
+            standby_exit_logged = 1;
+        }
+    }
 
     /* Detect SPL entry: PC in range 0x80F00000-0x80F0FFFF (PA 0xF00000) */
     {
@@ -958,9 +995,9 @@ static bool be300_run_batch(machine_t *m)
                     while (off < nk_size) {
                         uint32_t chunk = nk_size - off;
                         if (chunk > sizeof(page)) chunk = sizeof(page);
-                        uint64_t va = 0xffffffff80000000ULL | (nk_pa + off);
+                        uint64_t va = 0xffffffffA0000000ULL | (nk_pa + off);
                         if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                                va, page, chunk, MEM_READ, CACHE_DATA))
+                                va, page, chunk, MEM_READ, CACHE_NONE))
                             fwrite(page, 1, chunk, nk_fp);
                         else
                             break;
@@ -970,6 +1007,20 @@ static bool be300_run_batch(machine_t *m)
                     fprintf(stderr,
                         "[BE300] Dumped NK.exe (%u bytes)"
                         " to nk_decompressed.bin\n", off);
+                    /* Verify ECEC signature at VA 0xA0060040 */
+                    {
+                        uint8_t sig[4];
+                        uint64_t sig_va = 0xffffffffA0060040ULL;
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                sig_va, sig, 4, MEM_READ, CACHE_NONE)) {
+                            uint32_t sigw = sig[0] | (sig[1]<<8)
+                                | (sig[2]<<16) | (sig[3]<<24);
+                            fprintf(stderr,
+                                "[BE300] NK.exe ECEC check: 0x%08X %s\n",
+                                sigw,
+                                sigw == 0x45434543u ? "OK" : "MISMATCH");
+                        }
+                    }
                 }
             }
         }
