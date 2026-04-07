@@ -612,7 +612,7 @@ machine_t *be300_create(const machine_config_t *cfg)
                         store_32bit_word(m->cpu, rom_va + 0x3F0,
                             0x24040004); /* li $a0, 4 (was +0x3E0) */
                         store_32bit_word(m->cpu, rom_va + 0x3F4,
-                            0x0BF000EC); /* j 0x9FC003B0 (boot loop) */
+                            0x0BF000E8); /* j 0xFC003A0 -> section copier+boot */
                         store_32bit_word(m->cpu, rom_va + 0x3F8,
                             0x00000000); /* nop */
 
@@ -879,7 +879,7 @@ static bool be300_run_batch(machine_t *m)
             spl_entry_logged = 1;
         }
         /* Periodically probe boot state */
-        if (m->loop_count > 0 && m->loop_count % 50000 == 0 && m->loop_count <= 200000) {
+        if (m->loop_count > 0 && (m->loop_count == 1 || (m->loop_count % 50000 == 0 && m->loop_count <= 200000))) {
             /* Read descriptor counter at PA 0x10034 */
             uint8_t cbuf[1];
             uint64_t cva = 0xffffffff80010034ULL;
