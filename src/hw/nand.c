@@ -418,9 +418,9 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 uint32_t col = (uint32_t)s->xfer_addr_bytes[0];
                 s->stream_page = row;
                 s->stream_col = col;
-                s->stream_base = row * NAND_PAGE_DATA + col;
+                s->stream_base = row * NAND_PAGE_RAW + col;
                 s->stream_cursor = 0;
-                s->stream_limit = NAND_PAGE_DATA - col;
+                s->stream_limit = NAND_PAGE_RAW - col;
                 s->stream_active = true;
                 if (log && nand_stream_start_log_count < NAND_STREAM_LOG_MAX) {
                     fprintf(stderr,
