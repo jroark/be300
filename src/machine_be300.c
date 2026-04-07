@@ -979,7 +979,7 @@ static bool be300_run_batch(machine_t *m)
      * The SPL decompresses NK.exe to PA 0x60000 and jumps to
      * 0xA0060004 which redirects to 0x80076B50.
      */
-    if (!m->wince.cold_boot_copy_done) {
+    if (!m->wince.cold_boot_copy_done && m->nand_data) {
         uint32_t pc = (uint32_t)m->cpu->pc;
         uint32_t pa = pc & 0x1FFFFFFFu;
         if (pa >= 0x60000u && pa < 0x100000u) {
