@@ -1,5 +1,4 @@
 #pragma once
-#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -28,6 +27,6 @@ typedef struct {
     uint16_t pmudivreg;
 } pmu_state_t;
 
-void     pmu_init (pmu_state_t *s, bool warm);
+void     pmu_init (pmu_state_t *s);
 uint32_t pmu_read (pmu_state_t *s, uint32_t offset, unsigned size);
 void     pmu_write(pmu_state_t *s, uint32_t offset, unsigned size, uint32_t val);

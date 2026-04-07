@@ -1,5 +1,4 @@
 #pragma once
-#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -51,7 +50,7 @@ typedef struct {
     uint64_t etime_latched;   /* stable snapshot across multi-read sequence */
 } rtc_state_t;
 
-void     rtc_init (rtc_state_t *s, bool warm);
+void     rtc_init (rtc_state_t *s);
 uint32_t rtc_read (rtc_state_t *s, uint32_t offset, unsigned size);
 void     rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val);
 
