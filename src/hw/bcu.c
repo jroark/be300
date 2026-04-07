@@ -44,25 +44,22 @@ static void bcu_apply_window_writes(bcu_state_t *s, const uint8_t *buf)
 void bcu_init(bcu_state_t *s)
 {
     /*
-     * Seed the BCU window from the stable hardware survey readback at
-     * PA 0x0F000000:
-     *   0x0F000000: 0000000C 100C4444 26721242 00000000
-     *   0x0F000010: 00005002 0883020C 00000000 00000000
+     * Cold boot: BCU registers at hardware-reset defaults.
      *
-     * The boot ROM polls the 32-bit word at 0xAF000000 and expects it to
-     * be non-zero after early serial/BCU setup. Zero-seeding BCUCNTREG1/2
-     * leaves that poll permanently closed and traps the ROM in the retry
-     * loop at 0x9FC003A0.
+     * REVIDREG (0x5002) and CLKSPEEDREG (0x020C) are read-only hardware
+     * values — chip revision and pin-strap clock configuration.  The ROM
+     * programs the bus timing registers (BCUCNTREG1, ROM/IO speed/size)
+     * during early initialization.
      */
-    s->bcucntreg1  = 0x000C;
-    s->bcucntreg2  = 0x0000;
-    s->romsizereg  = 0x4444;
-    s->romspeedreg = 0x100C;
-    s->io0sizereg  = 0x1242;
-    s->io0speedreg = 0x2672;
-    s->io1speedreg = 0x0000;
-    s->revidreg    = 0x5002;
-    s->clkspeedreg = 0x020C;
+    s->bcucntreg1  = 0;
+    s->bcucntreg2  = 0;
+    s->romsizereg  = 0;
+    s->romspeedreg = 0;
+    s->io0sizereg  = 0;
+    s->io0speedreg = 0;
+    s->io1speedreg = 0;
+    s->revidreg    = 0x5002;  /* read-only chip revision ID */
+    s->clkspeedreg = 0x020C;  /* read-only pin-strap clock config */
 }
 
 uint32_t bcu_read(bcu_state_t *s, uint32_t offset, unsigned size)
