@@ -853,15 +853,57 @@ static bool be300_run_batch(machine_t *m)
         }
     }
 
+    /* NK.exe PC tracking after entry detected */
+    if (m->wince.cold_boot_copy_done && m->nand_data) {
+        static int nk_batch_log_count = 0;
+        if (nk_batch_log_count < 500 && (nk_batch_log_count < 5 || nk_batch_log_count % 50 == 0
+            || (((uint32_t)m->cpu->pc & 0x1FFFFFFFu) >= 0x60000u
+                && ((uint32_t)m->cpu->pc & 0x1FFFFFFFu) < 0x100000u))) {
+            fprintf(stderr, "[NK_PC] batch=%d PC=0x%08X Status=0x%08X"
+                " SP=0x%08X RA=0x%08X\n",
+                m->loop_count, (uint32_t)m->cpu->pc,
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            nk_batch_log_count++;
+        }
+    }
+
+    /* NK.exe PC milestone tracking */
+    if (m->wince.cold_boot_copy_done && m->nand_data) {
+        static uint32_t milestones_seen = 0;
+        uint32_t pc32 = (uint32_t)m->cpu->pc;
+        uint32_t pa = pc32 & 0x1FFFFFFFu;
+        struct { uint32_t va; uint32_t bit; const char *name; } checks[] = {
+            { 0x80077820u, 0x01, "FUN_80077820-boot-dispatch" },
+            { 0x8007B398u, 0x02, "cold-start-kernel-entry" },
+            { 0x800792ACu, 0x04, "FUN_800792AC-state-save" },
+            { 0x80079634u, 0x08, "warm-path-entry" },
+            { 0x80079730u, 0x10, "warm-path-gpr-restore" },
+            { 0x800797DCu, 0x20, "warm-path-crash-point" },
+            { 0x800794C8u, 0x40, "cold-boot-continuation" },
+            { 0x800795B4u, 0x80, "warm-resume-entry" },
+        };
+        for (int i = 0; i < 8; i++) {
+            if (pc32 == checks[i].va && !(milestones_seen & checks[i].bit)) {
+                milestones_seen |= checks[i].bit;
+                fprintf(stderr,
+                    "[NK_MILESTONE] %s PC=0x%08X batch=%d"
+                    " Status=0x%08X SP=0x%08X RA=0x%08X\n",
+                    checks[i].name, pc32, m->loop_count,
+                    (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            }
+        }
+    }
+
     /*
-     * Cold boot: patch STANDBY → J cold-start entry BEFORE NK.exe runs.
-     *
-     * Poll PA 0x24FC for the NK.exe entry point (set by SPL after
-     * decompression).  Once detected, patch the STANDBY instruction at
-     * VA 0x80079598 with a J to 0x8007B398 (kernel cold-start entry).
-     * This must happen before dyntrans compiles the STANDBY page.
+     * Poll PA 0x24FC for NK.exe entry point (set by SPL after decompression).
+     * When detected, dump boot state BEFORE NK.exe starts executing.
      */
-    if (!m->wince.cold_boot_redirected && m->nand_data) {
+    if (!m->wince.cold_boot_copy_done && m->nand_data) {
+        static int entry_poll_logged = 0;
         uint8_t buf24fc[4];
         uint64_t va24fc = 0xffffffffA00024FCULL;
         if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
@@ -869,27 +911,59 @@ static bool be300_run_batch(machine_t *m)
             uint32_t entry = buf24fc[0] | (buf24fc[1]<<8)
                 | (buf24fc[2]<<16) | (buf24fc[3]<<24);
             uint32_t entry_pa = entry & 0x1FFFFFFFu;
-            if (entry_pa >= 0x60000u && entry_pa < 0x100000u) {
-                /* NK.exe entry detected — patch STANDBY */
-                uint32_t j_cold = 0x0801ECE6u;  /* J 0x8007B398 */
-                uint8_t jpatch[4];
-                jpatch[0] = (j_cold >>  0) & 0xFF;
-                jpatch[1] = (j_cold >>  8) & 0xFF;
-                jpatch[2] = (j_cold >> 16) & 0xFF;
-                jpatch[3] = (j_cold >> 24) & 0xFF;
-                uint64_t standby_va = 0xffffffff80079598ULL;
-                m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                    standby_va, jpatch, 4, MEM_WRITE, CACHE_NONE);
-                m->cpu->invalidate_translation_caches(
-                    m->cpu, 0x79000, INVALIDATE_PADDR);
+            if (entry_pa >= 0x60000u && entry_pa < 0x100000u
+                && !entry_poll_logged) {
+                entry_poll_logged = 1;
                 m->wince.cold_boot_copy_done = true;
                 m->nand.wince_mode = true;
+                wince_boot_pc_ring_activate(m);
                 fprintf(stderr,
-                    "[BE300] *** COLD START PATCH:"
-                    " PA_24FC=0x%08X → STANDBY patched"
-                    " → J 0x8007B398 ***\n", entry);
-                wince_boot_note_cold_boot_redirect(
-                    m, "standby-patched-to-cold-start");
+                    "[BE300] *** NK.exe entry at PA_24FC=0x%08X"
+                    " (PC=0x%08X batch=%d) ***\n",
+                    entry, (uint32_t)m->cpu->pc, m->loop_count);
+                /* Dump boot signature PA 0x2700 */
+                {
+                    uint8_t sig[16];
+                    uint64_t sig_va = 0xffffffffA0002700ULL;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            sig_va, sig, 16, MEM_READ, CACHE_NONE)) {
+                        fprintf(stderr,
+                            "[BE300]   boot_sig PA 0x2700:"
+                            " %02X %02X %02X %02X %02X %02X %02X %02X"
+                            " %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                            sig[0],sig[1],sig[2],sig[3],
+                            sig[4],sig[5],sig[6],sig[7],
+                            sig[8],sig[9],sig[10],sig[11],
+                            sig[12],sig[13],sig[14],sig[15]);
+                    }
+                }
+                /* Dump resume_ctx PA 0x2200 */
+                {
+                    uint8_t ctx[32];
+                    uint64_t ctx_va = 0xffffffffA0002200ULL;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            ctx_va, ctx, 32, MEM_READ, CACHE_NONE)) {
+                        fprintf(stderr,
+                            "[BE300]   resume_ctx PA 0x2200:"
+                            " %02X%02X%02X%02X %02X%02X%02X%02X"
+                            " %02X%02X%02X%02X %02X%02X%02X%02X\n",
+                            ctx[0],ctx[1],ctx[2],ctx[3],
+                            ctx[4],ctx[5],ctx[6],ctx[7],
+                            ctx[8],ctx[9],ctx[10],ctx[11],
+                            ctx[12],ctx[13],ctx[14],ctx[15]);
+                    }
+                }
+                /* Dump PA 0x2518 (checked by FUN_80079488) */
+                {
+                    uint8_t f[4];
+                    uint64_t f_va = 0xffffffffA0002518ULL;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                            f_va, f, 4, MEM_READ, CACHE_NONE)) {
+                        uint32_t val = f[0]|(f[1]<<8)|(f[2]<<16)|(f[3]<<24);
+                        fprintf(stderr,
+                            "[BE300]   PA 0x2518=0x%08X\n", val);
+                    }
+                }
             }
         }
     }
@@ -986,33 +1060,9 @@ static bool be300_run_batch(machine_t *m)
             m->wince.cold_boot_copy_done = true;
             m->nand.wince_mode = true;
 
-            /*
-             * Patch STANDBY at VA 0x80079598 → J 0x8007B398
-             *
-             * NK.exe enters STANDBY after "Initializing..." splash.
-             * The post-STANDBY warm path restores from resume_ctx
-             * (PA 0x2200) which is empty on cold boot.  Patch to
-             * jump directly to the kernel cold-start entry which
-             * builds everything from scratch.
-             */
-            {
-                uint32_t j_cold = 0x0801ECE6u;  /* J 0x8007B398 */
-                uint8_t jpatch[4];
-                jpatch[0] = (j_cold >>  0) & 0xFF;
-                jpatch[1] = (j_cold >>  8) & 0xFF;
-                jpatch[2] = (j_cold >> 16) & 0xFF;
-                jpatch[3] = (j_cold >> 24) & 0xFF;
-                uint64_t standby_va = 0xffffffff80079598ULL;
-                m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                    standby_va, jpatch, 4, MEM_WRITE, CACHE_NONE);
-                m->cpu->invalidate_translation_caches(
-                    m->cpu, 0x79000, INVALIDATE_PADDR);
-                fprintf(stderr,
-                    "[BE300] *** COLD START PATCH:"
-                    " STANDBY at 0x80079598 → J 0x8007B398 ***\n");
-                wince_boot_note_cold_boot_redirect(
-                    m, "standby-patched-to-cold-start");
-            }
+            fprintf(stderr,
+                "[BE300] *** NK.exe entry detected at PC=0x%08X batch=%d ***\n",
+                pc, m->loop_count);
 
             /* Dump decompressed NK.exe binary for analysis */
             {
@@ -1064,10 +1114,29 @@ static bool be300_run_batch(machine_t *m)
             m->cpu->is_halted,
             (uint32_t)m->cpu->pc);
 
+        /* Dump PC ring buffer on crash */
+        wince_boot_pc_ring_dump(m);
+
+        /* Dump boot signature at PA 0x2700 (FUN_80079E48 cold/warm check) */
+        if (m->nand_data) {
+            uint8_t sig[16];
+            uint64_t sig_va = 0xffffffffA0002700ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                    sig_va, sig, 16, MEM_READ, CACHE_NONE)) {
+                fprintf(stderr,
+                    "[CRASH] PA 0x2700 boot_sig:"
+                    " %02X %02X %02X %02X %02X %02X %02X %02X"
+                    " %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                    sig[0],sig[1],sig[2],sig[3],sig[4],sig[5],sig[6],sig[7],
+                    sig[8],sig[9],sig[10],sig[11],sig[12],sig[13],sig[14],sig[15]);
+            }
+        }
+
         /* Basic crash diagnostics */
         {
             uint32_t pc = (uint32_t)m->cpu->pc;
-            fprintf(stderr, "[CRASH] PC=0x%08X\n", pc);
+            fprintf(stderr, "[CRASH] PC=0x%08X batch=%d instrs=%" PRIi64 "\n",
+                pc, m->loop_count, m->cpu->ninstrs);
             fprintf(stderr, "[CRASH] CP0: Status=0x%08X"
                 " Cause=0x%08X EPC=0x%08X BadVA=0x%08X\n",
                 (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],

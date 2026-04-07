@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define WINCE_VECTOR_WORDS 8u
+#define WINCE_PC_RING_SIZE 512u
 
 typedef enum {
     WINCE_VECTOR_NONE = 0,
@@ -39,4 +40,11 @@ typedef struct {
     uint32_t synthetic_low_general[WINCE_VECTOR_WORDS];
     uint32_t observed_low_tlb[WINCE_VECTOR_WORDS];
     uint32_t observed_low_general[WINCE_VECTOR_WORDS];
+
+    /* PC ring buffer — sampled every device tick for crash analysis */
+    uint32_t pc_ring[WINCE_PC_RING_SIZE];
+    uint32_t pc_ring_sp[WINCE_PC_RING_SIZE];
+    uint32_t pc_ring_status[WINCE_PC_RING_SIZE];
+    uint32_t pc_ring_idx;
+    bool     pc_ring_active;
 } wince_boot_state_t;
