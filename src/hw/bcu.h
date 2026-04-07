@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -34,6 +35,6 @@ typedef struct {
     uint16_t clkspeedreg;
 } bcu_state_t;
 
-void     bcu_init (bcu_state_t *s);
+void     bcu_init (bcu_state_t *s, bool warm);
 uint32_t bcu_read (bcu_state_t *s, uint32_t offset, unsigned size);
 void     bcu_write(bcu_state_t *s, uint32_t offset, unsigned size, uint32_t val);

@@ -297,13 +297,26 @@ machine_t *be300_create(const machine_config_t *cfg)
 
     /*
      * Initialize our peripheral state structs.
+     *
+     * Linux kernels were originally loaded from a running WinCE (warm
+     * start) and expect hardware registers to hold warm-state values.
+     * NAND cold boot starts from power-on reset defaults (zero).
+     * emulated_hz enables the CP0 Count/Compare timer needed for
+     * NAND STANDBY wake; it must stay 0 for Linux (uses RTCL1).
      */
-    bcu_init(&m->bcu);
-    cmu_init(&m->cmu);
-    pmu_init(&m->pmu);
-    icu_init(&m->icu);
-    siu_init(&m->siu);
-    rtc_init(&m->rtc);
+    {
+        bool warm = (m->cfg.kernel_path != NULL);
+        if (!warm)
+            gxm->emulated_hz = 131072000;
+        bcu_init(&m->bcu, warm);
+        cmu_init(&m->cmu, warm);
+        pmu_init(&m->pmu, warm);
+        icu_init(&m->icu);
+        siu_init(&m->siu);
+        rtc_init(&m->rtc, warm);
+        if (warm)
+            dev_vr41xx_apply_warm_seeds(gxm);
+    }
     gpio_init(&m->gpio);
     nand_init(&m->nand, NULL, 0);
 
