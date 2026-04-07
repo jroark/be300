@@ -25,3 +25,5 @@ void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
     size_t len);
 void wince_boot_note_fb_oob(struct cpu *cpu, uint64_t paddr, size_t len);
 void wince_boot_check_dma_autocopy(struct cpu *cpu);
+void wince_boot_pc_ring_activate(machine_t *m);
+void wince_boot_pc_ring_dump(machine_t *m);

@@ -747,6 +747,47 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     if (!m || !m->wince.active)
         return;
 
+    /* Detect NK.exe code execution during machine_run (the per-batch
+     * check in be300_run_batch misses NK.exe entry because it can enter
+     * and crash within a single batch). */
+    if (!m->wince.cold_boot_copy_done && m->nand_data) {
+        uint32_t pc32 = (uint32_t)cpu->pc;
+        uint32_t pa = pc32 & 0x1FFFFFFFu;
+        if (pa >= 0x60000u && pa < 0x100000u) {
+            m->wince.cold_boot_copy_done = true;
+            m->nand.wince_mode = true;
+            fprintf(stderr,
+                "[WINCE_CKPT] nk_entry_detected PC=0x%08X PA=0x%08X"
+                " SP=0x%08X RA=0x%08X Status=0x%08X\n",
+                pc32, pa,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
+            /* Dump PA 0x2700 boot signature (FUN_80079E48 checks this) */
+            fprintf(stderr, "[WINCE_CKPT] boot_sig PA=0x2700:");
+            {
+                size_t i;
+                for (i = 0; i < 16; i++)
+                    fprintf(stderr, " %02X",
+                        load_pa_word(m, 0x2700u + (uint32_t)(i * 4u))
+                            & 0xFFu);
+            }
+            fprintf(stderr, "\n");
+            dump_pa_words(m, "resume_ctx", 0x00002200u, 8);
+        }
+    }
+
+    /* PC ring buffer — sample every tick once PA 0x24FC is detected */
+    if (m->wince.pc_ring_active) {
+        uint32_t idx = m->wince.pc_ring_idx % WINCE_PC_RING_SIZE;
+        m->wince.pc_ring[idx] = (uint32_t)cpu->pc;
+        m->wince.pc_ring_sp[idx] =
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+        m->wince.pc_ring_status[idx] =
+            (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
+        m->wince.pc_ring_idx++;
+    }
+
     scan_low_vectors(m);
     maybe_track_low_vector_runtime_changes(m);
     maybe_note_first_exception(m);
@@ -846,4 +887,55 @@ void wince_boot_note_fb_oob(struct cpu *cpu, uint64_t paddr, size_t len)
         "[WINCE_FB] first out-of-range framebuffer write"
         " paddr=0x%08" PRIx64 " len=%zu pc=0x%08" PRIx64 "\n",
         paddr, len, (uint64_t)cpu->pc);
+}
+
+void wince_boot_pc_ring_activate(machine_t *m)
+{
+    if (!m || !m->wince.active || m->wince.pc_ring_active)
+        return;
+    m->wince.pc_ring_active = true;
+    m->wince.pc_ring_idx = 0;
+    fprintf(stderr, "[WINCE_CKPT] pc_ring activated\n");
+}
+
+void wince_boot_pc_ring_dump(machine_t *m)
+{
+    uint32_t total;
+    uint32_t start;
+    uint32_t count;
+    uint32_t i;
+
+    if (!m || !m->wince.active || !m->wince.pc_ring_active)
+        return;
+
+    total = m->wince.pc_ring_idx;
+    if (total == 0) {
+        fprintf(stderr, "[PC_RING] empty\n");
+        return;
+    }
+
+    count = total < WINCE_PC_RING_SIZE ? total : WINCE_PC_RING_SIZE;
+    start = total < WINCE_PC_RING_SIZE ? 0 : total % WINCE_PC_RING_SIZE;
+
+    fprintf(stderr, "[PC_RING] %u samples (last %u shown):\n", total, count);
+    for (i = 0; i < count; i++) {
+        uint32_t idx = (start + i) % WINCE_PC_RING_SIZE;
+        uint32_t pc = m->wince.pc_ring[idx];
+        uint32_t pa = pc & 0x1FFFFFFFu;
+        const char *region = "???";
+        if (pa >= 0x1FC00000u)
+            region = "ROM";
+        else if (pa >= 0xF00000u && pa < 0x1000000u)
+            region = "SPL";
+        else if (pa >= 0x60000u && pa < 0x100000u)
+            region = "NK";
+        else if (pa < 0x10000u)
+            region = "LOW";
+
+        fprintf(stderr, "[PC_RING] [%3u] PC=0x%08X (%s)"
+            " SP=0x%08X Status=0x%08X\n",
+            i, pc, region,
+            m->wince.pc_ring_sp[idx],
+            m->wince.pc_ring_status[idx]);
+    }
 }
