@@ -358,6 +358,11 @@ machine_t *be300_create(const machine_config_t *cfg)
          */
         dev_ram_init(gxm, 0x1FC00000, 0x4000, DEV_RAM_RAM, 0, NULL);
 
+        /* CF/ROM window at PA 0x1E000000: NK.exe XIP scanner probes
+         * VA 0x9E000000 for "RTBL" signature.  Zero-fill makes the
+         * check fail cleanly (no CF card inserted). */
+        dev_ram_init(gxm, 0x1E000000, 4096, DEV_RAM_RAM, 0x0, "cf_window");
+
         /*
          * Load the real BE-300 boot ROM into PA 0x1FC00000.
          * This 16KB masked ROM contains the reset vector, BEV
@@ -958,6 +963,7 @@ static bool be300_run_batch(machine_t *m)
                 && !entry_poll_logged) {
                 entry_poll_logged = 1;
                 m->wince.cold_boot_copy_done = true;
+                m->wince.cold_boot_redirected = true;
                 m->nand.wince_mode = true;
                 wince_boot_pc_ring_activate(m);
                 fprintf(stderr,
@@ -1102,6 +1108,7 @@ static bool be300_run_batch(machine_t *m)
         uint32_t pa = pc & 0x1FFFFFFFu;
         if (pa >= 0x60000u && pa < 0x100000u) {
             m->wince.cold_boot_copy_done = true;
+            m->wince.cold_boot_redirected = true;
             m->nand.wince_mode = true;
 
             fprintf(stderr,

@@ -534,64 +534,212 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
 struct be300_input_device {
     machine_t *m;
     bool       log_mmio;
+    /* PIU state (touch device only) */
+    uint16_t   piu_regs[16];       /* register file: index = offset / 4 */
+    uint16_t   piu_padstate;       /* PADSTATE(2:0) scan sequencer state */
+    bool       piu_prev_touch;     /* previous touch_down for edge detect */
+    struct interrupt piu_irq;      /* VRIP line 5 interrupt handle */
+    bool       piu_irq_connected;
+    bool       piu_irq_asserted;
 };
 
-/* Touchpanel device — PA 0x0A000300, size 0x60 */
+/*
+ *  PIU interrupt helper — idempotent assert/deassert through VRIP line 5.
+ *  INTERRUPT_ASSERT calls vr41xx_vrip_interrupt_assert() (dev_vr41xx.c:249)
+ *  which sets VR4131 SYSINT1 bit 5, potentially asserting CPU IRQ 2.
+ */
+static void piu_irq_update(struct be300_input_device *d, bool want)
+{
+    if (!d->piu_irq_connected)
+        return;
+    if (want && !d->piu_irq_asserted) {
+        INTERRUPT_ASSERT(d->piu_irq);
+        d->piu_irq_asserted = true;
+    } else if (!want && d->piu_irq_asserted) {
+        INTERRUPT_DEASSERT(d->piu_irq);
+        d->piu_irq_asserted = false;
+    }
+}
+
+/*
+ *  PIU scan sequencer state update after PIUCNTREG write.
+ *  Follows the state transition diagram in VRC4173 manual Figure 9-4.
+ */
+static void piu_update_state(struct be300_input_device *d)
+{
+    uint16_t ctl = d->piu_regs[0];
+
+    if (ctl & 0x0001) {
+        /* PADRST: reset everything */
+        memset(d->piu_regs, 0, sizeof(d->piu_regs));
+        d->piu_padstate = 0;  /* Disable */
+        piu_irq_update(d, false);
+        return;
+    }
+
+    if (!(ctl & 0x0002)) {
+        /* PIUPWR=0 → Disable */
+        d->piu_padstate = 0;
+        piu_irq_update(d, false);
+        return;
+    }
+
+    /* PIUPWR=1: at least Standby */
+    if (d->piu_padstate == 0)
+        d->piu_padstate = 1;  /* Disable → Standby */
+
+    if ((ctl & 0x0004) && (ctl & 0x0100) && ((ctl >> 3) & 3) == 0) {
+        /* PIUSEQEN=1, PADATSTART=1, PIUMODE=00 → WaitPenTouch */
+        if (d->piu_padstate < 4)
+            d->piu_padstate = 4;  /* → WaitPenTouch */
+
+        /* If pen is already down, transition immediately */
+        if (d->m->touch_down && d->piu_padstate == 4) {
+            d->piu_padstate = 5;  /* → PenDataScan */
+            d->piu_regs[1] |= 0x01;  /* PENCHGINTR */
+            d->piu_regs[1] |= 0x08;  /* PADPAGE0INTER */
+            piu_irq_update(d, true);
+        }
+    } else if (!(ctl & 0x0004)) {
+        /* PIUSEQEN=0 → back to Standby */
+        if (d->piu_padstate > 1) {
+            d->piu_padstate = 1;
+            piu_irq_update(d, false);
+        }
+    }
+}
+
+/*
+ *  Touchpanel device — PA 0x0A000300, size 0x60
+ *
+ *  VRC4173 PIU register model per Chapter 9 of U14579EJ2V0UM00.pdf.
+ *  Register offsets are 32-bit aligned (one 16-bit register per 4-byte word).
+ *
+ *  PIUCNTREG (+0x00): control register with scan sequencer state machine
+ *  PIUINTREG (+0x04): interrupt cause (W1C for interrupt bits)
+ *  PIUSIVLREG (+0x08) through PIUAMSKREG (+0x18): configuration
+ *  PIU page buffers (+0x20-0x2C, +0x50-0x5C): ADC data
+ */
 DEVICE_ACCESS(be300_touch)
 {
     struct be300_input_device *d = (struct be300_input_device *)extra;
     machine_t *m = d->m;
-
-    if (writeflag == MEM_WRITE)
-        return 1;   /* touch panel registers are read-only from guest */
-
-    uint64_t val = 0;
     uint32_t off = (uint32_t)relative_addr;
+    uint64_t val;
 
-    if (m->touch_down) {
-        /* Linear ADC mapping from calibration data:
-         *   y+ : ADC range 0x81E1→0x8E30 covers the FULL touch panel
-         *        (display 320px + virtual button strip below).
-         *        TOUCH_PANEL_H = display height + button strip height.
-         *        Adjust TOUCH_PANEL_H if y-axis calibration is off.
-         *   x- : ADC range 0x8300→0x8D1B, x-axis is physically inverted
-         *        relative to screen coordinates.                         */
-#define TOUCH_PANEL_H  (319u + 40u)   /* 320 display + ~40px button strip */
+    if (writeflag == MEM_WRITE) {
+        val = memory_readmax64(cpu, data, len);
+
+        if (d->log_mmio)
+            fprintf(stderr, "[PIU] W off=0x%02X val=0x%04X PC=0x%08X\n",
+                off, (uint16_t)val, (uint32_t)cpu->pc);
+
+        if (off <= 0x18 && (off & 3) == 0) {
+            uint32_t idx = off / 4;
+            if (off == 0x00) {
+                /* PIUCNTREG: store writable bits 9:0 only */
+                d->piu_regs[0] = (uint16_t)(val & 0x03FF);
+                piu_update_state(d);
+            } else if (off == 0x04) {
+                /* PIUINTREG: write-1-to-clear */
+                d->piu_regs[1] &= ~((uint16_t)val & 0x007D);
+                if (d->piu_regs[1] == 0)
+                    piu_irq_update(d, false);
+            } else {
+                d->piu_regs[idx] = (uint16_t)val;
+            }
+        }
+        wince_boot_note_mmio_access(m->gxe_machine, cpu, 0x0A000300ULL
+            + off, len, val, true);
+        return 1;
+    }
+
+    /* Read path */
+    val = 0;
+
+    if (off == 0x00) {
+        /* PIUCNTREG: compose from stored bits + dynamic state */
+        val = (d->piu_regs[0] & 0x03FFu)
+            | ((uint16_t)(d->piu_padstate & 7) << 10)
+            | (m->touch_down ? 0x2000u : 0);
+    } else if (off == 0x04) {
+        val = d->piu_regs[1];
+    } else if (off <= 0x18 && (off & 3) == 0) {
+        val = d->piu_regs[off / 4];
+    } else if ((off >= 0x20 && off <= 0x2C) || (off >= 0x50 && off <= 0x5C)) {
+        /* ADC buffer registers — return live touch coordinates */
+#define TOUCH_PANEL_H  (319u + 40u)
         uint16_t yp = (uint16_t)(0x81E1u +
             ((uint32_t)m->touch_y * (0x8E30u - 0x81E1u)) / TOUCH_PANEL_H);
         uint16_t ym = (uint16_t)(0x8E30u -
             ((uint32_t)m->touch_y * (0x8E30u - 0x81E1u)) / TOUCH_PANEL_H);
-        /* x is inverted: screen left (x=0) → high ADC, right (x=239) → low ADC */
         uint16_t xm = (uint16_t)(0x8D1Bu -
             ((uint32_t)m->touch_x * (0x8D1Bu - 0x8300u)) / 239u);
         uint16_t xp = (uint16_t)(0x8300u +
             ((uint32_t)m->touch_x * (0x8D1Bu - 0x8300u)) / 239u);
 
-        switch (off) {
-        case 0x00: val = 0x2000u; break;   /* pendown flag */
-        case 0x04: val = 0;       break;   /* interrupt bits */
-        case 0x20: case 0x50: val = yp; break;
-        case 0x24: case 0x54: val = ym; break;
-        case 0x28: case 0x58: val = xm; break;
-        case 0x2C: case 0x5C: val = xp; break;
-        default:   val = 0; break;
-        }
-    } else {
-        /* Pen up: return idle ADC values */
-        switch (off) {
-        case 0x00: val = 0;       break;
-        case 0x20: case 0x50: val = 0x81E1u; break;
-        case 0x24: case 0x54: val = 0x8E30u; break;
-        case 0x28: case 0x58: val = 0x8300u; break;
-        case 0x2C: case 0x5C: val = 0x8D1Bu; break;
-        default:   val = 0; break;
+        if (d->piu_padstate == 5 && m->touch_down) {
+            switch (off & 0x0F) {
+            case 0x00: val = yp; break;
+            case 0x04: val = ym; break;
+            case 0x08: val = xm; break;
+            case 0x0C: val = xp; break;
+            }
+        } else {
+            switch (off & 0x0F) {
+            case 0x00: val = 0x81E1u; break;
+            case 0x04: val = 0x8E30u; break;
+            case 0x08: val = 0x8300u; break;
+            case 0x0C: val = 0x8D1Bu; break;
+            }
         }
     }
 
     memory_writemax64(cpu, data, len, val);
-    wince_boot_note_mmio_access(m->gxe_machine, cpu, 0x0A00A040ULL
-        + (uint32_t)relative_addr, len, val, false);
+
+    if (d->log_mmio)
+        fprintf(stderr, "[PIU] R off=0x%02X val=0x%04X PC=0x%08X\n",
+            off, (uint16_t)val, (uint32_t)cpu->pc);
+
+    wince_boot_note_mmio_access(m->gxe_machine, cpu, 0x0A000300ULL
+        + off, len, val, false);
     return 1;
+}
+
+/*
+ *  be300_touch_tick():
+ *
+ *  Called from the VR41xx device tick to detect pen state changes
+ *  and generate PIU interrupts when the scan sequencer is active.
+ */
+void be300_touch_tick(machine_t *m)
+{
+    struct be300_input_device *d;
+    bool now, prev;
+
+    if (!m || !m->touch_device)
+        return;
+    d = (struct be300_input_device *)m->touch_device;
+    if (!d->piu_irq_connected)
+        return;
+
+    now = m->touch_down;
+    prev = d->piu_prev_touch;
+    d->piu_prev_touch = now;
+
+    if (d->piu_padstate == 4 && now && !prev) {
+        /* WaitPenTouch + pen down → PenDataScan */
+        d->piu_regs[1] |= 0x01;   /* PENCHGINTR */
+        if (d->piu_regs[0] & 0x100)  /* PADATSTART */
+            d->piu_padstate = 5;
+        d->piu_regs[1] |= 0x08;   /* PADPAGE0INTER */
+        piu_irq_update(d, true);
+    } else if (d->piu_padstate >= 4 && !now && prev) {
+        /* Pen release */
+        d->piu_regs[1] |= 0x01;   /* PENCHGINTR */
+        d->piu_padstate = 4;       /* back to WaitPenTouch */
+        piu_irq_update(d, true);
+    }
 }
 
 /* Button register device — PA 0x0A00A040, size 0x10 */
@@ -624,9 +772,25 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
 {
     struct be300_input_device *touch_d, *btn_d;
 
-    CHECK_ALLOCATION(touch_d = malloc(sizeof(struct be300_input_device)));
+    CHECK_ALLOCATION(touch_d = calloc(1, sizeof(struct be300_input_device)));
     touch_d->m = m;
     touch_d->log_mmio = log_mmio;
+
+    /* Connect PIU to VRIP interrupt line 5 (VRIP_INTR_PIU).
+     * The VRIP tree is registered by dev_vr41xx_init() — this must
+     * be called AFTER that init.  Same pattern as KIU/GIU at
+     * gxemul/src/devices/dev_vr41xx.c:1237-1242. */
+    {
+        char tmps[300];
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i",
+            gxm->path, gxm->bootstrap_cpu, 5);
+        INTERRUPT_CONNECT(tmps, touch_d->piu_irq);
+        touch_d->piu_irq_connected = true;
+        touch_d->piu_irq_asserted = false;
+    }
+
+    m->touch_device = touch_d;
+
     memory_device_register(gxm->memory, "be300_touch",
         0x0A000300ULL, 0x60,
         dev_be300_touch_access, (void *)touch_d, DM_DEFAULT, NULL);
