@@ -96,6 +96,18 @@ struct be300_vrc4173_latch {
 
 static struct be300_vrc4173_latch *g_be300_vrc4173_latch = NULL;
 
+static uint32_t be300_latch_peek_u32(struct be300_vrc4173_latch *d,
+    uint32_t off)
+{
+    if (!d || off + 4u > VRC4173_LATCH_SIZE)
+        return 0;
+
+    return (uint32_t)d->bytes[off + 0u]
+         | ((uint32_t)d->bytes[off + 1u] << 8)
+         | ((uint32_t)d->bytes[off + 2u] << 16)
+         | ((uint32_t)d->bytes[off + 3u] << 24);
+}
+
 struct be300_vrc4173_segment {
     struct be300_vrc4173_latch *latch;
     uint32_t offset_in_latch;    /* offset of this segment within the latch */
@@ -120,6 +132,13 @@ DEVICE_ACCESS(be300_vrc4173)
 
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
+        bool suspend_latch = false;
+
+        if ((off <= 0x1120 && off + len > 0x1120) ||
+            (off <= 0x112C && off + len > 0x112C) ||
+            (off <= 0x1B20 && off + len > 0x1B20)) {
+            suspend_latch = true;
+        }
 
         /*
          * VRC4173 interrupt status registers use write-1-to-clear:
@@ -137,7 +156,9 @@ DEVICE_ACCESS(be300_vrc4173)
          *   0x1B10 INTSTAT1 secondary read
          *   0x1B20 INTMASK1 / interrupt acknowledge
          */
-        if ((off >= 0x060 && off < 0x078) ||
+        if (suspend_latch) {
+            memcpy(&d->bytes[off], data, len);
+        } else if ((off >= 0x060 && off < 0x078) ||
             (off >= 0x1100 && off < 0x1140) ||
             (off >= 0x1B00 && off < 0x1B30)) {
             /* W1C: clear bits that are written as 1 */
@@ -383,6 +404,30 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
             memcpy(&latch->bytes[siu_regs[i].off], &v, 4);
         }
 
+        /*
+         * Sparse companion wake/interrupt latches from the hardware dump.
+         *
+         * The low-power helper at 0x80079898 toggles 0x1120, 0x112C,
+         * and 0x1B20 around SUSPEND using 0/1 stores, so seed the
+         * observed enable/state bits rather than leaving the whole page
+         * zeroed.
+         */
+        static const struct { uint16_t off; uint32_t val; } wake_regs[] = {
+            { 0x1120, 0x00000001 },
+            { 0x1128, 0x00000001 },
+            { 0x112C, 0x00000001 },
+            { 0x1138, 0x00000001 },
+            { 0x113C, 0x00000001 },
+            { 0x1B10, 0x00000048 },
+            { 0x1B14, 0x00000001 },
+            { 0x1B20, 0x00000001 },
+            { 0x1B2C, 0x00000001 },
+        };
+        for (unsigned i = 0; i < sizeof(wake_regs)/sizeof(wake_regs[0]); i++) {
+            uint32_t v = wake_regs[i].val;
+            memcpy(&latch->bytes[wake_regs[i].off], &v, 4);
+        }
+
         /* Board ID: offset 0x0A0C0 = 0x7100 (BE-300 identifier) */
         {
             uint32_t v = 0x00007100;
@@ -412,6 +457,22 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
             for (unsigned i = 0; i < sizeof(aux_regs) / sizeof(aux_regs[0]); i++)
                 memcpy(&aux->bytes[aux_regs[i].off], &aux_regs[i].val, 4);
         }
+
+        fprintf(stderr,
+            "[BE300] VRC seed"
+            " 8010=%08X 1120=%08X 1128=%08X 112C=%08X"
+            " 1138=%08X 113C=%08X 1B10=%08X 1B14=%08X"
+            " 1B20=%08X 1B2C=%08X\n",
+            be300_latch_peek_u32(latch, 0x8010u),
+            be300_latch_peek_u32(latch, 0x1120u),
+            be300_latch_peek_u32(latch, 0x1128u),
+            be300_latch_peek_u32(latch, 0x112Cu),
+            be300_latch_peek_u32(latch, 0x1138u),
+            be300_latch_peek_u32(latch, 0x113Cu),
+            be300_latch_peek_u32(latch, 0x1B10u),
+            be300_latch_peek_u32(latch, 0x1B14u),
+            be300_latch_peek_u32(latch, 0x1B20u),
+            be300_latch_peek_u32(latch, 0x1B2Cu));
     }
 
     /*
