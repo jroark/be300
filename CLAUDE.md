@@ -133,7 +133,7 @@ Push with: `git push -u origin <current branch>`
 ```
 
 **MIPS32 ROM helpers called from MIPS16 via JALX:**
-- 0x9FC00464: unknown helper
+- 0x9FC00464: mailbox writer (writes NK.exe entry to PA 0x24FC, version marker 0x03020101 to PA 0x2400)
 - 0x9FC00834: memcpy-like
 - 0x9FC00888: memset-like
 - 0x9FC00980: context save
@@ -297,17 +297,25 @@ The "Starting..." screen indicates NK.exe's post-init code is running
 - BCU revision check → main HW init path at 0x76C60
 - Version check at PA 0x2400 for 0x03020100, hibernate signature at PA 0x2524 for 0x3210xxxx
 - VRC4173 init, NAND controller, cache init, switch SP to kseg0
-- Jump to 0xA00772CC → more init → WAIT at VA 0xA0079598
+- Pre-init continuation at VA 0xA0079460: calls init functions (0x79ADC, 0x7AC50, 0x79B2C, 0x79B4C), then J 0x79510 → PMU/SDRAM config at 0x79560-0x79598 (jr ra loops back to 0x79560)
+- Kseg0 switch via FUN_800795B4 → 0x800795D8 (post-STANDBY checks)
+- Check1 (0x80079AC4): $v0 = button_reg & 0x9E00, **sets $t0 = 0xAA00A000** (always non-zero)
+- Check2 (0x8007AFA8): reads VRC4173 status, does NOT touch $t0
+- BNE $t0,$zero at 0x795F0 → **always branches to warm path (0x79634)**
+- Warm-path GPR restore at 0x79730: loads all GPRs/CP0 from resume_ctx (PA 0x2200), returns via restored RA
+- On cold boot: resume_ctx must contain RA=0x8007B398 (cold-start kernel entry), SP=0xA0003800, Status=0x34400000 (BEV=1)
+- **The real COP0 STANDBY instruction is at VA 0x800799F8** (in the scheduler idle path FUN_8008B528 → FUN_8007A3FC, NOT in the pre-init path). GXemul handles it natively.
+
+**NOTE:** VA 0x80079598 is `jr ra` (function return), NOT a STANDBY instruction. Previous documentation was incorrect.
 
 **Cold Boot Continuation (0x800794C8):**
-- Referenced by J instruction at 0x8007962C (after the unreachable cold boot init at 0x79DF8)
-- Calls 6 init functions: 0x79ADC (VRC4173 interrupt init), 0x79B94, 0x79B9C, 0x79BA4, 0x79BAC, 0x7AB38 (OEMInit callback dispatcher)
-- Flushes data cache (loop at 0x79500 using cache instruction)
-- Calls 3 more init functions: 0x79BB4, 0x79B5C, 0x79C88
-- Falls through to 0x79560 → PMU/DCU/SDRAMU → WAIT
-- Function 0x7AB38 is an OEMInit callback dispatcher: walks 32 entries (20 bytes each) at PA 0xA0051680, calls function pointers via JALR. These callbacks do real WinCE kernel initialization.
-- Running 0x794C8 does NOT update resume_ctx — the init functions at 0x794C8 don't write to PA 0x2200
+- Called from FUN_80079488 (via BEQ branch) and from 0x8007962C (warm-path cold init fallback — dead code due to $t0 clobber)
+- Also reached directly from pre-init via J 0x79510 (which is within the same code block)
+- Calls init functions: 0x79BB4, 0x79B5C, 0x79C88
+- PMU/SDRAM config at 0x79560-0x79598
+- Function 0x7AB38 is an OEMInit callback dispatcher: walks 32 entries (20 bytes each) at PA 0xA0051680, calls function pointers via JALR
 - OEMInit callback table at PA 0x51680: 11 callback groups (55 non-zero words). Contains function pointers into NK.exe OAL code (0x8007xxxx, 0x800Axxxx). Populated by the ROM's MIPS16 boot dispatcher at 0x9FC00C21.
+- **resume_ctx (PA 0x2200):** NOT populated by any code during cold boot (confirmed by memory-layer watchpoint). The only writer is FUN_800792AC (scheduler idle state save). The emulator seeds PA 0x2200 with cold-start state when PA 0x24FC is detected.
 
 **ROMHDR / COPYentry (WinCE image section copier):**
 - NK.exe has "ECEC" signature at offset 0x40, pTOC pointer at offset 0x44 (= 0x80655C54)
@@ -327,16 +335,16 @@ The ROM at 0xBFC002F0 runs these steps before entering NK.exe:
 8. Load PA 0x24FC, JR to NK.exe entry
 The emulator starts at the reset vector and the ROM executes all steps natively. Steps 5-6 are MIPS16 code (runs via GXemul's MIPS16 interpreter). The ROM loads the SPL from NAND; the SPL decompresses NK.exe; then the ROM continues with steps 5-8.
 
-**Post-WAIT OAL Init (always taken on both cold and warm boot):**
-- NOP sled → kseg0 switch → check1 (buttons) → check2 (VRC4173)
-- check1 reads PA 0x0A00A042 (button register), masks 0x9E00
-- **$t0 clobber bug:** check1 sets $t0=0xAA00A000 (button register base address).
-  check2 (at 0x8007AFA8) only touches $a0/$a1/$v0, NOT $t0. The BNE $t0,$zero
-  after check2 is ALWAYS taken → branch to 0x79634 (warm path). The cold boot
-  init at 0x79DF8 is **dead code** via this path.
+**Post-Init OAL Restore (0x800795D8, always taken on both cold and warm boot):**
+- Entered via kseg0 switch (FUN_800795B4 computes 0x800795D8 and JRs to it)
+- check1 (0x80079AC4): reads button register PA 0x0A00A042, masks 0x9E00 → $v0; **sets $t0=0xAA00A000** (always non-zero)
+- check2 (0x8007AFA8): reads VRC4173 status, does NOT touch $t0
+- BNE $t0,$zero at 0x795F0 → ALWAYS taken → warm path (0x79634)
+- The cold boot init at 0x79DF8 (called from fall-through at 0x79624) is **dead code** — never reached due to $t0 clobber. It writes the warm-boot signature (0x00-0xFF) to PA 0x2700.
 - 0x79634: JAL 0x78BC0 (OAL vtable init) → VR41xx HW setup → timer → ICU
-- 0x79668: Full GPR/CP0 restore from resume_ctx table at PA 0x2200
-- 0x797DC: LW $t0, 0($sp); JR $ra — function epilogue
+- 0x79668-0x79714: CP0 restore from resume_ctx (PA 0x2200), Status loaded last at 0x79714
+- 0x79730: Full GPR restore from resume_ctx (PA 0x2200)
+- 0x797DC: LW $t0, 0($sp); JR $ra; ADDIU $sp, 4 — epilogue, returns to RA from resume_ctx
 
 **Kernel Cold-Start Entry (0x8007B398):**
 The true kernel cold-start initialization, building everything from scratch:
@@ -408,7 +416,7 @@ is gated by four checks. ALL must pass for the save to run:
 Note: the version check at 0x76CBC clears PA 0x254C if PA 0x2400 != 0x03020100,
 which prevents check 4 from passing even if PA 0x254C was previously set.
 This function is NOT called from the main NK.exe pre-WAIT init path.
-It does NOT run during cold boot — resume_ctx is populated by the ROM dispatcher.
+It does NOT run during cold boot — resume_ctx (PA 0x2200) is NOT populated by any code during cold boot (confirmed by memory-layer watchpoint at memory_rw.c:559). The emulator seeds it with cold-start state.
 
 **VRC4173 Interrupt Registers:**
 - VRC4173 ICU SYSINT1REG at offset 0x060 from VRC4173 base (0x0A000000) is **read-only** on real hardware — reflects active peripheral interrupt sources
