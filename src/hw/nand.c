@@ -186,6 +186,58 @@ void nand_init(nand_state_t *s, const uint8_t *image, size_t size)
     s->state      = NAND_STATE_IDLE;
     s->portctl    = 0;
     memset(s->legacy_regs, 0x40, sizeof(s->legacy_regs));
+
+    /*
+     * Survey-backed companion/NAND strap block from real hardware.
+     * WinCE samples 0x0A00A0E0 bit 0 here to decide whether RAM sizing
+     * is 16 MB or 32 MB; leaving the window as zero makes it choose 32 MB
+     * and clear beyond installed SDRAM.
+     */
+    {
+        static const struct {
+            uint16_t off;
+            uint32_t val;
+        } strap_init[] = {
+            { 0xA060u, 0x000C000Cu }, { 0xA064u, 0x000C000Cu },
+            { 0xA068u, 0x000C000Cu }, { 0xA06Cu, 0x000C000Cu },
+            { 0xA070u, 0x000C000Cu }, { 0xA074u, 0x000C000Cu },
+            { 0xA078u, 0x000C000Cu }, { 0xA07Cu, 0x000C000Cu },
+            { 0xA080u, 0x00000000u }, { 0xA084u, 0x00000001u },
+            { 0xA088u, 0x00000000u }, { 0xA08Cu, 0x00007100u },
+            { 0xA090u, 0x00007100u }, { 0xA094u, 0x00007100u },
+            { 0xA098u, 0x00007100u }, { 0xA09Cu, 0x00007100u },
+            { 0xA0A0u, 0x00007100u }, { 0xA0A4u, 0x00007100u },
+            { 0xA0A8u, 0x00007100u }, { 0xA0ACu, 0x00007100u },
+            { 0xA0B0u, 0x00007100u }, { 0xA0B4u, 0x00007100u },
+            { 0xA0B8u, 0x00007100u }, { 0xA0BCu, 0x00007100u },
+            { 0xA0C0u, 0x00007100u }, { 0xA0C4u, 0x00000003u },
+            { 0xA0C8u, 0x0000FFFFu }, { 0xA0CCu, 0x00000000u },
+            { 0xA0D0u, 0x00000002u }, { 0xA0D4u, 0x00000000u },
+            { 0xA0D8u, 0x00000000u }, { 0xA0DCu, 0x00000005u },
+            { 0xA0E0u, 0x00000041u }, { 0xA0E4u, 0x0000000Fu },
+            { 0xA0E8u, 0x00000000u }, { 0xA0ECu, 0x00000000u },
+            { 0xA0F0u, 0x00000000u }, { 0xA0F4u, 0x00007100u },
+            { 0xA0F8u, 0x00007100u }, { 0xA0FCu, 0x00007100u },
+            { 0xA100u, 0x00000000u }, { 0xA104u, 0x00000000u },
+            { 0xA108u, 0x00000000u }, { 0xA10Cu, 0x00000000u },
+            { 0xA110u, 0x00000000u }, { 0xA114u, 0x00000000u },
+            { 0xA118u, 0x00000000u }, { 0xA11Cu, 0x00000000u },
+            { 0xA120u, 0x00000000u }, { 0xA124u, 0x00000000u },
+            { 0xA128u, 0x00000000u }, { 0xA12Cu, 0x00000000u },
+            { 0xA130u, 0x00000000u }, { 0xA134u, 0x00000000u },
+            { 0xA138u, 0x00000000u }, { 0xA13Cu, 0x00000000u },
+            { 0xA140u, 0x00000001u }, { 0xA144u, 0x00000000u },
+            { 0xA148u, 0x00000000u }, { 0xA14Cu, 0x00000000u },
+            { 0xA150u, 0x00000000u }, { 0xA154u, 0x00000000u },
+            { 0xA158u, 0x00000000u }, { 0xA15Cu, 0x00000000u },
+        };
+        size_t i;
+
+        for (i = 0; i < sizeof(strap_init) / sizeof(strap_init[0]); i++) {
+            uint32_t rel = (uint32_t)(strap_init[i].off - 0xA060u);
+            memcpy(&s->strap_regs[rel], &strap_init[i].val, sizeof(uint32_t));
+        }
+    }
 }
 
 /* Resolve current page_addr + column into a byte offset in the NAND image.
@@ -348,6 +400,14 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             else
                 s->ctrl_regs[2] = 0;
         }
+        return;
+    }
+
+    if (offset >= 0xA060u && offset < 0xA160u) {
+        uint32_t rel = offset - 0xA060u;
+
+        for (unsigned i = 0; i < size && (rel + i) < sizeof(s->strap_regs); i++)
+            s->strap_regs[rel + i] = (uint8_t)((value >> (8u * i)) & 0xFFu);
         return;
     }
 
@@ -836,6 +896,14 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
     if (offset >= NAND_CTRL_BASE && offset < NAND_CTRL_END) {
         uint32_t idx = (offset - NAND_CTRL_BASE) >> 2;
         val = (idx < 8) ? s->ctrl_regs[idx] : 0;
+        goto out;
+    }
+
+    if (offset >= 0xA060u && offset < 0xA160u) {
+        uint32_t rel = offset - 0xA060u;
+
+        for (unsigned i = 0; i < size && (rel + i) < sizeof(s->strap_regs); i++)
+            val |= (uint64_t)s->strap_regs[rel + i] << (8u * i);
         goto out;
     }
 
