@@ -596,9 +596,11 @@ static void piu_update_state(struct be300_input_device *d)
         /* If pen is already down, transition immediately */
         if (d->m->touch_down && d->piu_padstate == 4) {
             d->piu_padstate = 5;  /* → PenDataScan */
-            d->piu_regs[1] |= 0x01;  /* PENCHGINTR */
-            d->piu_regs[1] |= 0x08;  /* PADPAGE0INTER */
-            piu_irq_update(d, true);
+            /* Set pending bits in byte 0; assert IRQ if mask matches */
+            d->piu_regs[1] |= 0x01;  /* PENCHGINTR (pen contact change) */
+            d->piu_regs[1] |= 0x5C;  /* touch data ready bits */
+            if (d->piu_regs[1] & (d->piu_regs[1] >> 8))
+                piu_irq_update(d, true);
         }
     } else if (!(ctl & 0x0004)) {
         /* PIUSEQEN=0 → back to Standby */
@@ -612,13 +614,15 @@ static void piu_update_state(struct be300_input_device *d)
 /*
  *  Touchpanel device — PA 0x0A000300, size 0x60
  *
- *  VRC4173 PIU register model per Chapter 9 of U14579EJ2V0UM00.pdf.
- *  Register offsets are 32-bit aligned (one 16-bit register per 4-byte word).
+ *  Register layout from docs/hardware.txt ISR analysis (GIRQ0-9):
  *
- *  PIUCNTREG (+0x00): control register with scan sequencer state machine
- *  PIUINTREG (+0x04): interrupt cause (W1C for interrupt bits)
- *  PIUSIVLREG (+0x08) through PIUAMSKREG (+0x18): configuration
- *  PIU page buffers (+0x20-0x2C, +0x50-0x5C): ADC data
+ *  +0x00 PIUCNTREG: bit 13 (0x2000) = pendown status
+ *  +0x04 PIUINTREG: byte 0 (bits 7:0) = pending status (set by HW)
+ *                   byte 1 (bits 15:8) = interrupt mask (R/W by driver)
+ *                   ISR does: intr = W[304]; intr &= (intr >> 8);
+ *                   Active bits: 0x5C → SYSINTR_TOUCH, 0x01 → SYSINTR_TOUCH_CHANGED
+ *                   ISR clears by zeroing mask bits (NOT write-1-to-clear)
+ *  +0x20-0x2C, +0x50-0x5C: ADC coordinate buffers (y+, y-, x-, x+)
  */
 DEVICE_ACCESS(be300_touch)
 {
@@ -641,9 +645,15 @@ DEVICE_ACCESS(be300_touch)
                 d->piu_regs[0] = (uint16_t)(val & 0x03FF);
                 piu_update_state(d);
             } else if (off == 0x04) {
-                /* PIUINTREG: write-1-to-clear */
-                d->piu_regs[1] &= ~((uint16_t)val & 0x007D);
-                if (d->piu_regs[1] == 0)
+                /* PIUINTREG: mask/status byte pair.
+                 * Byte 0 (bits 7:0) = pending status (read-only, set by HW)
+                 * Byte 1 (bits 15:8) = interrupt mask (writable)
+                 * ISR clears by zeroing mask bits, e.g. W[304] &= 0xFE00.
+                 * Only update the mask byte; leave pending bits alone. */
+                d->piu_regs[1] = (d->piu_regs[1] & 0x00FF)
+                    | ((uint16_t)val & 0xFF00);
+                /* Deassert if no pending bits match the new mask */
+                if ((d->piu_regs[1] & (d->piu_regs[1] >> 8)) == 0)
                     piu_irq_update(d, false);
             } else {
                 d->piu_regs[idx] = (uint16_t)val;
@@ -663,6 +673,7 @@ DEVICE_ACCESS(be300_touch)
             | ((uint16_t)(d->piu_padstate & 7) << 10)
             | (m->touch_down ? 0x2000u : 0);
     } else if (off == 0x04) {
+        /* Return (mask << 8) | pending; ISR does pending & mask */
         val = d->piu_regs[1];
     } else if (off <= 0x18 && (off & 3) == 0) {
         val = d->piu_regs[off / 4];
@@ -729,16 +740,19 @@ void be300_touch_tick(machine_t *m)
 
     if (d->piu_padstate == 4 && now && !prev) {
         /* WaitPenTouch + pen down → PenDataScan */
-        d->piu_regs[1] |= 0x01;   /* PENCHGINTR */
+        d->piu_regs[1] |= 0x01;   /* pending: pen contact change */
         if (d->piu_regs[0] & 0x100)  /* PADATSTART */
             d->piu_padstate = 5;
-        d->piu_regs[1] |= 0x08;   /* PADPAGE0INTER */
-        piu_irq_update(d, true);
+        d->piu_regs[1] |= 0x5C;   /* pending: touch data ready */
+        /* Assert IRQ only if pending & mask is non-zero */
+        if (d->piu_regs[1] & (d->piu_regs[1] >> 8))
+            piu_irq_update(d, true);
     } else if (d->piu_padstate >= 4 && !now && prev) {
         /* Pen release */
-        d->piu_regs[1] |= 0x01;   /* PENCHGINTR */
+        d->piu_regs[1] |= 0x01;   /* pending: pen contact change */
         d->piu_padstate = 4;       /* back to WaitPenTouch */
-        piu_irq_update(d, true);
+        if (d->piu_regs[1] & (d->piu_regs[1] >> 8))
+            piu_irq_update(d, true);
     }
 }
 
