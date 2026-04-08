@@ -56,6 +56,7 @@ typedef struct {
     bool        log_mmio;
     bool        sfb_5bit_green;
     bool        log_nand_legacy;
+    bool        debug_serial;
 
     const char *rom_path;
     const char *kernel_path;
