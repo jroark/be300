@@ -34,7 +34,7 @@ typedef struct {
     /* Cold boot state */
     bool cold_boot_copy_done;
     uint32_t cold_boot_pc_probes_logged;
-    uint32_t boot_path_probe_mask;
+    uint64_t boot_path_probe_mask;
 
     /* Vector tracking */
     wince_vector_owner_t vector_owner;
