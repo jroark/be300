@@ -36,6 +36,12 @@ static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
 #define WINCE_PATH_PROBE_79430      UINT32_C(0x00000800)
 #define WINCE_PATH_PROBE_79460      UINT32_C(0x00001000)
 #define WINCE_PATH_PROBE_79510      UINT32_C(0x00002000)
+#define WINCE_PATH_PROBE_772F0      UINT32_C(0x00004000)
+#define WINCE_PATH_PROBE_7742C      UINT32_C(0x00008000)
+#define WINCE_PATH_PROBE_7757C      UINT32_C(0x00010000)
+#define WINCE_PATH_PROBE_77664      UINT32_C(0x00020000)
+#define WINCE_PATH_PROBE_77738      UINT32_C(0x00040000)
+#define WINCE_PATH_PROBE_77260      UINT32_C(0x00080000)
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -214,6 +220,10 @@ static bool watched_ram_range_name(uint64_t paddr, uint64_t len,
         *name = "boot_flags_251c";
         return true;
     }
+    if (range_overlaps(paddr, len, 0x00002528u, 4u)) {
+        *name = "resume_ptr_2528";
+        return true;
+    }
     return false;
 }
 
@@ -234,6 +244,26 @@ static bool watched_mmio_range_name(uint64_t paddr, uint64_t len,
     }
     if (range_overlaps(paddr, len, 0x0A00A042u, 2u)) {
         *name = "buttons_a042";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A00A044u, 2u)) {
+        *name = "buttons_a044";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A00A07Cu, 2u)) {
+        *name = "buttons_a07c";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A00A03Cu, 4u)) {
+        *name = "buttons_a03c";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A000300u, 4u)) {
+        *name = "vrc4173_0300";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A000390u, 4u)) {
+        *name = "vrc4173_0390";
         return true;
     }
     if (range_overlaps(paddr, len, 0x0A001054u, 2u)) {
@@ -279,13 +309,19 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     uint32_t pa251c;
     uint32_t pa2524;
     uint32_t pa254c;
+    uint32_t pa2528;
     uint32_t pa2700;
     uint32_t latch0004 = 0;
+    uint32_t a03c = 0;
     uint32_t vrc8010 = 0;
     uint32_t vrc104c = 0;
     uint32_t vrc1b50 = 0;
     uint32_t vrc1b58 = 0;
+    uint32_t vrc0300 = 0;
+    uint32_t vrc0390 = 0;
     uint16_t btn_a042 = 0;
+    uint16_t btn_a044 = 0;
+    uint16_t btn_a07c = 0;
     uint16_t vrc1054 = 0;
     uint16_t pmu_c0 = 0;
     uint16_t vr0104 = 0;
@@ -293,22 +329,32 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     uint32_t vr0100 = 0;
     bool vrc8010_ok;
     bool latch0004_ok;
+    bool a03c_ok;
     bool vrc104c_ok;
     bool vrc1b50_ok;
     bool vrc1b58_ok;
     bool btn_ok;
+    bool btn044_ok;
+    bool btn07c_ok;
     bool vrc1054_ok;
+    bool vrc0300_ok;
+    bool vrc0390_ok;
     bool pmu_c0_ok;
     bool vr0100_ok;
     bool vr0104_ok;
     bool vr0144_ok;
     char b8010[9];
     char b0004[9];
+    char ba03c[9];
     char b104c[9];
     char b1b50[9];
     char b1b58[9];
     char ba042[5];
+    char ba044[5];
+    char ba07c[5];
     char b1054[5];
+    char b0300[9];
+    char b0390[9];
     char bpmu[5];
     char b0100[9];
     char b0104[5];
@@ -342,6 +388,30 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     case 0x80077820u:
         bit = WINCE_PATH_PROBE_77820;
         name = "boot_dispatch";
+        break;
+    case 0x800772F0u:
+        bit = WINCE_PATH_PROBE_772F0;
+        name = "cont_772f0";
+        break;
+    case 0x80077260u:
+        bit = WINCE_PATH_PROBE_77260;
+        name = "wait_0144_timeout_79460";
+        break;
+    case 0x8007742Cu:
+        bit = WINCE_PATH_PROBE_7742C;
+        name = "cont_after_76e68";
+        break;
+    case 0x8007757Cu:
+        bit = WINCE_PATH_PROBE_7757C;
+        name = "cont_version_gate";
+        break;
+    case 0x80077664u:
+        bit = WINCE_PATH_PROBE_77664;
+        name = "cont_seq2408_gate";
+        break;
+    case 0x80077738u:
+        bit = WINCE_PATH_PROBE_77738;
+        name = "cont_join_77738";
         break;
     case 0x80079430u:
         bit = WINCE_PATH_PROBE_79430;
@@ -389,17 +459,23 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     pa2518 = load_pa_word(m, 0x2518u);
     pa251c = load_pa_word(m, 0x251Cu);
     pa2524 = load_pa_word(m, 0x2524u);
+    pa2528 = load_pa_word(m, 0x2528u);
     pa254c = load_pa_word(m, 0x254Cu);
     pa2700 = load_pa_word(m, 0x2700u);
 
     set_watch_observer(m, false);
     vrc8010_ok = load_va_word(m, 0xAA008010u, &vrc8010);
     latch0004_ok = load_va_word(m, 0xAA000004u, &latch0004);
+    a03c_ok = load_va_word(m, 0xAA00A03Cu, &a03c);
     vrc104c_ok = load_va_word(m, 0xAA00104Cu, &vrc104c);
     btn_ok = load_va_half(m, 0xAA00A042u, &btn_a042);
+    btn044_ok = load_va_half(m, 0xAA00A044u, &btn_a044);
+    btn07c_ok = load_va_half(m, 0xAA00A07Cu, &btn_a07c);
     vrc1054_ok = load_va_half(m, 0xAA001054u, &vrc1054);
     vrc1b50_ok = load_va_word(m, 0xAA001B50u, &vrc1b50);
     vrc1b58_ok = load_va_word(m, 0xAA001B58u, &vrc1b58);
+    vrc0300_ok = load_va_word(m, 0xAA000300u, &vrc0300);
+    vrc0390_ok = load_va_word(m, 0xAA000390u, &vrc0390);
     vr0100_ok = load_va_word(m, 0xAF000100u, &vr0100);
     vr0104_ok = load_va_half(m, 0xAF000104u, &vr0104);
     vr0144_ok = load_va_half(m, 0xAF000144u, &vr0144);
@@ -411,10 +487,11 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
         " V0=0x%08X V1=0x%08X T0=0x%08X"
         " Status=0x%08X Cause=0x%08X EPC=0x%08X"
         " PA2400=0x%08X PA2404=0x%08X PA250C=0x%08X"
-        " PA2518=0x%08X PA251C=0x%08X PA2524=0x%08X PA254C=0x%08X"
+        " PA2518=0x%08X PA251C=0x%08X PA2524=0x%08X PA2528=0x%08X PA254C=0x%08X"
         " PA2700=0x%08X"
-        " VRC8010=0x%s LATCH0004=0x%s VRC104C=0x%s"
-        " BTN_A042=0x%s VRC1054=0x%s VRC1B50=0x%s VRC1B58=0x%s"
+        " VRC8010=0x%s LATCH0004=0x%s BTN_A03C=0x%s VRC104C=0x%s"
+        " BTN_A042=0x%s BTN_A044=0x%s BTN_A07C=0x%s VRC1054=0x%s"
+        " VRC0300=0x%s VRC0390=0x%s VRC1B50=0x%s VRC1B58=0x%s"
         " VR0100=0x%s VR0104=0x%s VR0144=0x%s PMU_C0=0x%s\n",
         name,
         raw_pc32,
@@ -433,13 +510,19 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
         pa2518,
         pa251c,
         pa2524,
+        pa2528,
         pa254c,
         pa2700,
         format_word_or_unknown(b8010, sizeof(b8010), vrc8010_ok, vrc8010),
         format_word_or_unknown(b0004, sizeof(b0004), latch0004_ok, latch0004),
+        format_word_or_unknown(ba03c, sizeof(ba03c), a03c_ok, a03c),
         format_word_or_unknown(b104c, sizeof(b104c), vrc104c_ok, vrc104c),
         format_half_or_unknown(ba042, sizeof(ba042), btn_ok, btn_a042),
+        format_half_or_unknown(ba044, sizeof(ba044), btn044_ok, btn_a044),
+        format_half_or_unknown(ba07c, sizeof(ba07c), btn07c_ok, btn_a07c),
         format_half_or_unknown(b1054, sizeof(b1054), vrc1054_ok, vrc1054),
+        format_word_or_unknown(b0300, sizeof(b0300), vrc0300_ok, vrc0300),
+        format_word_or_unknown(b0390, sizeof(b0390), vrc0390_ok, vrc0390),
         format_word_or_unknown(b1b50, sizeof(b1b50), vrc1b50_ok, vrc1b50),
         format_word_or_unknown(b1b58, sizeof(b1b58), vrc1b58_ok, vrc1b58),
         format_word_or_unknown(b0100, sizeof(b0100), vr0100_ok, vr0100),
@@ -1270,7 +1353,7 @@ bool wince_boot_arm_step_trace(struct cpu *cpu, uint32_t pc32)
 
     if (m->wince.nk_step_trace_done || m->wince.nk_step_trace_active)
         return false;
-    if (canon_pc < 0x80079000u || canon_pc >= 0x80079800u)
+    if (canon_pc < 0x80079400u || canon_pc >= 0x80079800u)
         return false;
 
     m->wince.nk_step_trace_active = true;
