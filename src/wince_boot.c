@@ -129,6 +129,11 @@ static bool load_va_half(machine_t *m, uint32_t va, uint16_t *out)
     return true;
 }
 
+static bool load_vrc_latch_word(uint32_t pa, uint32_t *out)
+{
+    return be300_vrc4173_latch_read_u32(pa, out);
+}
+
 static void invalidate_all(machine_t *m)
 {
     m->cpu->invalidate_translation_caches(m->cpu, 0, INVALIDATE_ALL);
@@ -258,6 +263,42 @@ static bool watched_mmio_range_name(uint64_t paddr, uint64_t len,
         *name = "vrc4173_8010";
         return true;
     }
+    if (range_overlaps(paddr, len, 0x0A001120u, 4u)) {
+        *name = "vrc4173_1120";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A001128u, 4u)) {
+        *name = "vrc4173_1128";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A00112Cu, 4u)) {
+        *name = "vrc4173_112c";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A001138u, 4u)) {
+        *name = "vrc4173_1138";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A00113Cu, 4u)) {
+        *name = "vrc4173_113c";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A001B10u, 4u)) {
+        *name = "vrc4173_1b10";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A001B14u, 4u)) {
+        *name = "vrc4173_1b14";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A001B20u, 4u)) {
+        *name = "vrc4173_1b20";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A001B2Cu, 4u)) {
+        *name = "vrc4173_1b2c";
+        return true;
+    }
     if (range_overlaps(paddr, len, 0x0A000004u, 4u)) {
         *name = "vrc4173_0004";
         return true;
@@ -356,6 +397,11 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     uint32_t vrc130c = 0;
     uint32_t vrc1b10 = 0;
     uint32_t vrc1b20 = 0;
+    uint32_t lat8010 = 0;
+    uint32_t lat1120 = 0;
+    uint32_t lat112c = 0;
+    uint32_t lat1b10 = 0;
+    uint32_t lat1b20 = 0;
     uint32_t vrc0300 = 0;
     uint32_t vrc0390 = 0;
     uint16_t btn_a042 = 0;
@@ -382,6 +428,11 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     bool vrc130c_ok;
     bool vrc1b10_ok;
     bool vrc1b20_ok;
+    bool lat8010_ok;
+    bool lat1120_ok;
+    bool lat112c_ok;
+    bool lat1b10_ok;
+    bool lat1b20_ok;
     bool btn_ok;
     bool btn044_ok;
     bool btn07c_ok;
@@ -408,6 +459,11 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     char b130c[9];
     char b1b10[9];
     char b1b20[9];
+    char blat8010[9];
+    char blat1120[9];
+    char blat112c[9];
+    char blat1b10[9];
+    char blat1b20[9];
     char ba042[5];
     char ba044[5];
     char ba07c[5];
@@ -627,6 +683,11 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     vrc1b20_ok = load_va_word(m, 0xAA001B20u, &vrc1b20);
     vrc0300_ok = load_va_word(m, 0xAA000300u, &vrc0300);
     vrc0390_ok = load_va_word(m, 0xAA000390u, &vrc0390);
+    lat8010_ok = load_vrc_latch_word(0x0A008010u, &lat8010);
+    lat1120_ok = load_vrc_latch_word(0x0A001120u, &lat1120);
+    lat112c_ok = load_vrc_latch_word(0x0A00112Cu, &lat112c);
+    lat1b10_ok = load_vrc_latch_word(0x0A001B10u, &lat1b10);
+    lat1b20_ok = load_vrc_latch_word(0x0A001B20u, &lat1b20);
     vr0100_ok = load_va_word(m, 0xAF000100u, &vr0100);
     vr0046_ok = load_va_half(m, 0xAF000046u, &vr0046);
     vr0104_ok = load_va_half(m, 0xAF000104u, &vr0104);
@@ -646,6 +707,7 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
         " BTN_A042=0x%s BTN_A044=0x%s BTN_A07C=0x%s VRC1054=0x%s"
         " VRC08A0=0x%s VRC0A00=0x%s VRC1120=0x%s VRC112C=0x%s"
         " VRC1134=0x%s VRC130C=0x%s VRC1B10=0x%s VRC1B20=0x%s"
+        " LAT8010=0x%s LAT1120=0x%s LAT112C=0x%s LAT1B10=0x%s LAT1B20=0x%s"
         " VRC0300=0x%s VRC0390=0x%s VRC1B50=0x%s VRC1B58=0x%s"
         " VR0046=0x%s VR0100=0x%s VR0104=0x%s VR0144=0x%s PMU_C0=0x%s\n",
         name,
@@ -687,6 +749,11 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
         format_word_or_unknown(b130c, sizeof(b130c), vrc130c_ok, vrc130c),
         format_word_or_unknown(b1b10, sizeof(b1b10), vrc1b10_ok, vrc1b10),
         format_word_or_unknown(b1b20, sizeof(b1b20), vrc1b20_ok, vrc1b20),
+        format_word_or_unknown(blat8010, sizeof(blat8010), lat8010_ok, lat8010),
+        format_word_or_unknown(blat1120, sizeof(blat1120), lat1120_ok, lat1120),
+        format_word_or_unknown(blat112c, sizeof(blat112c), lat112c_ok, lat112c),
+        format_word_or_unknown(blat1b10, sizeof(blat1b10), lat1b10_ok, lat1b10),
+        format_word_or_unknown(blat1b20, sizeof(blat1b20), lat1b20_ok, lat1b20),
         format_word_or_unknown(b0300, sizeof(b0300), vrc0300_ok, vrc0300),
         format_word_or_unknown(b0390, sizeof(b0390), vrc0390_ok, vrc0390),
         format_word_or_unknown(b1b50, sizeof(b1b50), vrc1b50_ok, vrc1b50),
@@ -1607,4 +1674,89 @@ void wince_boot_note_mmio_access(struct machine *gxm, struct cpu *cpu,
         (unsigned long long)value,
         (uint64_t)cpu->pc,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+}
+
+void wince_boot_note_idle_transition(struct cpu *cpu, const char *event,
+    const char *mode, uint32_t status, uint32_t cause, uint32_t enabled,
+    uint32_t mask, uint32_t raw_pending, uint32_t count, uint32_t compare,
+    int compare_pending, int is_halted)
+{
+    machine_t *m;
+    uint32_t pc;
+    uint32_t epc;
+    uint32_t sp;
+    uint32_t ra;
+    uint32_t badva;
+    uint16_t vr0046 = 0;
+    uint16_t vr008c = 0;
+    uint16_t vr00a6 = 0;
+    uint16_t vr0118 = 0;
+    uint32_t lat1120 = 0;
+    uint32_t lat112c = 0;
+    uint32_t lat1b10 = 0;
+    uint32_t lat1b20 = 0;
+
+    if (!cpu)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m || !m->wince.active || !m->wince.cold_boot_redirected)
+        return;
+    if (m->wince.idle_diag_count >= 48)
+        return;
+
+    pc = (uint32_t)cpu->pc;
+    epc = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    badva = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR];
+    if (!cold_boot_scheduler_probe_pc_match(pc)
+        && !cold_boot_scheduler_probe_epc_match(epc)
+        && badva != UINT32_C(0x0201FE2C)) {
+        return;
+    }
+
+    set_watch_observer(m, false);
+    (void)load_va_half(m, UINT32_C(0xAF000046), &vr0046);
+    (void)load_va_half(m, UINT32_C(0xAF00008C), &vr008c);
+    (void)load_va_half(m, UINT32_C(0xAF0000A6), &vr00a6);
+    (void)load_va_half(m, UINT32_C(0xAF000118), &vr0118);
+    (void)load_vrc_latch_word(UINT32_C(0x0A001120), &lat1120);
+    (void)load_vrc_latch_word(UINT32_C(0x0A00112C), &lat112c);
+    (void)load_vrc_latch_word(UINT32_C(0x0A001B10), &lat1b10);
+    (void)load_vrc_latch_word(UINT32_C(0x0A001B20), &lat1b20);
+    set_watch_observer(m, true);
+
+    sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+    ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+
+    fprintf(stderr,
+        "[WINCE_IDLE] event=%s mode=%s pc=0x%08X epc=0x%08X"
+        " ra=0x%08X sp=0x%08X status=0x%08X cause=0x%08X"
+        " enabled=%u mask=0x%08X raw=0x%08X count=0x%08X"
+        " compare=0x%08X cmp_pending=%d halted=%d"
+        " vr0046=0x%04X vr008c=0x%04X vr00a6=0x%04X vr0118=0x%04X"
+        " lat1120=0x%08X lat112c=0x%08X lat1b10=0x%08X lat1b20=0x%08X\n",
+        event ? event : "?",
+        mode ? mode : "?",
+        pc,
+        epc,
+        ra,
+        sp,
+        status,
+        cause,
+        enabled,
+        mask,
+        raw_pending,
+        count,
+        compare,
+        compare_pending,
+        is_halted,
+        vr0046,
+        vr008c,
+        vr00a6,
+        vr0118,
+        lat1120,
+        lat112c,
+        lat1b10,
+        lat1b20);
+    m->wince.idle_diag_count++;
 }

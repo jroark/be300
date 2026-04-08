@@ -55,6 +55,7 @@ typedef struct {
     uint16_t ram_watch_write_count;
     uint16_t mmio_watch_read_count;
     uint16_t mmio_watch_write_count;
+    uint16_t idle_diag_count;
 
     /* Temporary instruction-by-instruction trace window around NK pre-init */
     bool     nk_step_trace_active;
