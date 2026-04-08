@@ -103,12 +103,33 @@ Push with: `git push -u origin <current branch>`
 - `ce/cyace` - source code for CyaCE loader
 
 **WinCE restore images**
-- Should be full NAND images including NK.exe
+- Raw sector data in logical block order (1004 blocks × 32 pages × 512 bytes = 16,449,536 bytes)
+- NANDWRITER writes these to NAND as-is (no transformation) with identity block mapping
 - RESTORE_IMAGES.md, contains details of the NAND images
 - `ce/restore_images/All_nand_300.bin` - WinCE 3.0 image (SPL v0.52)
+- `ce/restore_images/All_nand_Net.bin` - WinCE 4.0 (.NET) image
 - `ce/restore_images/org_CE_30.bin` - WinCE 3.0 image (SPL v0.60)
 - `ce/restore_images/BE500.bin` - BE-500 model variant (SPL v0.62)
 - `ce/restore_images/CE_Net.bin` - WinCE 4.0 image (SPL v0.62)
+
+**Restore image partition table** (block 0, 16-byte entries: 8 bytes 0xFF + start_sector(4) + size(4)):
+- Entry 0: sectors 0-31 → boot metadata (16KB)
+- Entry 1: sectors 32-159 → SPL/Kloader (64KB, B000FF format)
+- Entry 2: sectors 160-7583 → NK.exe kernel (3.6MB compressed, B000FF with leading 0xFF byte)
+- Entry 3: sectors 7584-32127 → FAT16 filesystem (12MB)
+- Note: NK partition at offset 0x14000 has a single leading 0xFF byte before the B000FF signature (consistent across all 5 images, real data not corruption)
+
+**Flash tools** (in `ce/restore_images/`):
+- `NANDWRITER.bin` - WinCE B000FF app (v0.67, base 0x80E00000): CF card → NAND recovery flash tool
+  - Reads `all_nand.bin` + `Area.dat` from CompactFlash FAT16
+  - Writes 3 volumes (Kloader, Kernel, Disk) directly to NAND HW registers
+  - Does direct block copy — no data transformation (confirmed via Ghidra decompilation)
+  - OOB per page: 0xAA 0x55 0x0F 0xFF + logical_block_id(4) + ECC(8)
+- `DevOSInstall.exe` - MIPS WinCE on-device OS installer (uses NANDAccess.dll)
+- `Setup.exe` - x86 Win32 PC-side upgrade coordinator (pushes UpdateData.bin via ActiveSync)
+- `DevRestore.exe` / `DevBackup.exe` - MIPS WinCE data backup/restore
+- `BootInSafeModeWithPCC.exe` - MIPS WinCE safe mode boot
+- `NANDAccess.dll` - NAND sector read/write driver (exists in NAND FAT16 at offset 0x6DC4FB)
 
 **Boot ROM**
 - 16KB masked ROM at PA 0x1FC00000 (VA 0xBFC00000 kseg1, 0x9FC00000 kseg0)
