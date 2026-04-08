@@ -1182,9 +1182,11 @@ static void maybe_log_cold_boot_scheduler_probe(machine_t *m,
 
     /* Scheduler globals from FUN_8008B528 / FUN_8007A3FC decompilation */
     dump_va_window(m, "sched_runlist",  UINT32_C(0x80669800), 0x100u);
-    dump_va_window(m, "sched_kerndata", UINT32_C(0x80660000), 0x80u);
+    dump_va_window(m, "sched_kerndata", UINT32_C(0x80660000), 0x100u);
     dump_va_window(m, "sched_timers",   UINT32_C(0x8066BF80), 0x80u);
     dump_va_window(m, "sched_misc",     UINT32_C(0x80669500), 0x80u);
+    /* OAL vtable at 0x8066BFC0 (pointed to by 0x80660000) */
+    dump_va_window(m, "oal_vtable",     UINT32_C(0x8066BFC0), 0x40u);
 
     /* PC diversity analysis: scan pc_ring[] for distinct PCs */
     if (m->wince.pc_ring_active && m->wince.pc_ring_idx > 0) {
