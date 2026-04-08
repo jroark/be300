@@ -62,9 +62,13 @@ DEVICE_ACCESS(be300_nand)
             cpu->cd.mips.coproc[0]->reg[COP0_COUNT] = 0; /* WORKAROUND */
             cpu->cd.mips.gpr[19] = 1;  /* WORKAROUND: $s3 = DMA complete */
         }
+        wince_boot_note_mmio_access(cpu->machine, cpu,
+            0x0A000000ULL + offset, len, val, true);
     } else {
         uint64_t val = nand_read(d->nand, offset, (unsigned)len, d->log_mmio, pc);
         memory_writemax64(cpu, data, len, val);
+        wince_boot_note_mmio_access(cpu->machine, cpu,
+            0x0A000000ULL + offset, len, val, false);
     }
 
     return 1;

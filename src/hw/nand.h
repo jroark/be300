@@ -103,6 +103,7 @@ typedef struct {
 
     /* Latched control registers */
     uint32_t ctrl_regs[8];      /* 0xA000-0xA01C */
+    uint8_t  strap_regs[0x100]; /* 0xA060-0xA15F survey-backed latch */
     uint32_t xfer_regs[64];     /* 0xA400-0xA4FC */
 
     /* SPL transfer engine state (A420/A440/A460/A464/B000 path) */

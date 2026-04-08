@@ -224,6 +224,10 @@ static bool watched_ram_range_name(uint64_t paddr, uint64_t len,
         *name = "resume_ptr_2528";
         return true;
     }
+    if (range_overlaps(paddr, len, 0x00002554u, 4u)) {
+        *name = "ram_size_2554";
+        return true;
+    }
     return false;
 }
 
@@ -256,6 +260,10 @@ static bool watched_mmio_range_name(uint64_t paddr, uint64_t len,
     }
     if (range_overlaps(paddr, len, 0x0A00A03Cu, 4u)) {
         *name = "buttons_a03c";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A00A0E0u, 4u)) {
+        *name = "nand_a0e0";
         return true;
     }
     if (range_overlaps(paddr, len, 0x0A000300u, 4u)) {
@@ -309,10 +317,12 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     uint32_t pa251c;
     uint32_t pa2524;
     uint32_t pa254c;
+    uint32_t pa2554;
     uint32_t pa2528;
     uint32_t pa2700;
     uint32_t latch0004 = 0;
     uint32_t a03c = 0;
+    uint32_t nand_a0e0 = 0;
     uint32_t vrc8010 = 0;
     uint32_t vrc104c = 0;
     uint32_t vrc1b50 = 0;
@@ -330,6 +340,7 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     bool vrc8010_ok;
     bool latch0004_ok;
     bool a03c_ok;
+    bool nand_a0e0_ok;
     bool vrc104c_ok;
     bool vrc1b50_ok;
     bool vrc1b58_ok;
@@ -346,6 +357,7 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     char b8010[9];
     char b0004[9];
     char ba03c[9];
+    char ba0e0[9];
     char b104c[9];
     char b1b50[9];
     char b1b58[9];
@@ -461,12 +473,14 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
     pa2524 = load_pa_word(m, 0x2524u);
     pa2528 = load_pa_word(m, 0x2528u);
     pa254c = load_pa_word(m, 0x254Cu);
+    pa2554 = load_pa_word(m, 0x2554u);
     pa2700 = load_pa_word(m, 0x2700u);
 
     set_watch_observer(m, false);
     vrc8010_ok = load_va_word(m, 0xAA008010u, &vrc8010);
     latch0004_ok = load_va_word(m, 0xAA000004u, &latch0004);
     a03c_ok = load_va_word(m, 0xAA00A03Cu, &a03c);
+    nand_a0e0_ok = load_va_word(m, 0xAA00A0E0u, &nand_a0e0);
     vrc104c_ok = load_va_word(m, 0xAA00104Cu, &vrc104c);
     btn_ok = load_va_half(m, 0xAA00A042u, &btn_a042);
     btn044_ok = load_va_half(m, 0xAA00A044u, &btn_a044);
@@ -487,9 +501,10 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
         " V0=0x%08X V1=0x%08X T0=0x%08X"
         " Status=0x%08X Cause=0x%08X EPC=0x%08X"
         " PA2400=0x%08X PA2404=0x%08X PA250C=0x%08X"
-        " PA2518=0x%08X PA251C=0x%08X PA2524=0x%08X PA2528=0x%08X PA254C=0x%08X"
+        " PA2518=0x%08X PA251C=0x%08X PA2524=0x%08X PA2528=0x%08X"
+        " PA254C=0x%08X PA2554=0x%08X"
         " PA2700=0x%08X"
-        " VRC8010=0x%s LATCH0004=0x%s BTN_A03C=0x%s VRC104C=0x%s"
+        " VRC8010=0x%s LATCH0004=0x%s BTN_A03C=0x%s NAND_A0E0=0x%s VRC104C=0x%s"
         " BTN_A042=0x%s BTN_A044=0x%s BTN_A07C=0x%s VRC1054=0x%s"
         " VRC0300=0x%s VRC0390=0x%s VRC1B50=0x%s VRC1B58=0x%s"
         " VR0100=0x%s VR0104=0x%s VR0144=0x%s PMU_C0=0x%s\n",
@@ -512,10 +527,12 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
         pa2524,
         pa2528,
         pa254c,
+        pa2554,
         pa2700,
         format_word_or_unknown(b8010, sizeof(b8010), vrc8010_ok, vrc8010),
         format_word_or_unknown(b0004, sizeof(b0004), latch0004_ok, latch0004),
         format_word_or_unknown(ba03c, sizeof(ba03c), a03c_ok, a03c),
+        format_word_or_unknown(ba0e0, sizeof(ba0e0), nand_a0e0_ok, nand_a0e0),
         format_word_or_unknown(b104c, sizeof(b104c), vrc104c_ok, vrc104c),
         format_half_or_unknown(ba042, sizeof(ba042), btn_ok, btn_a042),
         format_half_or_unknown(ba044, sizeof(ba044), btn044_ok, btn_a044),
