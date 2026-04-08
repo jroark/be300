@@ -1398,6 +1398,107 @@ void wince_boot_check_dma_autocopy(struct cpu *cpu)
      * populate the callback table at PA 0x8080. */
 }
 
+/*
+ *  Splash display probe: log calls to OAL display dispatcher at 0x80078E10.
+ *  a0=10 → clear screen, a0=0 → "Starting...", a0=6 → "Initializing..."
+ */
+static void maybe_log_splash_dispatch(machine_t *m, struct cpu *cpu)
+{
+    static int splash_count = 0;
+    uint32_t pc = (uint32_t)cpu->pc & 0x1FFFFFFFu;
+
+    if (pc != (0x80078E10u & 0x1FFFFFFFu) || splash_count >= 20)
+        return;
+    splash_count++;
+    fprintf(stderr, "[SPLASH] call #%d a0=%u PC=0x%08X RA=0x%08X\n",
+        splash_count,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+}
+
+/*
+ *  Debug serial: intercept MMIO writes to the VRC4173 SIU and VR4131 SIU
+ *  that carry debug output from NK.exe. Called from the MMIO access observer
+ *  whenever a write hits the SIU range. Also dumps the OAL debug function
+ *  pointer at VA 0x80660084 once during init.
+ *
+ *  Additionally, on each tick, check if PC is at known debug output functions
+ *  (0x8007B670 = OEMWriteDebugString, 0x8007B8C8 = NKDbgPrintfW) and capture
+ *  the wide string from $a0.
+ */
+static void maybe_capture_debug_serial(machine_t *m, struct cpu *cpu)
+{
+    static int dbg_count = 0;
+    static bool ptr_dumped = false;
+    uint32_t pc;
+
+    if (!m->cfg.debug_serial)
+        return;
+
+    /* One-shot: dump the OAL debug output function pointer */
+    if (!ptr_dumped && m->wince.cold_boot_copy_done) {
+        uint32_t fptr = 0;
+        ptr_dumped = true;
+        (void)load_va_word(m, UINT32_C(0x80660084), &fptr);
+        fprintf(stderr, "[DBGSERIAL] OAL debug func ptr @0x80660084 = 0x%08X\n",
+            fptr);
+    }
+
+    pc = (uint32_t)cpu->pc & 0x1FFFFFFFu;
+
+    /* Catch OEMWriteDebugString (0x8007B670) — takes wchar_t * in $a0 */
+    if (pc == (0x8007B670u & 0x1FFFFFFFu) && dbg_count < 500) {
+        uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        if (a0 != 0) {
+            unsigned char buf[256];
+            char ascii[128];
+            int i, j;
+
+            memset(buf, 0, sizeof(buf));
+            cpu->memory_rw(cpu, cpu->mem, va32_to_mips64(a0),
+                buf, sizeof(buf), MEM_READ, CACHE_DATA | NO_EXCEPTIONS);
+
+            /* Convert UTF-16LE to ASCII for display */
+            for (i = 0, j = 0; i < (int)sizeof(buf) - 1 && j < 126; i += 2) {
+                uint16_t wc = (uint16_t)buf[i] | ((uint16_t)buf[i+1] << 8);
+                if (wc == 0) break;
+                ascii[j++] = (wc < 0x80) ? (char)wc : '?';
+            }
+            ascii[j] = '\0';
+
+            dbg_count++;
+            printf("[DBGSERIAL] %s\n", ascii);
+            fflush(stdout);
+        }
+    }
+
+    /* Also catch NKDbgPrintfW (0x8007B8C8) — format string in $a0 */
+    if (pc == (0x8007B8C8u & 0x1FFFFFFFu) && dbg_count < 500) {
+        uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        if (a0 != 0) {
+            unsigned char buf[256];
+            char ascii[128];
+            int i, j;
+
+            memset(buf, 0, sizeof(buf));
+            cpu->memory_rw(cpu, cpu->mem, va32_to_mips64(a0),
+                buf, sizeof(buf), MEM_READ, CACHE_DATA | NO_EXCEPTIONS);
+
+            for (i = 0, j = 0; i < (int)sizeof(buf) - 1 && j < 126; i += 2) {
+                uint16_t wc = (uint16_t)buf[i] | ((uint16_t)buf[i+1] << 8);
+                if (wc == 0) break;
+                ascii[j++] = (wc < 0x80) ? (char)wc : '?';
+            }
+            ascii[j] = '\0';
+
+            dbg_count++;
+            printf("[DBGSERIAL] %s\n", ascii);
+            fflush(stdout);
+        }
+    }
+}
+
 void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
 {
     machine_t *m = wince_boot_from_gx(gxm);
@@ -1450,6 +1551,8 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
         m->wince.pc_ring_idx++;
     }
 
+    maybe_log_splash_dispatch(m, cpu);
+    maybe_capture_debug_serial(m, cpu);
     maybe_log_boot_path_probe(m, (uint32_t)cpu->pc);
     scan_low_vectors(m);
     maybe_track_low_vector_runtime_changes(m);
