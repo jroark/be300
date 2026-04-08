@@ -849,6 +849,7 @@ static bool be300_run_batch(machine_t *m)
     __sync_synchronize();
     if (emul_shutdown) {
         fprintf(stderr, "[BE300] Loop exit: emul_shutdown is true\n");
+        wince_boot_pc_ring_dump(m);
         return false;
     }
 
