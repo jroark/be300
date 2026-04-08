@@ -1609,6 +1609,13 @@ void wince_boot_pc_ring_dump(machine_t *m)
     }
 }
 
+void wince_boot_crash_pc_dump(struct machine *gxm)
+{
+    machine_t *m = wince_boot_from_gx(gxm);
+    if (m)
+        wince_boot_pc_ring_dump(m);
+}
+
 void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
 {
     machine_t *m;
