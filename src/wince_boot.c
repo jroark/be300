@@ -1179,6 +1179,50 @@ static void maybe_log_cold_boot_scheduler_probe(machine_t *m,
         dump_va_window(m, "cold_late_s0", s0 & ~UINT32_C(0x1F), 0x120u);
     if (s1 != 0)
         dump_va_window(m, "cold_late_s1", s1 & ~UINT32_C(0x1F), 0x60u);
+
+    /* Scheduler globals from FUN_8008B528 / FUN_8007A3FC decompilation */
+    dump_va_window(m, "sched_runlist",  UINT32_C(0x80669800), 0x100u);
+    dump_va_window(m, "sched_kerndata", UINT32_C(0x80660000), 0x80u);
+    dump_va_window(m, "sched_timers",   UINT32_C(0x8066BF80), 0x80u);
+    dump_va_window(m, "sched_misc",     UINT32_C(0x80669500), 0x80u);
+
+    /* PC diversity analysis: scan pc_ring[] for distinct PCs */
+    if (m->wince.pc_ring_active && m->wince.pc_ring_idx > 0) {
+        uint32_t total = m->wince.pc_ring_idx;
+        uint32_t count = total < WINCE_PC_RING_SIZE
+            ? total : WINCE_PC_RING_SIZE;
+        uint32_t distinct = 0;
+        uint32_t usermode = 0;
+        uint32_t last_non_idle = 0;
+        uint32_t seen[64];
+        uint32_t nseen = 0;
+
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t idx = (total - count + i) % WINCE_PC_RING_SIZE;
+            uint32_t ring_pc = m->wince.pc_ring[idx];
+            bool found = false;
+
+            if (ring_pc < UINT32_C(0x80000000))
+                usermode++;
+            if (!((ring_pc >= UINT32_C(0x80079000)
+                   && ring_pc < UINT32_C(0x800799FF))
+                  || (ring_pc >= UINT32_C(0x8007A300)
+                      && ring_pc < UINT32_C(0x8007A500))
+                  || (ring_pc >= UINT32_C(0x8008B400)
+                      && ring_pc < UINT32_C(0x8008B600))))
+                last_non_idle = ring_pc;
+            for (uint32_t j = 0; j < nseen; j++) {
+                if (seen[j] == ring_pc) { found = true; break; }
+            }
+            if (!found && nseen < 64)
+                seen[nseen++] = ring_pc;
+        }
+        distinct = nseen;
+        fprintf(stderr,
+            "[WINCE_COLD_LATE] pc_diversity: samples=%u distinct=%u"
+            " usermode=%u last_non_idle=0x%08X\n",
+            count, distinct, usermode, last_non_idle);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1369,6 +1413,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
         uint32_t pa = pc32 & 0x1FFFFFFFu;
         if (pa >= 0x60000u && pa < 0x100000u) {
             m->wince.cold_boot_copy_done = true;
+            m->wince.cold_boot_redirected = true;
             m->nand.wince_mode = true;
             fprintf(stderr,
                 "[WINCE_CKPT] nk_entry_detected PC=0x%08X PA=0x%08X"
@@ -1388,6 +1433,9 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
             }
             fprintf(stderr, "\n");
             dump_pa_words(m, "resume_ctx", 0x00002200u, 8);
+            /* Activate PC ring for diversity analysis */
+            if (!m->wince.pc_ring_active)
+                wince_boot_pc_ring_activate(m);
         }
     }
 
@@ -1407,6 +1455,12 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     maybe_track_low_vector_runtime_changes(m);
     maybe_note_first_exception(m);
     maybe_log_cold_boot_scheduler_probe(m, (uint32_t)cpu->pc);
+
+    /* PIU pen-state change detection (generates VRIP PIU interrupt) */
+    {
+        extern void be300_touch_tick(machine_t *m);
+        be300_touch_tick(m);
+    }
 }
 
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
