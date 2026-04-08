@@ -853,7 +853,7 @@ static bool be300_run_batch(machine_t *m)
 
         if (!m->wince.nk_step_trace_done
             && !m->wince.nk_step_trace_active
-            && canon_pc >= 0x80079000u && canon_pc < 0x80079800u) {
+            && canon_pc >= 0x80079400u && canon_pc < 0x80079800u) {
             single_step = true;
             m->wince.nk_step_trace_active = true;
             m->wince.nk_step_trace_remaining = 256;
