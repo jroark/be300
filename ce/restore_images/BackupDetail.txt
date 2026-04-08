@@ -1,0 +1,41 @@
+==========================
+Precautions Concerning Data Backup 
+==========================
+When installing Windows CE .NET, you will be provided with an opportunity to store some CASSIOPEIA data to your computer, so you can return it to your CASSIOPEIA after updating your operating system. However, you should note that the data storage operation performed when updating the operating system does not save all of the data currently in CASSIOPEIA memory. 
+It stores data for pre-installed factory default BE-300 applications only. 
+
+Important!
+Data that is not stored when you install Windows CE .NET will be deleted. If you need the data, be sure to backup memory contents before installing Windows CE .NET. 
+
+
+[Applications Whose Data Is Stored]
+  Calendar
+  Contacts
+  Notes
+  Tasks
+  Mail
+  Some settings
+  Connections Communication Setups(*)
+
+(*)
+Though Connections setups data is saved, setup names are not compatible between the two operating systems. Because of this, we recommend that after you open each setup and click the [Finish] button to save it. When you do, you will get an illegal name error message. Rename the setup and you will be able to us it with the new operating system. 
+
+
+[Data That Is Not Stored]
+The following data is not stored. 
+  Photo
+  Music
+  Movie
+  Internet Bookmark (Favorites)
+  Microsoft Word / Microsoft Excel
+  Any data stored in the "Unknown" folder
+  Data of later added add-on applications
+  Most settings
+
+
+Backing Up Memory Contents Before Installing Windows CE. NET
+We strongly recommend that you perform a full backup of BE-300 memory contents before installing Windows CE .NET. Though you will not be able to restore the contents of a full backup after installing Windows CE .NET, having a full backup on hand will allow you to  restore CASSIOPEIA to its pre-update state under Windows CE 3.0, if necessary. 
+
+To back up BE-300 memory contents
+In PC Connect, select [Settings] and then [Folder Synchronization Settings...]. 
+See your BE-300 User's Guide for details about the backup procedure. 
