@@ -248,10 +248,12 @@ DEVICE_ACCESS(be300_wince_aux)
          * keep reads of the exact 0x520 status halfword deasserted even
          * after command writes.
          */
+        /* After PPSH command writes to 0x520, the MCU processes the
+         * command and clears bit 1 when done.  Keep the ID bits (0x2320)
+         * but clear bit 1 to signal instant completion. */
         if (off == 0x400 && len >= 2) {
-            uint16_t idle = 0;
-
-            memcpy(&d->bytes[off], &idle, sizeof(idle));
+            uint16_t status = 0x2320;  /* MCU ID with bit 1 clear */
+            memcpy(&d->bytes[off], &status, sizeof(status));
         }
 
         if (d->log_mmio) {
@@ -264,13 +266,19 @@ DEVICE_ACCESS(be300_wince_aux)
         memcpy(data, &d->bytes[off], len);
         val = memory_readmax64(cpu, data, len);
 
+        /*
+         * PPSH controller identification at offset 0x400 (PA 0x0C000520).
+         * NK.exe PPSH driver reads this and expects 0x2320 (Casio companion
+         * MCU ID).  Without this, PPSH sets NoPPFS=TRUE and the NAND
+         * filesystem may not mount.
+         *
+         * After initial ID check, PPSH polls until bit 1 clears (command
+         * completion).  Return 0x2320 on first read, then 0x2320 with
+         * bit 1 clear (= 0x2320) for subsequent reads.
+         */
         if (off == 0x400 && len >= 2) {
-            val = 0;
+            val = 0x2320;
             memory_writemax64(cpu, data, len, val);
-        }
-
-        if (off == 0x400) {
-            val = memory_readmax64(cpu, data, len);
         }
 
         if (d->log_mmio) {
