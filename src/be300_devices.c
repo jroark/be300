@@ -21,6 +21,7 @@
 
 #include "be300.h"
 #include "hw/nand.h"
+#include "wince_boot.h"
 
 /*
  *  VRC4173 NAND flash controller device.
@@ -164,6 +165,8 @@ DEVICE_ACCESS(be300_vrc4173)
             fprintf(stderr, "[VRC4173] W PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
                     (uint32_t)(VRC4173_LATCH_BASE + off), len,
                     (unsigned long long)val, (uint32_t)cpu->pc);
+        wince_boot_note_mmio_access(cpu->machine, cpu,
+            VRC4173_LATCH_BASE + off, len, val, true);
     } else {
         /*
          * WORKAROUND: ScCmcu registers (Casio companion MCU,
@@ -192,6 +195,9 @@ DEVICE_ACCESS(be300_vrc4173)
                     (uint32_t)(VRC4173_LATCH_BASE + off), len,
                     (unsigned long long)memory_readmax64(cpu, data, len),
                     (uint32_t)cpu->pc);
+        wince_boot_note_mmio_access(cpu->machine, cpu,
+            VRC4173_LATCH_BASE + off, len,
+            memory_readmax64(cpu, data, len), false);
     }
 
     return 1;
@@ -518,6 +524,8 @@ DEVICE_ACCESS(be300_touch)
     }
 
     memory_writemax64(cpu, data, len, val);
+    wince_boot_note_mmio_access(m->gxe_machine, cpu, 0x0A00A040ULL
+        + (uint32_t)relative_addr, len, val, false);
     return 1;
 }
 

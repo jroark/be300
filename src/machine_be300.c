@@ -965,53 +965,6 @@ static bool be300_run_batch(machine_t *m)
                     }
                 }
 
-                /*
-                 * Populate resume_ctx at PA 0x2200 with cold-start
-                 * kernel entry state.
-                 *
-                 * The warm-path GPR restore at VA 0x80079730 runs on
-                 * every boot (cold and warm) due to a $t0 clobber in
-                 * check1 (FUN_80079AC4).  It loads all GPRs and CP0
-                 * from PA 0x2200 and returns via the restored RA.
-                 *
-                 * On real hardware, PA 0x2200 contains valid state
-                 * through a mechanism not fully understood.  The
-                 * emulator zeros SDRAM, so we must seed the cold-start
-                 * entry state explicitly.
-                 *
-                 * resume_ctx layout (FUN_800792AC):
-                 *   +0x6C = SP, +0x74 = RA, +0xA8 = Status, +0xB0 = EPC
-                 * Warm-path epilogue (0x800797DC):
-                 *   lw t0, 0(sp); jr ra; addiu sp, sp, 4
-                 */
-                {
-                    uint64_t ctx = 0xFFFFFFFF80002200ULL;
-                    /* SP: initial stack (kseg1, uncached) */
-                    store_32bit_word(m->cpu, ctx + 0x6C,
-                        0xA0003800u);
-                    /* RA: cold-start kernel entry — the
-                     * epilogue does jr ra to reach here */
-                    store_32bit_word(m->cpu, ctx + 0x74,
-                        0x8007B398u);
-                    /* Status: BEV=1, CU0=1, CU1=1 — keep
-                     * ROM BEV handlers active until NK.exe
-                     * installs its own exception vectors */
-                    store_32bit_word(m->cpu, ctx + 0xA8,
-                        0x34400000u);
-                    /* EPC: cold-start entry */
-                    store_32bit_word(m->cpu, ctx + 0xB0,
-                        0x8007B398u);
-                    /* Stack word at SP so the epilogue's
-                     * lw t0, 0(sp) reads without faulting */
-                    store_32bit_word(m->cpu,
-                        0xFFFFFFFF80003800ULL, 0x00000000u);
-                    m->cpu->invalidate_translation_caches(
-                        m->cpu, 0x2000, INVALIDATE_PADDR);
-                    fprintf(stderr,
-                        "[BE300] Seeded resume_ctx at PA 0x2200"
-                        " (RA=0x8007B398 SP=0xA0003800"
-                        " Status=0x34400000)\n");
-                }
             }
         }
     }

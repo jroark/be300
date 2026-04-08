@@ -27,12 +27,14 @@ typedef struct {
     bool first_fb_oob_logged;
     bool vectors_ready;
     bool suppress_vector_write_observer;
+    bool suppress_watch_observer;
     bool low_vector_observed_valid;
     bool low_vector_runtime_drift_logged;
 
     /* Cold boot state */
     bool cold_boot_copy_done;
     uint32_t cold_boot_pc_probes_logged;
+    uint32_t boot_path_probe_mask;
 
     /* Vector tracking */
     wince_vector_owner_t vector_owner;
@@ -47,4 +49,10 @@ typedef struct {
     uint32_t pc_ring_status[WINCE_PC_RING_SIZE];
     uint32_t pc_ring_idx;
     bool     pc_ring_active;
+
+    /* Targeted RAM/MMIO watch counters */
+    uint16_t ram_watch_read_count;
+    uint16_t ram_watch_write_count;
+    uint16_t mmio_watch_read_count;
+    uint16_t mmio_watch_write_count;
 } wince_boot_state_t;
