@@ -28,6 +28,14 @@ static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
 #define WINCE_PATH_PROBE_795D8      UINT32_C(0x00000008)
 #define WINCE_PATH_PROBE_79634      UINT32_C(0x00000010)
 #define WINCE_PATH_PROBE_79730      UINT32_C(0x00000020)
+#define WINCE_PATH_PROBE_76FBC      UINT32_C(0x00000040)
+#define WINCE_PATH_PROBE_76FE0      UINT32_C(0x00000080)
+#define WINCE_PATH_PROBE_7767C      UINT32_C(0x00000100)
+#define WINCE_PATH_PROBE_776F0      UINT32_C(0x00000200)
+#define WINCE_PATH_PROBE_77770      UINT32_C(0x00000400)
+#define WINCE_PATH_PROBE_79430      UINT32_C(0x00000800)
+#define WINCE_PATH_PROBE_79460      UINT32_C(0x00001000)
+#define WINCE_PATH_PROBE_79510      UINT32_C(0x00002000)
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -212,8 +220,16 @@ static bool watched_ram_range_name(uint64_t paddr, uint64_t len,
 static bool watched_mmio_range_name(uint64_t paddr, uint64_t len,
     const char **name)
 {
+    if (range_overlaps(paddr, len, 0x0A008010u, 4u)) {
+        *name = "vrc4173_8010";
+        return true;
+    }
     if (range_overlaps(paddr, len, 0x0A000004u, 4u)) {
         *name = "vrc4173_0004";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A00104Cu, 4u)) {
+        *name = "vrc4173_104c";
         return true;
     }
     if (range_overlaps(paddr, len, 0x0A00A042u, 2u)) {
@@ -224,6 +240,26 @@ static bool watched_mmio_range_name(uint64_t paddr, uint64_t len,
         *name = "vrc4173_1054";
         return true;
     }
+    if (range_overlaps(paddr, len, 0x0A001B50u, 4u)) {
+        *name = "vrc4173_1b50";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A001B58u, 4u)) {
+        *name = "vrc4173_1b58";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0F000100u, 4u)) {
+        *name = "vr41xx_0100";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0F000104u, 2u)) {
+        *name = "vr41xx_0104";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0F000144u, 2u)) {
+        *name = "vr41xx_0144";
+        return true;
+    }
     if (range_overlaps(paddr, len, 0x0F0000C0u, 2u)) {
         *name = "pmu_c0";
         return true;
@@ -231,30 +267,89 @@ static bool watched_mmio_range_name(uint64_t paddr, uint64_t len,
     return false;
 }
 
-static void maybe_log_boot_path_probe(machine_t *m, uint32_t pc32)
+static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
 {
+    uint32_t pc32 = raw_pc32;
     uint32_t bit = 0;
     const char *name = NULL;
+    uint32_t pa2400;
+    uint32_t pa2404;
     uint32_t pa250c;
     uint32_t pa2518;
     uint32_t pa251c;
+    uint32_t pa2524;
+    uint32_t pa254c;
+    uint32_t pa2700;
     uint32_t latch0004 = 0;
+    uint32_t vrc8010 = 0;
+    uint32_t vrc104c = 0;
+    uint32_t vrc1b50 = 0;
+    uint32_t vrc1b58 = 0;
     uint16_t btn_a042 = 0;
     uint16_t vrc1054 = 0;
     uint16_t pmu_c0 = 0;
+    uint16_t vr0104 = 0;
+    uint16_t vr0144 = 0;
+    uint32_t vr0100 = 0;
+    bool vrc8010_ok;
     bool latch0004_ok;
+    bool vrc104c_ok;
+    bool vrc1b50_ok;
+    bool vrc1b58_ok;
     bool btn_ok;
     bool vrc1054_ok;
     bool pmu_c0_ok;
+    bool vr0100_ok;
+    bool vr0104_ok;
+    bool vr0144_ok;
+    char b8010[9];
     char b0004[9];
+    char b104c[9];
+    char b1b50[9];
+    char b1b58[9];
     char ba042[5];
     char b1054[5];
     char bpmu[5];
+    char b0100[9];
+    char b0104[5];
+    char b0144[5];
+
+    if ((pc32 & 0xE0000000u) == 0x80000000u
+        || (pc32 & 0xE0000000u) == 0xA0000000u)
+        pc32 = (pc32 & 0x1FFFFFFFu) | 0x80000000u;
 
     switch (pc32) {
+    case 0x80076FBCu:
+        bit = WINCE_PATH_PROBE_76FBC;
+        name = "preinit_wait_0144_0800";
+        break;
+    case 0x80076FE0u:
+        bit = WINCE_PATH_PROBE_76FE0;
+        name = "preinit_fallback_79460";
+        break;
+    case 0x8007767Cu:
+        bit = WINCE_PATH_PROBE_7767C;
+        name = "late_dispatch_entry";
+        break;
+    case 0x800776F0u:
+        bit = WINCE_PATH_PROBE_776F0;
+        name = "late_cold_setup";
+        break;
+    case 0x80077770u:
+        bit = WINCE_PATH_PROBE_77770;
+        name = "late_keysplit_a07c";
+        break;
     case 0x80077820u:
         bit = WINCE_PATH_PROBE_77820;
         name = "boot_dispatch";
+        break;
+    case 0x80079430u:
+        bit = WINCE_PATH_PROBE_79430;
+        name = "resume_snapshot";
+        break;
+    case 0x80079460u:
+        bit = WINCE_PATH_PROBE_79460;
+        name = "preinit_tail";
         break;
     case 0x80079488u:
         bit = WINCE_PATH_PROBE_79488;
@@ -263,6 +358,10 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t pc32)
     case 0x800794C8u:
         bit = WINCE_PATH_PROBE_794C8;
         name = "cold_path";
+        break;
+    case 0x80079510u:
+        bit = WINCE_PATH_PROBE_79510;
+        name = "common_tail";
         break;
     case 0x800795D8u:
         bit = WINCE_PATH_PROBE_795D8;
@@ -284,24 +383,41 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t pc32)
         return;
     m->wince.boot_path_probe_mask |= bit;
 
+    pa2400 = load_pa_word(m, 0x2400u);
+    pa2404 = load_pa_word(m, 0x2404u);
     pa250c = load_pa_word(m, 0x250Cu);
     pa2518 = load_pa_word(m, 0x2518u);
     pa251c = load_pa_word(m, 0x251Cu);
+    pa2524 = load_pa_word(m, 0x2524u);
+    pa254c = load_pa_word(m, 0x254Cu);
+    pa2700 = load_pa_word(m, 0x2700u);
 
     set_watch_observer(m, false);
+    vrc8010_ok = load_va_word(m, 0xAA008010u, &vrc8010);
     latch0004_ok = load_va_word(m, 0xAA000004u, &latch0004);
+    vrc104c_ok = load_va_word(m, 0xAA00104Cu, &vrc104c);
     btn_ok = load_va_half(m, 0xAA00A042u, &btn_a042);
     vrc1054_ok = load_va_half(m, 0xAA001054u, &vrc1054);
+    vrc1b50_ok = load_va_word(m, 0xAA001B50u, &vrc1b50);
+    vrc1b58_ok = load_va_word(m, 0xAA001B58u, &vrc1b58);
+    vr0100_ok = load_va_word(m, 0xAF000100u, &vr0100);
+    vr0104_ok = load_va_half(m, 0xAF000104u, &vr0104);
+    vr0144_ok = load_va_half(m, 0xAF000144u, &vr0144);
     pmu_c0_ok = load_va_half(m, 0xAF0000C0u, &pmu_c0);
     set_watch_observer(m, true);
 
     fprintf(stderr,
-        "[WINCE_PATH] %s PC=0x%08X RA=0x%08X SP=0x%08X"
+        "[WINCE_PATH] %s PC=0x%08X Canon=0x%08X RA=0x%08X SP=0x%08X"
         " V0=0x%08X V1=0x%08X T0=0x%08X"
         " Status=0x%08X Cause=0x%08X EPC=0x%08X"
-        " PA250C=0x%08X PA2518=0x%08X PA251C=0x%08X"
-        " LATCH0004=0x%s BTN_A042=0x%s VRC1054=0x%s PMU_C0=0x%s\n",
+        " PA2400=0x%08X PA2404=0x%08X PA250C=0x%08X"
+        " PA2518=0x%08X PA251C=0x%08X PA2524=0x%08X PA254C=0x%08X"
+        " PA2700=0x%08X"
+        " VRC8010=0x%s LATCH0004=0x%s VRC104C=0x%s"
+        " BTN_A042=0x%s VRC1054=0x%s VRC1B50=0x%s VRC1B58=0x%s"
+        " VR0100=0x%s VR0104=0x%s VR0144=0x%s PMU_C0=0x%s\n",
         name,
+        raw_pc32,
         pc32,
         (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
         (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
@@ -311,12 +427,24 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t pc32)
         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
         (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
+        pa2400,
+        pa2404,
         pa250c,
         pa2518,
         pa251c,
+        pa2524,
+        pa254c,
+        pa2700,
+        format_word_or_unknown(b8010, sizeof(b8010), vrc8010_ok, vrc8010),
         format_word_or_unknown(b0004, sizeof(b0004), latch0004_ok, latch0004),
+        format_word_or_unknown(b104c, sizeof(b104c), vrc104c_ok, vrc104c),
         format_half_or_unknown(ba042, sizeof(ba042), btn_ok, btn_a042),
         format_half_or_unknown(b1054, sizeof(b1054), vrc1054_ok, vrc1054),
+        format_word_or_unknown(b1b50, sizeof(b1b50), vrc1b50_ok, vrc1b50),
+        format_word_or_unknown(b1b58, sizeof(b1b58), vrc1b58_ok, vrc1b58),
+        format_word_or_unknown(b0100, sizeof(b0100), vr0100_ok, vr0100),
+        format_half_or_unknown(b0104, sizeof(b0104), vr0104_ok, vr0104),
+        format_half_or_unknown(b0144, sizeof(b0144), vr0144_ok, vr0144),
         format_half_or_unknown(bpmu, sizeof(bpmu), pmu_c0_ok, pmu_c0));
 }
 
@@ -1122,6 +1250,40 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
         return;
 
     maybe_log_boot_path_probe(m, pc32);
+}
+
+bool wince_boot_arm_step_trace(struct cpu *cpu, uint32_t pc32)
+{
+    machine_t *m;
+    uint32_t canon_pc = pc32;
+
+    if (!cpu)
+        return false;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m || !m->wince.active || !m->wince.cold_boot_copy_done)
+        return false;
+
+    if ((canon_pc & 0xE0000000u) == 0x80000000u
+        || (canon_pc & 0xE0000000u) == 0xA0000000u)
+        canon_pc = (canon_pc & 0x1FFFFFFFu) | 0x80000000u;
+
+    if (m->wince.nk_step_trace_done || m->wince.nk_step_trace_active)
+        return false;
+    if (canon_pc < 0x80079000u || canon_pc >= 0x80079800u)
+        return false;
+
+    m->wince.nk_step_trace_active = true;
+    m->wince.nk_step_trace_remaining = 256;
+    fprintf(stderr,
+        "[WINCE_STEP] armed PC=0x%08X Canon=0x%08X"
+        " RA=0x%08X SP=0x%08X Status=0x%08X\n",
+        pc32,
+        canon_pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
+    return true;
 }
 
 void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,

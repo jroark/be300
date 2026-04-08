@@ -29,6 +29,7 @@ void wince_boot_check_dma_autocopy(struct cpu *cpu);
 void wince_boot_pc_ring_activate(machine_t *m);
 void wince_boot_pc_ring_dump(machine_t *m);
 void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32);
+bool wince_boot_arm_step_trace(struct cpu *cpu, uint32_t pc32);
 void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
     const unsigned char *data, size_t len, bool is_write);
 void wince_boot_note_mmio_access(struct machine *gxm, struct cpu *cpu,
