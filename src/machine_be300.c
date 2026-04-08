@@ -36,6 +36,15 @@
 /* GXemul externs */
 extern volatile bool emul_shutdown;
 extern volatile bool emul_executing;
+extern bool single_step;
+
+static uint32_t be300_canonicalize_nk_pc(uint32_t pc)
+{
+    if ((pc & 0xE0000000u) == 0x80000000u
+        || (pc & 0xE0000000u) == 0xA0000000u)
+        return (pc & 0x1FFFFFFFu) | 0x80000000u;
+    return pc;
+}
 
 static void be300_handle_stop_signal(int signum)
 {
@@ -838,6 +847,40 @@ static bool be300_run_batch(machine_t *m)
         return false;
     }
 
+    if (m->wince.cold_boot_copy_done && m->nand_data) {
+        uint32_t raw_pc = (uint32_t)m->cpu->pc;
+        uint32_t canon_pc = be300_canonicalize_nk_pc(raw_pc);
+
+        if (!m->wince.nk_step_trace_done
+            && !m->wince.nk_step_trace_active
+            && canon_pc >= 0x80079000u && canon_pc < 0x80079800u) {
+            single_step = true;
+            m->wince.nk_step_trace_active = true;
+            m->wince.nk_step_trace_remaining = 256;
+            fprintf(stderr,
+                "[WINCE_STEP] start PC=0x%08X Canon=0x%08X"
+                " RA=0x%08X SP=0x%08X Status=0x%08X\n",
+                raw_pc,
+                canon_pc,
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
+        }
+
+        if (m->wince.nk_step_trace_active) {
+            fprintf(stderr,
+                "[WINCE_STEP] pre rem=%u PC=0x%08X Canon=0x%08X"
+                " RA=0x%08X SP=0x%08X Status=0x%08X EPC=0x%08X\n",
+                (unsigned)m->wince.nk_step_trace_remaining,
+                raw_pc,
+                canon_pc,
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC]);
+        }
+    }
+
     if (m->loop_count % 1000 == 0) {
         fprintf(stderr, "[BE300] Loop batch %d, PC=0x%08" PRIx64 "\n",
                 m->loop_count, m->cpu->pc);
@@ -1108,6 +1151,11 @@ static bool be300_run_batch(machine_t *m)
     }
 
     if (!machine_run(gxm)) {
+        if (m->wince.nk_step_trace_active) {
+            single_step = false;
+            m->wince.nk_step_trace_active = false;
+            m->wince.nk_step_trace_done = true;
+        }
         wince_boot_note_fatal_stop(m, "machine-no-longer-running");
         fprintf(stderr, "[BE300] Loop exit: machine no longer running"
             " (mips16=%d halted=%d PC=0x%08X)\n",
@@ -1153,6 +1201,41 @@ static bool be300_run_batch(machine_t *m)
         }
 
         return false;
+    }
+
+    if (m->wince.nk_step_trace_active) {
+        uint32_t raw_pc = (uint32_t)m->cpu->pc;
+        uint32_t canon_pc = be300_canonicalize_nk_pc(raw_pc);
+
+        fprintf(stderr,
+            "[WINCE_STEP] post rem=%u PC=0x%08X Canon=0x%08X"
+            " RA=0x%08X SP=0x%08X Status=0x%08X EPC=0x%08X\n",
+            (unsigned)m->wince.nk_step_trace_remaining,
+            raw_pc,
+            canon_pc,
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+            (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC]);
+
+        if (m->wince.nk_step_trace_remaining > 0)
+            m->wince.nk_step_trace_remaining--;
+
+        if (m->wince.nk_step_trace_remaining == 0
+            || canon_pc < 0x80079000u
+            || canon_pc >= 0x80079880u) {
+            single_step = false;
+            m->wince.nk_step_trace_active = false;
+            m->wince.nk_step_trace_done = true;
+            fprintf(stderr,
+                "[WINCE_STEP] stop PC=0x%08X Canon=0x%08X"
+                " RA=0x%08X SP=0x%08X Status=0x%08X\n",
+                raw_pc,
+                canon_pc,
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
+        }
     }
 
     if (m->web_mode)
