@@ -1564,6 +1564,31 @@ static bool be300_run_batch(machine_t *m)
             }
         }
 
+        /* Check if non-XIP modules (ddi.dll, touch.dll) were loaded to RAM */
+        if (m->wince.cold_boot_copy_done && m->nand_data) {
+            static int dll_check_count = 0;
+            if (dll_check_count < 3) {
+                dll_check_count++;
+                struct { uint32_t va; const char *name; } mods[] = {
+                    { 0x8079F000, "ddi.dll" },
+                    { 0x807BA000, "touch.dll" },
+                    { 0x807C3000, "keybddr.dll" },
+                };
+                uint8_t tbuf[16];
+                for (int mi = 0; mi < 3; mi++) {
+                    uint64_t a = 0xFFFFFFFF00000000ULL | mods[mi].va;
+                    int ok = m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                        a, tbuf, 16, MEM_READ, CACHE_DATA | NO_EXCEPTIONS);
+                    int nz = 0;
+                    for (int b = 0; b < 16; b++) nz += (tbuf[b] != 0);
+                    fprintf(stderr, "[MOD_CHECK] %s VA=0x%08X: %s (%02X%02X%02X%02X...)\n",
+                        mods[mi].name, mods[mi].va,
+                        nz ? "LOADED" : "ZERO",
+                        tbuf[0], tbuf[1], tbuf[2], tbuf[3]);
+                }
+                /* check again next time */
+            }
+        }
         /* Probe WinCE tick counters to see if scheduler tick is running */
         if (m->wince.cold_boot_copy_done && m->nand_data) {
             uint8_t buf[4];
