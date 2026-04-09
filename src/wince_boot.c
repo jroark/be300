@@ -406,6 +406,10 @@ static bool watched_mmio_range_name(uint64_t paddr, uint64_t len,
         *name = "vrc4173_112c";
         return true;
     }
+    if (range_overlaps(paddr, len, 0x0A001134u, 4u)) {
+        *name = "vrc4173_1134";
+        return true;
+    }
     if (range_overlaps(paddr, len, 0x0A001138u, 4u)) {
         *name = "vrc4173_1138";
         return true;
@@ -476,6 +480,22 @@ static bool watched_mmio_range_name(uint64_t paddr, uint64_t len,
     }
     if (range_overlaps(paddr, len, 0x0A001B58u, 4u)) {
         *name = "vrc4173_1b58";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A0008A0u, 4u)) {
+        *name = "vrc4173_08a0";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A000A00u, 4u)) {
+        *name = "vrc4173_0a00";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0A00130Cu, 4u)) {
+        *name = "vrc4173_130c";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x0F000046u, 2u)) {
+        *name = "vr41xx_0046";
         return true;
     }
     if (range_overlaps(paddr, len, 0x0F000100u, 4u)) {
@@ -1237,13 +1257,17 @@ static bool cold_boot_scheduler_probe_pc_match(uint32_t value)
         || (value >= UINT32_C(0x80089760) && value <= UINT32_C(0x800897C0))
         || (value >= UINT32_C(0x80089870) && value <= UINT32_C(0x800898F8))
         || (value >= UINT32_C(0x8008B4F0) && value <= UINT32_C(0x8008B6C0))
-        || (value >= UINT32_C(0x8007A3F0) && value <= UINT32_C(0x8007A6B0));
+        || (value >= UINT32_C(0x8007A3F0) && value <= UINT32_C(0x8007A6B0))
+        || (value >= UINT32_C(0x80032780) && value <= UINT32_C(0x800328B8))
+        || (value >= UINT32_C(0x80048D40) && value <= UINT32_C(0x80048D90))
+        || (value >= UINT32_C(0x80068B00) && value <= UINT32_C(0x80068B30));
 }
 
 static bool cold_boot_scheduler_probe_epc_match(uint32_t value)
 {
     return cold_boot_scheduler_probe_pc_match(value)
-        || value == UINT32_C(0x80089A50);
+        || value == UINT32_C(0x80089A50)
+        || value == UINT32_C(0x80048D6C);
 }
 
 static void maybe_log_cold_boot_scheduler_probe(machine_t *m,

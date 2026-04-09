@@ -560,6 +560,17 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
             be300_latch_peek_u32(latch, 0x0880u),
             be300_latch_peek_u32(latch, 0x0888u),
             be300_latch_peek_u32(latch, 0x1118u));
+        fprintf(stderr,
+            "[BE300] VRC audio seed"
+            " 03C0=%08X 03C4=%08X 03C8=%08X 03F4=%08X"
+            " 0880=%08X 0888=%08X 1118=%08X\n",
+            be300_latch_peek_u32(latch, 0x03C0u),
+            be300_latch_peek_u32(latch, 0x03C4u),
+            be300_latch_peek_u32(latch, 0x03C8u),
+            be300_latch_peek_u32(latch, 0x03F4u),
+            be300_latch_peek_u32(latch, 0x0880u),
+            be300_latch_peek_u32(latch, 0x0888u),
+            be300_latch_peek_u32(latch, 0x1118u));
     }
 
     /*
