@@ -121,10 +121,12 @@ Push with: `git push -u origin <current branch>`
 
 **Flash tools** (in `ce/restore_images/`):
 - `NANDWRITER.bin` - WinCE B000FF app (v0.67, base 0x80E00000): CF card → NAND recovery flash tool
-  - Reads `all_nand.bin` + `Area.dat` from CompactFlash FAT16
+  - Reads from FAT-formatted CF card: `KLOADER.bin` (SPL) + `All_nand.bin` (NK + FAT16); `Area.dat` optional
+  - Also supports `nk.cpk` (compressed NK) as alternate input
   - Writes 3 volumes (Kloader, Kernel, Disk) directly to NAND HW registers
   - Does direct block copy — no data transformation (confirmed via Ghidra decompilation)
   - OOB per page: 0xAA 0x55 0x0F 0xFF + logical_block_id(4) + ECC(8)
+- `KLOADER.bin` - Standalone SPL bootloader (B000FF format, v0.62, 48KB) — used by NANDWRITER
 - `DevOSInstall.exe` - MIPS WinCE on-device OS installer (uses NANDAccess.dll)
 - `Setup.exe` - x86 Win32 PC-side upgrade coordinator (pushes UpdateData.bin via ActiveSync)
 - `DevRestore.exe` / `DevBackup.exe` - MIPS WinCE data backup/restore

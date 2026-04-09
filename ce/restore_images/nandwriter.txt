@@ -1,0 +1,8 @@
+1) On your PC use a card reader/writer to format (not Quick Format) a CF Card at least 24 MB in size to FAT (not FAT32).
+
+2) Copy the following files onto the CF card (in root), one at a time, in order: a) NANDWRITER.bin, b) KLOADER.bin, and c) All_nand.bin.
+
+3) Insert the CF card into your BE-500 and hard reset (press power plus reset). You'll see "NandWriter" on the screen along with a progress bar.
+It takes a few minutes to complete, and then the BE-500 will restart automatically.
+After you complete the screen calibration, you'll be presented with the English version of Top Menu. You now have a BE-300 instead of the former BE-500.
+You can now reflash any of the BE-300 OEs (Bee, BeShell, eXpod, EpodXP, GTshell) as with any other BE-300. Using this method, I was able to convert my first silver BE-500 to a BE-300 and flash whatever OE I choose.
