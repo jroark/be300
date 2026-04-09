@@ -1564,9 +1564,21 @@ static bool be300_run_batch(machine_t *m)
             }
         }
 
-        /* Check if non-XIP modules (ddi.dll, touch.dll) were loaded to RAM */
+        /* Check timer threshold and non-XIP modules */
         if (m->wince.cold_boot_copy_done && m->nand_data) {
             static int dll_check_count = 0;
+            /* Probe timer threshold at 0x80669654 */
+            {
+                uint8_t tb[4];
+                uint64_t tva = 0xffffffff80669654ULL;
+                if (m->cpu->memory_rw(m->cpu, m->cpu->mem, tva, tb, 4,
+                        MEM_READ, CACHE_DATA | NO_EXCEPTIONS)) {
+                    uint32_t thresh = tb[0]|(tb[1]<<8)|(tb[2]<<16)|(tb[3]<<24);
+                    if (thresh != 0 && dll_check_count < 5) {
+                        fprintf(stderr, "[TIMER_THRESH] 0x80669654=0x%08X\n", thresh);
+                    }
+                }
+            }
             if (dll_check_count < 3) {
                 dll_check_count++;
                 struct { uint32_t va; const char *name; } mods[] = {
