@@ -1588,6 +1588,33 @@ static bool be300_run_batch(machine_t *m)
             if (m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4,
                     MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
                 isr_cnt2 = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+            /* Dump KData at VA 0xFFFFD800 — thread/process pointers */
+            {
+                static int kdata_dumped = 0;
+                if (!kdata_dumped) {
+                    uint32_t kd[16];
+                    int kok = 1;
+                    for (int k = 0; k < 16; k++) {
+                        uint64_t a = 0xFFFFFFFFFFFFD800ULL + (uint64_t)k * 4;
+                        if (!m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                a, buf, 4,
+                                MEM_READ, CACHE_DATA | NO_EXCEPTIONS)) {
+                            kok = 0; break;
+                        }
+                        kd[k] = buf[0]|(buf[1]<<8)|
+                                 (buf[2]<<16)|(buf[3]<<24);
+                    }
+                    if (kok) {
+                        fprintf(stderr, "[KDATA]");
+                        for (int k = 0; k < 16; k++)
+                            fprintf(stderr, " %08X", kd[k]);
+                        fprintf(stderr, "\n");
+                    } else {
+                        fprintf(stderr, "[KDATA] TLB miss\n");
+                    }
+                    kdata_dumped = 1;
+                }
+            }
             /* Dump wired TLB entries that map 0xFFFFDxxx */
             {
                 static int tlb_dumped = 0;
