@@ -764,6 +764,29 @@ static uint64_t monotonic_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
+static uint64_t be300_sext32(uint32_t v)
+{
+    return (uint64_t)(int64_t)(int32_t)v;
+}
+
+static int be300_read_u32_va(machine_t *m, uint64_t va, uint32_t *value)
+{
+    unsigned char buf[4];
+
+    if (!m || !m->cpu || !value)
+        return 0;
+
+    if (!m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, sizeof(buf),
+        MEM_READ, CACHE_NONE | NO_EXCEPTIONS))
+        return 0;
+
+    *value = (uint32_t)buf[0]
+        | ((uint32_t)buf[1] << 8)
+        | ((uint32_t)buf[2] << 16)
+        | ((uint32_t)buf[3] << 24);
+    return 1;
+}
+
 static void be300_dump_virtual_page(machine_t *m, const char *label,
                                     uint64_t va)
 {
@@ -1188,14 +1211,30 @@ static bool be300_run_batch(machine_t *m)
     }
 
     /*
-     * Detect NK.exe entry and dump decompressed binary for analysis.
-     * The SPL decompresses NK.exe to PA 0x60000 and jumps to
-     * 0xA0060004 which redirects to 0x80076B50.
+     * Detect NK.exe entry and dump the decompressed image for analysis.
+     * Derive the image base from the live entry at PA 0x24FC instead of
+     * assuming the WinCE 3.0 layout. The .NET image enters at 0xA0029004,
+     * while the 3.0 image enters at 0xA0060004.
      */
     if (!m->wince.cold_boot_copy_done && m->nand_data) {
         uint32_t pc = (uint32_t)m->cpu->pc;
         uint32_t pa = pc & 0x1FFFFFFFu;
-        if (pa >= 0x60000u && pa < 0x100000u) {
+        uint32_t entry_va = 0;
+        uint32_t entry_pa = 0;
+        uint32_t base_pa = 0;
+
+        if (be300_read_u32_va(m, 0xffffffffA00024FCULL, &entry_va)
+            && ((entry_va & 0xE0000000u) == 0x80000000u
+                || (entry_va & 0xE0000000u) == 0xA0000000u)
+            && (entry_va & 0x1FFFFFFFu) >= 4u) {
+            entry_pa = entry_va & 0x1FFFFFFFu;
+            base_pa = entry_pa - 4u;
+        }
+
+        if (base_pa != 0
+            && base_pa < 0x00800000u
+            && pa >= base_pa
+            && pa < base_pa + 0x00800000u) {
             m->wince.cold_boot_copy_done = true;
             m->wince.cold_boot_redirected = true;
             m->nand.wince_mode = true;
@@ -1206,9 +1245,41 @@ static bool be300_run_batch(machine_t *m)
 
             /* Dump decompressed NK.exe binary for analysis */
             {
-                const uint32_t nk_pa = 0x00060000u;
-                const uint32_t nk_size = 0x005F6AC8u;
+                uint32_t nk_pa = base_pa;
+                uint32_t nk_size = 0x00800000u;
+                uint32_t sig = 0;
+                uint32_t p_toc = 0;
+                uint32_t physfirst = 0;
+                uint32_t physlast = 0;
                 FILE *nk_fp = fopen("nk_decompressed.bin", "wb");
+
+                if (be300_read_u32_va(m,
+                        0xffffffffA0000000ULL | (uint64_t)(base_pa + 0x40u),
+                        &sig)
+                    && sig == 0x43454345u
+                    && be300_read_u32_va(m,
+                        0xffffffffA0000000ULL | (uint64_t)(base_pa + 0x44u),
+                        &p_toc)
+                    /*
+                     * Windows CE ROMHDR fields used here:
+                     * physfirst @ +0x08, physlast @ +0x0C.
+                     */
+                    && be300_read_u32_va(m, be300_sext32(p_toc + 0x08u),
+                        &physfirst)
+                    && be300_read_u32_va(m, be300_sext32(p_toc + 0x0Cu),
+                        &physlast)
+                    && physlast > physfirst) {
+                    nk_pa = physfirst & 0x1FFFFFFFu;
+                    nk_size = physlast - physfirst;
+                }
+
+                fprintf(stderr,
+                    "[BE300] NK dump plan: entry=0x%08X base_pa=0x%08X"
+                    " sig=0x%08X pTOC=0x%08X physfirst=0x%08X"
+                    " physlast=0x%08X size=0x%08X\n",
+                    entry_va, base_pa, sig, p_toc,
+                    physfirst, physlast, nk_size);
+
                 if (nk_fp) {
                     uint8_t page[4096];
                     uint32_t off = 0;
@@ -1227,18 +1298,16 @@ static bool be300_run_batch(machine_t *m)
                     fprintf(stderr,
                         "[BE300] Dumped NK.exe (%u bytes)"
                         " to nk_decompressed.bin\n", off);
-                    /* Verify ECEC signature at VA 0xA0060040 */
+                    /* Verify ECEC signature at the derived image base. */
                     {
-                        uint8_t sig[4];
-                        uint64_t sig_va = 0xffffffffA0060040ULL;
-                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                                sig_va, sig, 4, MEM_READ, CACHE_NONE)) {
-                            uint32_t sigw = sig[0] | (sig[1]<<8)
-                                | (sig[2]<<16) | (sig[3]<<24);
+                        uint32_t sigw = 0;
+                        uint64_t sig_va = 0xffffffffA0000000ULL
+                            | (uint64_t)(nk_pa + 0x40u);
+                        if (be300_read_u32_va(m, sig_va, &sigw)) {
                             fprintf(stderr,
                                 "[BE300] NK.exe ECEC check: 0x%08X %s\n",
                                 sigw,
-                                sigw == 0x45434543u ? "OK" : "MISMATCH");
+                                sigw == 0x43454345u ? "OK" : "MISMATCH");
                         }
                     }
                 }
@@ -1404,9 +1473,11 @@ static bool be300_run_batch(machine_t *m)
         last_progress_pc = m->cpu->pc;
 
         if (!stuck_dumped &&
-            same_progress_pc_reports >= 5 &&
-            m->cpu->pc < 0x80000000ULL) {
+            same_progress_pc_reports >= 5) {
             uint32_t io_base = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V1];
+            uint32_t epc = (uint32_t)cp0[COP0_EPC];
+            uint32_t badvaddr = (uint32_t)cp0[COP0_BADVADDR];
+            uint32_t latch_val = 0;
 
             stuck_dumped = 1;
             fprintf(stderr,
@@ -1437,17 +1508,46 @@ static bool be300_run_batch(machine_t *m)
                 (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_GP],
                 (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_T9]);
             be300_dump_virtual_page(m, "pc", m->cpu->pc);
+            be300_dump_virtual_dword(m, "pc_word", m->cpu->pc);
             be300_dump_virtual_page(m, "ra",
                 m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
-            be300_dump_virtual_dword(m, "global_01f620c8", 0x01f620c8u);
-            be300_dump_virtual_dword(m, "io_base",
-                (uint64_t)io_base);
-            be300_dump_virtual_dword(m, "io_03c0",
-                (uint64_t)io_base + 0x3c0u);
-            be300_dump_virtual_dword(m, "io_03c4",
-                (uint64_t)io_base + 0x3c4u);
-            be300_dump_virtual_dword(m, "io_03f4",
-                (uint64_t)io_base + 0x3f4u);
+            if (epc != 0) {
+                be300_dump_virtual_page(m, "epc", epc);
+                be300_dump_virtual_dword(m, "epc_word", epc);
+            }
+            if (badvaddr != 0) {
+                be300_dump_virtual_dword(m, "badvaddr", badvaddr);
+                if ((badvaddr & ~0xfffU) != (epc & ~0xfffU))
+                    be300_dump_virtual_page(m, "badvaddr", badvaddr);
+            }
+
+            if (m->cpu->pc < 0x80000000ULL) {
+                be300_dump_virtual_dword(m, "global_01f620c8", 0x01f620c8u);
+                be300_dump_virtual_dword(m, "io_base",
+                    (uint64_t)io_base);
+                be300_dump_virtual_dword(m, "io_03c0",
+                    (uint64_t)io_base + 0x3c0u);
+                be300_dump_virtual_dword(m, "io_03c4",
+                    (uint64_t)io_base + 0x3c4u);
+                be300_dump_virtual_dword(m, "io_03f4",
+                    (uint64_t)io_base + 0x3f4u);
+                if (be300_vrc4173_latch_read_u32(0x0A0003C0u, &latch_val))
+                    fprintf(stderr,
+                        "[BE300] STUCK_LATCH pa=0x0A0003C0 value=0x%08X\n",
+                        latch_val);
+                if (be300_vrc4173_latch_read_u32(0x0A0003C4u, &latch_val))
+                    fprintf(stderr,
+                        "[BE300] STUCK_LATCH pa=0x0A0003C4 value=0x%08X\n",
+                        latch_val);
+                if (be300_vrc4173_latch_read_u32(0x0A0003C8u, &latch_val))
+                    fprintf(stderr,
+                        "[BE300] STUCK_LATCH pa=0x0A0003C8 value=0x%08X\n",
+                        latch_val);
+                if (be300_vrc4173_latch_read_u32(0x0A0003F4u, &latch_val))
+                    fprintf(stderr,
+                        "[BE300] STUCK_LATCH pa=0x0A0003F4 value=0x%08X\n",
+                        latch_val);
+            }
         }
 
         /* Check PA 0x24FC and version at PA 0x2400 */
