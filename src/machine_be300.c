@@ -1625,6 +1625,44 @@ static bool be300_run_batch(machine_t *m)
                     dbg_probed = 1;
                 }
             }
+            /* Probe critical section at 0x80669740 (CreateProcess lock) */
+            {
+                static int cs_probed = 0;
+                if (cs_probed < 3) {
+                    uint8_t cb[8];
+                    uint64_t cva = 0xffffffff80669740ULL;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem, cva, cb, 8,
+                            MEM_READ, CACHE_DATA | NO_EXCEPTIONS)) {
+                        uint32_t lock_count = cb[0]|(cb[1]<<8)|(cb[2]<<16)|(cb[3]<<24);
+                        uint32_t owner = cb[4]|(cb[5]<<8)|(cb[6]<<16)|(cb[7]<<24);
+                        if (lock_count != 0 || cs_probed == 0) {
+                            fprintf(stderr,
+                                "[CS_PROBE] 0x80669740: count=%u owner=0x%08X\n",
+                                lock_count, owner);
+                        }
+                    }
+                    cs_probed++;
+                }
+            }
+            /* Also probe module table entry for index 7 */
+            {
+                static int mt_probed = 0;
+                if (!mt_probed) {
+                    uint8_t mb[20];
+                    uint64_t mva = 0xffffffff8066014CULL;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem, mva, mb, 20,
+                            MEM_READ, CACHE_DATA | NO_EXCEPTIONS)) {
+                        uint32_t w[5];
+                        for (int j = 0; j < 5; j++)
+                            w[j] = mb[j*4]|(mb[j*4+1]<<8)|(mb[j*4+2]<<16)|(mb[j*4+3]<<24);
+                        fprintf(stderr,
+                            "[MOD_TABLE] idx7 at 0x8066014C:"
+                            " %08X %08X %08X %08X %08X\n",
+                            w[0], w[1], w[2], w[3], w[4]);
+                    }
+                    mt_probed = 1;
+                }
+            }
             /* Probe sleep queue head and timer threshold */
             {
                 uint8_t qb[4];
