@@ -17,6 +17,7 @@
 #include "devices.h"
 #include "machine.h"
 #include "memory.h"
+#include "mips_cpu_types.h"
 
 static machine_t *g_active_wince_machine = NULL;
 static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
@@ -132,6 +133,136 @@ static bool load_va_half(machine_t *m, uint32_t va, uint16_t *out)
 static bool load_vrc_latch_word(uint32_t pa, uint32_t *out)
 {
     return be300_vrc4173_latch_read_u32(pa, out);
+}
+
+static void dump_live_tlb(machine_t *m)
+{
+    struct mips_coproc *cp;
+    int ntlb;
+    int i;
+
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+        return;
+
+    cp = m->cpu->cd.mips.coproc[0];
+    ntlb = m->cpu->cd.mips.cpu_type.nr_of_tlb_entries;
+
+    fprintf(stderr,
+        "[WINCE_TLB] dump entries=%d wired=%u entryhi=0x%08X pagemask=0x%08X\n",
+        ntlb,
+        (unsigned)cp->reg[COP0_WIRED],
+        (uint32_t)cp->reg[COP0_ENTRYHI],
+        (uint32_t)cp->reg[COP0_PAGEMASK]);
+
+    for (i = 0; i < ntlb; i++) {
+        uint32_t hi = (uint32_t)cp->tlbs[i].hi;
+        uint32_t lo0 = (uint32_t)cp->tlbs[i].lo0;
+        uint32_t lo1 = (uint32_t)cp->tlbs[i].lo1;
+        uint32_t mask = (uint32_t)cp->tlbs[i].mask;
+
+        if (hi == 0 && lo0 == 0 && lo1 == 0 && mask == 0)
+            continue;
+
+        fprintf(stderr,
+            "[WINCE_TLB]   [%2d] hi=0x%08X lo0=0x%08X lo1=0x%08X"
+            " mask=0x%08X\n",
+            i, hi, lo0, lo1, mask);
+    }
+}
+
+static void dump_tlb_match_for_va(machine_t *m, uint32_t va,
+    const char *label)
+{
+    struct mips_coproc *cp;
+    int pageshift;
+    int ntlb;
+    int i;
+
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+        return;
+
+    cp = m->cpu->cd.mips.coproc[0];
+    ntlb = m->cpu->cd.mips.cpu_type.nr_of_tlb_entries;
+    pageshift = (m->cpu->cd.mips.cpu_type.rev == MIPS_R4100) ? 10 : 12;
+
+    for (i = 0; i < ntlb; i++) {
+        uint64_t hi = cp->tlbs[i].hi;
+        uint64_t lo[2] = { cp->tlbs[i].lo0, cp->tlbs[i].lo1 };
+        uint64_t mask = cp->tlbs[i].mask;
+        uint64_t match_mask = mask
+            | (uint64_t)((m->cpu->cd.mips.cpu_type.rev == MIPS_R4100)
+                ? 0x07ffu : 0x1fffu);
+        uint64_t page_size = (match_mask + 1u) >> 1;
+        uint32_t vbase = ((uint32_t)hi & (uint32_t)ENTRYHI_VPN2_MASK);
+        int page;
+
+        vbase &= ~(uint32_t)match_mask;
+
+        for (page = 0; page < 2; page++) {
+            uint32_t page_vbase = vbase + (uint32_t)((uint64_t)page
+                * page_size);
+            uint64_t page_lo = lo[page];
+
+            if (va < page_vbase
+                || (uint64_t)va >= (uint64_t)page_vbase + page_size) {
+                continue;
+            }
+
+            if (!(page_lo & ENTRYLO_V)) {
+                fprintf(stderr,
+                    "[WINCE_TLB] match %-14s va=0x%08X idx=%d page=%d"
+                    " vbase=0x%08X psize=0x%08X valid=0 global=%d"
+                    " asid=0x%02X lo=0x%08X\n",
+                    label ? label : "-",
+                    va, i, page,
+                    page_vbase,
+                    (uint32_t)page_size,
+                    (int)(((uint32_t)hi & TLB_G) ? 1 : 0),
+                    (unsigned)((uint32_t)hi & ENTRYHI_ASID),
+                    (uint32_t)page_lo);
+                return;
+            }
+
+            {
+                uint64_t pbase = (page_lo & ENTRYLO_PFN_MASK)
+                    >> ENTRYLO_PFN_SHIFT;
+                uint64_t paddr = (pbase << pageshift)
+                    & ~(match_mask >> 1);
+
+                paddr += (uint64_t)(va - page_vbase);
+                fprintf(stderr,
+                    "[WINCE_TLB] match %-14s va=0x%08X idx=%d page=%d"
+                    " vbase=0x%08X pbase=0x%08X paddr=0x%08X"
+                    " psize=0x%08X valid=1 global=%d asid=0x%02X"
+                    " lo=0x%08X\n",
+                    label ? label : "-",
+                    va, i, page,
+                    page_vbase,
+                    (uint32_t)(paddr - (va - page_vbase)),
+                    (uint32_t)paddr,
+                    (uint32_t)page_size,
+                    (int)(((uint32_t)hi & TLB_G) ? 1 : 0),
+                    (unsigned)((uint32_t)hi & ENTRYHI_ASID),
+                    (uint32_t)page_lo);
+            }
+            return;
+        }
+    }
+
+    fprintf(stderr,
+        "[WINCE_TLB] match %-14s va=0x%08X status=NO_MATCH\n",
+        label ? label : "-", va);
+}
+
+static void dump_va_peek(machine_t *m, const char *label, uint32_t va)
+{
+    uint32_t word = 0;
+    bool ok;
+
+    ok = load_va_word(m, va, &word);
+    fprintf(stderr,
+        "[WINCE_TLB] peek  %-14s va=0x%08X ok=%d value=0x%08X\n",
+        label ? label : "-", va, ok ? 1 : 0, word);
 }
 
 static void invalidate_all(machine_t *m)
@@ -1587,9 +1718,171 @@ void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
     }
 }
 
+static bool is_idle_exception_focus_pc(uint32_t raw_pc32)
+{
+    uint32_t pc32 = raw_pc32;
+
+    if ((pc32 & 0xE0000000u) == 0x80000000u
+        || (pc32 & 0xE0000000u) == 0xA0000000u) {
+        pc32 = (pc32 & 0x1FFFFFFFu) | 0x80000000u;
+    }
+
+    return (pc32 >= UINT32_C(0x80079900) && pc32 <= UINT32_C(0x80079A20))
+        || (pc32 >= UINT32_C(0x8007A3E0) && pc32 <= UINT32_C(0x8007A460))
+        || (pc32 >= UINT32_C(0x8008B200) && pc32 <= UINT32_C(0x8008B560));
+}
+
+void wince_boot_note_interrupt_exception(struct cpu *cpu, uint32_t exccode)
+{
+    machine_t *m;
+
+    if (!cpu || exccode != EXCEPTION_INT)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m || !m->wince.active || !m->wince.cold_boot_redirected
+        || !m->wince.vectors_ready || m->wince.irq_exception_snapshot_logged
+        || !is_idle_exception_focus_pc((uint32_t)cpu->pc)) {
+        return;
+    }
+
+    m->wince.irq_exception_snapshot_logged = true;
+    fprintf(stderr,
+        "[WINCE_IRQ] entry pc=0x%08X at=0x%08X t6=0x%08X sp=0x%08X"
+        " ra=0x%08X status=0x%08X cause=0x%08X epc=0x%08X"
+        " delay=%d owner=%d ready=%d\n",
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_AT],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T6],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+        (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
+        (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_EPC],
+        cpu->delay_slot,
+        (int)m->wince.vector_owner,
+        m->wince.vectors_ready ? 1 : 0);
+    dump_code_window(m, (uint32_t)cpu->pc, 4u, 10u);
+    dump_pa_words(m, "low_0180", 0x00000180u, WINCE_VECTOR_WORDS);
+}
+
+void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
+    uint32_t vaddr)
+{
+    machine_t *m;
+    uint32_t status;
+    uint32_t cause;
+    uint32_t epc;
+    uint32_t badvaddr;
+
+    if (!cpu)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m || !m->wince.active || !m->wince.cold_boot_redirected
+        || m->wince.tlb_fault_snapshot_logged) {
+        return;
+    }
+
+    m->wince.tlb_fault_snapshot_logged = true;
+    status = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
+    cause = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_CAUSE];
+    epc = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    badvaddr = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR];
+
+    fprintf(stderr,
+        "[WINCE_TLB] first_exception exc=%u pc=0x%08X epc=0x%08X"
+        " vaddr=0x%08X badvaddr=0x%08X status=0x%08X cause=0x%08X"
+        " owner=%d ready=%d sp=0x%08X ra=0x%08X\n",
+        exccode,
+        (uint32_t)cpu->pc,
+        epc,
+        vaddr,
+        badvaddr,
+        status,
+        cause,
+        (int)m->wince.vector_owner,
+        m->wince.vectors_ready ? 1 : 0,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+
+    dump_live_tlb(m);
+    dump_tlb_match_for_va(m, UINT32_C(0xFFFFD000), "helper_high");
+    dump_tlb_match_for_va(m, UINT32_C(0xFFFFDAC0), "ctx_ptr");
+    dump_tlb_match_for_va(m, UINT32_C(0xFFFFDAB0), "ctx_link");
+    dump_tlb_match_for_va(m, UINT32_C(0xFFFFBFA8), "nested_stack");
+    dump_tlb_match_for_va(m, UINT32_C(0xFFFFC09C), "vector_save");
+    dump_tlb_match_for_va(m, UINT32_C(0x1FFFD794), "queue_slot");
+
+    dump_va_peek(m, "ctx_ptr", UINT32_C(0xFFFFDAC0));
+    dump_va_peek(m, "ctx_link", UINT32_C(0xFFFFDAB0));
+    dump_va_peek(m, "cause_mask", UINT32_C(0xFFFFD890));
+    dump_va_peek(m, "saved_t0", UINT32_C(0xFFFFD888));
+    dump_va_peek(m, "nest_count", UINT32_C(0xFFFFD884));
+    dump_va_peek(m, "refill_tblf", UINT32_C(0xFFFFD8FC));
+    dump_va_peek(m, "refill_tbl0", UINT32_C(0xFFFFD8C0));
+    dump_va_peek(m, "refill_tbl1", UINT32_C(0xFFFFD8C4));
+    dump_va_peek(m, "refill_mask", UINT32_C(0xFFFFD89C));
+    dump_va_peek(m, "db00", UINT32_C(0xFFFFDB00));
+    dump_va_peek(m, "db04", UINT32_C(0xFFFFDB04));
+    dump_va_peek(m, "db08", UINT32_C(0xFFFFDB08));
+    dump_va_peek(m, "db0c", UINT32_C(0xFFFFDB0C));
+    dump_va_peek(m, "db1c", UINT32_C(0xFFFFDB1C));
+    dump_va_peek(m, "db20", UINT32_C(0xFFFFDB20));
+    dump_va_peek(m, "db34", UINT32_C(0xFFFFDB34));
+    dump_va_peek(m, "mm_first", UINT32_C(0x80669540));
+    dump_va_peek(m, "mm_last", UINT32_C(0x80669544));
+    dump_va_peek(m, "queue_count", UINT32_C(0x80669548));
+    dump_va_peek(m, "queue_base", UINT32_C(0x8066954C));
+    dump_va_peek(m, "queue_head", UINT32_C(0x80669554));
+    dump_va_peek(m, "cur_thrd", UINT32_C(0x80669844));
+
+    dump_pa_words(m, "pa_18c0", 0x000018C0u, 16);
+    dump_va_window(m, "refill_tbl", UINT32_C(0xFFFFD8C0), 0x40u);
+    dump_va_window(m, "db_state", UINT32_C(0xFFFFDB00), 0x40u);
+    dump_va_window(m, "mm_state", UINT32_C(0x80669540), 0x20u);
+}
+
+void wince_boot_note_eret(struct cpu *cpu)
+{
+    machine_t *m;
+    uint32_t target;
+
+    if (!cpu)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m || !m->wince.active || !m->wince.cold_boot_redirected
+        || !m->wince.irq_exception_snapshot_logged
+        || m->wince.eret_snapshot_logged) {
+        return;
+    }
+
+    target = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    if (!is_idle_exception_focus_pc(target))
+        return;
+
+    m->wince.eret_snapshot_logged = true;
+    fprintf(stderr,
+        "[WINCE_IRQ] eret target=0x%08X at=0x%08X t6=0x%08X sp=0x%08X"
+        " ra=0x%08X status=0x%08X cause=0x%08X\n",
+        target,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_AT],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T6],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
+        (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_CAUSE]);
+    dump_code_window(m, target, 4u, 10u);
+}
+
 bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
 {
     machine_t *m = wince_boot_from_gx(gxm);
+    const uint64_t sched_mask = WINCE_PATH_PROBE_8B21C
+        | WINCE_PATH_PROBE_8B528
+        | WINCE_PATH_PROBE_7A3FC
+        | WINCE_PATH_PROBE_79990;
     (void)cpu;
 
     if (!m || !m->wince.active)
@@ -1601,6 +1894,16 @@ bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
             fprintf(stderr,
                 "[WINCE_CKPT] timer_irq_gate active waiting_for_vectors\n");
             m->wince.timer_gate_logged = true;
+        }
+        return false;
+    }
+    if ((m->wince.boot_path_probe_mask & sched_mask) == 0) {
+        if (!m->wince.timer_sched_gate_logged) {
+            fprintf(stderr,
+                "[WINCE_CKPT] timer_irq_gate active waiting_for_scheduler"
+                " probes=0x%016" PRIx64 "\n",
+                m->wince.boot_path_probe_mask);
+            m->wince.timer_sched_gate_logged = true;
         }
         return false;
     }

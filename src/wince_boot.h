@@ -21,6 +21,10 @@ void wince_boot_install_synthetic_low_vectors(machine_t *m,
 void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu);
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
     uint64_t relative_addr, uint64_t value);
+void wince_boot_note_interrupt_exception(struct cpu *cpu, uint32_t exccode);
+void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
+    uint32_t vaddr);
+void wince_boot_note_eret(struct cpu *cpu);
 bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu);
 void wince_boot_note_low_vector_write(struct cpu *cpu, uint64_t paddr,
     size_t len);
