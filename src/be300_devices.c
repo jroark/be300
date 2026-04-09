@@ -417,6 +417,58 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
             memcpy(&latch->bytes[i * 4], &v, 4);
         }
 
+        /*
+         * Audio/AIU-adjacent register snapshot from real hardware.
+         *
+         * The .NET wavedev driver maps these offsets through user VA
+         * 0x001B0000 and expects the status bits seen in the hardware
+         * survey instead of an all-zero block.
+         */
+        static const struct { uint16_t off; uint32_t val; } audio_regs[] = {
+            { 0x0390, 0x00000E22 },
+            { 0x0398, 0x0000DD00 },
+            { 0x039C, 0x0000DD00 },
+            { 0x03A8, 0x0000DD00 },
+            { 0x03AC, 0x0000DD00 },
+            { 0x03B0, 0x0000DD00 },
+            { 0x03B4, 0x0000DD00 },
+            { 0x03B8, 0x0000DD00 },
+            { 0x03BC, 0x0000DD00 },
+            { 0x03C0, 0x0000D007 },
+            { 0x03C4, 0x00000001 },
+            { 0x03C8, 0x00000003 },
+            { 0x03CC, 0x00000000 },
+            { 0x03D4, 0x00070000 },
+            { 0x03F4, 0x00000007 },
+            { 0x0880, 0x00000004 },
+            { 0x0884, 0x00000001 },
+            { 0x0888, 0x00000003 },
+            { 0x088C, 0x00000001 },
+            { 0x0890, 0x00000000 },
+            { 0x0894, 0x00000088 },
+            { 0x0898, 0x00000000 },
+            { 0x089C, 0x00000000 },
+            { 0x08A0, 0x00000000 },
+            { 0x08A4, 0x00000000 },
+            { 0x08A8, 0x00000000 },
+            { 0x08AC, 0x00000004 },
+            { 0x08B0, 0x0004D000 },
+            { 0x08B4, 0x0004D5FC },
+            { 0x08B8, 0x0004D000 },
+            { 0x08BC, 0x0004D5FC },
+            { 0x08C0, 0x00000001 },
+            { 0x08C4, 0x00000001 },
+            { 0x08C8, 0x00000001 },
+            { 0x08CC, 0x00000001 },
+            { 0x1114, 0x00000001 },
+            { 0x1118, 0x00000001 },
+            { 0x111C, 0x00000001 },
+        };
+        for (unsigned i = 0; i < sizeof(audio_regs)/sizeof(audio_regs[0]); i++) {
+            uint32_t v = audio_regs[i].val;
+            memcpy(&latch->bytes[audio_regs[i].off], &v, 4);
+        }
+
         /* SIU/AIU area (PA 0x0A008000, offset 0x8000) */
         static const struct { uint16_t off; uint32_t val; } siu_regs[] = {
             { 0x8000, 0x0000200C },  /* master control */
@@ -488,7 +540,9 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
             "[BE300] VRC seed"
             " 8010=%08X 1120=%08X 1128=%08X 112C=%08X"
             " 1138=%08X 113C=%08X 1B10=%08X 1B14=%08X"
-            " 1B20=%08X 1B2C=%08X\n",
+            " 1B20=%08X 1B2C=%08X"
+            " 03C0=%08X 03C4=%08X 03C8=%08X 03F4=%08X"
+            " 0880=%08X 0888=%08X 1118=%08X\n",
             be300_latch_peek_u32(latch, 0x8010u),
             be300_latch_peek_u32(latch, 0x1120u),
             be300_latch_peek_u32(latch, 0x1128u),
@@ -498,7 +552,14 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
             be300_latch_peek_u32(latch, 0x1B10u),
             be300_latch_peek_u32(latch, 0x1B14u),
             be300_latch_peek_u32(latch, 0x1B20u),
-            be300_latch_peek_u32(latch, 0x1B2Cu));
+            be300_latch_peek_u32(latch, 0x1B2Cu),
+            be300_latch_peek_u32(latch, 0x03C0u),
+            be300_latch_peek_u32(latch, 0x03C4u),
+            be300_latch_peek_u32(latch, 0x03C8u),
+            be300_latch_peek_u32(latch, 0x03F4u),
+            be300_latch_peek_u32(latch, 0x0880u),
+            be300_latch_peek_u32(latch, 0x0888u),
+            be300_latch_peek_u32(latch, 0x1118u));
     }
 
     /*

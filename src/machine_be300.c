@@ -764,6 +764,90 @@ static uint64_t monotonic_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
+static void be300_dump_virtual_page(machine_t *m, const char *label,
+                                    uint64_t va)
+{
+    unsigned char page[4096];
+    uint64_t paddr = 0;
+    uint64_t page_va;
+    uint64_t page_paddr;
+    char path[128];
+    FILE *f;
+    size_t wrote;
+
+    if (!m || !m->cpu || !m->cpu->translate_v2p)
+        return;
+
+    if (!m->cpu->translate_v2p(m->cpu, va, &paddr,
+        FLAG_NOEXCEPTIONS | FLAG_INSTR)) {
+        fprintf(stderr,
+            "[BE300] STUCK_DUMP %s va=0x%08" PRIx64 " map_ok=0\n",
+            label, va);
+        return;
+    }
+
+    page_va = va & ~0xfffULL;
+    page_paddr = paddr & ~0xfffULL;
+    if (!m->cpu->memory_rw(m->cpu, m->cpu->mem, page_paddr, page,
+        sizeof(page), MEM_READ,
+        PHYSICAL | NO_EXCEPTIONS | CACHE_INSTRUCTION)) {
+        fprintf(stderr,
+            "[BE300] STUCK_DUMP %s va_page=0x%08" PRIx64
+            " paddr_page=0x%08" PRIx64 " read_ok=0\n",
+            label, page_va, page_paddr);
+        return;
+    }
+
+    snprintf(path, sizeof(path), "stuck_%s_page_%08x.bin", label,
+        (uint32_t)page_paddr);
+    f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr,
+            "[BE300] STUCK_DUMP %s va_page=0x%08" PRIx64
+            " paddr_page=0x%08" PRIx64 " fopen failed for %s\n",
+            label, page_va, page_paddr, path);
+        return;
+    }
+
+    wrote = fwrite(page, 1, sizeof(page), f);
+    fclose(f);
+
+    fprintf(stderr,
+        "[BE300] STUCK_DUMP %s va_page=0x%08" PRIx64
+        " paddr_page=0x%08" PRIx64 " path=%s wrote=%zu\n",
+        label, page_va, page_paddr, path, wrote);
+}
+
+static void be300_dump_virtual_dword(machine_t *m, const char *label,
+                                     uint64_t va)
+{
+    uint32_t value = 0;
+    uint64_t paddr = 0;
+    int map_ok;
+    int read_ok;
+
+    if (!m || !m->cpu || !m->cpu->translate_v2p)
+        return;
+
+    map_ok = m->cpu->translate_v2p(m->cpu, va, &paddr, FLAG_NOEXCEPTIONS);
+    read_ok = m->cpu->memory_rw(m->cpu, m->cpu->mem, va,
+        (unsigned char *)&value, sizeof(value), MEM_READ,
+        CACHE_DATA | NO_EXCEPTIONS);
+
+    fprintf(stderr,
+        "[BE300] STUCK_DWORD %s va=0x%08" PRIx64
+        " map_ok=%d paddr=%s0x%08" PRIx64
+        " read_ok=%d value=%s0x%08X\n",
+        label,
+        va,
+        map_ok,
+        map_ok ? "" : "(none) ",
+        paddr,
+        read_ok,
+        read_ok ? "" : "(none) ",
+        value);
+}
+
 static void be300_runtime_start(machine_t *m)
 {
     struct machine *gxm = m->gxe_machine;
@@ -844,6 +928,10 @@ static void be300_runtime_finalize(machine_t *m)
 
 static bool be300_run_batch(machine_t *m)
 {
+    static uint64_t last_progress_pc = 0;
+    static int same_progress_pc_reports = 0;
+    static int stuck_dumped = 0;
+
     struct machine *gxm = m->gxe_machine;
 
     __sync_synchronize();
@@ -1308,6 +1396,59 @@ static bool be300_run_batch(machine_t *m)
             (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
             (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
         m->last_report = m->cpu->ninstrs;
+
+        if (m->cpu->pc == last_progress_pc)
+            same_progress_pc_reports++;
+        else
+            same_progress_pc_reports = 0;
+        last_progress_pc = m->cpu->pc;
+
+        if (!stuck_dumped &&
+            same_progress_pc_reports >= 5 &&
+            m->cpu->pc < 0x80000000ULL) {
+            uint32_t io_base = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V1];
+
+            stuck_dumped = 1;
+            fprintf(stderr,
+                "[BE300] STUCK_PC pc=0x%08" PRIx64 " same_reports=%d"
+                " status=0x%08X cause=0x%08X epc=0x%08X"
+                " badvaddr=0x%08X sp=0x%08X ra=0x%08X"
+                " v0=0x%08X v1=0x%08X a0=0x%08X a1=0x%08X"
+                " a2=0x%08X a3=0x%08X s0=0x%08X s1=0x%08X"
+                " s2=0x%08X s3=0x%08X gp=0x%08X t9=0x%08X\n",
+                m->cpu->pc,
+                same_progress_pc_reports,
+                (uint32_t)cp0[COP0_STATUS],
+                (uint32_t)cp0[COP0_CAUSE],
+                (uint32_t)cp0[COP0_EPC],
+                (uint32_t)cp0[COP0_BADVADDR],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V0],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V1],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A2],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A3],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S0],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S1],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S2],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S3],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_GP],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_T9]);
+            be300_dump_virtual_page(m, "pc", m->cpu->pc);
+            be300_dump_virtual_page(m, "ra",
+                m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            be300_dump_virtual_dword(m, "global_01f620c8", 0x01f620c8u);
+            be300_dump_virtual_dword(m, "io_base",
+                (uint64_t)io_base);
+            be300_dump_virtual_dword(m, "io_03c0",
+                (uint64_t)io_base + 0x3c0u);
+            be300_dump_virtual_dword(m, "io_03c4",
+                (uint64_t)io_base + 0x3c4u);
+            be300_dump_virtual_dword(m, "io_03f4",
+                (uint64_t)io_base + 0x3f4u);
+        }
 
         /* Check PA 0x24FC and version at PA 0x2400 */
         {
