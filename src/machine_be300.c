@@ -1563,6 +1563,34 @@ static bool be300_run_batch(machine_t *m)
                 fprintf(stderr, "[BE300]   PA_2400=0x%08X PA_24FC=0x%08X\n", ver, ep);
             }
         }
+
+        /* Probe WinCE tick counters to see if scheduler tick is running */
+        if (m->wince.cold_boot_copy_done && m->nand_data) {
+            uint8_t buf[4];
+            uint64_t va;
+            uint32_t tick_lo = 0, tick_hi = 0, curmsec = 0;
+            /* PA 0x660030/0x660034 = VA 0x80660030 (CurMSec 64-bit) */
+            va = 0xffffffff80660030ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4,
+                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                tick_lo = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+            va = 0xffffffff80660034ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4,
+                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                tick_hi = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+            /* Probe VA 0xFFFFD894/0xFFFFD898 through TLB (ISR tick counters) */
+            uint32_t isr_cnt1 = 0, isr_cnt2 = 0;
+            va = 0xFFFFFFFFFFFFD894ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4,
+                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                isr_cnt1 = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+            va = 0xFFFFFFFFFFFFD898ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4,
+                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                isr_cnt2 = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+            fprintf(stderr, "[BE300]   TICK=0x%08X:%08X ISR=%u/%u\n",
+                tick_hi, tick_lo, isr_cnt1, isr_cnt2);
+        }
     }
 
     if (++m->loop_count % 100 == 0) {
