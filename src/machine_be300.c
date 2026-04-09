@@ -1567,6 +1567,76 @@ static bool be300_run_batch(machine_t *m)
         /* Check timer threshold and non-XIP modules */
         if (m->wince.cold_boot_copy_done && m->nand_data) {
             static int dll_check_count = 0;
+            /* Probe debugger event and timer threshold */
+            {
+                static int dbg_probed = 0;
+                if (!dbg_probed) {
+                    /* Read KData+0x2C0 (current thread ptr) */
+                    uint8_t db[4];
+                    uint64_t dva;
+                    uint32_t cur_thd = 0, cur_prc = 0, dbg_evt = 0;
+                    dva = 0xFFFFFFFFFFFFDAC0ULL;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem, dva, db, 4,
+                            MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                        cur_thd = db[0]|(db[1]<<8)|(db[2]<<16)|(db[3]<<24);
+                    dva = 0xFFFFFFFFFFFFDAC4ULL;
+                    if (m->cpu->memory_rw(m->cpu, m->cpu->mem, dva, db, 4,
+                            MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                        cur_prc = db[0]|(db[1]<<8)|(db[2]<<16)|(db[3]<<24);
+                    /* Read *(cur_thd + 0x24) — debugger event */
+                    if (cur_thd != 0) {
+                        dva = 0xFFFFFFFF00000000ULL | ((uint64_t)cur_thd + 0x24);
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem, dva, db, 4,
+                                MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                            dbg_evt = db[0]|(db[1]<<8)|(db[2]<<16)|(db[3]<<24);
+                    }
+                    /* Also read the other blocking condition fields */
+                    uint32_t prc_20 = 0, prc_0c = 0, evt_0c = 0;
+                    if (cur_prc != 0) {
+                        dva = 0xFFFFFFFF00000000ULL | ((uint64_t)cur_prc + 0x20);
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem, dva, db, 4,
+                                MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                            prc_20 = db[0]|(db[1]<<8)|(db[2]<<16)|(db[3]<<24);
+                        dva = 0xFFFFFFFF00000000ULL | ((uint64_t)cur_prc + 0x0c);
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem, dva, db, 4,
+                                MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                            prc_0c = db[0]|(db[1]<<8)|(db[2]<<16)|(db[3]<<24);
+                    }
+                    if (dbg_evt != 0) {
+                        dva = 0xFFFFFFFF00000000ULL | ((uint64_t)dbg_evt + 0x0c);
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem, dva, db, 4,
+                                MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                            evt_0c = db[0]|(db[1]<<8)|(db[2]<<16)|(db[3]<<24);
+                    }
+                    fprintf(stderr,
+                        "[DBG_PROBE] cur_thd=0x%08X cur_prc=0x%08X"
+                        " *(thd+0x24)=0x%08X\n"
+                        "  prc+0x20=0x%08X (>>25=0x%02X)"
+                        " prc+0x0c=0x%08X (>>25=0x%02X)"
+                        " evt+0x0c=0x%08X\n"
+                        "  BLOCK=%s\n",
+                        cur_thd, cur_prc, dbg_evt,
+                        prc_20, prc_20 >> 25,
+                        prc_0c, prc_0c >> 25,
+                        evt_0c,
+                        (dbg_evt != 0 &&
+                         (prc_20 >> 25) == (prc_0c >> 25) &&
+                         evt_0c != 0) ? "YES" : "NO");
+                    dbg_probed = 1;
+                }
+            }
+            /* Probe sleep queue head and timer threshold */
+            {
+                uint8_t qb[4];
+                uint64_t qva = 0xffffffff8066961CULL;
+                uint32_t qhead = 0;
+                if (m->cpu->memory_rw(m->cpu, m->cpu->mem, qva, qb, 4,
+                        MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                    qhead = qb[0]|(qb[1]<<8)|(qb[2]<<16)|(qb[3]<<24);
+                if (qhead != 0 && dll_check_count < 5) {
+                    fprintf(stderr, "[SLEEP_Q] head=0x%08X\n", qhead);
+                }
+            }
             /* Probe timer threshold at 0x80669654 */
             {
                 uint8_t tb[4];

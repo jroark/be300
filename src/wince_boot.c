@@ -1820,10 +1820,10 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
             dll_tlb_count++;
         }
     }
-    /* Also log TLB misses for ALL user-mode VAs (first 10 only) */
+    /* Also log TLB misses/MOD for ALL user-mode VAs */
     if (vaddr < 0x80000000u) {
         static int user_tlb_count = 0;
-        if (user_tlb_count < 10) {
+        if (user_tlb_count < 20 || (exccode == 1 && user_tlb_count < 50)) {
             fprintf(stderr,
                 "[USER_TLB] exc=%u vaddr=0x%08X pc=0x%08X"
                 " sp=0x%08X #%d\n",
