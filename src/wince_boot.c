@@ -1803,9 +1803,35 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
         return;
 
     m = wince_boot_from_gx(cpu->machine);
-    if (!m || !m->wince.active || !m->wince.cold_boot_redirected
-        || m->wince.tlb_fault_snapshot_logged) {
+    if (!m || !m->wince.active || !m->wince.cold_boot_redirected)
         return;
+
+    /* Log TLB exceptions for DLL VA range — BEFORE the one-shot gate */
+    /* Log TLB exceptions for DLL VA range (0x01800000-0x02000000) */
+    if (vaddr >= 0x01800000u && vaddr < 0x02000000u) {
+        static int dll_tlb_count = 0;
+        if (dll_tlb_count < 20) {
+            fprintf(stderr,
+                "[DLL_TLB] exc=%u vaddr=0x%08X pc=0x%08X"
+                " sp=0x%08X #%d\n",
+                exccode, vaddr, (uint32_t)cpu->pc,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+                dll_tlb_count);
+            dll_tlb_count++;
+        }
+    }
+    /* Also log TLB misses for ALL user-mode VAs (first 10 only) */
+    if (vaddr < 0x80000000u) {
+        static int user_tlb_count = 0;
+        if (user_tlb_count < 10) {
+            fprintf(stderr,
+                "[USER_TLB] exc=%u vaddr=0x%08X pc=0x%08X"
+                " sp=0x%08X #%d\n",
+                exccode, vaddr, (uint32_t)cpu->pc,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+                user_tlb_count);
+            user_tlb_count++;
+        }
     }
 
     m->wince.tlb_fault_snapshot_logged = true;
