@@ -119,6 +119,7 @@ struct be300_vrc4173_segment {
 struct be300_wince_aux {
     uint8_t bytes[WINCE_AUX_SIZE];
     bool    log_mmio;
+    uint16_t ppsh_status_520;
 };
 
 DEVICE_ACCESS(be300_vrc4173)
@@ -242,18 +243,38 @@ DEVICE_ACCESS(be300_wince_aux)
         memcpy(&d->bytes[off], data, len);
 
         /*
-         * WinCE uses 0x0C000520 as a command latch and then polls the
-         * same halfword until bit 1 clears. Captured companion-chip
-         * surveys show the backing word at 0x0A000520 idles at zero, so
-         * keep reads of the exact 0x520 status halfword deasserted even
-         * after command writes.
+         * NK's PPSH companion-MCU handshake uses 0x0C000520 as a small
+         * status machine, not a constant ID register:
+         *   0x3330: controller-ID probe, expect 0x2320 bits
+         *   0x1100: command dispatch, wait until bit 1 becomes set
+         *   0x9100/0x9900: completion phase, wait until bit 1 clears
+         *
+         * Model the observed status transitions directly so the guest can
+         * drive the same poll loops as on hardware.
          */
-        /* After PPSH command writes to 0x520, the MCU processes the
-         * command and clears bit 1 when done.  Keep the ID bits (0x2320)
-         * but clear bit 1 to signal instant completion. */
         if (off == 0x400 && len >= 2) {
-            uint16_t status = 0x2320;  /* MCU ID with bit 1 clear */
-            memcpy(&d->bytes[off], &status, sizeof(status));
+            uint16_t cmd = (uint16_t)val;
+
+            switch (cmd) {
+            case 0x3330:
+                d->ppsh_status_520 = 0x2320;
+                break;
+            case 0x1100:
+                d->ppsh_status_520 = 0x2322;
+                break;
+            case 0x9100:
+                d->ppsh_status_520 = 0x2322;
+                break;
+            case 0x9900:
+                d->ppsh_status_520 = 0x2320;
+                break;
+            default:
+                d->ppsh_status_520 = 0x2320;
+                break;
+            }
+
+            memcpy(&d->bytes[off], &d->ppsh_status_520,
+                sizeof(d->ppsh_status_520));
         }
 
         if (d->log_mmio) {
@@ -268,16 +289,12 @@ DEVICE_ACCESS(be300_wince_aux)
 
         /*
          * PPSH controller identification at offset 0x400 (PA 0x0C000520).
-         * NK.exe PPSH driver reads this and expects 0x2320 (Casio companion
-         * MCU ID).  Without this, PPSH sets NoPPFS=TRUE and the NAND
-         * filesystem may not mount.
-         *
-         * After initial ID check, PPSH polls until bit 1 clears (command
-         * completion).  Return 0x2320 on first read, then 0x2320 with
-         * bit 1 clear (= 0x2320) for subsequent reads.
+         * Reads return the current emulated companion-MCU status word.
          */
         if (off == 0x400 && len >= 2) {
-            val = 0x2320;
+            memcpy(&d->bytes[off], &d->ppsh_status_520,
+                sizeof(d->ppsh_status_520));
+            val = d->ppsh_status_520;
             memory_writemax64(cpu, data, len, val);
         }
 
@@ -367,6 +384,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
     g_be300_vrc4173_latch = latch;
     CHECK_ALLOCATION(aux = calloc(1, sizeof(struct be300_wince_aux)));
     aux->log_mmio = log_mmio;
+    aux->ppsh_status_520 = 0x2320;
 
     /*
      * Pre-populate latch with real hardware register values from
