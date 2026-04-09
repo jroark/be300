@@ -1588,8 +1588,48 @@ static bool be300_run_batch(machine_t *m)
             if (m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4,
                     MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
                 isr_cnt2 = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
-            fprintf(stderr, "[BE300]   TICK=0x%08X:%08X ISR=%u/%u\n",
-                tick_hi, tick_lo, isr_cnt1, isr_cnt2);
+            /* Dump wired TLB entries that map 0xFFFFDxxx */
+            {
+                static int tlb_dumped = 0;
+                if (!tlb_dumped) {
+                    struct mips_coproc *cp0 = m->cpu->cd.mips.coproc[0];
+                    int wired = (int)cp0->reg[COP0_WIRED];
+                    int ntlbs = cp0->nr_of_tlbs;
+                    fprintf(stderr, "[TLB_DUMP] Wired=%d total=%d\n",
+                        wired, ntlbs);
+                    for (int i = 0; i < ntlbs && i < 8; i++) {
+                        uint64_t hi = cp0->tlbs[i].hi;
+                        uint64_t lo0 = cp0->tlbs[i].lo0;
+                        uint64_t lo1 = cp0->tlbs[i].lo1;
+                        uint64_t mask = cp0->tlbs[i].mask;
+                        uint32_t vpn2 = (uint32_t)(hi >> 13) << 13;
+                        uint32_t pfn0 = (uint32_t)((lo0 >> 6) << 12);
+                        uint32_t pfn1 = (uint32_t)((lo1 >> 6) << 12);
+                        fprintf(stderr,
+                            "[TLB_DUMP] [%d] hi=0x%08X lo0=0x%08X"
+                            " lo1=0x%08X mask=0x%08X"
+                            " → VPN=0x%08X PFN0=0x%08X PFN1=0x%08X"
+                            " V0=%d V1=%d\n",
+                            i, (uint32_t)hi, (uint32_t)lo0,
+                            (uint32_t)lo1, (uint32_t)mask,
+                            vpn2, pfn0, pfn1,
+                            (int)(lo0 & 2) >> 1, (int)(lo1 & 2) >> 1);
+                    }
+                    tlb_dumped = 1;
+                }
+            }
+            /* Also read PA 0x4894/0x4898 directly via kseg0 */
+            uint32_t pa_cnt1 = 0, pa_cnt2 = 0;
+            va = 0xffffffff80004894ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4,
+                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                pa_cnt1 = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+            va = 0xffffffff80004898ULL;
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4,
+                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                pa_cnt2 = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
+            fprintf(stderr, "[BE300]   TICK=0x%08X:%08X ISR=%u/%u PA=%u/%u\n",
+                tick_hi, tick_lo, isr_cnt1, isr_cnt2, pa_cnt1, pa_cnt2);
         }
     }
 
