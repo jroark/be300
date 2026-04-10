@@ -1894,7 +1894,7 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
                 ->reg[COP0_ENTRYHI];
             uint32_t ctx = (uint32_t)cpu->cd.mips.coproc[0]
                 ->reg[COP0_CONTEXT];
-            uint32_t sec_idx = (vaddr >> 22) & 0x3Fu;
+            uint32_t sec_idx = (vaddr >> 25) & 0x3Fu;
             uint32_t sec_val = 0;
             (void)load_va_word(m, 0xFFFFD8C0u + sec_idx * 4u, &sec_val);
             fprintf(stderr,
@@ -1920,7 +1920,7 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
                 ->reg[COP0_ENTRYHI];
             uint32_t ctx = (uint32_t)cpu->cd.mips.coproc[0]
                 ->reg[COP0_CONTEXT];
-            uint32_t sec_idx = (vaddr >> 22) & 0x3Fu;
+            uint32_t sec_idx = (vaddr >> 25) & 0x3Fu;
             uint32_t sec_val = 0;
             (void)load_va_word(m, 0xFFFFD8C0u + sec_idx * 4u, &sec_val);
             fprintf(stderr,
@@ -1934,39 +1934,71 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
                 (status >> 1) & 1u,
                 sec_idx, sec_val, ctx,
                 user_tlb_count);
-            /* If section entry is valid, dump 2nd-level PTE */
+            /* If section entry is valid, dump 2nd-level PTE.
+             * Handler algorithm (from 0x8008C418):
+             *   L2 byte offset = (badva >> 14) & 0x7FC
+             *   L2 entry = *(section_entry + L2_offset)
+             *   PTE group offset = (badva >> 10) & 0x38
+             *   EntryLo0 = *(L2_entry + PTE_offset + 12)
+             *   EntryLo1 = *(L2_entry + PTE_offset + 16) */
             if (sec_val != 0 && user_tlb_count < 10) {
-                uint32_t l2_idx = (vaddr >> 14) & 0xFFu;
-                uint32_t l2_ptr = sec_val + l2_idx * 4u;
+                uint32_t l2_boff = (vaddr >> 14) & 0x7FCu;
+                uint32_t l2_ptr = sec_val + l2_boff;
                 uint32_t l2_val = 0;
                 (void)load_va_word(m, l2_ptr, &l2_val);
                 fprintf(stderr,
                     "[USER_TLB_L2] vaddr=0x%08X sec=0x%08X"
-                    " l2[%u]=0x%08X (at VA 0x%08X)\n",
-                    vaddr, sec_val, l2_idx, l2_val, l2_ptr);
+                    " l2_off=0x%X l2_val=0x%08X"
+                    " (at VA 0x%08X) valid=%d\n",
+                    vaddr, sec_val, l2_boff, l2_val,
+                    l2_ptr, (int32_t)l2_val < 0);
+                /* If L2 entry is valid (bit 31 set), dump PTE */
+                if ((int32_t)l2_val < 0) {
+                    uint32_t pte_off = (vaddr >> 10) & 0x38u;
+                    uint32_t lo0 = 0, lo1 = 0, blk0 = 0;
+                    uint32_t rmask = 0;
+                    (void)load_va_word(m, l2_val, &blk0);
+                    (void)load_va_word(m, 0xFFFFD89Cu,
+                        &rmask);
+                    (void)load_va_word(m,
+                        l2_val + pte_off + 12u, &lo0);
+                    (void)load_va_word(m,
+                        l2_val + pte_off + 16u, &lo1);
+                    fprintf(stderr,
+                        "[USER_TLB_PTE] l2=0x%08X"
+                        " pte_off=0x%X blk0=0x%08X"
+                        " mask=0x%08X"
+                        " lo0=0x%08X lo1=0x%08X\n",
+                        l2_val, pte_off, blk0,
+                        rmask, lo0, lo1);
+                }
             }
             user_tlb_count++;
         }
 
-        /* Step 2: One-shot section table dump on first user-space TLB miss */
+        /* Step 2: One-shot section table dump on first user-space TLB miss.
+         * Handler uses (badva >> 25) & 0x3F as section index.
+         * Each section = 32MB. Process slots = 32MB each.
+         * Slot 0 = section[0], slot 1 = section[1], etc. */
         if (!section_table_dumped) {
             unsigned si;
             section_table_dumped = 1;
             fprintf(stderr,
                 "[SECTION_TABLE] dump at first user-space TLB miss"
-                " (vaddr=0x%08X):\n", vaddr);
+                " (vaddr=0x%08X, section=%u):\n",
+                vaddr, (vaddr >> 25) & 0x3Fu);
             for (si = 0; si < 64; si++) {
                 uint32_t sv = 0;
                 (void)load_va_word(m, 0xFFFFD8C0u + si * 4u, &sv);
-                if (sv != 0 || si == 0 || si == 8
-                    || si == 16 || si == 24)
+                if (sv != 0 || si < 4)
                     fprintf(stderr,
                         "[SECTION_TABLE]   [%2u] = 0x%08X%s\n",
                         si, sv,
-                        (si == 0) ? " (slot0)" :
-                        (si == 8) ? " (slot1)" :
-                        (si == 16) ? " (slot2)" :
-                        (si == 24) ? " (slot3)" : "");
+                        (si == 0) ? " (slot0, 0x00-0x01FFFFFF)" :
+                        (si == 1) ? " (slot1, 0x02-0x03FFFFFF)" :
+                        (si == 2) ? " (slot2, 0x04-0x05FFFFFF)" :
+                        (si == 3) ? " (slot3, 0x06-0x07FFFFFF)" :
+                        "");
             }
         }
 
