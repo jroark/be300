@@ -66,4 +66,13 @@ typedef struct {
     bool     nk_step_trace_active;
     bool     nk_step_trace_done;
     uint16_t nk_step_trace_remaining;
+
+    /* L2 demand-page marker fixup: when process tables are created,
+     * the kernel doesn't copy demand-page markers (0x00000001) from
+     * the shared table.  We track the shared table pointer and copy
+     * markers into each new process L2 table on first swap-in. */
+    uint32_t shared_l2_table;       /* e.g. 0x80668CC0 */
+    uint32_t last_section0_val;     /* last value written to section[0] */
+    uint32_t l2_fixup_applied[32];  /* per-L2-table: PA of fixed tables */
+    uint8_t  l2_fixup_count;
 } wince_boot_state_t;
