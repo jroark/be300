@@ -389,6 +389,16 @@ static bool watched_ram_range_name(uint64_t paddr, uint64_t len,
         *name = "section_tbl";
         return true;
     }
+    /* KData+0xA0 (PA 0x18A0): PSL trap dispatch base pointer */
+    if (range_overlaps(paddr, len, 0x000018A0u, 4u)) {
+        *name = "psl_trap_base";
+        return true;
+    }
+    /* KData+0x9C (PA 0x189C): refill_mask */
+    if (range_overlaps(paddr, len, 0x0000189Cu, 4u)) {
+        *name = "refill_mask";
+        return true;
+    }
     return false;
 }
 
