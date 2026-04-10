@@ -216,9 +216,8 @@ machine_t *be300_create(const machine_config_t *cfg)
             "[BE300] Hardware mode: %s; workaround gates "
             "rom_patches=%s tlb_preload=%s dev2_fixup=%s "
             "dma_cpu_mutation=%s timer_gate=%s l2_fixup=%s "
-            "sysint1_clear=%s nand_phase_gate=%s\n",
+            "sysint1_clear=%s\n",
             cfg->strict_hardware ? "strict" : "compat",
-            cfg->strict_hardware ? "off" : "on",
             cfg->strict_hardware ? "off" : "on",
             cfg->strict_hardware ? "off" : "on",
             cfg->strict_hardware ? "off" : "on",
@@ -331,7 +330,6 @@ machine_t *be300_create(const machine_config_t *cfg)
     rtc_init(&m->rtc);
     gpio_init(&m->gpio);
     nand_init(&m->nand, NULL, 0);
-    m->nand.strict_hardware = cfg->strict_hardware;
 
     /*
      * Load kernel or NAND image.
@@ -360,7 +358,6 @@ machine_t *be300_create(const machine_config_t *cfg)
         /* Re-initialize NAND controller with image data */
         if (m->nand_data) {
             nand_init(&m->nand, m->nand_data, m->nand_size);
-            m->nand.strict_hardware = cfg->strict_hardware;
         }
 
         /*
@@ -1102,8 +1099,6 @@ static bool be300_run_batch(machine_t *m)
                 entry_poll_logged = 1;
                 m->wince.cold_boot_copy_done = true;
                 m->wince.cold_boot_redirected = true;
-                if (!m->cfg.strict_hardware)
-                    m->nand.wince_mode = true;
                 wince_boot_pc_ring_activate(m);
                 fprintf(stderr,
                     "[BE300] *** NK.exe entry at PA_24FC=0x%08X"
@@ -1271,8 +1266,6 @@ static bool be300_run_batch(machine_t *m)
             && pa < base_pa + 0x00800000u) {
             m->wince.cold_boot_copy_done = true;
             m->wince.cold_boot_redirected = true;
-            if (!m->cfg.strict_hardware)
-                m->nand.wince_mode = true;
             fprintf(stderr,
                 "[BE300] *** NK.exe entry detected at PC=0x%08X batch=%d ***\n",
                 pc, m->loop_count);

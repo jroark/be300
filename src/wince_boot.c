@@ -1700,8 +1700,6 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
         if (pa >= 0x60000u && pa < 0x100000u) {
             m->wince.cold_boot_copy_done = true;
             m->wince.cold_boot_redirected = true;
-            if (!m->cfg.strict_hardware)
-                m->nand.wince_mode = true;
             fprintf(stderr,
                 "[WINCE_CKPT] nk_entry_detected PC=0x%08X PA=0x%08X"
                 " SP=0x%08X RA=0x%08X Status=0x%08X\n",

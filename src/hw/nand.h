@@ -29,9 +29,9 @@
 #define NAND_REG_XFER_KICK     0xA460u
 #define NAND_REG_XFER_MODE     0xA464u
 #define NAND_REG_XFER_MISC     0xA468u
-#define NAND_REG_BUFFER_BASE   0xA4A0u   /* WinCE data buffer (4 x 32-bit) */
+#define NAND_REG_BUFFER_BASE   0xA4A0u   /* mode-4/ECC result buffer */
 #define NAND_REG_BUFFER_END    0xA4B0u
-#define NAND_REG_XFER_STATUS2  0xA4C0u   /* Alternate status (same as 0xA440) */
+#define NAND_REG_XFER_STATUS2  0xA4C0u   /* ECC/result status latch */
 #define NAND_REG_STREAM_DATA   0xB000u
 
 /* ROM transfer-engine registers */
@@ -129,11 +129,8 @@ typedef struct {
     uint16_t legacy_read_since_write[256]; /* per-index: read count since last write */
     uint16_t legacy_status7_event_reads;   /* sustained idx7 event-bit poll counter */
     bool     legacy_status7_ff_armed;      /* one-shot 0xFF escape has been emitted */
-    uint8_t  xfer_buffer[16];              /* WinCE mode-4 data buffer (0xA4A0-0xA4AC) */
-    bool     xfer_buffer_valid;            /* true after mode-4/MISC populates buffer */
+    uint8_t  xfer_buffer[16];              /* mode-4/ECC result buffer (0xA4A0-0xA4AC) */
     uint8_t  xfer_ecc_count;               /* six 10-bit ECC inputs via 0xA468 */
-    bool     wince_mode;                   /* compat gate: true after NK.exe loads */
-    bool     strict_hardware;              /* disable phase gates for diagnostic runs */
     uint8_t  dio_mode;                     /* D002 control: 0x80=CLE, 0x01=ALE, 0=data */
     uint8_t  dio_last_write;              /* last byte written to D000 (for echo-back) */
 
