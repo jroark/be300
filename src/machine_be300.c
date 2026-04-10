@@ -214,12 +214,9 @@ machine_t *be300_create(const machine_config_t *cfg)
     if (cfg->nand_path) {
         fprintf(stderr,
             "[BE300] Hardware mode: %s; workaround gates "
-            "rom_patches=%s tlb_preload=%s dev2_fixup=%s "
-            "dma_cpu_mutation=%s timer_gate=%s l2_fixup=%s "
-            "sysint1_clear=%s\n",
+            "rom_patches=%s tlb_preload=%s timer_gate=%s "
+            "l2_fixup=%s sysint1_clear=%s\n",
             cfg->strict_hardware ? "strict" : "compat",
-            cfg->strict_hardware ? "off" : "on",
-            cfg->strict_hardware ? "off" : "on",
             cfg->strict_hardware ? "off" : "on",
             cfg->strict_hardware ? "off" : "on",
             cfg->strict_hardware ? "off" : "on",
@@ -645,34 +642,6 @@ machine_t *be300_create(const machine_config_t *cfg)
                             0x0BF000E8); /* j 0xFC003A0 -> section copier+boot */
                         store_32bit_word(m->cpu, rom_va + 0x3F8,
                             0x00000000); /* nop */
-
-                        /*
-                         * WORKAROUND: Patch delay-loop SUB→SUBU at
-                         * ROM +0x51C and +0x520.
-                         *
-                         * The ROM's MIPS32 delay function at offset
-                         * 0x534 reads CP0 Count, subtracts a base
-                         * value, and compares against a threshold.
-                         * It uses SUB (which traps on signed overflow)
-                         * rather than SUBU (which wraps silently).
-                         *
-                         * In the emulator, CP0 Count can wrap past
-                         * 0x80000000 between reads because we reset
-                         * Count to 0 on DMA triggers (another
-                         * workaround).  The SUB then computes a
-                         * negative difference that exceeds the signed
-                         * range, triggering an Integer Overflow
-                         * exception.  On real hardware, Count
-                         * increments monotonically and the difference
-                         * stays small, so the overflow never occurs.
-                         *
-                         * SUBU produces the same arithmetic result
-                         * without trapping.
-                         */
-                        store_32bit_word(m->cpu, rom_va + 0x51C,
-                            0x00C53023); /* WORKAROUND: subu a2,a2,a1 */
-                        store_32bit_word(m->cpu, rom_va + 0x520,
-                            0x00461023); /* WORKAROUND: subu v0,v0,a2 */
 
                         /* Verify entry point jump patch */
                         {

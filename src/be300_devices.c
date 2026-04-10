@@ -13,8 +13,6 @@
 #include <string.h>
 
 #include "cpu.h"
-#include "cop0.h"
-#include "cpu_mips.h"
 #include "machine.h"
 #include "memory.h"
 #include "misc.h"
@@ -47,22 +45,6 @@ DEVICE_ACCESS(be300_nand)
         uint64_t val = memory_readmax64(cpu, data, len);
         nand_write(d->nand, offset, (unsigned)len, val, d->log_mmio, pc);
 
-        /*
-         *  WORKAROUND: Simulate the DMA-complete interrupt side effect.
-         *
-         *  The ROM's MIPS16 path writes 0 to 0xC376 as a clear-to-idle
-         *  step before it issues the actual read trigger through cmd byte 7
-         *  = 0xEC.  So only the 0xEC trigger should synthesize the old
-         *  Count/$s3 side effects; doing it on 0xC376 corrupts the control
-         *  flow we just recovered from Ghidra.
-         */
-        if (!wince_boot_strict_hardware_enabled(cpu) &&
-            offset >= NAND_DMA_BASE && offset < NAND_DMA_END &&
-            ((offset - NAND_DMA_BASE) + len - 1) >= 7 &&
-            d->nand->dma_cmd[7] == 0xECu) {
-            cpu->cd.mips.coproc[0]->reg[COP0_COUNT] = 0; /* WORKAROUND */
-            cpu->cd.mips.gpr[19] = 1;  /* WORKAROUND: $s3 = DMA complete */
-        }
         wince_boot_note_mmio_access(cpu->machine, cpu,
             0x0A000000ULL + offset, len, val, true);
     } else {
