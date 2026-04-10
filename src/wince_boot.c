@@ -914,6 +914,40 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
         format_half_or_unknown(b0104, sizeof(b0104), vr0104_ok, vr0104),
         format_half_or_unknown(b0144, sizeof(b0144), vr0144_ok, vr0144),
         format_half_or_unknown(bpmu, sizeof(bpmu), pmu_c0_ok, pmu_c0));
+
+    /* Step 4: One-shot PSL dispatch table dump on scheduler_dispatch */
+    if (bit == WINCE_PATH_PROBE_8B528) {
+        unsigned pi;
+        uint32_t trap_base = 0;
+
+        /* KData+0xA0 (VA 0xFFFFD8A0) — system trap dispatch pointer */
+        (void)load_va_word(m, 0xFFFFD8A0u, &trap_base);
+        fprintf(stderr, "[PSL_TABLE] KData+0xA0=0x%08X (trap base)\n",
+            trap_base);
+        if (trap_base != 0) {
+            for (pi = 0; pi < 32; pi++) {
+                uint32_t entry = 0;
+                (void)load_va_word(m, trap_base + pi * 4u, &entry);
+                if (entry != 0 || pi < 4)
+                    fprintf(stderr,
+                        "[PSL_TABLE]   [%2u] = 0x%08X\n",
+                        pi, entry);
+            }
+        }
+
+        /* ROM callback table at PA 0x51680 (11 groups, 55 words) */
+        fprintf(stderr, "[PSL_TABLE] ROM callbacks PA=0x51680:\n");
+        for (pi = 0; pi < 55; pi += 5) {
+            fprintf(stderr,
+                "[PSL_TABLE]   cb[%u]: %08X %08X %08X %08X %08X\n",
+                pi / 5,
+                load_pa_word(m, 0x51680u + pi * 4u),
+                load_pa_word(m, 0x51680u + (pi + 1u) * 4u),
+                load_pa_word(m, 0x51680u + (pi + 2u) * 4u),
+                load_pa_word(m, 0x51680u + (pi + 3u) * 4u),
+                load_pa_word(m, 0x51680u + (pi + 4u) * 4u));
+        }
+    }
 }
 
 static void dump_pa_words(machine_t *m, const char *label, uint32_t pa,
@@ -1069,6 +1103,50 @@ static void maybe_log_checkpoint(machine_t *m, const char *tag,
     dump_pa_words(m, "vec_bev_0200", 0x1FC00200u, WINCE_VECTOR_WORDS);
     dump_pa_words(m, "vec_bev_0380", 0x1FC00380u, WINCE_VECTOR_WORDS);
     dump_ctx_window(m, 0x00002000u, 0x300u);
+
+    /* Step 1: Compare installed low vectors against NK.exe source handlers.
+     * TLB refill source: VA 0x8008C418, installed at PA 0x0000.
+     * General exception source: VA 0x8008B240, installed at PA 0x0180. */
+    {
+        uint32_t pa_vec[WINCE_VECTOR_WORDS];
+        uint32_t nk_src[WINCE_VECTOR_WORDS];
+        size_t i;
+        int mismatch;
+        static const struct {
+            uint32_t pa;
+            uint32_t src_va;
+            const char *name;
+        } vec_pairs[] = {
+            { 0x00000000u, 0x8008C418u, "tlb_refill" },
+            { 0x00000180u, 0x8008B240u, "general_exc" },
+        };
+        unsigned vp;
+
+        for (vp = 0; vp < 2; vp++) {
+            read_block(m, vec_pairs[vp].pa, pa_vec, WINCE_VECTOR_WORDS);
+            mismatch = -1;
+            for (i = 0; i < WINCE_VECTOR_WORDS; i++) {
+                uint32_t w;
+                if (!load_va_word(m, vec_pairs[vp].src_va
+                    + (uint32_t)(i * 4u), &w))
+                    w = 0xDEADBEEFu;
+                nk_src[i] = w;
+                if (mismatch < 0 && w != pa_vec[i])
+                    mismatch = (int)i;
+            }
+            fprintf(stderr,
+                "[VECTOR_MATCH] %s: PA=0x%08X vs VA=0x%08X match=%s",
+                vec_pairs[vp].name, vec_pairs[vp].pa,
+                vec_pairs[vp].src_va,
+                mismatch < 0 ? "YES" : "NO");
+            if (mismatch >= 0)
+                fprintf(stderr, " first_diff_word=%d"
+                    " pa_val=0x%08X nk_val=0x%08X",
+                    mismatch, pa_vec[mismatch],
+                    nk_src[mismatch]);
+            fprintf(stderr, "\n");
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1806,16 +1884,29 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
     if (!m || !m->wince.active || !m->wince.cold_boot_redirected)
         return;
 
-    /* Log TLB exceptions for DLL VA range — BEFORE the one-shot gate */
+    status = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
+
     /* Log TLB exceptions for DLL VA range (0x01800000-0x02000000) */
     if (vaddr >= 0x01800000u && vaddr < 0x02000000u) {
         static int dll_tlb_count = 0;
         if (dll_tlb_count < 20) {
+            uint32_t entryhi = (uint32_t)cpu->cd.mips.coproc[0]
+                ->reg[COP0_ENTRYHI];
+            uint32_t ctx = (uint32_t)cpu->cd.mips.coproc[0]
+                ->reg[COP0_CONTEXT];
+            uint32_t sec_idx = (vaddr >> 22) & 0x3Fu;
+            uint32_t sec_val = 0;
+            (void)load_va_word(m, 0xFFFFD8C0u + sec_idx * 4u, &sec_val);
             fprintf(stderr,
                 "[DLL_TLB] exc=%u vaddr=0x%08X pc=0x%08X"
-                " sp=0x%08X #%d\n",
+                " sp=0x%08X asid=%u bev=%u exl=%u"
+                " sec[%u]=0x%08X ctx=0x%08X #%d\n",
                 exccode, vaddr, (uint32_t)cpu->pc,
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+                entryhi & 0xFFu,
+                (status >> 22) & 1u,
+                (status >> 1) & 1u,
+                sec_idx, sec_val, ctx,
                 dll_tlb_count);
             dll_tlb_count++;
         }
@@ -1823,19 +1914,83 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
     /* Also log TLB misses/MOD for ALL user-mode VAs */
     if (vaddr < 0x80000000u) {
         static int user_tlb_count = 0;
+        static int section_table_dumped = 0;
         if (user_tlb_count < 20 || (exccode == 1 && user_tlb_count < 50)) {
+            uint32_t entryhi = (uint32_t)cpu->cd.mips.coproc[0]
+                ->reg[COP0_ENTRYHI];
+            uint32_t ctx = (uint32_t)cpu->cd.mips.coproc[0]
+                ->reg[COP0_CONTEXT];
+            uint32_t sec_idx = (vaddr >> 22) & 0x3Fu;
+            uint32_t sec_val = 0;
+            (void)load_va_word(m, 0xFFFFD8C0u + sec_idx * 4u, &sec_val);
             fprintf(stderr,
                 "[USER_TLB] exc=%u vaddr=0x%08X pc=0x%08X"
-                " sp=0x%08X #%d\n",
+                " sp=0x%08X asid=%u bev=%u exl=%u"
+                " sec[%u]=0x%08X ctx=0x%08X #%d\n",
                 exccode, vaddr, (uint32_t)cpu->pc,
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+                entryhi & 0xFFu,
+                (status >> 22) & 1u,
+                (status >> 1) & 1u,
+                sec_idx, sec_val, ctx,
                 user_tlb_count);
+            /* If section entry is valid, dump 2nd-level PTE */
+            if (sec_val != 0 && user_tlb_count < 10) {
+                uint32_t l2_idx = (vaddr >> 14) & 0xFFu;
+                uint32_t l2_ptr = sec_val + l2_idx * 4u;
+                uint32_t l2_val = 0;
+                (void)load_va_word(m, l2_ptr, &l2_val);
+                fprintf(stderr,
+                    "[USER_TLB_L2] vaddr=0x%08X sec=0x%08X"
+                    " l2[%u]=0x%08X (at VA 0x%08X)\n",
+                    vaddr, sec_val, l2_idx, l2_val, l2_ptr);
+            }
             user_tlb_count++;
+        }
+
+        /* Step 2: One-shot section table dump on first user-space TLB miss */
+        if (!section_table_dumped) {
+            unsigned si;
+            section_table_dumped = 1;
+            fprintf(stderr,
+                "[SECTION_TABLE] dump at first user-space TLB miss"
+                " (vaddr=0x%08X):\n", vaddr);
+            for (si = 0; si < 64; si++) {
+                uint32_t sv = 0;
+                (void)load_va_word(m, 0xFFFFD8C0u + si * 4u, &sv);
+                if (sv != 0 || si == 0 || si == 8
+                    || si == 16 || si == 24)
+                    fprintf(stderr,
+                        "[SECTION_TABLE]   [%2u] = 0x%08X%s\n",
+                        si, sv,
+                        (si == 0) ? " (slot0)" :
+                        (si == 8) ? " (slot1)" :
+                        (si == 16) ? " (slot2)" :
+                        (si == 24) ? " (slot3)" : "");
+            }
+        }
+
+        /* Step 5 validation: Context register BadVPN2 formula check */
+        {
+            static int ctx_check_count = 0;
+            if (ctx_check_count < 5) {
+                uint32_t v = vaddr;
+                uint32_t old_ctx = ((((v & 0xFFFFE000u) >> 11)
+                    << 4) & 0x01fffff0u);
+                uint32_t new_ctx = (((v >> 11) << 4)
+                    & 0x01fffff0u);
+                fprintf(stderr,
+                    "[CONTEXT_CHECK] vaddr=0x%08X"
+                    " old_formula=0x%08X new_formula=0x%08X"
+                    " diff=%d\n",
+                    v, old_ctx, new_ctx,
+                    old_ctx != new_ctx);
+                ctx_check_count++;
+            }
         }
     }
 
     m->wince.tlb_fault_snapshot_logged = true;
-    status = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
     cause = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_CAUSE];
     epc = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_EPC];
     badvaddr = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR];

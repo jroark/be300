@@ -1625,10 +1625,11 @@ static bool be300_run_batch(machine_t *m)
                     dbg_probed = 1;
                 }
             }
-            /* Probe critical section at 0x80669740 (CreateProcess lock) */
+            /* Probe critical section at 0x80669740 — check on every report */
             {
                 static int cs_probed = 0;
-                if (cs_probed < 3) {
+                static uint32_t prev_count = 0;
+                if (cs_probed < 10) {
                     uint8_t cb[8];
                     uint64_t cva = 0xffffffff80669740ULL;
                     if (m->cpu->memory_rw(m->cpu, m->cpu->mem, cva, cb, 8,
