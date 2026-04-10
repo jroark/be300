@@ -20,10 +20,6 @@ typedef struct {
     bool timer_config_logged;
     bool first_exception_logged;
     bool fatal_exit_logged;
-    bool timer_gate_logged;
-    bool timer_release_logged;
-    bool timer_sched_gate_logged;
-    bool timer_exc_state_gate_logged;
     bool tlb_fault_snapshot_logged;
     bool irq_exception_snapshot_logged;
     bool eret_snapshot_logged;
