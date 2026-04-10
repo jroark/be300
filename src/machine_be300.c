@@ -214,9 +214,8 @@ machine_t *be300_create(const machine_config_t *cfg)
     if (cfg->nand_path) {
         fprintf(stderr,
             "[BE300] Hardware mode: %s; workaround gates "
-            "timer_gate=%s l2_fixup=%s sysint1_clear=%s\n",
+            "l2_fixup=%s sysint1_clear=%s\n",
             cfg->strict_hardware ? "strict" : "compat",
-            cfg->strict_hardware ? "off" : "on",
             cfg->strict_hardware ? "off" : "on",
             cfg->strict_hardware ? "off" : "on");
     }

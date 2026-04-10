@@ -2064,44 +2064,8 @@ void wince_boot_note_eret(struct cpu *cpu)
 
 bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
 {
-    machine_t *m = wince_boot_from_gx(gxm);
-    const uint64_t sched_mask = WINCE_PATH_PROBE_8B21C
-        | WINCE_PATH_PROBE_8B528
-        | WINCE_PATH_PROBE_7A3FC
-        | WINCE_PATH_PROBE_79990;
+    (void)gxm;
     (void)cpu;
-
-    if (!m || !m->wince.active)
-        return true;
-    if (m->cfg.strict_hardware)
-        return true;
-    if (!m->wince.cold_boot_redirected)
-        return true;
-    if (!m->wince.vectors_ready) {
-        if (!m->wince.timer_gate_logged) {
-            fprintf(stderr,
-                "[WINCE_CKPT] timer_irq_gate active waiting_for_vectors\n");
-            m->wince.timer_gate_logged = true;
-        }
-        return false;
-    }
-    if ((m->wince.boot_path_probe_mask & sched_mask) == 0) {
-        if (!m->wince.timer_sched_gate_logged) {
-            fprintf(stderr,
-                "[WINCE_CKPT] timer_irq_gate active waiting_for_scheduler"
-                " probes=0x%016" PRIx64 "\n",
-                m->wince.boot_path_probe_mask);
-            m->wince.timer_sched_gate_logged = true;
-        }
-        return false;
-    }
-
-    if (!m->wince.timer_release_logged) {
-        fprintf(stderr,
-            "[WINCE_CKPT] timer_irq_gate released owner=%d\n",
-            (int)m->wince.vector_owner);
-        m->wince.timer_release_logged = true;
-    }
     return true;
 }
 
