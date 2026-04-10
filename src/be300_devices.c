@@ -131,8 +131,7 @@ DEVICE_ACCESS(be300_vrc4173)
          * but the latch keeps returning 1 on subsequent reads.
          *
          * W1C registers (offsets from VRC4173 base 0x0A000000):
-         *   0x060  SYSINT1REG — aggregate interrupt status (R on real HW,
-         *          but W1C here lets software explicitly clear bits)
+         *   0x060  SYSINT1REG — read-only aggregate interrupt status
          *   0x062-0x06A  Level-2 status registers (PIU, AIU, KIU, GIU)
          *   0x1120 GIU interrupt status / clear
          *   0x112C GIU interrupt status / clear
@@ -146,26 +145,11 @@ DEVICE_ACCESS(be300_vrc4173)
             (off >= 0x1100 && off < 0x1140) ||
             (off >= 0x1B00 && off < 0x1B30)) {
             /* W1C: clear bits that are written as 1 */
-            for (size_t i = 0; i < len && (off + i) < VRC4173_LATCH_SIZE; i++)
-                d->bytes[off + i] &= ~data[i];
-            /*
-             * WORKAROUND: Zero SYSINT1REG (0x060) after any W1C write
-             * to peripheral interrupt registers.
-             *
-             * On real hardware, SYSINT1REG is a read-only aggregate
-             * that reflects the OR of all peripheral interrupt lines.
-             * In our latch-based emulation, SYSINT1REG is just memory
-             * that retains whatever was last written or initialized.
-             * Without this workaround, stale non-zero bits in
-             * SYSINT1REG cause WinCE's ISR to keep setting software
-             * interrupt flags in an infinite loop, because the ISR
-             * reads SYSINT1REG, sees pending interrupts, and never
-             * clears them (the real hardware would auto-clear when the
-             * peripheral source is serviced).
-             */
-            if (!wince_boot_strict_hardware_enabled(cpu) && off != 0x060) {
-                d->bytes[0x060] = 0;  /* WORKAROUND */
-                d->bytes[0x061] = 0;  /* WORKAROUND */
+            for (size_t i = 0; i < len && (off + i) < VRC4173_LATCH_SIZE; i++) {
+                uint32_t byte_off = off + (uint32_t)i;
+                if (byte_off == 0x060u || byte_off == 0x061u)
+                    continue;
+                d->bytes[byte_off] &= ~data[i];
             }
         } else {
             memcpy(&d->bytes[off], data, len);
