@@ -1769,24 +1769,51 @@ static bool be300_run_batch(machine_t *m)
                             nxmods[ni].name, vb,
                             sec_idx, sec_val, l2_val,
                             lo0, pa0, lo1, pa1, data0);
-                        /* Also check original shared L2 table at 0x80668CC0 */
+                        /* Compare L2 entries across a range for both tables.
+                         * Dump entries around ddi.dll's L2 offset (0x694)
+                         * to see which entries have demand-page markers. */
                         {
                             uint32_t orig_sec = 0x80668CC0u;
-                            uint32_t orig_l2 = 0;
-                            rva = 0xFFFFFFFF00000000ULL
-                                | (orig_sec + l2_boff);
-                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                                    rva, rb, 4,
-                                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
-                                orig_l2 = rb[0]|(rb[1]<<8)
-                                    |(rb[2]<<16)|(rb[3]<<24);
+                            uint32_t proc_sec = sec_val;
+                            unsigned li;
+                            /* Dump 8 L2 entries around the target offset */
+                            uint32_t start_off = (l2_boff >= 0x10)
+                                ? (l2_boff - 0x10) : 0;
                             fprintf(stderr,
-                                "[VBASE_PROBE] %s orig_table"
-                                " 0x80668CC0+0x%X=0x%08X"
-                                " valid=%d\n",
-                                nxmods[ni].name, l2_boff,
-                                orig_l2,
-                                (int32_t)orig_l2 < 0);
+                                "[L2_COMPARE] %s shared=0x%08X"
+                                " proc=0x%08X l2_boff=0x%X:\n",
+                                nxmods[ni].name,
+                                orig_sec, proc_sec, l2_boff);
+                            for (li = 0; li < 12; li++) {
+                                uint32_t off = start_off + li * 4;
+                                uint32_t sv = 0, pv = 0;
+                                rva = 0xFFFFFFFF00000000ULL
+                                    | (orig_sec + off);
+                                if (m->cpu->memory_rw(m->cpu,
+                                        m->cpu->mem, rva, rb, 4,
+                                        MEM_READ,
+                                        CACHE_DATA | NO_EXCEPTIONS))
+                                    sv = rb[0]|(rb[1]<<8)
+                                        |(rb[2]<<16)|(rb[3]<<24);
+                                if (proc_sec != 0) {
+                                    rva = 0xFFFFFFFF00000000ULL
+                                        | (proc_sec + off);
+                                    if (m->cpu->memory_rw(m->cpu,
+                                            m->cpu->mem, rva, rb, 4,
+                                            MEM_READ,
+                                            CACHE_DATA|NO_EXCEPTIONS))
+                                        pv = rb[0]|(rb[1]<<8)
+                                            |(rb[2]<<16)|(rb[3]<<24);
+                                }
+                                if (sv != pv || off == l2_boff)
+                                    fprintf(stderr,
+                                        "[L2_COMPARE]   +0x%03X:"
+                                        " shared=0x%08X"
+                                        " proc=0x%08X%s\n",
+                                        off, sv, pv,
+                                        (off == l2_boff)
+                                        ? " <-- target" : "");
+                            }
                         }
                     }
                 }
