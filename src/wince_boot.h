@@ -16,7 +16,6 @@ void wince_boot_note_spl_handoff(machine_t *m);
 void wince_boot_note_cold_boot_redirect(machine_t *m, const char *detail);
 void wince_boot_note_first_exception(machine_t *m, const char *detail);
 void wince_boot_note_fatal_stop(machine_t *m, const char *reason);
-bool wince_boot_strict_hardware_enabled(struct cpu *cpu);
 void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu);
 void wince_boot_note_timer_config(struct machine *gxm, struct cpu *cpu,
     uint64_t relative_addr, uint64_t value);

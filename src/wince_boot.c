@@ -1443,18 +1443,6 @@ void wince_boot_detach_machine(machine_t *m)
         g_active_wince_machine = NULL;
 }
 
-bool wince_boot_strict_hardware_enabled(struct cpu *cpu)
-{
-    machine_t *m = NULL;
-
-    if (cpu && cpu->machine)
-        m = wince_boot_from_gx(cpu->machine);
-    if (!m)
-        m = g_active_wince_machine;
-
-    return m != NULL && m->cfg.strict_hardware;
-}
-
 void wince_boot_init(machine_t *m)
 {
     memset(&m->wince, 0, sizeof(m->wince));
