@@ -103,6 +103,8 @@ struct be300_wince_aux {
     uint8_t bytes[WINCE_AUX_SIZE];
     bool    log_mmio;
     uint16_t ppsh_status_520;
+    uint16_t ppsh_data;         /* response data at offset 0x000 */
+    bool     ppsh_response_pending; /* true after cmd dispatch until data read */
 };
 
 DEVICE_ACCESS(be300_vrc4173)
@@ -224,16 +226,24 @@ DEVICE_ACCESS(be300_wince_aux)
 
             switch (cmd) {
             case 0x3330:
-                d->ppsh_status_520 = 0x2320;
+                /*
+                 * Controller-ID probe.  If a command response is
+                 * pending, keep bit 0x1000 (data_avail) set so the
+                 * subsequent ppsh_read_response poll succeeds.
+                 */
+                d->ppsh_status_520 = d->ppsh_response_pending
+                    ? 0x3320 : 0x2320;
                 break;
             case 0x1100:
                 d->ppsh_status_520 = 0x2322;
+                d->ppsh_response_pending = true;
                 break;
             case 0x9100:
                 d->ppsh_status_520 = 0x2322;
                 break;
             case 0x9900:
-                d->ppsh_status_520 = 0x2320;
+                d->ppsh_status_520 = 0x3320;  /* ready + data_avail (bit 0x1000) */
+                d->ppsh_data = 0x0100;        /* response: upper byte = 0x01 (ACK) */
                 break;
             default:
                 d->ppsh_status_520 = 0x2320;
@@ -255,7 +265,17 @@ DEVICE_ACCESS(be300_wince_aux)
         val = memory_readmax64(cpu, data, len);
 
         /*
-         * PPSH controller identification at offset 0x400 (PA 0x0C000520).
+         * PPSH data register at offset 0x000 (PA 0x0C000120).
+         * Returns response data; reading clears bit 0x1000 (data_avail)
+         * from the status register, matching real MCU mailbox semantics.
+         */
+        if (off == 0x000 && len >= 2) {
+            val = d->ppsh_data;
+            memory_writemax64(cpu, data, len, val);
+        }
+
+        /*
+         * PPSH status register at offset 0x400 (PA 0x0C000520).
          * Reads return the current emulated companion-MCU status word.
          */
         if (off == 0x400 && len >= 2) {
