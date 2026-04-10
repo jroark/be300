@@ -211,13 +211,6 @@ machine_t *be300_create(const machine_config_t *cfg)
     m->fb_height = 320;
     m->fb_stride = 256;
     wince_boot_init(m);
-    if (cfg->nand_path) {
-        fprintf(stderr,
-            "[BE300] Hardware mode: %s; workaround gates "
-            "l2_fixup=%s\n",
-            cfg->strict_hardware ? "strict" : "compat",
-            cfg->strict_hardware ? "off" : "on");
-    }
 
     /*
      * Initialize GXemul subsystems once per process.
@@ -1636,7 +1629,6 @@ machine_t *be300_create_web(uint32_t sdram_mb, uint32_t target_mhz,
         .sfb_5bit_green = sfb_5bit_green,
         .log_nand_legacy = false,
         .debug_serial = false,
-        .strict_hardware = false,
         .rom_path = NULL,
         .kernel_path = NULL,
         .cmdline = NULL,
