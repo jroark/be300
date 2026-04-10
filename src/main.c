@@ -16,6 +16,7 @@ static void usage(const char *prog)
         "  --sfb-5bit-green      Use 5-bit green expansion for 2.6 sfb.c\n"
         "  --ram <file>          Preload a raw RAM image at PA 0x00000000\n"
         "  --debug-serial        Capture NK.exe debug printf to stdout\n"
+        "  --strict-hardware     Disable BE-300 boot workarounds that mutate guest state\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --speed <mhz>        Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
@@ -37,6 +38,7 @@ int main(int argc, char *argv[])
         .sfb_5bit_green = false,
         .log_nand_legacy = false,
         .debug_serial   = false,
+        .strict_hardware = false,
         .rom_path       = NULL,
         .kernel_path    = NULL,
         .cmdline        = NULL,
@@ -59,6 +61,8 @@ int main(int argc, char *argv[])
             cfg.sfb_5bit_green = true;
         } else if (strcmp(argv[i], "--debug-serial") == 0) {
             cfg.debug_serial = true;
+        } else if (strcmp(argv[i], "--strict-hardware") == 0) {
+            cfg.strict_hardware = true;
         } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {
             cfg.nand_path = argv[++i];
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {

@@ -211,6 +211,22 @@ machine_t *be300_create(const machine_config_t *cfg)
     m->fb_height = 320;
     m->fb_stride = 256;
     wince_boot_init(m);
+    if (cfg->nand_path) {
+        fprintf(stderr,
+            "[BE300] Hardware mode: %s; workaround gates "
+            "rom_patches=%s tlb_preload=%s dev2_fixup=%s "
+            "dma_cpu_mutation=%s timer_gate=%s l2_fixup=%s "
+            "sysint1_clear=%s nand_phase_gate=%s\n",
+            cfg->strict_hardware ? "strict" : "compat",
+            cfg->strict_hardware ? "off" : "on",
+            cfg->strict_hardware ? "off" : "on",
+            cfg->strict_hardware ? "off" : "on",
+            cfg->strict_hardware ? "off" : "on",
+            cfg->strict_hardware ? "off" : "on",
+            cfg->strict_hardware ? "off" : "on",
+            cfg->strict_hardware ? "off" : "on",
+            cfg->strict_hardware ? "off" : "on");
+    }
 
     /*
      * Initialize GXemul subsystems once per process.
@@ -315,6 +331,7 @@ machine_t *be300_create(const machine_config_t *cfg)
     rtc_init(&m->rtc);
     gpio_init(&m->gpio);
     nand_init(&m->nand, NULL, 0);
+    m->nand.strict_hardware = cfg->strict_hardware;
 
     /*
      * Load kernel or NAND image.
@@ -343,6 +360,7 @@ machine_t *be300_create(const machine_config_t *cfg)
         /* Re-initialize NAND controller with image data */
         if (m->nand_data) {
             nand_init(&m->nand, m->nand_data, m->nand_size);
+            m->nand.strict_hardware = cfg->strict_hardware;
         }
 
         /*
@@ -383,6 +401,7 @@ machine_t *be300_create(const machine_config_t *cfg)
                     fprintf(stderr, "[BE300] Loaded embedded boot ROM"
                         " (%u bytes) at PA 0x1FC00000\n", be300_boot_rom_len);
 
+                    if (!cfg->strict_hardware) {
                     /*
                      * Patch the ROM's BEV exception vectors with MIPS32
                      * handlers.  The real ROM has:
@@ -677,6 +696,10 @@ machine_t *be300_create(const machine_config_t *cfg)
                             " (stub@+0x280),"
                             " boot code relocated +0x384->+0x394\n");
                     }
+                    } else {
+                        fprintf(stderr,
+                            "[BE300] Strict hardware: boot ROM left unpatched\n");
+                    }
 
                     /*
                      * NOTE: The NAND device descriptor base pointer at
@@ -689,15 +712,15 @@ machine_t *be300_create(const machine_config_t *cfg)
                 }
         }
 
-        /*
-         * Pre-load TLB with mappings for VRC4173 I/O access.
-         * The ROM's MIPS16 dispatcher uses kseg3 virtual addresses
-         * that need TLB mappings:
-         *
-         *   VA 0xFF100000 -> PA 0x09100000 (on-chip SRAM)
-         *   VA 0xF2000000 -> PA 0x0A000000 (VRC4173 I/O)
-         */
-        {
+        if (!cfg->strict_hardware) {
+            /*
+             * Pre-load TLB with mappings for VRC4173 I/O access.
+             * The ROM's MIPS16 dispatcher uses kseg3 virtual addresses
+             * that need TLB mappings:
+             *
+             *   VA 0xFF100000 -> PA 0x09100000 (on-chip SRAM)
+             *   VA 0xF2000000 -> PA 0x0A000000 (VRC4173 I/O)
+             */
             uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
 
             /* TLB 0: VA 0xFF100000 -> PA 0x09100000 (stack)
@@ -724,6 +747,9 @@ machine_t *be300_create(const machine_config_t *cfg)
             fprintf(stderr,
                 "[BE300] TLB: 0xFF100000->PA 0x09100000,"
                 " 0xF2000000->PA 0x0A000000\n");
+        } else {
+            fprintf(stderr,
+                "[BE300] Strict hardware: ROM-era TLB preloads disabled\n");
         }
 
         /* Register VRC4173 latch (catch-all); pre-split to leave gaps for input device */
@@ -1076,7 +1102,8 @@ static bool be300_run_batch(machine_t *m)
                 entry_poll_logged = 1;
                 m->wince.cold_boot_copy_done = true;
                 m->wince.cold_boot_redirected = true;
-                m->nand.wince_mode = true;
+                if (!m->cfg.strict_hardware)
+                    m->nand.wince_mode = true;
                 wince_boot_pc_ring_activate(m);
                 fprintf(stderr,
                     "[BE300] *** NK.exe entry at PA_24FC=0x%08X"
@@ -1244,8 +1271,8 @@ static bool be300_run_batch(machine_t *m)
             && pa < base_pa + 0x00800000u) {
             m->wince.cold_boot_copy_done = true;
             m->wince.cold_boot_redirected = true;
-            m->nand.wince_mode = true;
-
+            if (!m->cfg.strict_hardware)
+                m->nand.wince_mode = true;
             fprintf(stderr,
                 "[BE300] *** NK.exe entry detected at PC=0x%08X batch=%d ***\n",
                 pc, m->loop_count);
@@ -1968,6 +1995,8 @@ machine_t *be300_create_web(uint32_t sdram_mb, uint32_t target_mhz,
         .log_mmio = false,
         .sfb_5bit_green = sfb_5bit_green,
         .log_nand_legacy = false,
+        .debug_serial = false,
+        .strict_hardware = false,
         .rom_path = NULL,
         .kernel_path = NULL,
         .cmdline = NULL,
