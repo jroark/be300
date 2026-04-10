@@ -1,5 +1,11 @@
 # CLAUDE.md — Working Rules for This Repository
 
+## Emulation Philosophy
+
+The goal of this project is **accurate cold boot emulation** of the Casio BE-300. The emulator must boot from the ROM reset vector through SPL, NK.exe decompression, and into WinCE — exactly as real hardware does after battery removal.
+
+**Always prefer hardware-accurate emulation over workarounds.** Do not use seeds, patches, memory pre-population, or guest binary modifications to work around emulation bugs. If a guest OS behavior fails, the root cause is a missing or incorrect hardware behavior in the emulator. Find and fix the emulator bug rather than patching the guest. The ROM and NK.exe binaries are captured from real hardware and must run unmodified.
+
 ## Reference & Documentation
 I have access to real be300 hardware and a Virtual machine with eMbedded Visual C++ 3.0 (with the be300 SDK).
 I also have another VM with Platform Builder 3.0.
@@ -166,8 +172,8 @@ Push with: `git push -u origin <current branch>`
 
 
 **Things to note**
-- originally the kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
-- None of the test kernels had full hw support
+- originally the linux kernels were loaded from a running WinCE (warm start, not cold) - hw may have been initialized by WinCE
+- None of the test linux kernels had full hw support
 - The BE-300 CAN be cold-booted from a fully unpowered state (battery removed). The ROM boot dispatcher handles all initialization.
 
 ---
@@ -448,6 +454,21 @@ It does NOT run during cold boot — resume_ctx (PA 0x2200) is NOT populated by 
 - The NAND controller has phase-aware behavior (`wince_mode` flag in nand_state_t): buffer registers 0xA4A0-0xA4AC and STATUS2 at 0xA4C0 return 0 during SPL (to avoid ECC errors), active data after NK.exe loads
 - The ROM-era NAND HW ECC engine (BOOT_ECC_IN at 0xC068 / BOOT_ECC_OUT at 0xC0A0-0xC0AC) outputs zero syndromes — correct for bit-perfect emulated NAND data. The real HW computes syndrome = stored_ECC XOR computed_ECC; since there are no bit errors, syndrome is zero. Previously echoing input ECC caused the ROM's software ECC (FUN_9fc01828) to corrupt data.
 
+**PPSH (Parallel Port Shell) — Debug Interface at PA 0x0C000120:**
+- PPSH is a Casio debug interface (parallel port debug shell), NOT a companion MCU
+- Two registers: data at PA 0x0C000120 (offset 0x000), status/command at PA 0x0C000520 (offset 0x400)
+- Emulated in `src/be300_devices.c` as `be300_wince_aux` device (0x0C000120-0x0C000620)
+- NK.exe probes for PPSH at boot via command 0x3330 to status register; if `(status & 0x2320) == 0x2320`, PPSH is present
+- When PPSH is detected, WinCE routes console I/O to the debug shell — bypasses normal GUI boot
+- Default: probe returns 0x0000 (no controller) → normal GUI boot path
+- `--ppsh` flag: probe returns 0x2320 → debug shell enabled, boots to "Windows CE>" prompt
+- PPSH protocol: framed messages with sync=0xAA5555AA, trailer=0x5AA50A1A, types include 0x02 (process load), 0x05 (console write)
+- NK.exe PPSH functions (all called via function pointers at VA 0x800B8050-0x800B8078):
+  - VA 0x8007846c: ppsh_read_response — polls bit 0x1000 in status reg, reads upper byte of data reg
+  - VA 0x800784f4: ppsh_send_command — writes cmd byte to data reg, dispatches 0x1100, handshakes 0x9100/0x9900
+  - Command sequence: write data → 0x1100 (dispatch) → poll bit 0x0002 → 0x9100 → 0x9900 → 0x3330 (re-probe)
+- Status bit semantics: 0x2000=present, 0x0200=active, 0x0100=init, 0x0020=ready, 0x0002=busy, 0x1000=data_avail
+
 **ROM NAND Boot Functions (MIPS16, Ghidra labels):**
 - FUN_9fc015f4: high-level multi-page reader — converts page addresses to logical blocks, caches last block
 - FUN_9fc01710: block translation layer — linear search of physical blocks, checks OOB metadata (0x55AA + 0x0F + block ID), majority votes across 5 pages per block, software ECC post-search
@@ -478,3 +499,4 @@ It does NOT run during cold boot — resume_ctx (PA 0x2200) is NOT populated by 
 - `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, RTCINTREG write-one-to-clear
 - `src/hw/nand.c` — NAND flash controller with SPL transfer engine, OOB synthesis, and phase-aware WinCE mode
 - `src/hw/bcu.c` — Silenced unhandled register reads (SPL probes many)
+- `src/be300_devices.c` — VRC4173 latch, PPSH debug shell (0x0C000120/0x0C000520), WinCE aux device
