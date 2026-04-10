@@ -1708,6 +1708,69 @@ static bool be300_run_batch(machine_t *m)
                         tbuf[0], tbuf[1], tbuf[2], tbuf[3]);
                 }
                 /* check again next time */
+                /* Probe page table for non-XIP module vbases */
+                if (dll_check_count == 1) {
+                    struct { uint32_t vbase; const char *name; } nxmods[] = {
+                        { 0x01A50000u, "ddi.dll" },
+                        { 0x01B00000u, "touch.dll" },
+                    };
+                    for (int ni = 0; ni < 2; ni++) {
+                        uint32_t vb = nxmods[ni].vbase;
+                        /* Walk page table: section → L2 → PTE
+                         * Same algorithm as TLB handler at 0x8008C418 */
+                        uint32_t sec_idx = (vb >> 25) & 0x3Fu;
+                        uint32_t sec_va = 0xFFFFD8C0u + sec_idx * 4u;
+                        uint32_t sec_val = 0;
+                        uint8_t rb[4];
+                        uint64_t rva = 0xFFFFFFFF00000000ULL | sec_va;
+                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem, rva, rb, 4,
+                                MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                            sec_val = rb[0]|(rb[1]<<8)|(rb[2]<<16)|(rb[3]<<24);
+
+                        uint32_t l2_boff = (vb >> 14) & 0x7FCu;
+                        uint32_t l2_val = 0;
+                        if (sec_val != 0) {
+                            rva = 0xFFFFFFFF00000000ULL | (sec_val + l2_boff);
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, rva, rb, 4,
+                                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                                l2_val = rb[0]|(rb[1]<<8)|(rb[2]<<16)|(rb[3]<<24);
+                        }
+
+                        uint32_t lo0 = 0, lo1 = 0;
+                        if ((int32_t)l2_val < 0) {
+                            uint32_t pte_off = (vb >> 10) & 0x38u;
+                            rva = 0xFFFFFFFF00000000ULL | (l2_val + pte_off + 12u);
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, rva, rb, 4,
+                                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                                lo0 = rb[0]|(rb[1]<<8)|(rb[2]<<16)|(rb[3]<<24);
+                            rva = 0xFFFFFFFF00000000ULL | (l2_val + pte_off + 16u);
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, rva, rb, 4,
+                                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                                lo1 = rb[0]|(rb[1]<<8)|(rb[2]<<16)|(rb[3]<<24);
+                        }
+
+                        /* Decode PA from EntryLo (R4100: PFN in bits 25:6, PA = PFN << 10) */
+                        uint32_t pa0 = ((lo0 >> 6) & 0xFFFFFu) << 10;
+                        uint32_t pa1 = ((lo1 >> 6) & 0xFFFFFu) << 10;
+                        /* Read first 4 bytes at mapped PA */
+                        uint32_t data0 = 0;
+                        if (pa0 != 0) {
+                            unsigned char *hp = memory_paddr_to_hostaddr(
+                                m->cpu->mem, pa0, MEM_READ);
+                            if (hp)
+                                data0 = hp[0]|(hp[1]<<8)|(hp[2]<<16)|(hp[3]<<24);
+                        }
+                        fprintf(stderr,
+                            "[VBASE_PROBE] %s vbase=0x%08X"
+                            " sec[%u]=0x%08X l2=0x%08X"
+                            " lo0=0x%08X(PA=0x%08X)"
+                            " lo1=0x%08X(PA=0x%08X)"
+                            " data@PA=0x%08X\n",
+                            nxmods[ni].name, vb,
+                            sec_idx, sec_val, l2_val,
+                            lo0, pa0, lo1, pa1, data0);
+                    }
+                }
             }
         }
         /* Probe WinCE tick counters to see if scheduler tick is running */
