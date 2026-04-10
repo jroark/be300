@@ -1126,6 +1126,13 @@ static bool be300_run_batch(machine_t *m)
                     }
                 }
 
+                /* NOTE: Method 113 of API set 0 ("Win32") at function table
+                 * 0x800753D8+0x1C4 = 0xFFFFFFFF (PSL server redirect).
+                 * This is likely CreateFileW. When filesys.exe calls it
+                 * during its own init, the PSL dispatch should detect
+                 * that the caller IS the server and handle it locally.
+                 * Patching 0xFFFFFFFF to a return-error stub doesn't work
+                 * because filesys.exe needs CreateFileW to succeed. */
             }
         }
     }
