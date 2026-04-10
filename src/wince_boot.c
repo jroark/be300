@@ -303,6 +303,116 @@ static bool range_overlaps(uint64_t base_a, uint64_t size_a, uint64_t base_b,
     return base_a < end_b && base_b < end_a;
 }
 
+static uint32_t table_va_to_pa(uint32_t table_va)
+{
+    return table_va & UINT32_C(0x1FFFFFFF);
+}
+
+static uint32_t load_table_word(machine_t *m, uint32_t table_va,
+    uint32_t offset)
+{
+    if (table_va == 0)
+        return 0;
+    return load_pa_word(m, table_va_to_pa(table_va) + offset);
+}
+
+static void log_l2_table_state(machine_t *m, const char *tag,
+    uint32_t table_va, uint32_t focus_vaddr)
+{
+    uint32_t focus_off;
+
+    if (!m || table_va == 0)
+        return;
+
+    focus_off = (focus_vaddr != 0)
+        ? ((focus_vaddr >> 14) & 0x7FCu)
+        : 0x694u;
+
+    fprintf(stderr,
+        "[WINCE_L2_STATE] %s table=0x%08X pa=0x%08X"
+        " focus_va=0x%08X focus_off=0x%03X focus=0x%08X"
+        " dll600=0x%08X dll694=0x%08X dll7f8=0x%08X\n",
+        tag ? tag : "-",
+        table_va,
+        table_va_to_pa(table_va),
+        focus_vaddr,
+        focus_off,
+        load_table_word(m, table_va, focus_off),
+        load_table_word(m, table_va, 0x600u),
+        load_table_word(m, table_va, 0x694u),
+        load_table_word(m, table_va, 0x7F8u));
+}
+
+static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, uint64_t len, uint64_t val)
+{
+    uint32_t p32 = (uint32_t)paddr;
+    uint32_t value = (uint32_t)val;
+
+    if (!m || !cpu || len != 4)
+        return;
+
+    if (paddr >= 0x000018C0u && paddr + len <= 0x000019C0u) {
+        unsigned idx = (unsigned)((p32 - 0x18C0u) >> 2);
+        uint32_t old = m->wince.section_table_shadow[idx];
+
+        if (m->wince.section_write_diag_count < 96) {
+            fprintf(stderr,
+                "[WINCE_SECTION_WRITE] idx=%u old=0x%08X"
+                " new=0x%08X PC=0x%08X RA=0x%08X\n",
+                idx,
+                old,
+                value,
+                (uint32_t)cpu->pc,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            m->wince.section_write_diag_count++;
+        }
+
+        m->wince.section_table_shadow[idx] = value;
+
+        if (value != 0 && value != 0x8008BC18u && idx < 2) {
+            uint32_t marker = load_table_word(m, value, 0x694u);
+            if (marker == 1u) {
+                m->wince.diag_shared_l2_table = value;
+            } else if (value != m->wince.diag_shared_l2_table) {
+                m->wince.diag_process_l2_table = value;
+            }
+            if (m->wince.section_write_diag_count <= 96)
+                log_l2_table_state(m, "section_write", value,
+                    idx == 0 ? 0x01A50000u : 0x0201FF00u);
+        }
+    }
+
+    for (int which = 0; which < 2; which++) {
+        uint32_t table_va = which == 0 ? m->wince.diag_shared_l2_table
+            : m->wince.diag_process_l2_table;
+        const char *table_name = which == 0 ? "shared" : "process";
+        uint32_t table_pa;
+        uint32_t off;
+
+        if (table_va == 0)
+            continue;
+
+        table_pa = table_va_to_pa(table_va);
+        if (!range_overlaps(paddr, len, table_pa + 0x600u, 0x200u))
+            continue;
+
+        off = p32 - table_pa;
+        if (m->wince.l2_write_diag_count < 96) {
+            fprintf(stderr,
+                "[WINCE_L2_WRITE] table=%s table_va=0x%08X"
+                " off=0x%03X new=0x%08X PC=0x%08X RA=0x%08X\n",
+                table_name,
+                table_va,
+                off,
+                value,
+                (uint32_t)cpu->pc,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            m->wince.l2_write_diag_count++;
+        }
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Diagnostic / dump helpers                                           */
 /* ------------------------------------------------------------------ */
@@ -367,6 +477,15 @@ static bool watched_ram_range_name(uint64_t paddr, uint64_t len,
     /* KData+0xA0 (PA 0x18A0): PSL trap dispatch base pointer */
     if (range_overlaps(paddr, len, 0x000018A0u, 4u)) {
         *name = "psl_trap_base";
+        return true;
+    }
+    /* KData current thread/process links used by the refill path */
+    if (range_overlaps(paddr, len, 0x00001AB0u, 4u)) {
+        *name = "ctx_link";
+        return true;
+    }
+    if (range_overlaps(paddr, len, 0x00001AC0u, 4u)) {
+        *name = "ctx_ptr";
         return true;
     }
     /* KData+0x9C (PA 0x189C): refill_mask */
@@ -2017,6 +2136,92 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
     dump_va_window(m, "mm_state", UINT32_C(0x80669540), 0x20u);
 }
 
+void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
+    uint32_t vaddr)
+{
+    machine_t *m;
+    struct mips_coproc *cp0;
+    uint32_t section_idx;
+    uint32_t section_val;
+    uint32_t l2_off;
+    uint32_t l2_val;
+    uint32_t pte_off;
+    uint32_t lo0 = 0;
+    uint32_t lo1 = 0;
+    uint32_t repeat;
+
+    if (!cpu)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m || !m->wince.active || !m->wince.cold_boot_redirected)
+        return;
+    if (vaddr >= 0x80000000u && vaddr < 0xFFFF0000u)
+        return;
+
+    cp0 = cpu->cd.mips.coproc[0];
+    if (!cp0)
+        return;
+
+    if (m->wince.last_tlb_post_vaddr == vaddr
+        && m->wince.last_tlb_post_pc == (uint32_t)cpu->pc) {
+        if (m->wince.last_tlb_post_repeat < UINT16_MAX)
+            m->wince.last_tlb_post_repeat++;
+    } else {
+        m->wince.last_tlb_post_vaddr = vaddr;
+        m->wince.last_tlb_post_pc = (uint32_t)cpu->pc;
+        m->wince.last_tlb_post_repeat = 1;
+    }
+    repeat = m->wince.last_tlb_post_repeat;
+
+    if (m->wince.tlb_post_diag_count >= 160 && repeat != 4
+        && repeat != 16 && repeat != 64)
+        return;
+
+    section_idx = (vaddr >> 25) & 0x3Fu;
+    section_val = load_pa_word(m, 0x18C0u + section_idx * 4u);
+    l2_off = (vaddr >> 14) & 0x7FCu;
+    l2_val = section_val != 0 ? load_table_word(m, section_val, l2_off) : 0;
+    pte_off = (vaddr >> 10) & 0x38u;
+    if ((int32_t)l2_val < 0) {
+        lo0 = load_table_word(m, l2_val, pte_off + 12u);
+        lo1 = load_table_word(m, l2_val, pte_off + 16u);
+    }
+
+    fprintf(stderr,
+        "[WINCE_TLB_POST] exc=%u fault=0x%08X vector_pc=0x%08X"
+        " epc=0x%08X badvaddr=0x%08X entryhi=0x%08X"
+        " context=0x%08X status=0x%08X cause=0x%08X asid=%u"
+        " sec[%u]=0x%08X l2_off=0x%03X l2=0x%08X"
+        " pte_off=0x%02X lo0=0x%08X lo1=0x%08X repeat=%u"
+        " sp=0x%08X ra=0x%08X\n",
+        exccode,
+        vaddr,
+        (uint32_t)cpu->pc,
+        (uint32_t)cp0->reg[COP0_EPC],
+        (uint32_t)cp0->reg[COP0_BADVADDR],
+        (uint32_t)cp0->reg[COP0_ENTRYHI],
+        (uint32_t)cp0->reg[COP0_CONTEXT],
+        (uint32_t)cp0->reg[COP0_STATUS],
+        (uint32_t)cp0->reg[COP0_CAUSE],
+        (unsigned)((uint32_t)cp0->reg[COP0_ENTRYHI] & 0xFFu),
+        section_idx,
+        section_val,
+        l2_off,
+        l2_val,
+        pte_off,
+        lo0,
+        lo1,
+        repeat,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+
+    if (section_val != 0 && m->wince.tlb_post_diag_count < 32)
+        log_l2_table_state(m, "post_fault", section_val, vaddr);
+
+    m->wince.tlb_post_diag_count++;
+}
+
 void wince_boot_note_eret(struct cpu *cpu)
 {
     machine_t *m;
@@ -2227,6 +2432,13 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
     m = wince_boot_from_gx(cpu->machine);
     if (!m || !m->wince.active || m->wince.suppress_watch_observer)
         return;
+
+    for (i = 0; i < len && i < 8; i++)
+        val |= (uint64_t)data[i] << (8 * i);
+
+    if (is_write)
+        maybe_log_tlb_table_write(m, cpu, paddr, (uint64_t)len, val);
+
     if (!watched_ram_range_name(paddr, (uint64_t)len, &name))
         return;
 
@@ -2235,9 +2447,6 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
     if (*count >= 256)
         return;
     (*count)++;
-
-    for (i = 0; i < len && i < 8; i++)
-        val |= (uint64_t)data[i] << (8 * i);
 
     fprintf(stderr,
         "[WINCE_RAM] %c %s PA=0x%08" PRIx64 " len=%zu val=0x%llX"
