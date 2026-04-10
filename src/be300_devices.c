@@ -105,6 +105,7 @@ struct be300_wince_aux {
     uint16_t ppsh_status_520;
     uint16_t ppsh_data;         /* response data at offset 0x000 */
     bool     ppsh_response_pending; /* true after cmd dispatch until data read */
+    bool     ppsh_enabled;    /* --ppsh: enable PPSH debug shell probe */
 };
 
 DEVICE_ACCESS(be300_vrc4173)
@@ -227,12 +228,21 @@ DEVICE_ACCESS(be300_wince_aux)
             switch (cmd) {
             case 0x3330:
                 /*
-                 * Controller-ID probe.  If a command response is
-                 * pending, keep bit 0x1000 (data_avail) set so the
-                 * subsequent ppsh_read_response poll succeeds.
+                 * PPSH controller-ID probe.  Without --ppsh, return 0
+                 * so the probe check (status & 0x2320) != 0x2320 fails
+                 * — no debug hardware.  This prevents WinCE from
+                 * routing console I/O to the parallel port shell,
+                 * which blocks the normal GUI boot path.
+                 *
+                 * With --ppsh, return 0x2320 (or 0x3320 if response
+                 * pending) to enable the debug shell.
                  */
-                d->ppsh_status_520 = d->ppsh_response_pending
-                    ? 0x3320 : 0x2320;
+                if (d->ppsh_enabled) {
+                    d->ppsh_status_520 = d->ppsh_response_pending
+                        ? 0x3320 : 0x2320;
+                } else {
+                    d->ppsh_status_520 = 0x0000;
+                }
                 break;
             case 0x1100:
                 d->ppsh_status_520 = 0x2322;
@@ -362,7 +372,8 @@ void be300_register_nand(struct machine *gxm, nand_state_t *nand, bool log_mmio)
  *  Segment A: 0x0A000000 - 0x0A008000 (below SIU/NAND)
  *  Segment B: 0x0A00E000 - 0x0A020000 (above NAND)
  */
-void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
+void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio,
+                                  bool enable_ppsh)
 {
     struct be300_vrc4173_latch *latch;
     struct be300_wince_aux *aux;
@@ -372,6 +383,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio)
     CHECK_ALLOCATION(aux = calloc(1, sizeof(struct be300_wince_aux)));
     aux->log_mmio = log_mmio;
     aux->ppsh_status_520 = 0x2320;
+    aux->ppsh_enabled = enable_ppsh;
 
     /*
      * Pre-populate latch with real hardware register values from

@@ -390,8 +390,8 @@ machine_t *be300_create(const machine_config_t *cfg)
         fprintf(stderr, "[BE300] ROM-era TLB preloads disabled\n");
 
         /* Register VRC4173 latch (catch-all); pre-split to leave gaps for input device */
-        extern void be300_register_vrc4173_latch(struct machine *, bool);
-        be300_register_vrc4173_latch(gxm, cfg->log_mmio);
+        extern void be300_register_vrc4173_latch(struct machine *, bool, bool);
+        be300_register_vrc4173_latch(gxm, cfg->log_mmio, cfg->enable_ppsh);
 
         /* Register NAND flash; pre-split to leave gap at 0x0A00A040 for input device */
         extern void be300_register_nand(struct machine *, nand_state_t *, bool);
