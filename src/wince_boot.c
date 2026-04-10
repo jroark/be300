@@ -77,11 +77,6 @@ static machine_t *wince_boot_from_gx(struct machine *gxm)
     return g_active_wince_machine;
 }
 
-static uint64_t pa_to_kseg0(uint32_t pa)
-{
-    return 0xffffffff80000000ULL | (uint64_t)pa;
-}
-
 static uint64_t va32_to_mips64(uint32_t va)
 {
     return (uint64_t)(int64_t)(int32_t)va;
@@ -306,26 +301,6 @@ static bool range_overlaps(uint64_t base_a, uint64_t size_a, uint64_t base_b,
     end_a = base_a + size_a;
     end_b = base_b + size_b;
     return base_a < end_b && base_b < end_a;
-}
-
-static void set_vector_write_observer(machine_t *m, bool enable)
-{
-    m->wince.suppress_vector_write_observer = !enable;
-}
-
-static void write_block(machine_t *m, uint32_t pa, const uint32_t *words,
-    size_t word_count)
-{
-    size_t i;
-
-    if (pa < 0x00000400u) {
-        set_vector_write_observer(m, false);
-        m->wince.low_vector_observed_valid = false;
-    }
-    for (i = 0; i < word_count; i++)
-        store_32bit_word(m->cpu, pa_to_kseg0(pa + (uint32_t)(i * 4u)), words[i]);
-    if (pa < 0x00000400u)
-        set_vector_write_observer(m, true);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1172,8 +1147,6 @@ static void scan_low_vectors(machine_t *m)
 {
     uint32_t tlb[WINCE_VECTOR_WORDS];
     uint32_t general[WINCE_VECTOR_WORDS];
-    bool tlb_matches;
-    bool general_matches;
     bool tlb_real;
     bool general_real;
     bool ready;
@@ -1184,34 +1157,14 @@ static void scan_low_vectors(machine_t *m)
     read_block(m, 0x00000000u, tlb, WINCE_VECTOR_WORDS);
     read_block(m, 0x00000180u, general, WINCE_VECTOR_WORDS);
 
-    tlb_matches = block_matches(tlb, m->wince.synthetic_low_tlb,
-        WINCE_VECTOR_WORDS);
-    general_matches = block_matches(general, m->wince.synthetic_low_general,
-        WINCE_VECTOR_WORDS);
-    tlb_real = block_has_nonzero(tlb, WINCE_VECTOR_WORDS) && !tlb_matches;
-    general_real = block_has_nonzero(general, WINCE_VECTOR_WORDS)
-        && !general_matches;
+    tlb_real = block_has_nonzero(tlb, WINCE_VECTOR_WORDS);
+    general_real = block_has_nonzero(general, WINCE_VECTOR_WORDS);
     ready = tlb_real || general_real;
 
-    if (m->wince.vector_owner == WINCE_VECTOR_SYNTHETIC) {
-        if (!tlb_matches || !general_matches) {
-            m->wince.vector_owner = WINCE_VECTOR_GUEST;
-            m->wince.vectors_ready = ready;
-            m->wince.low_vector_observed_valid = false;
-            invalidate_all(m);
-            if (!m->wince.low_vector_guest_write_logged) {
-                fprintf(stderr,
-                    "[WINCE_CKPT] guest_low_vector_takeover"
-                    " tlb_match=%d general_match=%d ready=%d\n",
-                    tlb_matches ? 1 : 0,
-                    general_matches ? 1 : 0,
-                    ready ? 1 : 0);
-                m->wince.low_vector_guest_write_logged = true;
-            }
-            if (ready)
-                maybe_log_checkpoint(m, "vector_owner", "guest-low-vectors");
-        }
-        return;
+    if (m->wince.vector_owner == WINCE_VECTOR_NONE && ready) {
+        m->wince.vector_owner = WINCE_VECTOR_GUEST;
+        m->wince.low_vector_observed_valid = false;
+        invalidate_all(m);
     }
 
     if (m->wince.vector_owner == WINCE_VECTOR_GUEST
@@ -1490,6 +1443,18 @@ void wince_boot_detach_machine(machine_t *m)
         g_active_wince_machine = NULL;
 }
 
+bool wince_boot_strict_hardware_enabled(struct cpu *cpu)
+{
+    machine_t *m = NULL;
+
+    if (cpu && cpu->machine)
+        m = wince_boot_from_gx(cpu->machine);
+    if (!m)
+        m = g_active_wince_machine;
+
+    return m != NULL && m->cfg.strict_hardware;
+}
+
 void wince_boot_init(machine_t *m)
 {
     memset(&m->wince, 0, sizeof(m->wince));
@@ -1527,36 +1492,6 @@ void wince_boot_note_fatal_stop(machine_t *m, const char *reason)
         return;
     m->wince.fatal_exit_logged = true;
     maybe_log_checkpoint(m, "fatal_stop", reason);
-}
-
-void wince_boot_install_synthetic_low_vectors(machine_t *m,
-    const uint32_t *handler, size_t word_count, const char *reason)
-{
-    size_t count = word_count;
-
-    if (!m->wince.active)
-        return;
-    if (count > WINCE_VECTOR_WORDS)
-        count = WINCE_VECTOR_WORDS;
-
-    memset(m->wince.synthetic_low_tlb, 0, sizeof(m->wince.synthetic_low_tlb));
-    memset(m->wince.synthetic_low_general, 0,
-        sizeof(m->wince.synthetic_low_general));
-    memcpy(m->wince.synthetic_low_tlb, handler, count * sizeof(uint32_t));
-    memcpy(m->wince.synthetic_low_general, handler, count * sizeof(uint32_t));
-
-    if (m->wince.vector_owner == WINCE_VECTOR_NONE
-        || m->wince.vector_owner == WINCE_VECTOR_SYNTHETIC) {
-        write_block(m, 0x00000000u, m->wince.synthetic_low_tlb, count);
-        write_block(m, 0x00000180u, m->wince.synthetic_low_general, count);
-        invalidate_all(m);
-        m->wince.vector_owner = WINCE_VECTOR_SYNTHETIC;
-        m->wince.vectors_ready = false;
-    }
-
-    if (reason)
-        fprintf(stderr, "[WINCE_CKPT] synthetic_low_vectors reason=%s\n",
-            reason);
 }
 
 /*
@@ -1765,7 +1700,8 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
         if (pa >= 0x60000u && pa < 0x100000u) {
             m->wince.cold_boot_copy_done = true;
             m->wince.cold_boot_redirected = true;
-            m->nand.wince_mode = true;
+            if (!m->cfg.strict_hardware)
+                m->nand.wince_mode = true;
             fprintf(stderr,
                 "[WINCE_CKPT] nk_entry_detected PC=0x%08X PA=0x%08X"
                 " SP=0x%08X RA=0x%08X Status=0x%08X\n",
@@ -2139,6 +2075,8 @@ bool wince_boot_timer_irq_allowed(struct machine *gxm, struct cpu *cpu)
 
     if (!m || !m->wince.active)
         return true;
+    if (m->cfg.strict_hardware)
+        return true;
     if (!m->wince.cold_boot_redirected)
         return true;
     if (!m->wince.vectors_ready) {
@@ -2373,7 +2311,7 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
      * The shared table is the first non-default value seen in
      * section[0].  Process tables are any subsequent different value.
      */
-    if (is_write && paddr == 0x18C0u && len == 4) {
+    if (!m->cfg.strict_hardware && is_write && paddr == 0x18C0u && len == 4) {
         uint32_t new_val = (uint32_t)val;
 
         /* Identify the shared L2 table by its content: the one with

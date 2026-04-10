@@ -131,7 +131,9 @@ typedef struct {
     bool     legacy_status7_ff_armed;      /* one-shot 0xFF escape has been emitted */
     uint8_t  xfer_buffer[16];              /* WinCE mode-4 data buffer (0xA4A0-0xA4AC) */
     bool     xfer_buffer_valid;            /* true after mode-4/MISC populates buffer */
-    bool     wince_mode;                   /* true after NK.exe loads (enables STATUS2/buffer) */
+    uint8_t  xfer_ecc_count;               /* six 10-bit ECC inputs via 0xA468 */
+    bool     wince_mode;                   /* compat gate: true after NK.exe loads */
+    bool     strict_hardware;              /* disable phase gates for diagnostic runs */
     uint8_t  dio_mode;                     /* D002 control: 0x80=CLE, 0x01=ALE, 0=data */
     uint8_t  dio_last_write;              /* last byte written to D000 (for echo-back) */
 

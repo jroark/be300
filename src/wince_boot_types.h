@@ -8,7 +8,6 @@
 
 typedef enum {
     WINCE_VECTOR_NONE = 0,
-    WINCE_VECTOR_SYNTHETIC = 1,
     WINCE_VECTOR_GUEST = 3,
 } wince_vector_owner_t;
 
@@ -43,8 +42,6 @@ typedef struct {
 
     /* Vector tracking */
     wince_vector_owner_t vector_owner;
-    uint32_t synthetic_low_tlb[WINCE_VECTOR_WORDS];
-    uint32_t synthetic_low_general[WINCE_VECTOR_WORDS];
     uint32_t observed_low_tlb[WINCE_VECTOR_WORDS];
     uint32_t observed_low_general[WINCE_VECTOR_WORDS];
 
@@ -67,10 +64,8 @@ typedef struct {
     bool     nk_step_trace_done;
     uint16_t nk_step_trace_remaining;
 
-    /* L2 demand-page marker fixup: when process tables are created,
-     * the kernel doesn't copy demand-page markers (0x00000001) from
-     * the shared table.  We track the shared table pointer and copy
-     * markers into each new process L2 table on first swap-in. */
+    /* Compat-mode L2 demand-page marker fixup state. Strict hardware mode
+     * leaves process page tables untouched and only logs RAM writes. */
     uint32_t shared_l2_table;       /* e.g. 0x80668CC0 */
     uint32_t last_section0_val;     /* last value written to section[0] */
     uint32_t l2_fixup_applied[32];  /* per-L2-table: PA of fixed tables */

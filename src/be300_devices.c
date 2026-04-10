@@ -56,7 +56,8 @@ DEVICE_ACCESS(be300_nand)
          *  Count/$s3 side effects; doing it on 0xC376 corrupts the control
          *  flow we just recovered from Ghidra.
          */
-        if (offset >= NAND_DMA_BASE && offset < NAND_DMA_END &&
+        if (!wince_boot_strict_hardware_enabled(cpu) &&
+            offset >= NAND_DMA_BASE && offset < NAND_DMA_END &&
             ((offset - NAND_DMA_BASE) + len - 1) >= 7 &&
             d->nand->dma_cmd[7] == 0xECu) {
             cpu->cd.mips.coproc[0]->reg[COP0_COUNT] = 0; /* WORKAROUND */
@@ -180,7 +181,7 @@ DEVICE_ACCESS(be300_vrc4173)
              * clears them (the real hardware would auto-clear when the
              * peripheral source is serviced).
              */
-            if (off != 0x060) {
+            if (!wince_boot_strict_hardware_enabled(cpu) && off != 0x060) {
                 d->bytes[0x060] = 0;  /* WORKAROUND */
                 d->bytes[0x061] = 0;  /* WORKAROUND */
             }
