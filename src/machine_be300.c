@@ -1769,6 +1769,25 @@ static bool be300_run_batch(machine_t *m)
                             nxmods[ni].name, vb,
                             sec_idx, sec_val, l2_val,
                             lo0, pa0, lo1, pa1, data0);
+                        /* Also check original shared L2 table at 0x80668CC0 */
+                        {
+                            uint32_t orig_sec = 0x80668CC0u;
+                            uint32_t orig_l2 = 0;
+                            rva = 0xFFFFFFFF00000000ULL
+                                | (orig_sec + l2_boff);
+                            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                                    rva, rb, 4,
+                                    MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+                                orig_l2 = rb[0]|(rb[1]<<8)
+                                    |(rb[2]<<16)|(rb[3]<<24);
+                            fprintf(stderr,
+                                "[VBASE_PROBE] %s orig_table"
+                                " 0x80668CC0+0x%X=0x%08X"
+                                " valid=%d\n",
+                                nxmods[ni].name, l2_boff,
+                                orig_l2,
+                                (int32_t)orig_l2 < 0);
+                        }
                     }
                 }
             }
