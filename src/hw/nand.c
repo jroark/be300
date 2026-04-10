@@ -451,34 +451,29 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
              */
             if (data_byte == 0x00u || data_byte == 0x01u) {
                 s->xfer_ecc_count = 0;
-                s->xfer_buffer_valid = false;
-                if (data_byte == 0x00u)
-                    memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
+                memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
+                s->xfer_regs[(NAND_REG_XFER_STATUS2 - NAND_XFER_BASE) >> 2] = 0;
             } else if (data_byte == 0x04u) {
-                if (s->strict_hardware || s->wince_mode) {
-                    /* Mode-4 fills the small buffer register window from the
-                     * current stream position.  Compat mode keeps this gated
-                     * until NK.exe because the current SPL ECC/status model
-                     * still depends on the old zero-buffer behavior. */
-                    if (!s->stream_active && s->xfer_addr_count >= 3) {
-                        uint32_t row = (uint32_t)s->xfer_addr_bytes[1]
-                                     | ((uint32_t)s->xfer_addr_bytes[2] << 8);
-                        uint32_t col = (uint32_t)s->xfer_addr_bytes[0];
-                        s->stream_page = row;
-                        s->stream_col = col;
-                        s->stream_base = row * NAND_PAGE_DATA + col;
-                        s->stream_cursor = 0;
-                        s->stream_active = true;
-                    }
-                    memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
-                    if (s->stream_active) {
-                        for (int i = 0; i < 16; i++)
-                            s->xfer_buffer[i] = nand_stream_byte(s,
-                                s->stream_cursor + i);
-                    }
-                    s->xfer_buffer_valid = true;
-                } else {
-                    s->xfer_buffer_valid = false;
+                /*
+                 * Mode-4 fills the small result buffer from the current
+                 * stream position.  The ROM/SPL may request this before NK.exe,
+                 * so this must be hardware state rather than a WinCE phase gate.
+                 */
+                if (!s->stream_active && s->xfer_addr_count >= 3) {
+                    uint32_t row = (uint32_t)s->xfer_addr_bytes[1]
+                                 | ((uint32_t)s->xfer_addr_bytes[2] << 8);
+                    uint32_t col = (uint32_t)s->xfer_addr_bytes[0];
+                    s->stream_page = row;
+                    s->stream_col = col;
+                    s->stream_base = row * NAND_PAGE_RAW + col;
+                    s->stream_cursor = 0;
+                    s->stream_active = true;
+                }
+                memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
+                if (s->stream_active) {
+                    for (int i = 0; i < 16; i++)
+                        s->xfer_buffer[i] = nand_stream_byte(s,
+                            s->stream_cursor + i);
                 }
             } else if (data_byte == 0x05u) {
                 uint32_t row = (uint32_t)s->xfer_addr_bytes[1]
@@ -503,7 +498,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                             row, col, s->stream_base);
                     nand_stream_start_log_count++;
                 }
-                s->xfer_buffer_valid = false;
             }
             s->ready = true;
         } else if (offset == NAND_REG_XFER_MISC) {
@@ -513,13 +507,12 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
              * syndromes through the buffer registers; for a bit-perfect
              * emulated image those syndromes are zero.
              */
-            if ((s->strict_hardware || s->wince_mode)
-                && s->xfer_regs[(NAND_REG_XFER_MODE - NAND_XFER_BASE) >> 2] == 0x01u) {
+            if (s->xfer_regs[(NAND_REG_XFER_MODE - NAND_XFER_BASE) >> 2] == 0x01u) {
                 if (s->xfer_ecc_count < 6)
                     s->xfer_ecc_count++;
                 if (s->xfer_ecc_count >= 6) {
                     memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
-                    s->xfer_buffer_valid = true;
+                    s->xfer_regs[(NAND_REG_XFER_STATUS2 - NAND_XFER_BASE) >> 2] = 0;
                     s->ready = true;
                 }
             }
@@ -937,9 +930,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
     if (offset >= NAND_XFER_BASE && offset < NAND_XFER_END) {
         uint32_t idx = (offset - NAND_XFER_BASE) >> 2;
         if (offset == NAND_REG_XFER_STATUS) {
-            val = s->ready ? 0x00000001u : 0u;
-        } else if (offset == NAND_REG_XFER_STATUS2
-                   && (s->strict_hardware || s->wince_mode)) {
             val = s->ready ? 0x00000001u : 0u;
         } else if (offset == NAND_REG_XFER_STATUS2) {
             val = s->xfer_regs[idx];
