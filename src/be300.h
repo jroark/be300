@@ -57,7 +57,6 @@ typedef struct {
     bool        sfb_5bit_green;
     bool        log_nand_legacy;
     bool        debug_serial;
-    bool        strict_hardware;
 
     const char *rom_path;
     const char *kernel_path;

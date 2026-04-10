@@ -60,10 +60,4 @@ typedef struct {
     bool     nk_step_trace_done;
     uint16_t nk_step_trace_remaining;
 
-    /* Compat-mode L2 demand-page marker fixup state. Strict hardware mode
-     * leaves process page tables untouched and only logs RAM writes. */
-    uint32_t shared_l2_table;       /* e.g. 0x80668CC0 */
-    uint32_t last_section0_val;     /* last value written to section[0] */
-    uint32_t l2_fixup_applied[32];  /* per-L2-table: PA of fixed tables */
-    uint8_t  l2_fixup_count;
 } wince_boot_state_t;
