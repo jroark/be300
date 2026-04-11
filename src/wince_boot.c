@@ -2317,6 +2317,21 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     }
     maybe_track_fb_runtime_changes(m, cpu);
 
+    /* PPSH error flag detection: poll PA 0x66001C (VA 0x8066001C) for
+     * transition from 0 to 1.  The RAM write hook misses this because
+     * dyntrans fast-path stores bypass memory_rw(). */
+    if (m->wince.cold_boot_copy_done && !m->wince.ppsh_timeout_logged) {
+        uint32_t flag = load_pa_word(m, 0x66001Cu);
+        if (flag == 1) {
+            m->wince.ppsh_timeout_logged = true;
+            fprintf(stderr,
+                "[PPSH_TIMEOUT] error_flag=1 at PA 0x66001C"
+                " PC=0x%08X instrs=%llu\n",
+                (uint32_t)cpu->pc,
+                (unsigned long long)cpu->ninstrs);
+        }
+    }
+
     /* PIU pen-state change detection (generates VRIP PIU interrupt) */
     {
         extern void be300_touch_tick(machine_t *m);
