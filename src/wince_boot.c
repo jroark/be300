@@ -27,6 +27,9 @@ static machine_t *g_active_wince_machine = NULL;
 static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
 static const char *format_word_or_unknown(char *buf, size_t buf_size, bool ok,
     uint32_t value);
+static void dump_section3_descriptor_window(machine_t *m, const char *tag);
+static void dump_section3_context_head(machine_t *m, const char *tag,
+    uint32_t pc32);
 
 #define WINCE_COLD_LATE_PROBE_LOGGED UINT32_C(0x00200000)
 #define WINCE_PATH_PROBE_77820      UINT64_C(0x0000000000000001)
@@ -1669,11 +1672,21 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
     uint32_t pc32;
     uint32_t a0;
     uint32_t a3;
+    uint32_t a0_d0 = 0;
+    uint32_t a0_e8 = 0;
+    uint32_t a0_ec = 0;
+    uint32_t sp_34 = 0;
+    uint32_t sp_38 = 0;
     uint32_t s1;
     uint32_t s4;
     uint32_t v104 = 0;
     uint32_t v11c = 0;
     uint32_t v120 = 0;
+    bool a0_d0_ok = false;
+    bool a0_e8_ok = false;
+    bool a0_ec_ok = false;
+    bool sp_34_ok = false;
+    bool sp_38_ok = false;
     bool v104_ok = false;
     bool v11c_ok = false;
     bool v120_ok = false;
@@ -1685,6 +1698,11 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
     bool dac0_18_ok = false;
     bool dac0_1c_ok = false;
     bool dac0_38_ok = false;
+    char a0_d0_buf[16];
+    char a0_e8_buf[16];
+    char a0_ec_buf[16];
+    char sp_34_buf[16];
+    char sp_38_buf[16];
     char v104_buf[16];
     char v11c_buf[16];
     char v120_buf[16];
@@ -1695,16 +1713,67 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
 
     if (!m || !cpu)
         return;
-    if (m->wince.hot_fault_probe_count >= WINCE_HOT_FAULT_PROBE_MAX)
-        return;
 
     pc32 = canonicalize_nk_pc(raw_pc32);
+    if (pc32 != 0x80094E4Cu && pc32 != 0x80094E8Cu
+        && m->wince.hot_fault_probe_count >= WINCE_HOT_FAULT_PROBE_MAX)
+        return;
     a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
     a3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3];
     s1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1];
     s4 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4];
 
     switch (pc32) {
+    case 0x80094E4Cu:
+        if (m->wince.section3_head_probe_count >= 4u)
+            return;
+        a0_d0_ok = load_va_word(m, a0 + 0xD0u, &a0_d0);
+        a0_e8_ok = load_va_word(m, a0 + 0xE8u, &a0_e8);
+        a0_ec_ok = load_va_word(m, a0 + 0xECu, &a0_ec);
+        fprintf(stderr,
+            "[WINCE_HOT_PC] label=systempatch_desc_prepare pc=0x%08X"
+            " ra=0x%08X sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
+            " a0+d0=%s a0+e8=%s a0+ec=%s\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            a0,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            format_word_or_unknown(a0_d0_buf, sizeof(a0_d0_buf), a0_d0_ok, a0_d0),
+            format_word_or_unknown(a0_e8_buf, sizeof(a0_e8_buf), a0_e8_ok, a0_e8),
+            format_word_or_unknown(a0_ec_buf, sizeof(a0_ec_buf), a0_ec_ok, a0_ec));
+        dump_section3_context_head(m, "desc_prepare", pc32);
+        dump_pointer_bytes(m, "desc_prepare_a0", a0);
+        dump_code_window(m, pc32, 4u, 10u);
+        m->wince.section3_head_probe_count++;
+        return;
+
+    case 0x80094E8Cu:
+        if (m->wince.section3_head_probe_count >= 4u)
+            return;
+        sp_34_ok = load_va_word(m,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x34u, &sp_34);
+        sp_38_ok = load_va_word(m,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x38u, &sp_38);
+        fprintf(stderr,
+            "[WINCE_HOT_PC] label=systempatch_desc_post_alloc pc=0x%08X"
+            " ra=0x%08X sp=0x%08X v0=0x%08X stack34=%s stack38=%s"
+            " s0=0x%08X s1=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            format_word_or_unknown(sp_34_buf, sizeof(sp_34_buf), sp_34_ok, sp_34),
+            format_word_or_unknown(sp_38_buf, sizeof(sp_38_buf), sp_38_ok, sp_38),
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1]);
+        dump_section3_context_head(m, "desc_post_alloc", pc32);
+        dump_section3_descriptor_window(m, "desc_post_alloc");
+        dump_code_window(m, pc32, 4u, 10u);
+        m->wince.section3_head_probe_count++;
+        return;
+
     case 0x800A5794u:
     case 0x800A57C0u:
         fprintf(stderr,
@@ -1781,9 +1850,11 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
             format_word_or_unknown(dac0_1c_buf, sizeof(dac0_1c_buf), dac0_1c_ok, dac0_1c),
             format_word_or_unknown(dac0_38_buf, sizeof(dac0_38_buf), dac0_38_ok, dac0_38));
         dump_pointer_bytes(m, "setup_a0", a0);
+        dump_section3_context_head(m, "systempatch_setup", pc32);
         dump_code_window(m, pc32, 4u, 8u);
         maybe_log_systempatch_context(m, "hot_pc_94fd4");
         m->wince.hot_fault_probe_count++;
+        m->wince.section3_head_probe_count++;
         return;
 
     default:
@@ -2053,6 +2124,78 @@ static void dump_section3_descriptor_window(machine_t *m, const char *tag)
         desc_base,
         word_buf[0], word_buf[1], word_buf[2], word_buf[3],
         word_buf[4], word_buf[5], word_buf[6], word_buf[7]);
+}
+
+static bool load_section3_context_head(machine_t *m, uint32_t *ctx_ptr_out,
+    uint32_t *head_ptr_out)
+{
+    uint32_t ctx_ptr = 0;
+    uint32_t head_ptr = 0;
+
+    if (!m || !ctx_ptr_out || !head_ptr_out)
+        return false;
+    if (!load_va_word(m, UINT32_C(0xFFFFDAC0), &ctx_ptr))
+        return false;
+    if (ctx_ptr < UINT32_C(0x80000000) || ctx_ptr >= UINT32_C(0x81000000))
+        return false;
+    if (!load_va_word(m, ctx_ptr + 0x18u, &head_ptr))
+        return false;
+
+    *ctx_ptr_out = ctx_ptr;
+    *head_ptr_out = head_ptr;
+    return true;
+}
+
+static void dump_section3_context_head(machine_t *m, const char *tag,
+    uint32_t pc32)
+{
+    uint32_t ctx_ptr = 0;
+    uint32_t head_ptr = 0;
+    uint32_t desc_ptr = 0;
+    uint32_t desc_base = 0;
+    uint32_t words[6] = {0};
+    bool head_ok = false;
+    bool desc_ok = false;
+    bool word_ok[6];
+    bool head_matches_desc = false;
+    char ctx_buf[16];
+    char head_buf[16];
+    char desc_buf[16];
+    char word_buf[6][16];
+    size_t i;
+
+    if (!m)
+        return;
+
+    head_ok = load_section3_context_head(m, &ctx_ptr, &head_ptr);
+    desc_ok = load_section3_descriptor_focus(m, &desc_ptr, &desc_base);
+    for (i = 0; i < 6; i++)
+        word_ok[i] = head_ok && head_ptr != 0
+            && load_va_word(m, head_ptr + (uint32_t)(i * 4u), &words[i]);
+    if (head_ok && desc_ok) {
+        head_matches_desc = head_ptr >= desc_base
+            && head_ptr < desc_base + UINT32_C(0x40);
+    }
+    for (i = 0; i < 6; i++) {
+        if (word_ok[i])
+            snprintf(word_buf[i], sizeof(word_buf[i]), "%08X", words[i]);
+        else
+            snprintf(word_buf[i], sizeof(word_buf[i]), "????????");
+    }
+
+    fprintf(stderr,
+        "[WINCE_CTX_HEAD] tag=%s pc=0x%08X ctx=%s slot=%s"
+        " head_space=%s desc=%s head_matches_desc=%u"
+        " w0=%s w1=%s w2=%s w3=%s w4=%s w5=%s\n",
+        tag ? tag : "?",
+        pc32,
+        format_word_or_unknown(ctx_buf, sizeof(ctx_buf), head_ok, ctx_ptr),
+        format_word_or_unknown(head_buf, sizeof(head_buf), head_ok, head_ptr),
+        head_ok ? classify_va_space(head_ptr) : "?",
+        format_word_or_unknown(desc_buf, sizeof(desc_buf), desc_ok, desc_ptr),
+        head_matches_desc ? 1u : 0u,
+        word_buf[0], word_buf[1], word_buf[2],
+        word_buf[3], word_buf[4], word_buf[5]);
 }
 
 static void maybe_note_section3_callback_pc(machine_t *m, struct cpu *cpu,
@@ -3114,6 +3257,37 @@ static void maybe_log_section3_desc_write(machine_t *m, struct cpu *cpu,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
     dump_section3_descriptor_window(m, "desc_write");
     m->wince.section3_desc_write_count++;
+}
+
+static void maybe_log_section3_head_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    uint32_t ctx_ptr = 0;
+    uint32_t head_ptr = 0;
+    uint32_t slot_pa;
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.section3_head_write_count >= 16u)
+        return;
+    if (!load_section3_context_head(m, &ctx_ptr, &head_ptr))
+        return;
+
+    slot_pa = (ctx_ptr & UINT32_C(0x1FFFFFFF)) + 0x18u;
+    if (!range_overlaps(paddr, (uint64_t)len, slot_pa, 4u))
+        return;
+
+    fprintf(stderr,
+        "[WINCE_CTX_HEAD_W] slot_pa=0x%08X len=%zu val=0x%llX"
+        " PC=0x%08" PRIx64 " RA=0x%08X\n",
+        slot_pa,
+        len,
+        (unsigned long long)val,
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    dump_section3_context_head(m, "head_write",
+        canonicalize_nk_pc((uint32_t)cpu->pc));
+    m->wince.section3_head_write_count++;
 }
 
 /* ------------------------------------------------------------------ */
@@ -5567,6 +5741,8 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
         maybe_log_section3_page_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_desc_write(m, cpu, paddr, len, val);
+    if (is_write)
+        maybe_log_section3_head_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_owner_write(m, cpu, paddr, len, val);
 
