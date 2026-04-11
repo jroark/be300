@@ -2317,18 +2317,28 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     }
     maybe_track_fb_runtime_changes(m, cpu);
 
-    /* PPSH error flag detection: poll PA 0x66001C (VA 0x8066001C) for
-     * transition from 0 to 1.  The RAM write hook misses this because
-     * dyntrans fast-path stores bypass memory_rw(). */
-    if (m->wince.cold_boot_copy_done && !m->wince.ppsh_timeout_logged) {
+    /* PPSH error flag detection: poll PA 0x66001C (VA 0x8066001C).
+     * Detect both 0→1 (timeout set) and 1→0 (flag cleared) transitions.
+     * The RAM write hook misses these because dyntrans fast-path stores
+     * bypass memory_rw(). */
+    if (m->wince.cold_boot_copy_done) {
         uint32_t flag = load_pa_word(m, 0x66001Cu);
-        if (flag == 1) {
-            m->wince.ppsh_timeout_logged = true;
+        static uint32_t ppsh_flag_prev = 0;
+        static int ppsh_flag_transitions = 0;
+        if (flag != ppsh_flag_prev && ppsh_flag_transitions < 50) {
+            ppsh_flag_transitions++;
             fprintf(stderr,
-                "[PPSH_TIMEOUT] error_flag=1 at PA 0x66001C"
+                "[PPSH_FLAG] PA 0x66001C: %u→%u #%d"
                 " PC=0x%08X instrs=%llu\n",
+                ppsh_flag_prev, flag, ppsh_flag_transitions,
                 (uint32_t)cpu->pc,
                 (unsigned long long)cpu->ninstrs);
+            if (ppsh_flag_prev == 1 && flag == 0) {
+                fprintf(stderr,
+                    "[PPSH_FLAG] *** FLAG CLEARED — dumping PC ring ***\n");
+                dump_recent_pc_ring(m, "ppsh_flag_cleared", 64);
+            }
+            ppsh_flag_prev = flag;
         }
     }
 
