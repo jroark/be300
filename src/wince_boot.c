@@ -2253,6 +2253,24 @@ static void log_l2_table_state(machine_t *m, const char *tag,
         load_table_word(m, table_va, 0x7F8u));
 }
 
+static void log_section0_focus_window(machine_t *m, const char *tag,
+    uint32_t table_va)
+{
+    if (!m || table_va == 0)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_SECTION0_FOCUS] %s table=0x%08X pa=0x%08X"
+        " slot694=0x%08X slot7e0=0x%08X slot7e4=0x%08X slot7e8=0x%08X\n",
+        tag ? tag : "-",
+        table_va,
+        table_va_to_pa(table_va),
+        load_table_word(m, table_va, 0x694u),
+        load_table_word(m, table_va, 0x7E0u),
+        load_table_word(m, table_va, 0x7E4u),
+        load_table_word(m, table_va, 0x7E8u));
+}
+
 static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, uint64_t len, uint64_t val)
 {
@@ -2304,6 +2322,29 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
             if (m->wince.section_write_diag_count <= 96)
                 log_l2_table_state(m, "section_write", value,
                     idx == 0 ? 0x01A50000u : 0x0201FF00u);
+            if (idx == 0
+                && (value == UINT32_C(0x80FE5000)
+                    || old == UINT32_C(0x80FE5000))
+                && m->wince.section0_focus_diag_count < 16) {
+                fprintf(stderr,
+                    "[WINCE_SECTION0_TABLE] old=0x%08X new=0x%08X"
+                    " PC=0x%08X RA=0x%08X\n",
+                    old,
+                    value,
+                    (uint32_t)cpu->pc,
+                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+                if (old == UINT32_C(0x80FE5000)) {
+                    log_l2_table_state(m, "section0_old", old,
+                        UINT32_C(0x01F94B50));
+                    log_section0_focus_window(m, "section0_old", old);
+                }
+                if (value == UINT32_C(0x80FE5000)) {
+                    log_l2_table_state(m, "section0_new", value,
+                        UINT32_C(0x01F94B50));
+                    log_section0_focus_window(m, "section0_new", value);
+                }
+                m->wince.section0_focus_diag_count++;
+            }
             if (m->wince.systempatch_seen)
                 maybe_log_systempatch_context(m, "section_write");
         }
@@ -2337,6 +2378,56 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
             m->wince.l2_write_diag_count++;
         }
     }
+}
+
+static void maybe_log_section0_hot_slot_access(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val, bool is_write)
+{
+    const uint32_t table_pa = UINT32_C(0x00FE5000);
+    const uint32_t table_va = UINT32_C(0x80FE5000);
+    const char *tag = NULL;
+
+    if (!m || !cpu)
+        return;
+
+    if (!range_overlaps(paddr, (uint64_t)len, table_pa, 0x800u))
+        return;
+
+    if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7E4u, 4u)) {
+        tag = "slot7e4";
+    } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7E0u, 4u)) {
+        tag = "slot7e0";
+    } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7E8u, 4u)) {
+        tag = "slot7e8";
+    } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x694u, 4u)) {
+        tag = "slot694";
+    } else if (!is_write) {
+        return;
+    } else {
+        tag = "table";
+    }
+
+    if (m->wince.section0_hot_slot_diag_count >= 48)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_SEC0_RAM] %c %s off=0x%03" PRIx64 " len=%zu val=0x%llX"
+        " sec0=0x%08X PC=0x%08" PRIx64 " RA=0x%08X\n",
+        is_write ? 'W' : 'R',
+        tag,
+        paddr - table_pa,
+        len,
+        (unsigned long long)val,
+        load_pa_word(m, 0x18C0u),
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+
+    if (strcmp(tag, "table") != 0) {
+        log_l2_table_state(m, tag, table_va, UINT32_C(0x01F94B50));
+        log_section0_focus_window(m, tag, table_va);
+    }
+
+    m->wince.section0_hot_slot_diag_count++;
 }
 
 /* ------------------------------------------------------------------ */
@@ -4780,6 +4871,8 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
         }
     }
+
+    maybe_log_section0_hot_slot_access(m, cpu, paddr, len, val, is_write);
 
     if (is_write)
         maybe_log_tlb_table_write(m, cpu, paddr, (uint64_t)len, val);
