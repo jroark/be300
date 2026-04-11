@@ -1866,6 +1866,325 @@ static void maybe_note_section3_install_pc(machine_t *m, struct cpu *cpu,
     m->wince.section3_install_probe_count++;
 }
 
+static void log_section3_owner_state(machine_t *m, struct cpu *cpu,
+    const char *tag, uint32_t pc32)
+{
+    uint32_t sec0 = 0;
+    uint32_t sec3 = 0;
+    uint32_t db08 = 0;
+    uint32_t db48 = 0;
+    uint32_t obj97a0[8] = {0};
+    uint32_t obj97c0[8] = {0};
+    uint32_t a0 = 0;
+    uint32_t a0_00 = 0;
+    uint32_t a0_04 = 0;
+    uint32_t a0_08 = 0;
+    uint32_t a0_0c = 0;
+    uint32_t a0_88 = 0;
+    uint32_t a0_8c = 0;
+    uint32_t a0_90 = 0;
+    uint32_t a0_9c = 0;
+    uint32_t slot0 = 0;
+    uint32_t slot694 = 0;
+    uint32_t slot7e4 = 0;
+    bool sec0_ok;
+    bool sec3_ok;
+    bool db08_ok;
+    bool db48_ok;
+    bool obj97a0_ok[8];
+    bool obj97c0_ok[8];
+    bool a0_00_ok = false;
+    bool a0_04_ok = false;
+    bool a0_08_ok = false;
+    bool a0_0c_ok = false;
+    bool a0_88_ok = false;
+    bool a0_8c_ok = false;
+    bool a0_90_ok = false;
+    bool a0_9c_ok = false;
+    char sec0_buf[16];
+    char sec3_buf[16];
+    char db08_buf[16];
+    char db48_buf[16];
+    char a0_00_buf[16];
+    char a0_04_buf[16];
+    char a0_08_buf[16];
+    char a0_0c_buf[16];
+    char a0_88_buf[16];
+    char a0_8c_buf[16];
+    char a0_90_buf[16];
+    char a0_9c_buf[16];
+    char obj_a_buf[8][16];
+    char obj_c_buf[8][16];
+    size_t i;
+
+    if (!m || !cpu)
+        return;
+
+    sec0_ok = true;
+    sec0 = load_pa_word(m, 0x18C0u);
+    sec3_ok = true;
+    sec3 = load_pa_word(m, 0x18CCu);
+    db08_ok = load_va_word(m, UINT32_C(0xFFFFD808), &db08);
+    db48_ok = load_va_word(m, UINT32_C(0xFFFFDB48), &db48);
+    slot0 = load_pa_word(m, 0x00FE5000u);
+    slot694 = load_pa_word(m, 0x00FE5694u);
+    slot7e4 = load_pa_word(m, 0x00FE57E4u);
+
+    for (i = 0; i < 8; i++) {
+        obj97a0_ok[i] = load_va_word(m,
+            UINT32_C(0x806697A0) + (uint32_t)(i * 4u), &obj97a0[i]);
+        obj97c0_ok[i] = load_va_word(m,
+            UINT32_C(0x806697C0) + (uint32_t)(i * 4u), &obj97c0[i]);
+    }
+
+    a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+    if (a0 >= UINT32_C(0x80000000) && a0 < UINT32_C(0x81000000)) {
+        a0_00_ok = load_va_word(m, a0 + 0x00u, &a0_00);
+        a0_04_ok = load_va_word(m, a0 + 0x04u, &a0_04);
+        a0_08_ok = load_va_word(m, a0 + 0x08u, &a0_08);
+        a0_0c_ok = load_va_word(m, a0 + 0x0Cu, &a0_0c);
+        a0_88_ok = load_va_word(m, a0 + 0x88u, &a0_88);
+        a0_8c_ok = load_va_word(m, a0 + 0x8Cu, &a0_8c);
+        a0_90_ok = load_va_word(m, a0 + 0x90u, &a0_90);
+        a0_9c_ok = load_va_word(m, a0 + 0x9Cu, &a0_9c);
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC3_OWNER] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+        " s0=0x%08X s1=0x%08X s2=0x%08X"
+        " sec0=%s sec3=%s db08=%s db48=%s"
+        " page0=0x%08X p694=0x%08X p7e4=0x%08X\n",
+        tag ? tag : "?",
+        pc32,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
+        format_word_or_unknown(sec0_buf, sizeof(sec0_buf), sec0_ok, sec0),
+        format_word_or_unknown(sec3_buf, sizeof(sec3_buf), sec3_ok, sec3),
+        format_word_or_unknown(db08_buf, sizeof(db08_buf), db08_ok, db08),
+        format_word_or_unknown(db48_buf, sizeof(db48_buf), db48_ok, db48),
+        slot0, slot694, slot7e4);
+    fprintf(stderr,
+        "[WINCE_SEC3_OWNER] tag=%s obj97a0=%s/%s/%s/%s/%s/%s/%s/%s\n",
+        tag ? tag : "?",
+        format_word_or_unknown(obj_a_buf[0], sizeof(obj_a_buf[0]), obj97a0_ok[0], obj97a0[0]),
+        format_word_or_unknown(obj_a_buf[1], sizeof(obj_a_buf[1]), obj97a0_ok[1], obj97a0[1]),
+        format_word_or_unknown(obj_a_buf[2], sizeof(obj_a_buf[2]), obj97a0_ok[2], obj97a0[2]),
+        format_word_or_unknown(obj_a_buf[3], sizeof(obj_a_buf[3]), obj97a0_ok[3], obj97a0[3]),
+        format_word_or_unknown(obj_a_buf[4], sizeof(obj_a_buf[4]), obj97a0_ok[4], obj97a0[4]),
+        format_word_or_unknown(obj_a_buf[5], sizeof(obj_a_buf[5]), obj97a0_ok[5], obj97a0[5]),
+        format_word_or_unknown(obj_a_buf[6], sizeof(obj_a_buf[6]), obj97a0_ok[6], obj97a0[6]),
+        format_word_or_unknown(obj_a_buf[7], sizeof(obj_a_buf[7]), obj97a0_ok[7], obj97a0[7]));
+    fprintf(stderr,
+        "[WINCE_SEC3_OWNER] tag=%s obj97c0=%s/%s/%s/%s/%s/%s/%s/%s"
+        " a0_words=%s/%s/%s/%s a0_tail=%s/%s/%s/%s\n",
+        tag ? tag : "?",
+        format_word_or_unknown(obj_c_buf[0], sizeof(obj_c_buf[0]), obj97c0_ok[0], obj97c0[0]),
+        format_word_or_unknown(obj_c_buf[1], sizeof(obj_c_buf[1]), obj97c0_ok[1], obj97c0[1]),
+        format_word_or_unknown(obj_c_buf[2], sizeof(obj_c_buf[2]), obj97c0_ok[2], obj97c0[2]),
+        format_word_or_unknown(obj_c_buf[3], sizeof(obj_c_buf[3]), obj97c0_ok[3], obj97c0[3]),
+        format_word_or_unknown(obj_c_buf[4], sizeof(obj_c_buf[4]), obj97c0_ok[4], obj97c0[4]),
+        format_word_or_unknown(obj_c_buf[5], sizeof(obj_c_buf[5]), obj97c0_ok[5], obj97c0[5]),
+        format_word_or_unknown(obj_c_buf[6], sizeof(obj_c_buf[6]), obj97c0_ok[6], obj97c0[6]),
+        format_word_or_unknown(obj_c_buf[7], sizeof(obj_c_buf[7]), obj97c0_ok[7], obj97c0[7]),
+        format_word_or_unknown(a0_00_buf, sizeof(a0_00_buf), a0_00_ok, a0_00),
+        format_word_or_unknown(a0_04_buf, sizeof(a0_04_buf), a0_04_ok, a0_04),
+        format_word_or_unknown(a0_08_buf, sizeof(a0_08_buf), a0_08_ok, a0_08),
+        format_word_or_unknown(a0_0c_buf, sizeof(a0_0c_buf), a0_0c_ok, a0_0c),
+        format_word_or_unknown(a0_88_buf, sizeof(a0_88_buf), a0_88_ok, a0_88),
+        format_word_or_unknown(a0_8c_buf, sizeof(a0_8c_buf), a0_8c_ok, a0_8c),
+        format_word_or_unknown(a0_90_buf, sizeof(a0_90_buf), a0_90_ok, a0_90),
+        format_word_or_unknown(a0_9c_buf, sizeof(a0_9c_buf), a0_9c_ok, a0_9c));
+}
+
+static bool load_section3_descriptor_focus(machine_t *m, uint32_t *desc_ptr_out,
+    uint32_t *desc_base_out)
+{
+    uint32_t desc_ptr = 0;
+
+    if (!m || !desc_ptr_out || !desc_base_out)
+        return false;
+    if (!load_va_word(m, UINT32_C(0x806697DC), &desc_ptr))
+        return false;
+    if (desc_ptr < UINT32_C(0x80000000) || desc_ptr >= UINT32_C(0x81000000))
+        return false;
+
+    *desc_ptr_out = desc_ptr;
+    *desc_base_out = desc_ptr & ~UINT32_C(0x1F);
+    return true;
+}
+
+static void dump_section3_descriptor_window(machine_t *m, const char *tag)
+{
+    uint32_t desc_ptr = 0;
+    uint32_t desc_base = 0;
+    uint32_t words[8] = {0};
+    bool ok[8];
+    char word_buf[8][16];
+    size_t i;
+
+    if (!load_section3_descriptor_focus(m, &desc_ptr, &desc_base)) {
+        fprintf(stderr, "[WINCE_SEC3_DESC] tag=%s ptr=?\n",
+            tag ? tag : "?");
+        return;
+    }
+
+    for (i = 0; i < 8; i++)
+        ok[i] = load_va_word(m, desc_base + (uint32_t)(i * 4u), &words[i]);
+    for (i = 0; i < 8; i++) {
+        if (ok[i])
+            snprintf(word_buf[i], sizeof(word_buf[i]), "%08X", words[i]);
+        else
+            snprintf(word_buf[i], sizeof(word_buf[i]), "????????");
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC3_DESC] tag=%s ptr=0x%08X base=0x%08X"
+        " w0=%s w1=%s w2=%s w3=%s w4=%s w5=%s w6=%s w7=%s\n",
+        tag ? tag : "?",
+        desc_ptr,
+        desc_base,
+        word_buf[0], word_buf[1], word_buf[2], word_buf[3],
+        word_buf[4], word_buf[5], word_buf[6], word_buf[7]);
+}
+
+static void maybe_note_section3_callback_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    static const struct {
+        uint32_t pc;
+        const char *label;
+    } targets[] = {
+        { 0x80099324u, "desc_fill" },
+        { 0x80099528u, "cb_select" },
+        { 0x80099538u, "cb_call" },
+        { 0x80099540u, "cb_ret" },
+        { 0x80099794u, "desc_bind" },
+    };
+    uint32_t pc32;
+    uint32_t sec3;
+    size_t i;
+
+    if (!m || !cpu)
+        return;
+
+    sec3 = load_pa_word(m, 0x18CCu);
+    if (!m->wince.section3_page_watch_armed
+        && sec3 != UINT32_C(0x80FE5000))
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    for (i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        uint32_t cb_index = 0;
+        uint32_t cb_target = 0;
+        uint32_t desc_ptr = 0;
+        uint32_t desc_base = 0;
+        bool cb_target_ok = false;
+        bool desc_ok = false;
+        char cb_buf[16];
+
+        if (pc32 != targets[i].pc)
+            continue;
+        if ((m->wince.section3_callback_pc_mask & (UINT32_C(1) << i)) != 0)
+            return;
+
+        m->wince.section3_callback_pc_mask |= (UINT32_C(1) << i);
+        desc_ok = load_section3_descriptor_focus(m, &desc_ptr, &desc_base);
+        cb_index = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1] & 0xFFu;
+        if (cb_index < 16u) {
+            cb_target_ok = load_va_word(m,
+                UINT32_C(0x80075824) + cb_index * 4u, &cb_target);
+        }
+        if (cb_target_ok)
+            snprintf(cb_buf, sizeof(cb_buf), "%08X", cb_target);
+        else
+            snprintf(cb_buf, sizeof(cb_buf), "????????");
+
+        fprintf(stderr,
+            "[WINCE_SEC3_CB] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+            " s1=0x%08X s3=0x%08X s7=0x%08X t3=0x%08X v0=0x%08X"
+            " sec0=0x%08X sec3=0x%08X desc=%s cb_idx=%u cb=%s"
+            " page0=0x%08X p694=0x%08X p7e4=0x%08X\n",
+            targets[i].label,
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S7],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T3],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            load_pa_word(m, 0x18C0u),
+            sec3,
+            desc_ok ? "set" : "?",
+            cb_index,
+            cb_buf,
+            load_pa_word(m, 0x00FE5000u),
+            load_pa_word(m, 0x00FE5694u),
+            load_pa_word(m, 0x00FE57E4u));
+        dump_code_window(m, pc32, 8u, 12u);
+        if (cb_target_ok && cb_target >= UINT32_C(0x80060000)
+            && cb_target < UINT32_C(0x81000000)) {
+            dump_code_window(m, cb_target, 4u, 8u);
+        }
+        dump_section3_descriptor_window(m, targets[i].label);
+        m->wince.section3_callback_probe_count++;
+        return;
+    }
+}
+
+static void maybe_note_section3_owner_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    static const struct {
+        uint32_t pc;
+        const char *label;
+    } targets[] = {
+        { 0x80099924u, "evt_update" },
+        { 0x8008406Cu, "owner_link" },
+        { 0x80084214u, "owner_state_88" },
+        { 0x80084274u, "owner_state_post" },
+        { 0x800845C4u, "owner_state_tail" },
+        { 0x800819A4u, "owner_retpath" },
+    };
+    uint32_t pc32;
+    uint32_t sec3;
+    size_t i;
+
+    if (!m || !cpu)
+        return;
+
+    sec3 = load_pa_word(m, 0x18CCu);
+    if (!m->wince.section3_page_watch_armed
+        && sec3 != UINT32_C(0x80FE5000))
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    for (i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        if (pc32 != targets[i].pc)
+            continue;
+        if ((m->wince.section3_owner_pc_mask & (UINT32_C(1) << i)) != 0)
+            return;
+        m->wince.section3_owner_pc_mask |= (UINT32_C(1) << i);
+        log_section3_owner_state(m, cpu, targets[i].label, pc32);
+        dump_code_window(m, pc32, 8u, 12u);
+        if ((uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA] >= 8u) {
+            dump_code_window(m,
+                canonicalize_nk_pc((uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]) - 8u,
+                8u, 12u);
+        }
+        dump_va_window(m, "sec3_owner_evt97a0", UINT32_C(0x806697A0), 0x40u);
+        return;
+    }
+}
+
 static bool sample_framebuffer(machine_t *m, uint8_t *sample_out)
 {
     struct vfb_data *fb;
@@ -2528,6 +2847,9 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
             if (value == UINT32_C(0x80FE5000) && old != value) {
                 m->wince.section3_page_watch_armed = true;
                 m->wince.section3_page_diag_count = 0;
+                m->wince.section3_desc_write_count = 0;
+                m->wince.section3_callback_probe_count = 0;
+                m->wince.section3_callback_pc_mask = 0;
                 if (!m->wince.section3_step_trace_done
                     && !m->wince.section3_step_trace_active) {
                     m->wince.section3_step_trace_pending = false;
@@ -2723,6 +3045,75 @@ static void maybe_log_section3_page_write(machine_t *m, struct cpu *cpu,
     }
 
     m->wince.section3_page_diag_count++;
+}
+
+static void maybe_log_section3_owner_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    const uint32_t obj_pa = UINT32_C(0x006697A0);
+    const uint32_t obj2_pa = UINT32_C(0x006697C0);
+    uint32_t sec3;
+    const char *tag;
+
+    if (!m || !cpu)
+        return;
+    if (!range_overlaps(paddr, (uint64_t)len, obj_pa, 0x20u)
+        && !range_overlaps(paddr, (uint64_t)len, obj2_pa, 0x20u))
+        return;
+
+    sec3 = load_pa_word(m, 0x18CCu);
+    if (!m->wince.section3_page_watch_armed
+        && sec3 != UINT32_C(0x80FE5000))
+        return;
+    if (m->wince.section3_owner_write_count >= 24u)
+        return;
+
+    tag = range_overlaps(paddr, (uint64_t)len, obj_pa, 0x20u)
+        ? "evt97a0"
+        : "evt97c0";
+    fprintf(stderr,
+        "[WINCE_SEC3_OWNER_W] %s+0x%02" PRIx64 " len=%zu val=0x%llX"
+        " PC=0x%08" PRIx64 " RA=0x%08X\n",
+        tag,
+        paddr - (strcmp(tag, "evt97a0") == 0 ? obj_pa : obj2_pa),
+        len,
+        (unsigned long long)val,
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    log_section3_owner_state(m, cpu, tag,
+        canonicalize_nk_pc((uint32_t)cpu->pc));
+    m->wince.section3_owner_write_count++;
+}
+
+static void maybe_log_section3_desc_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    const uint32_t desc_pa = UINT32_C(0x00FE9CC0);
+    const uint32_t desc_len = UINT32_C(0x40);
+    uint32_t sec3;
+
+    if (!m || !cpu)
+        return;
+    if (!range_overlaps(paddr, (uint64_t)len, desc_pa, desc_len))
+        return;
+
+    sec3 = load_pa_word(m, 0x18CCu);
+    if (!m->wince.section3_page_watch_armed
+        && sec3 != UINT32_C(0x80FE5000))
+        return;
+    if (m->wince.section3_desc_write_count >= 24u)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_SEC3_DESC_W] off=0x%02" PRIx64 " len=%zu val=0x%llX"
+        " PC=0x%08" PRIx64 " RA=0x%08X\n",
+        paddr - desc_pa,
+        len,
+        (unsigned long long)val,
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    dump_section3_descriptor_window(m, "desc_write");
+    m->wince.section3_desc_write_count++;
 }
 
 /* ------------------------------------------------------------------ */
@@ -4745,6 +5136,8 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_note_ppsh_exact_pc(m, cpu, pc32);
     maybe_note_exception_hot_pc(m, cpu, pc32);
     maybe_note_section3_install_pc(m, cpu, pc32);
+    maybe_note_section3_callback_pc(m, cpu, pc32);
+    maybe_note_section3_owner_pc(m, cpu, pc32);
 }
 
 void wince_boot_note_ppsh_command(struct cpu *cpu, uint16_t cmd)
@@ -5172,6 +5565,10 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
         maybe_log_section3_raw_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_page_write(m, cpu, paddr, len, val);
+    if (is_write)
+        maybe_log_section3_desc_write(m, cpu, paddr, len, val);
+    if (is_write)
+        maybe_log_section3_owner_write(m, cpu, paddr, len, val);
 
     maybe_log_section0_hot_slot_access(m, cpu, paddr, len, val, is_write);
 

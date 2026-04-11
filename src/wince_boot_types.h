@@ -193,11 +193,16 @@ typedef struct {
     uint16_t section3_raw_diag_count;
     uint16_t section3_page_diag_count;
     uint16_t section3_install_probe_count;
+    uint16_t section3_owner_write_count;
+    uint16_t section3_desc_write_count;
+    uint16_t section3_callback_probe_count;
     bool     section3_page_watch_armed;
     bool     section3_step_trace_pending;
     bool     section3_step_trace_active;
     bool     section3_step_trace_done;
     uint16_t section3_step_trace_remaining;
+    uint32_t section3_owner_pc_mask;
+    uint32_t section3_callback_pc_mask;
     bool     systempatch_seen;
     bool     systempatch_first_exception_logged;
     bool     systempatch_process_logged;
