@@ -102,6 +102,8 @@ static void maybe_dump_ppsh_helper_context(machine_t *m, struct cpu *cpu,
     uint16_t cmd);
 static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
     uint32_t old_flag, uint32_t new_flag);
+static void maybe_dump_ppsh_watch_context(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32);
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -668,15 +670,17 @@ static void maybe_flush_ppsh_serial_line(machine_t *m)
 }
 
 static size_t collect_stack_return_sites(machine_t *m, uint32_t sp,
-    uint32_t *ret_offs, uint32_t *ret_addrs, size_t cap)
+    uint32_t *ret_offs, uint32_t *ret_addrs, size_t cap, uint32_t max_scan)
 {
     size_t count = 0;
     uint32_t off;
 
     if (!m || sp == 0 || !ret_offs || !ret_addrs || cap == 0)
         return 0;
+    if (max_scan == 0)
+        max_scan = 0x40u;
 
-    for (off = 0; off < 0x40u; off += 4u) {
+    for (off = 0; off < max_scan; off += 4u) {
         uint32_t word = 0;
         size_t i;
         bool seen = false;
@@ -732,7 +736,7 @@ static void maybe_dump_ppsh_helper_context(machine_t *m, struct cpu *cpu,
     (void)load_va_word(m, sp + 8u, &stk2);
     (void)load_va_word(m, sp + 12u, &stk3);
     ret_count = collect_stack_return_sites(m, sp, ret_offs, ret_addrs,
-        sizeof(ret_addrs) / sizeof(ret_addrs[0]));
+        sizeof(ret_addrs) / sizeof(ret_addrs[0]), 0x40u);
 
     fprintf(stderr,
         "[PPSH_HELPER] #%u cmd=0x%04X pc=0x%08X ra=0x%08X caller=0x%08X"
@@ -800,6 +804,9 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
     uint32_t ret_offs[4] = {0};
     uint32_t ret_addrs[4] = {0};
     size_t ret_count = 0;
+    bool has_97ec8 = false;
+    bool has_81a68 = false;
+    size_t i;
 
     if (!m || !cpu)
         return;
@@ -809,7 +816,13 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
     sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
     caller = ra >= 8u ? ra - 8u : 0u;
     ret_count = collect_stack_return_sites(m, sp, ret_offs, ret_addrs,
-        sizeof(ret_addrs) / sizeof(ret_addrs[0]));
+        sizeof(ret_addrs) / sizeof(ret_addrs[0]), 0x40u);
+    for (i = 0; i < ret_count; i++) {
+        if (ret_addrs[i] == 0x80097EC8u)
+            has_97ec8 = true;
+        else if (ret_addrs[i] == 0x80081A68u)
+            has_81a68 = true;
+    }
 
     fprintf(stderr,
         "[PPSH_FLAG_CTX] #%u %u->%u pc=0x%08X ra=0x%08X caller=0x%08X"
@@ -864,8 +877,109 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
         dump_code_window(m, ret_addrs[2] - 8u, 8u, 12u);
     if (ret_count > 3 && ret_addrs[3] >= 8u)
         dump_code_window(m, ret_addrs[3] - 8u, 8u, 12u);
+    if (!m->wince.ppsh_upper_path_dumped
+        && pc == 0x800A8420u
+        && has_97ec8
+        && has_81a68) {
+        m->wince.ppsh_upper_path_dumped = true;
+        fprintf(stderr,
+            "[PPSH_UPPER] ppfs_timeout_path pc=0x%08X"
+            " ra=0x%08X sp=0x%08X\n",
+            pc, ra, sp);
+        dump_code_window(m, 0x800815E0u, 8u, 12u);
+        dump_code_window(m, 0x8008C564u, 8u, 12u);
+        dump_code_window(m, 0x80099924u, 8u, 12u);
+        dump_code_window(m, 0x800A11B0u, 8u, 12u);
+        dump_va_window(m, "ppsh_ppfs_string", 0x80649780u, 0x80u);
+    }
     if (sp != 0)
         dump_va_window(m, "ppsh_flag_stack", sp, 0x40u);
+}
+
+typedef struct {
+    uint32_t pc;
+    const char *label;
+} ppsh_watch_target_t;
+
+static void maybe_dump_ppsh_watch_context(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    static const ppsh_watch_target_t watch_targets[] = {
+        { 0x8009700Cu, "ppfs_upper_9700c" },
+        { 0x80098D0Cu, "ppfs_upper_98d0c" },
+        { 0x800A1500u, "ppfs_upper_a1500" },
+        { 0x800A1904u, "ppfs_upper_a1904" },
+        { 0x800A1964u, "ppfs_upper_a1964" },
+        { 0x800A19B4u, "ppfs_upper_a19b4" },
+        { 0x800A1A50u, "ppfs_upper_a1a50" },
+    };
+    uint32_t pc32;
+    uint32_t sp;
+    uint32_t ret_offs[6] = {0};
+    uint32_t ret_addrs[6] = {0};
+    size_t ret_count;
+    size_t i;
+
+    if (!m || !cpu || !ppsh_trace_enabled(m))
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    if (pc32 < 0x80096000u || pc32 > 0x800A1B00u)
+        return;
+
+    for (i = 0; i < sizeof(watch_targets) / sizeof(watch_targets[0]); i++) {
+        if (pc32 != watch_targets[i].pc)
+            continue;
+        if ((m->wince.ppsh_watch_dump_mask & (UINT32_C(1) << i)) != 0)
+            return;
+
+        m->wince.ppsh_watch_dump_mask |= (UINT32_C(1) << i);
+        sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+        ret_count = collect_stack_return_sites(m, sp, ret_offs, ret_addrs,
+            sizeof(ret_addrs) / sizeof(ret_addrs[0]), 0x80u);
+
+        fprintf(stderr,
+            "[PPSH_WATCH] %s pc=0x%08X ra=0x%08X sp=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+            " v0=0x%08X v1=0x%08X s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X s4=0x%08X\n",
+            watch_targets[i].label,
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4]);
+        if (ret_count > 0) {
+            size_t j;
+
+            fprintf(stderr, "[PPSH_WATCH_RET] %s", watch_targets[i].label);
+            for (j = 0; j < ret_count; j++) {
+                fprintf(stderr, " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                    j,
+                    ret_addrs[j],
+                    ret_offs[j],
+                    ret_addrs[j] >= 8u ? ret_addrs[j] - 8u : 0u);
+            }
+            fputc('\n', stderr);
+        }
+
+        dump_code_window(m, pc32, 8u, 12u);
+        for (i = 0; i < ret_count; i++) {
+            if (ret_addrs[i] >= 8u)
+                dump_code_window(m, ret_addrs[i] - 8u, 8u, 12u);
+        }
+        if (sp != 0)
+            dump_va_window(m, "ppsh_watch_stack", sp, 0x80u);
+        return;
+    }
 }
 
 static bool sample_framebuffer(machine_t *m, uint8_t *sample_out)
@@ -3512,6 +3626,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
         return;
 
     maybe_log_boot_path_probe(m, pc32);
+    maybe_dump_ppsh_watch_context(m, cpu, pc32);
 }
 
 void wince_boot_note_ppsh_command(struct cpu *cpu, uint16_t cmd)
