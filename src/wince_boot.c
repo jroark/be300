@@ -138,6 +138,10 @@ static void log_l2_table_state(machine_t *m, const char *tag,
     uint32_t table_va, uint32_t focus_vaddr);
 static void log_section0_focus_window(machine_t *m, const char *tag,
     uint32_t table_va);
+static void maybe_note_section3_queue_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32);
+static void maybe_note_section3_worker_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32);
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -3277,6 +3281,291 @@ static void maybe_note_section3_obj_pc(machine_t *m, struct cpu *cpu,
     m->wince.section3_obj_probe_count++;
 }
 
+static void maybe_note_section3_queue_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.section3_queue_probe_count >= 16u)
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    if (pc32 == UINT32_C(0x80099F6C)) {
+        uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        uint32_t a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+        uint32_t a0_08 = 0;
+        uint32_t a0_0c = 0;
+        uint32_t a0_10 = 0;
+        uint32_t a0_14 = 0;
+        uint32_t a0_18 = 0;
+        uint32_t a0_1c = 0;
+        bool a0_08_ok = false;
+        bool a0_0c_ok = false;
+        bool a0_10_ok = false;
+        bool a0_14_ok = false;
+        bool a0_18_ok = false;
+        bool a0_1c_ok = false;
+        char a0_08_buf[16];
+        char a0_0c_buf[16];
+        char a0_10_buf[16];
+        char a0_14_buf[16];
+        char a0_18_buf[16];
+        char a0_1c_buf[16];
+
+        if (a0 < UINT32_C(0x80000000) || a0 >= UINT32_C(0x81000000))
+            return;
+
+        a0_08_ok = load_va_word(m, a0 + 0x08u, &a0_08);
+        a0_0c_ok = load_va_word(m, a0 + 0x0Cu, &a0_0c);
+        a0_10_ok = load_va_word(m, a0 + 0x10u, &a0_10);
+        a0_14_ok = load_va_word(m, a0 + 0x14u, &a0_14);
+        a0_18_ok = load_va_word(m, a0 + 0x18u, &a0_18);
+        a0_1c_ok = load_va_word(m, a0 + 0x1Cu, &a0_1c);
+
+        fprintf(stderr,
+            "[WINCE_SEC3_QUEUE] tag=wrap_commit pc=0x%08X ra=0x%08X"
+            " sp=0x%08X a0=0x%08X a1=0x%08X"
+            " a0+08=%s a0+0c=%s a0+10=%s a0+14=%s a0+18=%s a0+1c=%s"
+            " watch=%u watch_va=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            a0,
+            a1,
+            format_word_or_unknown(a0_08_buf, sizeof(a0_08_buf), a0_08_ok, a0_08),
+            format_word_or_unknown(a0_0c_buf, sizeof(a0_0c_buf), a0_0c_ok, a0_0c),
+            format_word_or_unknown(a0_10_buf, sizeof(a0_10_buf), a0_10_ok, a0_10),
+            format_word_or_unknown(a0_14_buf, sizeof(a0_14_buf), a0_14_ok, a0_14),
+            format_word_or_unknown(a0_18_buf, sizeof(a0_18_buf), a0_18_ok, a0_18),
+            format_word_or_unknown(a0_1c_buf, sizeof(a0_1c_buf), a0_1c_ok, a0_1c),
+            m->wince.section3_retobj_watch_armed ? 1u : 0u,
+            m->wince.section3_retobj_watch_va);
+        if (m->wince.section3_retobj_watch_armed
+            && (a0 == (m->wince.section3_retobj_watch_va & ~UINT32_C(0x3))
+                || a0_18 == m->wince.section3_retobj_watch_va)) {
+            dump_section3_retobj_window(m, "wrap_commit", m->wince.section3_retobj_watch_va);
+        }
+        m->wince.section3_queue_probe_count++;
+        return;
+    }
+
+    if (pc32 == UINT32_C(0x800998C0)) {
+        uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        uint32_t ev0 = 0;
+        uint32_t ev1 = 0;
+        uint32_t ev2 = 0;
+        uint32_t ev3 = 0;
+        uint32_t dac0 = 0;
+        uint32_t dac4 = 0;
+        uint32_t d808 = 0;
+        bool ev0_ok = false;
+        bool ev1_ok = false;
+        bool ev2_ok = false;
+        bool ev3_ok = false;
+        bool dac0_ok = false;
+        bool dac4_ok = false;
+        bool d808_ok = false;
+        char ev0_buf[16];
+        char ev1_buf[16];
+        char ev2_buf[16];
+        char ev3_buf[16];
+        char dac0_buf[16];
+        char dac4_buf[16];
+        char d808_buf[16];
+        const char *label = NULL;
+
+        switch (a0) {
+        case UINT32_C(0x80669740):
+            label = "evt_9740";
+            break;
+        case UINT32_C(0x806697A0):
+            label = "evt_97a0";
+            break;
+        case UINT32_C(0x806696C0):
+            label = "evt_96c0";
+            break;
+        default:
+            return;
+        }
+
+        ev0_ok = load_va_word(m, a0 + 0x00u, &ev0);
+        ev1_ok = load_va_word(m, a0 + 0x04u, &ev1);
+        ev2_ok = load_va_word(m, a0 + 0x08u, &ev2);
+        ev3_ok = load_va_word(m, a0 + 0x0Cu, &ev3);
+        dac0_ok = load_va_word(m, UINT32_C(0xFFFFDAC0), &dac0);
+        dac4_ok = load_va_word(m, UINT32_C(0xFFFFDAC4), &dac4);
+        d808_ok = load_va_word(m, UINT32_C(0xFFFFD808), &d808);
+
+        fprintf(stderr,
+            "[WINCE_SEC3_QUEUE] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+            " a0=0x%08X ev0=%s ev1=%s ev2=%s ev3=%s"
+            " dac0=%s dac4=%s d808=%s watch=%u watch_va=0x%08X\n",
+            label,
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            a0,
+            format_word_or_unknown(ev0_buf, sizeof(ev0_buf), ev0_ok, ev0),
+            format_word_or_unknown(ev1_buf, sizeof(ev1_buf), ev1_ok, ev1),
+            format_word_or_unknown(ev2_buf, sizeof(ev2_buf), ev2_ok, ev2),
+            format_word_or_unknown(ev3_buf, sizeof(ev3_buf), ev3_ok, ev3),
+            format_word_or_unknown(dac0_buf, sizeof(dac0_buf), dac0_ok, dac0),
+            format_word_or_unknown(dac4_buf, sizeof(dac4_buf), dac4_ok, dac4),
+            format_word_or_unknown(d808_buf, sizeof(d808_buf), d808_ok, d808),
+            m->wince.section3_retobj_watch_armed ? 1u : 0u,
+            m->wince.section3_retobj_watch_va);
+        m->wince.section3_queue_probe_count++;
+        return;
+    }
+}
+
+static void maybe_note_section3_worker_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    static const struct {
+        uint32_t pc;
+        const char *label;
+    } targets[] = {
+        { 0x801916A8u, "worker_entry" },
+        { 0x80084120u, "worker_core" },
+        { 0x80083BE8u, "type4_enqueue" },
+        { 0x8008406Cu, "type4_splice" },
+        { 0x80084658u, "type1_post" },
+        { 0x80083204u, "type1_commit" },
+        { 0x80088354u, "type1_wake" },
+    };
+    uint32_t pc32;
+    uint32_t watch;
+    uint32_t a0;
+    uint32_t a1;
+    uint32_t a2;
+    uint32_t a3;
+    uint32_t ctx = 0;
+    uint32_t ctx34 = 0;
+    uint32_t ctx58 = 0;
+    uint32_t ctx194 = 0;
+    uint32_t obj00 = 0;
+    uint32_t obj04 = 0;
+    uint32_t obj08 = 0;
+    uint32_t obj0c = 0;
+    uint32_t obj48 = 0;
+    uint32_t obj88 = 0;
+    uint32_t obj8c = 0;
+    uint32_t obj90 = 0;
+    bool ctx_ok = false;
+    bool ctx34_ok = false;
+    bool ctx58_ok = false;
+    bool ctx194_ok = false;
+    bool obj00_ok = false;
+    bool obj04_ok = false;
+    bool obj08_ok = false;
+    bool obj0c_ok = false;
+    bool obj48_ok = false;
+    bool obj88_ok = false;
+    bool obj8c_ok = false;
+    bool obj90_ok = false;
+    bool a0_match;
+    bool a1_match;
+    bool a2_match;
+    bool a3_match;
+    char ctx_buf[16];
+    char ctx34_buf[16];
+    char ctx58_buf[16];
+    char ctx194_buf[16];
+    char obj00_buf[16];
+    char obj04_buf[16];
+    char obj08_buf[16];
+    char obj0c_buf[16];
+    char obj48_buf[16];
+    char obj88_buf[16];
+    char obj8c_buf[16];
+    char obj90_buf[16];
+    size_t i;
+
+    if (!m || !cpu)
+        return;
+    if (!m->wince.section3_retobj_watch_armed)
+        return;
+    if (m->wince.section3_worker_probe_count >= 16u)
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    for (i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        if (pc32 != targets[i].pc)
+            continue;
+
+        watch = m->wince.section3_retobj_watch_va;
+        a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+        a2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+        a3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3];
+        a0_match = a0 == watch;
+        a1_match = a1 == watch;
+        a2_match = a2 == watch;
+        a3_match = a3 == watch;
+
+        ctx_ok = load_va_word(m, UINT32_C(0xFFFFDAC0), &ctx);
+        if (ctx_ok && ctx >= UINT32_C(0x80000000) && ctx < UINT32_C(0x81000000)) {
+            ctx34_ok = load_va_word(m, ctx + 0x34u, &ctx34);
+            ctx58_ok = load_va_word(m, ctx + 0x58u, &ctx58);
+            ctx194_ok = load_va_word(m, ctx + 0x194u, &ctx194);
+        }
+
+        obj00_ok = load_va_word(m, watch + 0x00u, &obj00);
+        obj04_ok = load_va_word(m, watch + 0x04u, &obj04);
+        obj08_ok = load_va_word(m, watch + 0x08u, &obj08);
+        obj0c_ok = load_va_word(m, watch + 0x0Cu, &obj0c);
+        obj48_ok = load_va_word(m, watch + 0x48u, &obj48);
+        obj88_ok = load_va_word(m, watch + 0x88u, &obj88);
+        obj8c_ok = load_va_word(m, watch + 0x8Cu, &obj8c);
+        obj90_ok = load_va_word(m, watch + 0x90u, &obj90);
+
+        fprintf(stderr,
+            "[WINCE_SEC3_WORKER] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+            " match=%u/%u/%u/%u watch=0x%08X"
+            " ctx=%s ctx+34=%s ctx+58=%s ctx+194=%s"
+            " obj+00=%s obj+04=%s obj+08=%s obj+0c=%s"
+            " obj+48=%s obj+88=%s obj+8c=%s obj+90=%s"
+            " sec0=0x%08X sec3=0x%08X\n",
+            targets[i].label,
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            a0, a1, a2, a3,
+            a0_match ? 1u : 0u,
+            a1_match ? 1u : 0u,
+            a2_match ? 1u : 0u,
+            a3_match ? 1u : 0u,
+            watch,
+            format_word_or_unknown(ctx_buf, sizeof(ctx_buf), ctx_ok, ctx),
+            format_word_or_unknown(ctx34_buf, sizeof(ctx34_buf), ctx34_ok, ctx34),
+            format_word_or_unknown(ctx58_buf, sizeof(ctx58_buf), ctx58_ok, ctx58),
+            format_word_or_unknown(ctx194_buf, sizeof(ctx194_buf), ctx194_ok, ctx194),
+            format_word_or_unknown(obj00_buf, sizeof(obj00_buf), obj00_ok, obj00),
+            format_word_or_unknown(obj04_buf, sizeof(obj04_buf), obj04_ok, obj04),
+            format_word_or_unknown(obj08_buf, sizeof(obj08_buf), obj08_ok, obj08),
+            format_word_or_unknown(obj0c_buf, sizeof(obj0c_buf), obj0c_ok, obj0c),
+            format_word_or_unknown(obj48_buf, sizeof(obj48_buf), obj48_ok, obj48),
+            format_word_or_unknown(obj88_buf, sizeof(obj88_buf), obj88_ok, obj88),
+            format_word_or_unknown(obj8c_buf, sizeof(obj8c_buf), obj8c_ok, obj8c),
+            format_word_or_unknown(obj90_buf, sizeof(obj90_buf), obj90_ok, obj90),
+            load_pa_word(m, 0x18C0u),
+            load_pa_word(m, 0x18CCu));
+
+        if (a0_match || a1_match || a2_match || a3_match
+            || pc32 == UINT32_C(0x801916A8)
+            || pc32 == UINT32_C(0x80084120)) {
+            dump_section3_retobj_window(m, targets[i].label, watch);
+        }
+
+        m->wince.section3_worker_probe_count++;
+        return;
+    }
+}
+
 static void maybe_note_section3_owner_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32)
 {
@@ -6387,6 +6676,8 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_note_section3_caller_pc(m, cpu, pc32);
     maybe_note_section3_source_pc(m, cpu, pc32);
     maybe_note_section3_obj_pc(m, cpu, pc32);
+    maybe_note_section3_queue_pc(m, cpu, pc32);
+    maybe_note_section3_worker_pc(m, cpu, pc32);
     maybe_note_section3_owner_pc(m, cpu, pc32);
 }
 
