@@ -89,6 +89,13 @@ static void maybe_dump_toc_summary(machine_t *m, uint32_t ptoc);
 static bool try_discover_ptoc(machine_t *m, uint32_t *ptoc_out);
 static void wince_fb_write_observer(struct vfb_data *fb, struct cpu *cpu,
     void *opaque, uint64_t relative_addr, size_t len);
+static void dump_code_window(machine_t *m, uint32_t pc, size_t before_words,
+    size_t after_words);
+static bool load_utf16_ascii(machine_t *m, struct cpu *cpu, uint32_t va,
+    char *ascii, size_t ascii_len);
+static void maybe_log_ppsh_debug_message(machine_t *m, struct cpu *cpu,
+    const char *source, uint32_t str_va, const char *ascii);
+static void maybe_flush_ppsh_serial_line(machine_t *m);
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -436,6 +443,152 @@ static bool load_guest_c_string(machine_t *m, uint32_t va_raw, char *out,
         memmove(out, out + start, out_len - start);
 
     return out[0] != '\0';
+}
+
+static bool load_utf16_ascii(machine_t *m, struct cpu *cpu, uint32_t va,
+    char *ascii, size_t ascii_len)
+{
+    unsigned char buf[256];
+    size_t i;
+    size_t j;
+
+    if (!m || !cpu || !ascii || ascii_len == 0 || va == 0)
+        return false;
+
+    memset(buf, 0, sizeof(buf));
+    memset(ascii, 0, ascii_len);
+    cpu->memory_rw(cpu, cpu->mem, va32_to_mips64(va),
+        buf, sizeof(buf), MEM_READ, CACHE_DATA | NO_EXCEPTIONS);
+
+    for (i = 0, j = 0; i + 1 < sizeof(buf) && j + 1 < ascii_len; i += 2) {
+        uint16_t wc = (uint16_t)buf[i] | ((uint16_t)buf[i + 1] << 8);
+
+        if (wc == 0)
+            break;
+        ascii[j++] = (wc < 0x80) ? (char)wc : '?';
+    }
+    ascii[j] = '\0';
+    return ascii[0] != '\0';
+}
+
+static bool ppsh_debug_message_is_focus(const char *ascii)
+{
+    return ascii != NULL
+        && (strstr(ascii, "PPSH Ctrl Err") != NULL
+            || strstr(ascii, "NoPPFS") != NULL
+            || strstr(ascii, "CtrlAddr=") != NULL
+            || strstr(ascii, "PPFS:Time Outs") != NULL);
+}
+
+static void maybe_log_ppsh_debug_message(machine_t *m, struct cpu *cpu,
+    const char *source, uint32_t str_va, const char *ascii)
+{
+    uint32_t callsite;
+    uint32_t fb_events;
+
+    if (!m || !cpu || !ascii || !ppsh_debug_message_is_focus(ascii))
+        return;
+    if (m->wince.ppsh_debug_msg_count >= 32)
+        return;
+
+    m->wince.ppsh_debug_msg_count++;
+    fb_events = (uint32_t)m->wince.fb_watch_report_count
+        + (uint32_t)m->wince.fb_write_diag_count;
+    callsite = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+    if (callsite >= 8u)
+        callsite -= 8u;
+
+    fprintf(stderr,
+        "[PPSH_MSG] #%u src=%s str=0x%08X callsite=0x%08X"
+        " pc=0x%08X ra=0x%08X sp=0x%08X"
+        " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+        " seqs=%u last_cmd=0x%04X polls=%u flags=%u/%u"
+        " sections=%u fb=%u msg=\"%s\"\n",
+        (unsigned)m->wince.ppsh_debug_msg_count,
+        source ? source : "?",
+        str_va,
+        callsite,
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+        (unsigned)m->wince.ppsh_cmd_seq_count,
+        (unsigned)m->wince.ppsh_seq_cmd,
+        (unsigned)m->wince.ppsh_poll_episode_count,
+        (unsigned)m->wince.ppsh_flag_set_count,
+        (unsigned)m->wince.ppsh_flag_clear_count,
+        (unsigned)count_active_sections(m),
+        (unsigned)fb_events,
+        ascii);
+
+    if (callsite != 0 && callsite != m->wince.ppsh_last_debug_callsite
+        && m->wince.ppsh_debug_dump_count < 8) {
+        m->wince.ppsh_last_debug_callsite = callsite;
+        m->wince.ppsh_debug_dump_count++;
+        dump_code_window(m, callsite, 2u, 8u);
+    }
+}
+
+static void maybe_flush_ppsh_serial_line(machine_t *m)
+{
+    uint32_t fb_events;
+    uint32_t callsite_first;
+    uint32_t callsite_last;
+
+    if (!m || m->wince.ppsh_serial_line_len == 0)
+        return;
+
+    m->wince.ppsh_serial_line[m->wince.ppsh_serial_line_len] = '\0';
+    if (!ppsh_debug_message_is_focus(m->wince.ppsh_serial_line)) {
+        m->wince.ppsh_serial_line_len = 0;
+        return;
+    }
+    if (m->wince.ppsh_serial_msg_count >= 32) {
+        m->wince.ppsh_serial_line_len = 0;
+        return;
+    }
+
+    m->wince.ppsh_serial_msg_count++;
+    callsite_first = m->wince.ppsh_serial_first_ra >= 8u
+        ? m->wince.ppsh_serial_first_ra - 8u : 0u;
+    callsite_last = m->wince.ppsh_serial_last_ra >= 8u
+        ? m->wince.ppsh_serial_last_ra - 8u : 0u;
+    fb_events = (uint32_t)m->wince.fb_watch_report_count
+        + (uint32_t)m->wince.fb_write_diag_count;
+
+    fprintf(stderr,
+        "[PPSH_UART] #%u first_pc=0x%08X first_ra=0x%08X"
+        " last_pc=0x%08X last_ra=0x%08X"
+        " call_first=0x%08X call_last=0x%08X"
+        " seqs=%u last_cmd=0x%04X polls=%u flags=%u/%u"
+        " sections=%u fb=%u line=\"%s\"\n",
+        (unsigned)m->wince.ppsh_serial_msg_count,
+        m->wince.ppsh_serial_first_pc,
+        m->wince.ppsh_serial_first_ra,
+        m->wince.ppsh_serial_last_pc,
+        m->wince.ppsh_serial_last_ra,
+        callsite_first,
+        callsite_last,
+        (unsigned)m->wince.ppsh_cmd_seq_count,
+        (unsigned)m->wince.ppsh_seq_cmd,
+        (unsigned)m->wince.ppsh_poll_episode_count,
+        (unsigned)m->wince.ppsh_flag_set_count,
+        (unsigned)m->wince.ppsh_flag_clear_count,
+        (unsigned)count_active_sections(m),
+        (unsigned)fb_events,
+        m->wince.ppsh_serial_line);
+
+    if (callsite_last != 0 && callsite_last != m->wince.ppsh_last_debug_callsite
+        && m->wince.ppsh_debug_dump_count < 8) {
+        m->wince.ppsh_last_debug_callsite = callsite_last;
+        m->wince.ppsh_debug_dump_count++;
+        dump_code_window(m, callsite_last, 2u, 8u);
+    }
+
+    m->wince.ppsh_serial_line_len = 0;
 }
 
 static bool sample_framebuffer(machine_t *m, uint8_t *sample_out)
@@ -2393,11 +2546,8 @@ static void maybe_capture_debug_serial(machine_t *m, struct cpu *cpu)
     static bool ptr_dumped = false;
     uint32_t pc;
 
-    if (!m->cfg.debug_serial)
-        return;
-
     /* One-shot: dump the OAL debug output function pointer */
-    if (!ptr_dumped && m->wince.cold_boot_copy_done) {
+    if (m->cfg.debug_serial && !ptr_dumped && m->wince.cold_boot_copy_done) {
         uint32_t fptr = 0;
         ptr_dumped = true;
         (void)load_va_word(m, UINT32_C(0x80660084), &fptr);
@@ -2411,25 +2561,17 @@ static void maybe_capture_debug_serial(machine_t *m, struct cpu *cpu)
     if (pc == (0x8007B670u & 0x1FFFFFFFu) && dbg_count < 500) {
         uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
         if (a0 != 0) {
-            unsigned char buf[256];
             char ascii[128];
-            int i, j;
 
-            memset(buf, 0, sizeof(buf));
-            cpu->memory_rw(cpu, cpu->mem, va32_to_mips64(a0),
-                buf, sizeof(buf), MEM_READ, CACHE_DATA | NO_EXCEPTIONS);
-
-            /* Convert UTF-16LE to ASCII for display */
-            for (i = 0, j = 0; i < (int)sizeof(buf) - 1 && j < 126; i += 2) {
-                uint16_t wc = (uint16_t)buf[i] | ((uint16_t)buf[i+1] << 8);
-                if (wc == 0) break;
-                ascii[j++] = (wc < 0x80) ? (char)wc : '?';
+            if (load_utf16_ascii(m, cpu, a0, ascii, sizeof(ascii))) {
+                maybe_log_ppsh_debug_message(m, cpu, "OEMWriteDebugString",
+                    a0, ascii);
+                if (m->cfg.debug_serial) {
+                    dbg_count++;
+                    printf("[DBGSERIAL] %s\n", ascii);
+                    fflush(stdout);
+                }
             }
-            ascii[j] = '\0';
-
-            dbg_count++;
-            printf("[DBGSERIAL] %s\n", ascii);
-            fflush(stdout);
         }
     }
 
@@ -2437,24 +2579,17 @@ static void maybe_capture_debug_serial(machine_t *m, struct cpu *cpu)
     if (pc == (0x8007B8C8u & 0x1FFFFFFFu) && dbg_count < 500) {
         uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
         if (a0 != 0) {
-            unsigned char buf[256];
             char ascii[128];
-            int i, j;
 
-            memset(buf, 0, sizeof(buf));
-            cpu->memory_rw(cpu, cpu->mem, va32_to_mips64(a0),
-                buf, sizeof(buf), MEM_READ, CACHE_DATA | NO_EXCEPTIONS);
-
-            for (i = 0, j = 0; i < (int)sizeof(buf) - 1 && j < 126; i += 2) {
-                uint16_t wc = (uint16_t)buf[i] | ((uint16_t)buf[i+1] << 8);
-                if (wc == 0) break;
-                ascii[j++] = (wc < 0x80) ? (char)wc : '?';
+            if (load_utf16_ascii(m, cpu, a0, ascii, sizeof(ascii))) {
+                maybe_log_ppsh_debug_message(m, cpu, "NKDbgPrintfW",
+                    a0, ascii);
+                if (m->cfg.debug_serial) {
+                    dbg_count++;
+                    printf("[DBGSERIAL] %s\n", ascii);
+                    fflush(stdout);
+                }
             }
-            ascii[j] = '\0';
-
-            dbg_count++;
-            printf("[DBGSERIAL] %s\n", ascii);
-            fflush(stdout);
         }
     }
 }
@@ -3210,6 +3345,48 @@ void wince_boot_note_ppsh_data_read(struct cpu *cpu, uint16_t word)
         ppsh_finish_sequence(m, "read_budget");
 }
 
+void wince_boot_note_serial_tx(struct cpu *cpu, unsigned char ch)
+{
+    machine_t *m;
+    size_t len;
+
+    if (!cpu)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!m || !m->wince.active || !m->wince.cold_boot_copy_done)
+        return;
+
+    if (ch == '\r')
+        return;
+
+    if (ch == '\n') {
+        maybe_flush_ppsh_serial_line(m);
+        return;
+    }
+
+    if (ch < 0x20 || ch > 0x7eu) {
+        maybe_flush_ppsh_serial_line(m);
+        return;
+    }
+
+    len = m->wince.ppsh_serial_line_len;
+    if (len == 0) {
+        m->wince.ppsh_serial_first_pc = (uint32_t)cpu->pc;
+        m->wince.ppsh_serial_first_ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+    } else if (len >= sizeof(m->wince.ppsh_serial_line) - 1u) {
+        maybe_flush_ppsh_serial_line(m);
+        m->wince.ppsh_serial_first_pc = (uint32_t)cpu->pc;
+        m->wince.ppsh_serial_first_ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+        len = 0;
+    }
+
+    m->wince.ppsh_serial_line[len++] = (char)ch;
+    m->wince.ppsh_serial_line_len = (uint16_t)len;
+    m->wince.ppsh_serial_last_pc = (uint32_t)cpu->pc;
+    m->wince.ppsh_serial_last_ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+}
+
 void wince_boot_log_summary(machine_t *m)
 {
     const char *classification = "unresolved";
@@ -3223,6 +3400,7 @@ void wince_boot_log_summary(machine_t *m)
         ppsh_finish_sequence(m, "shutdown");
     if (m->wince.ppsh_poll_active && m->cpu)
         ppsh_close_poll_episode(m, m->cpu, (uint32_t)m->cpu->pc, "shutdown");
+    maybe_flush_ppsh_serial_line(m);
 
     active_sections = count_active_sections(m);
     fb_events = (uint32_t)m->wince.fb_watch_report_count
