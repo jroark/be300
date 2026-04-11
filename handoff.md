@@ -77,8 +77,8 @@ Step 2 or 3 likely fails or blocks. The object store is in RAM, so no hardware d
 
 ## Important artifacts
 
-- `docs/nk_decompressed.bin` — WinCE 3.0 NK dump (base VA 0x80060000)
-- `build-host/nk_decompressed.bin` — overwritten each run
+- `docs/nk_decompressed.bin` — local ignored WinCE 3.0 NK dump copy refreshed from `All_nand_300.bin` (base VA 0x80060000, SHA-256 `df55a2f89c3c9635d0cf4f8bf73fa32ced70e7137fb00fcf7872b70a77f0b15f`)
+- `build-host/nk_decompressed.bin` — refreshed on WinCE NAND boots only, not Linux boots
 - Latest logs in `build-host/`
 
 ## Current workspace state

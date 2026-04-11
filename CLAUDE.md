@@ -479,9 +479,9 @@ It does NOT run during cold boot — resume_ctx (PA 0x2200) is NOT populated by 
 - FUN_9fc015dc: reads partition descriptor entry 1 (SPL location) — called from ROM dispatcher 0x9FC00C21
 
 **NK.exe Analysis Tools:**
-- Emulator dumps decompressed NK.exe to `nk_decompressed.bin` in the working directory when PC enters NK.exe range
-- `docs/nk_decompressed.bin` — WinCE 3.0 NK dump (from All_nand_300.bin, base VA 0x80060000, ~6.2MB)
-- `build-host/nk_decompressed.bin` — whichever image was last run (overwrites each boot); for .NET use All_nand_Net.bin (base VA 0x80029000)
+- Emulator dumps decompressed NK.exe to `nk_decompressed.bin` in the working directory during WinCE NAND boots when PA 0x24FC points at NK.exe; Linux kernel boots do not write this file
+- `docs/nk_decompressed.bin` — local ignored convenience copy of the verified WinCE 3.0 NK dump from `All_nand_300.bin` (base VA 0x80060000, size 6253256 bytes / 0x005F6AC8, SHA-256 `df55a2f89c3c9635d0cf4f8bf73fa32ced70e7137fb00fcf7872b70a77f0b15f`)
+- `build-host/nk_decompressed.bin` — whichever WinCE image was last run (overwrites each verified NAND boot); for .NET use All_nand_Net.bin (base VA 0x80029000)
 - NK.exe loaded at PA 0x60000 (3.0) or PA 0x29000 (.NET): file offset = VA - base VA
 - `tools/scan_nk_producers.py` — scan for store instructions to specific VAs
 - `tools/disasm_nk_ctx.py` — disassemble NK code regions
