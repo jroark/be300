@@ -102,7 +102,7 @@ static void maybe_dump_ppsh_helper_context(machine_t *m, struct cpu *cpu,
     uint16_t cmd);
 static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
     uint32_t old_flag, uint32_t new_flag);
-static void maybe_dump_ppsh_watch_context(machine_t *m, struct cpu *cpu,
+static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
 
 /* ------------------------------------------------------------------ */
@@ -806,6 +806,7 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
     size_t ret_count = 0;
     bool has_97ec8 = false;
     bool has_81a68 = false;
+    char timeout_msg[96];
     size_t i;
 
     if (!m || !cpu)
@@ -877,20 +878,32 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
         dump_code_window(m, ret_addrs[2] - 8u, 8u, 12u);
     if (ret_count > 3 && ret_addrs[3] >= 8u)
         dump_code_window(m, ret_addrs[3] - 8u, 8u, 12u);
-    if (!m->wince.ppsh_upper_path_dumped
-        && pc == 0x800A8420u
-        && has_97ec8
-        && has_81a68) {
-        m->wince.ppsh_upper_path_dumped = true;
+    memset(timeout_msg, 0, sizeof(timeout_msg));
+    if (!m->wince.ppsh_timeout_path_dumped
+        && (has_97ec8 || has_81a68)) {
+        m->wince.ppsh_timeout_path_dumped = true;
+        (void)load_guest_c_string(m, UINT32_C(0x806697A0),
+            timeout_msg, sizeof(timeout_msg));
         fprintf(stderr,
-            "[PPSH_UPPER] ppfs_timeout_path pc=0x%08X"
-            " ra=0x%08X sp=0x%08X\n",
-            pc, ra, sp);
+            "[PPSH_PATH] ppfs_timeout pc=0x%08X ra=0x%08X sp=0x%08X"
+            " ret_97ec8=%d ret_81a68=%d seqs=%u last_cmd=0x%04X"
+            " polls=%u flags=%u/%u msg=\"%s\"\n",
+            pc, ra, sp,
+            has_97ec8 ? 1 : 0,
+            has_81a68 ? 1 : 0,
+            (unsigned)m->wince.ppsh_cmd_seq_count,
+            (unsigned)m->wince.ppsh_seq_cmd,
+            (unsigned)m->wince.ppsh_poll_episode_count,
+            (unsigned)m->wince.ppsh_flag_set_count,
+            (unsigned)m->wince.ppsh_flag_clear_count,
+            timeout_msg[0] != '\0' ? timeout_msg : "?");
+        dump_code_window(m, 0x80081A60u, 8u, 12u);
+        dump_code_window(m, 0x80097EC0u, 8u, 12u);
         dump_code_window(m, 0x800815E0u, 8u, 12u);
         dump_code_window(m, 0x8008C564u, 8u, 12u);
         dump_code_window(m, 0x80099924u, 8u, 12u);
         dump_code_window(m, 0x800A11B0u, 8u, 12u);
-        dump_va_window(m, "ppsh_ppfs_string", 0x80649780u, 0x80u);
+        dump_va_window(m, "ppsh_timeout_msg", 0x80669780u, 0x80u);
     }
     if (sp != 0)
         dump_va_window(m, "ppsh_flag_stack", sp, 0x40u);
@@ -899,50 +912,48 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
 typedef struct {
     uint32_t pc;
     const char *label;
-} ppsh_watch_target_t;
+} ppsh_exact_pc_t;
 
-static void maybe_dump_ppsh_watch_context(machine_t *m, struct cpu *cpu,
+static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32)
 {
-    static const ppsh_watch_target_t watch_targets[] = {
-        { 0x8009700Cu, "ppfs_upper_9700c" },
-        { 0x80098D0Cu, "ppfs_upper_98d0c" },
-        { 0x800A1500u, "ppfs_upper_a1500" },
-        { 0x800A1904u, "ppfs_upper_a1904" },
-        { 0x800A1964u, "ppfs_upper_a1964" },
-        { 0x800A19B4u, "ppfs_upper_a19b4" },
-        { 0x800A1A50u, "ppfs_upper_a1a50" },
+    static const ppsh_exact_pc_t targets[] = {
+        { 0x80081A60u, "ppfs_list_walk" },
+        { 0x80097EC0u, "ppfs_timeout_dispatch" },
     };
     uint32_t pc32;
     uint32_t sp;
     uint32_t ret_offs[6] = {0};
     uint32_t ret_addrs[6] = {0};
     size_t ret_count;
+    char timeout_msg[96];
     size_t i;
 
     if (!m || !cpu || !ppsh_trace_enabled(m))
         return;
 
     pc32 = canonicalize_nk_pc(raw_pc32);
-    if (pc32 < 0x80096000u || pc32 > 0x800A1B00u)
-        return;
-
-    for (i = 0; i < sizeof(watch_targets) / sizeof(watch_targets[0]); i++) {
-        if (pc32 != watch_targets[i].pc)
+    for (i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        if (pc32 != targets[i].pc)
             continue;
-        if ((m->wince.ppsh_watch_dump_mask & (UINT32_C(1) << i)) != 0)
+        if ((m->wince.ppsh_exact_pc_mask & (UINT32_C(1) << i)) != 0)
             return;
 
-        m->wince.ppsh_watch_dump_mask |= (UINT32_C(1) << i);
+        m->wince.ppsh_exact_pc_mask |= (UINT32_C(1) << i);
         sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
         ret_count = collect_stack_return_sites(m, sp, ret_offs, ret_addrs,
             sizeof(ret_addrs) / sizeof(ret_addrs[0]), 0x80u);
+        memset(timeout_msg, 0, sizeof(timeout_msg));
+        if (pc32 == UINT32_C(0x80097EC0)) {
+            (void)load_guest_c_string(m, UINT32_C(0x806697A0),
+                timeout_msg, sizeof(timeout_msg));
+        }
 
         fprintf(stderr,
-            "[PPSH_WATCH] %s pc=0x%08X ra=0x%08X sp=0x%08X"
+            "[PPSH_PC] %s pc=0x%08X ra=0x%08X sp=0x%08X"
             " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
             " v0=0x%08X v1=0x%08X s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X s4=0x%08X\n",
-            watch_targets[i].label,
+            targets[i].label,
             pc32,
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
             sp,
@@ -957,10 +968,14 @@ static void maybe_dump_ppsh_watch_context(machine_t *m, struct cpu *cpu,
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4]);
+        if (timeout_msg[0] != '\0') {
+            fprintf(stderr, "[PPSH_PC] %s msg=\"%s\"\n",
+                targets[i].label, timeout_msg);
+        }
         if (ret_count > 0) {
             size_t j;
 
-            fprintf(stderr, "[PPSH_WATCH_RET] %s", watch_targets[i].label);
+            fprintf(stderr, "[PPSH_PC_RET] %s", targets[i].label);
             for (j = 0; j < ret_count; j++) {
                 fprintf(stderr, " ret%zu=%#010x@+0x%02X callsite=0x%08X",
                     j,
@@ -977,7 +992,7 @@ static void maybe_dump_ppsh_watch_context(machine_t *m, struct cpu *cpu,
                 dump_code_window(m, ret_addrs[i] - 8u, 8u, 12u);
         }
         if (sp != 0)
-            dump_va_window(m, "ppsh_watch_stack", sp, 0x80u);
+            dump_va_window(m, "ppsh_pc_stack", sp, 0x80u);
         return;
     }
 }
@@ -3626,7 +3641,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
         return;
 
     maybe_log_boot_path_probe(m, pc32);
-    maybe_dump_ppsh_watch_context(m, cpu, pc32);
+    maybe_note_ppsh_exact_pc(m, cpu, pc32);
 }
 
 void wince_boot_note_ppsh_command(struct cpu *cpu, uint16_t cmd)
