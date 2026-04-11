@@ -3025,7 +3025,195 @@ static void maybe_note_section3_obj_pc(machine_t *m, struct cpu *cpu,
         return;
 
     pc32 = canonicalize_nk_pc(raw_pc32);
-    if (pc32 == UINT32_C(0x800A9F6C)) {
+    if (pc32 == UINT32_C(0x80086BB0)
+        || pc32 == UINT32_C(0x80086EDC)
+        || pc32 == UINT32_C(0x80086EE0)) {
+        uint32_t obj_va;
+        uint32_t aux_va;
+        uint32_t obj_00 = 0;
+        uint32_t obj_04 = 0;
+        uint32_t obj_08 = 0;
+        uint32_t obj_0c = 0;
+        uint32_t obj_10 = 0;
+        uint32_t obj_14 = 0;
+        uint32_t obj_18 = 0;
+        uint32_t obj_90 = 0;
+        bool obj_00_ok = false;
+        bool obj_04_ok = false;
+        bool obj_08_ok = false;
+        bool obj_0c_ok = false;
+        bool obj_10_ok = false;
+        bool obj_14_ok = false;
+        bool obj_18_ok = false;
+        bool obj_90_ok = false;
+        char obj_buf[16];
+        char aux_buf[16];
+        char obj_00_buf[16];
+        char obj_04_buf[16];
+        char obj_08_buf[16];
+        char obj_0c_buf[16];
+        char obj_10_buf[16];
+        char obj_14_buf[16];
+        char obj_18_buf[16];
+        char obj_90_buf[16];
+        const char *tag;
+
+        if (pc32 == UINT32_C(0x80086BB0)) {
+            obj_va = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+            aux_va = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+            tag = "caller_9a0b0";
+        } else {
+            obj_va = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+            aux_va = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+            tag = pc32 == UINT32_C(0x80086EDC)
+                ? "pre_81e44_setup"
+                : "call_81e44";
+        }
+
+        if (obj_va < UINT32_C(0x80FE9000) || obj_va >= UINT32_C(0x80FF0000))
+            return;
+
+        obj_00_ok = load_va_word(m, obj_va + 0x00u, &obj_00);
+        obj_04_ok = load_va_word(m, obj_va + 0x04u, &obj_04);
+        obj_08_ok = load_va_word(m, obj_va + 0x08u, &obj_08);
+        obj_0c_ok = load_va_word(m, obj_va + 0x0Cu, &obj_0c);
+        obj_10_ok = load_va_word(m, obj_va + 0x10u, &obj_10);
+        obj_14_ok = load_va_word(m, obj_va + 0x14u, &obj_14);
+        obj_18_ok = load_va_word(m, obj_va + 0x18u, &obj_18);
+        obj_90_ok = load_va_word(m, obj_va + 0x90u, &obj_90);
+
+        fprintf(stderr,
+            "[WINCE_SEC3_SRC] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+            " obj=%s aux=%s"
+            " obj+00=%s obj+04=%s obj+08=%s obj+0c=%s"
+            " obj+10=%s obj+14=%s obj+18=%s obj+90=%s"
+            " watch=%u watch_va=0x%08X sec0=0x%08X sec3=0x%08X\n",
+            tag,
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            format_word_or_unknown(obj_buf, sizeof(obj_buf), true, obj_va),
+            format_word_or_unknown(aux_buf, sizeof(aux_buf), true, aux_va),
+            format_word_or_unknown(obj_00_buf, sizeof(obj_00_buf), obj_00_ok, obj_00),
+            format_word_or_unknown(obj_04_buf, sizeof(obj_04_buf), obj_04_ok, obj_04),
+            format_word_or_unknown(obj_08_buf, sizeof(obj_08_buf), obj_08_ok, obj_08),
+            format_word_or_unknown(obj_0c_buf, sizeof(obj_0c_buf), obj_0c_ok, obj_0c),
+            format_word_or_unknown(obj_10_buf, sizeof(obj_10_buf), obj_10_ok, obj_10),
+            format_word_or_unknown(obj_14_buf, sizeof(obj_14_buf), obj_14_ok, obj_14),
+            format_word_or_unknown(obj_18_buf, sizeof(obj_18_buf), obj_18_ok, obj_18),
+            format_word_or_unknown(obj_90_buf, sizeof(obj_90_buf), obj_90_ok, obj_90),
+            m->wince.section3_retobj_watch_armed ? 1u : 0u,
+            m->wince.section3_retobj_watch_va,
+            load_pa_word(m, 0x18C0u),
+            load_pa_word(m, 0x18CCu));
+        if (!m->wince.section3_retobj_watch_armed) {
+            m->wince.section3_retobj_watch_armed = true;
+            m->wince.section3_retobj_watch_va = obj_va;
+            m->wince.section3_retobj_write_count = 0;
+            fprintf(stderr,
+                "[WINCE_SEC3_RETOBJ_ARM] va=0x%08X pa=0x%08X"
+                " PC=0x%08X RA=0x%08X source=%s\n",
+                obj_va,
+                table_va_to_pa(obj_va),
+                pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                tag);
+            dump_section3_retobj_window(m, tag, obj_va);
+        }
+        m->wince.section3_source_probe_count++;
+        return;
+    }
+
+    if (pc32 == UINT32_C(0x8009A0B0)) {
+        uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        uint32_t a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+        uint32_t a2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+        uint32_t a1_00 = 0;
+        uint32_t a1_04 = 0;
+        uint32_t a1_08 = 0;
+        uint32_t a1_0c = 0;
+        uint32_t a1_10 = 0;
+        uint32_t a1_14 = 0;
+        uint32_t a1_18 = 0;
+        uint32_t a1_90 = 0;
+        bool a1_00_ok = false;
+        bool a1_04_ok = false;
+        bool a1_08_ok = false;
+        bool a1_0c_ok = false;
+        bool a1_10_ok = false;
+        bool a1_14_ok = false;
+        bool a1_18_ok = false;
+        bool a1_90_ok = false;
+        char a0_buf[16];
+        char a1_buf[16];
+        char a2_buf[16];
+        char a1_00_buf[16];
+        char a1_04_buf[16];
+        char a1_08_buf[16];
+        char a1_0c_buf[16];
+        char a1_10_buf[16];
+        char a1_14_buf[16];
+        char a1_18_buf[16];
+        char a1_90_buf[16];
+
+        if (a0 != UINT32_C(0x80074C38) && a0 != UINT32_C(0x80074C50))
+            return;
+        if (a1 < UINT32_C(0x80000000) || a1 >= UINT32_C(0x81000000))
+            return;
+
+        a1_00_ok = load_va_word(m, a1 + 0x00u, &a1_00);
+        a1_04_ok = load_va_word(m, a1 + 0x04u, &a1_04);
+        a1_08_ok = load_va_word(m, a1 + 0x08u, &a1_08);
+        a1_0c_ok = load_va_word(m, a1 + 0x0Cu, &a1_0c);
+        a1_10_ok = load_va_word(m, a1 + 0x10u, &a1_10);
+        a1_14_ok = load_va_word(m, a1 + 0x14u, &a1_14);
+        a1_18_ok = load_va_word(m, a1 + 0x18u, &a1_18);
+        a1_90_ok = load_va_word(m, a1 + 0x90u, &a1_90);
+
+        if (a0 == UINT32_C(0x80074C38)
+            && !m->wince.section3_retobj_watch_armed
+            && a1 >= UINT32_C(0x80660000)) {
+            m->wince.section3_retobj_watch_armed = true;
+            m->wince.section3_retobj_watch_va = a1;
+            m->wince.section3_retobj_write_count = 0;
+            fprintf(stderr,
+                "[WINCE_SEC3_RETOBJ_ARM] va=0x%08X pa=0x%08X"
+                " PC=0x%08X RA=0x%08X source=create_handle\n",
+                a1,
+                table_va_to_pa(a1),
+                pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            dump_section3_retobj_window(m, "create_handle", a1);
+        }
+
+        fprintf(stderr,
+            "[WINCE_SEC3_OBJ] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+            " a0=%s a1=%s a2=%s"
+            " a1+00=%s a1+04=%s a1+08=%s a1+0c=%s"
+            " a1+10=%s a1+14=%s a1+18=%s a1+90=%s"
+            " watch=%u watch_va=0x%08X sec0=0x%08X sec3=0x%08X\n",
+            a0 == UINT32_C(0x80074C38) ? "create_4c38" : "create_4c50",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            format_word_or_unknown(a0_buf, sizeof(a0_buf), true, a0),
+            format_word_or_unknown(a1_buf, sizeof(a1_buf), true, a1),
+            format_word_or_unknown(a2_buf, sizeof(a2_buf), true, a2),
+            format_word_or_unknown(a1_00_buf, sizeof(a1_00_buf), a1_00_ok, a1_00),
+            format_word_or_unknown(a1_04_buf, sizeof(a1_04_buf), a1_04_ok, a1_04),
+            format_word_or_unknown(a1_08_buf, sizeof(a1_08_buf), a1_08_ok, a1_08),
+            format_word_or_unknown(a1_0c_buf, sizeof(a1_0c_buf), a1_0c_ok, a1_0c),
+            format_word_or_unknown(a1_10_buf, sizeof(a1_10_buf), a1_10_ok, a1_10),
+            format_word_or_unknown(a1_14_buf, sizeof(a1_14_buf), a1_14_ok, a1_14),
+            format_word_or_unknown(a1_18_buf, sizeof(a1_18_buf), a1_18_ok, a1_18),
+            format_word_or_unknown(a1_90_buf, sizeof(a1_90_buf), a1_90_ok, a1_90),
+            m->wince.section3_retobj_watch_armed ? 1u : 0u,
+            m->wince.section3_retobj_watch_va,
+            load_pa_word(m, 0x18C0u),
+            load_pa_word(m, 0x18CCu));
+        m->wince.section3_obj_probe_count++;
+        return;
+    } else if (pc32 == UINT32_C(0x800A9F6C)) {
         obj = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
         obj_ok = obj >= UINT32_C(0x80000000) && obj < UINT32_C(0x81000000);
         if (!obj_ok)
