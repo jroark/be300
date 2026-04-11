@@ -1789,6 +1789,81 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
     }
 }
 
+static void maybe_note_section3_install_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+    uint32_t ra;
+    uint32_t sp;
+    uint32_t sec3;
+    uint32_t slot0;
+    uint32_t slot694;
+    uint32_t slot7e4;
+    uint32_t slot7e8;
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.section3_install_probe_count >= 24)
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    ra = canonicalize_nk_pc((uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+
+    switch (pc32) {
+    case 0x800975E4u:
+    case 0x8009769Cu:
+    case 0x800976A4u:
+    case 0x800976D0u:
+    case 0x800A335Cu:
+    case 0x80099924u:
+        break;
+    default:
+        return;
+    }
+
+    if (pc32 == 0x800A335Cu && ra != 0x800976A4u)
+        return;
+    if (pc32 == 0x80099924u && ra != 0x800976D8u)
+        return;
+
+    sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+    sec3 = load_pa_word(m, 0x18CCu);
+    slot0 = load_pa_word(m, 0x00FE5000u);
+    slot694 = load_pa_word(m, 0x00FE5694u);
+    slot7e4 = load_pa_word(m, 0x00FE57E4u);
+    slot7e8 = load_pa_word(m, 0x00FE57E8u);
+
+    fprintf(stderr,
+        "[WINCE_SEC3_PATH] pc=0x%08X ra=0x%08X sp=0x%08X"
+        " v0=0x%08X v1=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+        " sec3=0x%08X armed=%u page0=0x%08X p694=0x%08X p7e4=0x%08X"
+        " p7e8=0x%08X\n",
+        pc32,
+        ra,
+        sp,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+        sec3,
+        m->wince.section3_page_watch_armed ? 1u : 0u,
+        slot0,
+        slot694,
+        slot7e4,
+        slot7e8);
+
+    if (pc32 == 0x800976A4u || pc32 == 0x800976D0u
+        || pc32 == 0x80099924u) {
+        log_l2_table_state(m, "sec3_path", UINT32_C(0x80FE5000),
+            UINT32_C(0x01F94B50));
+        log_section0_focus_window(m, "sec3_path", UINT32_C(0x80FE5000));
+    }
+
+    m->wince.section3_install_probe_count++;
+}
+
 static bool sample_framebuffer(machine_t *m, uint8_t *sample_out)
 {
     struct vfb_data *fb;
@@ -4657,6 +4732,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_log_boot_path_probe(m, pc32);
     maybe_note_ppsh_exact_pc(m, cpu, pc32);
     maybe_note_exception_hot_pc(m, cpu, pc32);
+    maybe_note_section3_install_pc(m, cpu, pc32);
 }
 
 void wince_boot_note_ppsh_command(struct cpu *cpu, uint16_t cmd)

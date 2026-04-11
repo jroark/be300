@@ -192,6 +192,7 @@ typedef struct {
     uint16_t section3_focus_diag_count;
     uint16_t section3_raw_diag_count;
     uint16_t section3_page_diag_count;
+    uint16_t section3_install_probe_count;
     bool     section3_page_watch_armed;
     bool     systempatch_seen;
     bool     systempatch_first_exception_logged;
