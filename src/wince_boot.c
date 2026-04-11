@@ -89,6 +89,8 @@ static void maybe_dump_toc_summary(machine_t *m, uint32_t ptoc);
 static bool try_discover_ptoc(machine_t *m, uint32_t *ptoc_out);
 static void wince_fb_write_observer(struct vfb_data *fb, struct cpu *cpu,
     void *opaque, uint64_t relative_addr, size_t len);
+static void dump_va_window(machine_t *m, const char *label, uint32_t va,
+    uint32_t size);
 static void dump_code_window(machine_t *m, uint32_t pc, size_t before_words,
     size_t after_words);
 static bool load_utf16_ascii(machine_t *m, struct cpu *cpu, uint32_t va,
@@ -537,6 +539,10 @@ static void maybe_flush_ppsh_serial_line(machine_t *m)
     uint32_t fb_events;
     uint32_t callsite_first;
     uint32_t callsite_last;
+    uint32_t ret1 = 0;
+    uint32_t ret2 = 0;
+    char a0_ascii[96];
+    char s0_ascii[96];
 
     if (!m || m->wince.ppsh_serial_line_len == 0)
         return;
@@ -558,6 +564,10 @@ static void maybe_flush_ppsh_serial_line(machine_t *m)
         ? m->wince.ppsh_serial_last_ra - 8u : 0u;
     fb_events = (uint32_t)m->wince.fb_watch_report_count
         + (uint32_t)m->wince.fb_write_diag_count;
+    if (m->wince.ppsh_serial_first_sp != 0) {
+        (void)load_va_word(m, m->wince.ppsh_serial_first_sp + 0x14u, &ret1);
+        (void)load_va_word(m, m->wince.ppsh_serial_first_sp + 0x2Cu, &ret2);
+    }
 
     fprintf(stderr,
         "[PPSH_UART] #%u first_pc=0x%08X first_ra=0x%08X"
@@ -580,12 +590,74 @@ static void maybe_flush_ppsh_serial_line(machine_t *m)
         (unsigned)count_active_sections(m),
         (unsigned)fb_events,
         m->wince.ppsh_serial_line);
+    fprintf(stderr,
+        "[PPSH_UART] #%u regs sp=0x%08X"
+        " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+        " v0=0x%08X v1=0x%08X"
+        " s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X s4=0x%08X t9=0x%08X"
+        " stack=%08X/%08X/%08X/%08X"
+        " ret1=0x%08X ret2=0x%08X\n",
+        (unsigned)m->wince.ppsh_serial_msg_count,
+        m->wince.ppsh_serial_first_sp,
+        m->wince.ppsh_serial_first_a0,
+        m->wince.ppsh_serial_first_a1,
+        m->wince.ppsh_serial_first_a2,
+        m->wince.ppsh_serial_first_a3,
+        m->wince.ppsh_serial_first_v0,
+        m->wince.ppsh_serial_first_v1,
+        m->wince.ppsh_serial_first_s0,
+        m->wince.ppsh_serial_first_s1,
+        m->wince.ppsh_serial_first_s2,
+        m->wince.ppsh_serial_first_s3,
+        m->wince.ppsh_serial_first_s4,
+        m->wince.ppsh_serial_first_t9,
+        m->wince.ppsh_serial_stack0,
+        m->wince.ppsh_serial_stack1,
+        m->wince.ppsh_serial_stack2,
+        m->wince.ppsh_serial_stack3,
+        ret1,
+        ret2);
 
-    if (callsite_last != 0 && callsite_last != m->wince.ppsh_last_debug_callsite
+    memset(a0_ascii, 0, sizeof(a0_ascii));
+    memset(s0_ascii, 0, sizeof(s0_ascii));
+    if (m->cpu && load_utf16_ascii(m, m->cpu, m->wince.ppsh_serial_first_a0,
+            a0_ascii, sizeof(a0_ascii))) {
+        fprintf(stderr, "[PPSH_UART] #%u a0_utf16=\"%s\"\n",
+            (unsigned)m->wince.ppsh_serial_msg_count, a0_ascii);
+    }
+    if (m->cpu && load_utf16_ascii(m, m->cpu, m->wince.ppsh_serial_first_s0,
+            s0_ascii, sizeof(s0_ascii))) {
+        fprintf(stderr, "[PPSH_UART] #%u s0_utf16=\"%s\"\n",
+            (unsigned)m->wince.ppsh_serial_msg_count, s0_ascii);
+    }
+
+    if (((m->wince.ppsh_serial_first_a0 != 0
+          && m->wince.ppsh_serial_first_a0 != m->wince.ppsh_last_callsite_fmt)
+         || (m->wince.ppsh_serial_first_sp != 0
+             && m->wince.ppsh_serial_first_sp != m->wince.ppsh_last_serial_dump_sp))
+        && m->wince.ppsh_debug_dump_count < 8) {
+        m->wince.ppsh_last_callsite_fmt = m->wince.ppsh_serial_first_a0;
+        m->wince.ppsh_last_serial_dump_sp = m->wince.ppsh_serial_first_sp;
+        m->wince.ppsh_last_debug_callsite = callsite_last;
+        m->wince.ppsh_debug_dump_count++;
+        dump_code_window(m, callsite_last, 8u, 8u);
+        dump_code_window(m, m->wince.ppsh_serial_first_pc, 4u, 8u);
+        dump_va_window(m, "ppsh_uart_a0",
+            m->wince.ppsh_serial_first_a0 & ~UINT32_C(0x1F), 0x60u);
+        if (m->wince.ppsh_serial_first_sp != 0)
+            dump_va_window(m, "ppsh_uart_stack",
+                m->wince.ppsh_serial_first_sp, 0x40u);
+        if (ret1 >= UINT32_C(0x80000000))
+            dump_code_window(m, ret1 - 8u, 4u, 10u);
+        if (ret2 >= UINT32_C(0x80000000))
+            dump_code_window(m, ret2 - 8u, 4u, 10u);
+    } else if (callsite_last != 0
+        && callsite_last != m->wince.ppsh_last_debug_callsite
         && m->wince.ppsh_debug_dump_count < 8) {
         m->wince.ppsh_last_debug_callsite = callsite_last;
         m->wince.ppsh_debug_dump_count++;
-        dump_code_window(m, callsite_last, 2u, 8u);
+        dump_code_window(m, callsite_last, 8u, 8u);
+        dump_code_window(m, m->wince.ppsh_serial_first_pc, 4u, 8u);
     }
 
     m->wince.ppsh_serial_line_len = 0;
@@ -3374,10 +3446,60 @@ void wince_boot_note_serial_tx(struct cpu *cpu, unsigned char ch)
     if (len == 0) {
         m->wince.ppsh_serial_first_pc = (uint32_t)cpu->pc;
         m->wince.ppsh_serial_first_ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+        m->wince.ppsh_serial_first_sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+        m->wince.ppsh_serial_first_a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        m->wince.ppsh_serial_first_a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+        m->wince.ppsh_serial_first_a2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+        m->wince.ppsh_serial_first_a3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3];
+        m->wince.ppsh_serial_first_v0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0];
+        m->wince.ppsh_serial_first_v1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1];
+        m->wince.ppsh_serial_first_s0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0];
+        m->wince.ppsh_serial_first_s1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1];
+        m->wince.ppsh_serial_first_s2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2];
+        m->wince.ppsh_serial_first_s3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3];
+        m->wince.ppsh_serial_first_s4 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4];
+        m->wince.ppsh_serial_first_t9 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T9];
+        m->wince.ppsh_serial_stack0 = 0;
+        m->wince.ppsh_serial_stack1 = 0;
+        m->wince.ppsh_serial_stack2 = 0;
+        m->wince.ppsh_serial_stack3 = 0;
+        (void)load_va_word(m, m->wince.ppsh_serial_first_sp + 0u,
+            &m->wince.ppsh_serial_stack0);
+        (void)load_va_word(m, m->wince.ppsh_serial_first_sp + 4u,
+            &m->wince.ppsh_serial_stack1);
+        (void)load_va_word(m, m->wince.ppsh_serial_first_sp + 8u,
+            &m->wince.ppsh_serial_stack2);
+        (void)load_va_word(m, m->wince.ppsh_serial_first_sp + 12u,
+            &m->wince.ppsh_serial_stack3);
     } else if (len >= sizeof(m->wince.ppsh_serial_line) - 1u) {
         maybe_flush_ppsh_serial_line(m);
         m->wince.ppsh_serial_first_pc = (uint32_t)cpu->pc;
         m->wince.ppsh_serial_first_ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+        m->wince.ppsh_serial_first_sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+        m->wince.ppsh_serial_first_a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        m->wince.ppsh_serial_first_a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+        m->wince.ppsh_serial_first_a2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+        m->wince.ppsh_serial_first_a3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3];
+        m->wince.ppsh_serial_first_v0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0];
+        m->wince.ppsh_serial_first_v1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1];
+        m->wince.ppsh_serial_first_s0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0];
+        m->wince.ppsh_serial_first_s1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1];
+        m->wince.ppsh_serial_first_s2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2];
+        m->wince.ppsh_serial_first_s3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3];
+        m->wince.ppsh_serial_first_s4 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4];
+        m->wince.ppsh_serial_first_t9 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T9];
+        m->wince.ppsh_serial_stack0 = 0;
+        m->wince.ppsh_serial_stack1 = 0;
+        m->wince.ppsh_serial_stack2 = 0;
+        m->wince.ppsh_serial_stack3 = 0;
+        (void)load_va_word(m, m->wince.ppsh_serial_first_sp + 0u,
+            &m->wince.ppsh_serial_stack0);
+        (void)load_va_word(m, m->wince.ppsh_serial_first_sp + 4u,
+            &m->wince.ppsh_serial_stack1);
+        (void)load_va_word(m, m->wince.ppsh_serial_first_sp + 8u,
+            &m->wince.ppsh_serial_stack2);
+        (void)load_va_word(m, m->wince.ppsh_serial_first_sp + 12u,
+            &m->wince.ppsh_serial_stack3);
         len = 0;
     }
 

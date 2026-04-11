@@ -113,8 +113,27 @@ typedef struct {
     uint32_t ppsh_serial_first_ra;
     uint32_t ppsh_serial_last_pc;
     uint32_t ppsh_serial_last_ra;
+    uint32_t ppsh_serial_first_sp;
+    uint32_t ppsh_serial_first_a0;
+    uint32_t ppsh_serial_first_a1;
+    uint32_t ppsh_serial_first_a2;
+    uint32_t ppsh_serial_first_a3;
+    uint32_t ppsh_serial_first_v0;
+    uint32_t ppsh_serial_first_v1;
+    uint32_t ppsh_serial_first_s0;
+    uint32_t ppsh_serial_first_s1;
+    uint32_t ppsh_serial_first_s2;
+    uint32_t ppsh_serial_first_s3;
+    uint32_t ppsh_serial_first_s4;
+    uint32_t ppsh_serial_first_t9;
+    uint32_t ppsh_serial_stack0;
+    uint32_t ppsh_serial_stack1;
+    uint32_t ppsh_serial_stack2;
+    uint32_t ppsh_serial_stack3;
     uint16_t ppsh_serial_line_len;
     uint16_t ppsh_serial_msg_count;
+    uint32_t ppsh_last_callsite_fmt;
+    uint32_t ppsh_last_serial_dump_sp;
     char     ppsh_serial_line[160];
 
     /* Temporary instruction-by-instruction trace window around NK pre-init */
