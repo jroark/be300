@@ -15,6 +15,7 @@
 #include "be300.h"
 #include "host_io.h"
 #include "loader.h"
+#include "ppsh.h"
 #include "ui.h"
 #include "wince_boot.h"
 
@@ -71,6 +72,40 @@ static void be300_serial_ring_push(machine_t *m, int ch)
 static void be300_serial_sink(int ch, void *user_data)
 {
     be300_serial_ring_push((machine_t *)user_data, ch);
+}
+
+static void be300_ppsh_poll_host_input(machine_t *m)
+{
+    unsigned char raw[128];
+    uint8_t cooked[256];
+    size_t raw_len;
+    size_t cooked_len = 0;
+    size_t queued;
+
+    if (!m || !m->cfg.enable_ppsh || !be300_ppsh_transport_ready())
+        return;
+
+    raw_len = host_io_read_stdin_nonblocking(raw, sizeof(raw));
+    if (raw_len == 0)
+        return;
+
+    for (size_t i = 0; i < raw_len && cooked_len < sizeof(cooked); i++) {
+        unsigned char ch = raw[i];
+
+        if (ch == '\n') {
+            if (cooked_len == 0 || cooked[cooked_len - 1] != '\r')
+                cooked[cooked_len++] = '\r';
+        } else {
+            cooked[cooked_len++] = ch;
+        }
+    }
+
+    queued = be300_ppsh_queue_host_input(cooked, cooked_len);
+    if (m->cfg.log_mmio && queued > 0) {
+        fprintf(stderr,
+            "[PPSH] queued %zu host byte%s for guest transport\n",
+            queued, queued == 1 ? "" : "s");
+    }
 }
 
 static void be300_register_linux_input_if_needed(machine_t *m)
@@ -582,8 +617,16 @@ static void be300_runtime_start(machine_t *m)
     if (!m->web_mode)
         signal(SIGINT, be300_handle_stop_signal);
 
+    host_io_reset_stdin_state();
     host_io_set_serial_sink(be300_serial_sink, m);
     host_io_set_stdout_enabled(m->mirror_serial_to_stdout);
+    host_io_set_console_stdin_enabled(!m->cfg.enable_ppsh);
+
+    if (m->cfg.enable_ppsh) {
+        fprintf(stderr,
+            "[PPSH] console bridge enabled"
+            " (stdin is line-buffered unless the caller supplies raw input)\n");
+    }
 }
 
 static void be300_runtime_finalize(machine_t *m)
@@ -600,6 +643,7 @@ static void be300_runtime_finalize(machine_t *m)
     timer_stop();
     host_io_set_serial_sink(NULL, NULL);
     host_io_set_stdout_enabled(true);
+    host_io_set_console_stdin_enabled(true);
 
     emul_executing = false;
     signal(SIGTERM, SIG_DFL);
@@ -1110,6 +1154,7 @@ static bool be300_run_batch(machine_t *m)
     }
 
     console_flush();
+    be300_ppsh_poll_host_input(m);
     if (m->use_builtin_ui)
         ui_update(m);
 
