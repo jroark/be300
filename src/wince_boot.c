@@ -23,6 +23,8 @@
 
 static machine_t *g_active_wince_machine = NULL;
 static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
+static const char *format_word_or_unknown(char *buf, size_t buf_size, bool ok,
+    uint32_t value);
 
 #define WINCE_COLD_LATE_PROBE_LOGGED UINT32_C(0x00200000)
 #define WINCE_PATH_PROBE_77820      UINT64_C(0x0000000000000001)
@@ -104,6 +106,7 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
     uint32_t old_flag, uint32_t new_flag);
 static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
+static void log_ppsh_timeout_state(machine_t *m, const char *tag);
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -806,7 +809,6 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
     size_t ret_count = 0;
     bool has_97ec8 = false;
     bool has_81a68 = false;
-    char timeout_msg[96];
     size_t i;
 
     if (!m || !cpu)
@@ -878,16 +880,15 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
         dump_code_window(m, ret_addrs[2] - 8u, 8u, 12u);
     if (ret_count > 3 && ret_addrs[3] >= 8u)
         dump_code_window(m, ret_addrs[3] - 8u, 8u, 12u);
-    memset(timeout_msg, 0, sizeof(timeout_msg));
+    if (m->wince.ppsh_flag_transition_count <= 6u)
+        log_ppsh_timeout_state(m, "flag");
     if (!m->wince.ppsh_timeout_path_dumped
         && (has_97ec8 || has_81a68)) {
         m->wince.ppsh_timeout_path_dumped = true;
-        (void)load_guest_c_string(m, UINT32_C(0x806697A0),
-            timeout_msg, sizeof(timeout_msg));
         fprintf(stderr,
             "[PPSH_PATH] ppfs_timeout pc=0x%08X ra=0x%08X sp=0x%08X"
             " ret_97ec8=%d ret_81a68=%d seqs=%u last_cmd=0x%04X"
-            " polls=%u flags=%u/%u msg=\"%s\"\n",
+            " polls=%u flags=%u/%u\n",
             pc, ra, sp,
             has_97ec8 ? 1 : 0,
             has_81a68 ? 1 : 0,
@@ -895,15 +896,16 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
             (unsigned)m->wince.ppsh_seq_cmd,
             (unsigned)m->wince.ppsh_poll_episode_count,
             (unsigned)m->wince.ppsh_flag_set_count,
-            (unsigned)m->wince.ppsh_flag_clear_count,
-            timeout_msg[0] != '\0' ? timeout_msg : "?");
+            (unsigned)m->wince.ppsh_flag_clear_count);
+        log_ppsh_timeout_state(m, "timeout");
         dump_code_window(m, 0x80081A60u, 8u, 12u);
         dump_code_window(m, 0x80097EC0u, 8u, 12u);
         dump_code_window(m, 0x800815E0u, 8u, 12u);
         dump_code_window(m, 0x8008C564u, 8u, 12u);
         dump_code_window(m, 0x80099924u, 8u, 12u);
         dump_code_window(m, 0x800A11B0u, 8u, 12u);
-        dump_va_window(m, "ppsh_timeout_msg", 0x80669780u, 0x80u);
+        dump_va_window(m, "ppsh_evt_97a0", UINT32_C(0x806697A0), 0x40u);
+        dump_va_window(m, "ppsh_evt_97c0", UINT32_C(0x806697C0), 0x40u);
     }
     if (sp != 0)
         dump_va_window(m, "ppsh_flag_stack", sp, 0x40u);
@@ -926,7 +928,6 @@ static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
     uint32_t ret_offs[6] = {0};
     uint32_t ret_addrs[6] = {0};
     size_t ret_count;
-    char timeout_msg[96];
     size_t i;
 
     if (!m || !cpu || !ppsh_trace_enabled(m))
@@ -943,11 +944,6 @@ static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
         sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
         ret_count = collect_stack_return_sites(m, sp, ret_offs, ret_addrs,
             sizeof(ret_addrs) / sizeof(ret_addrs[0]), 0x80u);
-        memset(timeout_msg, 0, sizeof(timeout_msg));
-        if (pc32 == UINT32_C(0x80097EC0)) {
-            (void)load_guest_c_string(m, UINT32_C(0x806697A0),
-                timeout_msg, sizeof(timeout_msg));
-        }
 
         fprintf(stderr,
             "[PPSH_PC] %s pc=0x%08X ra=0x%08X sp=0x%08X"
@@ -968,10 +964,7 @@ static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4]);
-        if (timeout_msg[0] != '\0') {
-            fprintf(stderr, "[PPSH_PC] %s msg=\"%s\"\n",
-                targets[i].label, timeout_msg);
-        }
+        log_ppsh_timeout_state(m, targets[i].label);
         if (ret_count > 0) {
             size_t j;
 
@@ -995,6 +988,78 @@ static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
             dump_va_window(m, "ppsh_pc_stack", sp, 0x80u);
         return;
     }
+}
+
+static void log_ppsh_timeout_state(machine_t *m, const char *tag)
+{
+    uint32_t db08 = 0;
+    uint32_t db10 = 0;
+    uint32_t db34 = 0;
+    uint32_t dac0_ptr = 0;
+    uint32_t dac0_slot38 = 0;
+    uint32_t obj97a0[4] = {0};
+    uint32_t obj97c0[4] = {0};
+    bool db08_ok;
+    bool db10_ok;
+    bool db34_ok;
+    bool dac0_ok;
+    bool slot38_ok = false;
+    bool obj97a0_ok[4];
+    bool obj97c0_ok[4];
+    char db08_buf[16];
+    char db10_buf[16];
+    char db34_buf[16];
+    char dac0_buf[16];
+    char slot38_buf[16];
+    char a_buf[4][16];
+    char c_buf[4][16];
+    size_t i;
+
+    if (!m)
+        return;
+
+    db08_ok = load_va_word(m, UINT32_C(0xFFFFD808), &db08);
+    db10_ok = load_va_word(m, UINT32_C(0xFFFFDB10), &db10);
+    db34_ok = load_va_word(m, UINT32_C(0xFFFFDB34), &db34);
+    dac0_ok = load_va_word(m, UINT32_C(0xFFFFDAC0), &dac0_ptr);
+    if (dac0_ok && dac0_ptr >= UINT32_C(0x80000000)
+        && dac0_ptr < UINT32_C(0x81000000)) {
+        slot38_ok = load_va_word(m, dac0_ptr + 0x38u, &dac0_slot38);
+    }
+
+    for (i = 0; i < 4; i++) {
+        obj97a0_ok[i] = load_va_word(m, UINT32_C(0x806697A0) + (uint32_t)(i * 4u),
+            &obj97a0[i]);
+        obj97c0_ok[i] = load_va_word(m, UINT32_C(0x806697C0) + (uint32_t)(i * 4u),
+            &obj97c0[i]);
+    }
+
+    fprintf(stderr,
+        "[PPSH_STATE] tag=%s db08=%s db10=%s db34=%s dac0=%s slot38=%s"
+        " seqs=%u last_cmd=0x%04X polls=%u flags=%u/%u\n",
+        tag ? tag : "?",
+        format_word_or_unknown(db08_buf, sizeof(db08_buf), db08_ok, db08),
+        format_word_or_unknown(db10_buf, sizeof(db10_buf), db10_ok, db10),
+        format_word_or_unknown(db34_buf, sizeof(db34_buf), db34_ok, db34),
+        format_word_or_unknown(dac0_buf, sizeof(dac0_buf), dac0_ok, dac0_ptr),
+        format_word_or_unknown(slot38_buf, sizeof(slot38_buf), slot38_ok,
+            dac0_slot38),
+        (unsigned)m->wince.ppsh_cmd_seq_count,
+        (unsigned)m->wince.ppsh_seq_cmd,
+        (unsigned)m->wince.ppsh_poll_episode_count,
+        (unsigned)m->wince.ppsh_flag_set_count,
+        (unsigned)m->wince.ppsh_flag_clear_count);
+    fprintf(stderr,
+        "[PPSH_STATE] tag=%s obj97a0=%s/%s/%s/%s obj97c0=%s/%s/%s/%s\n",
+        tag ? tag : "?",
+        format_word_or_unknown(a_buf[0], sizeof(a_buf[0]), obj97a0_ok[0], obj97a0[0]),
+        format_word_or_unknown(a_buf[1], sizeof(a_buf[1]), obj97a0_ok[1], obj97a0[1]),
+        format_word_or_unknown(a_buf[2], sizeof(a_buf[2]), obj97a0_ok[2], obj97a0[2]),
+        format_word_or_unknown(a_buf[3], sizeof(a_buf[3]), obj97a0_ok[3], obj97a0[3]),
+        format_word_or_unknown(c_buf[0], sizeof(c_buf[0]), obj97c0_ok[0], obj97c0[0]),
+        format_word_or_unknown(c_buf[1], sizeof(c_buf[1]), obj97c0_ok[1], obj97c0[1]),
+        format_word_or_unknown(c_buf[2], sizeof(c_buf[2]), obj97c0_ok[2], obj97c0[2]),
+        format_word_or_unknown(c_buf[3], sizeof(c_buf[3]), obj97c0_ok[3], obj97c0[3]));
 }
 
 static bool sample_framebuffer(machine_t *m, uint8_t *sample_out)
@@ -3962,6 +4027,28 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
                 (unsigned long long)val,
                 (uint32_t)cpu->pc,
                 (unsigned long long)cpu->ninstrs);
+        }
+    }
+    if (is_write
+        && (range_overlaps(paddr, (uint64_t)len, 0x006697A0u, 0x20u)
+            || range_overlaps(paddr, (uint64_t)len, 0x006697C0u, 0x20u))) {
+        const char *obj_name = range_overlaps(paddr, (uint64_t)len,
+            0x006697A0u, 0x20u) ? "evt97a0" : "evt97c0";
+        uint32_t base = strcmp(obj_name, "evt97a0") == 0
+            ? UINT32_C(0x006697A0) : UINT32_C(0x006697C0);
+
+        m->wince.ppsh_obj_write_count++;
+        if (m->wince.ppsh_obj_write_count <= 24u) {
+            fprintf(stderr,
+                "[PPSH_OBJ] #%u %s+0x%02" PRIx64 " len=%zu val=0x%llX"
+                " PC=0x%08" PRIx64 " RA=0x%08X\n",
+                (unsigned)m->wince.ppsh_obj_write_count,
+                obj_name,
+                paddr - base,
+                len,
+                (unsigned long long)val,
+                (uint64_t)cpu->pc,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
         }
     }
 

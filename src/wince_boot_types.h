@@ -134,6 +134,7 @@ typedef struct {
     uint16_t ppsh_serial_msg_count;
     uint16_t ppsh_helper_dump_count;
     uint16_t ppsh_flag_dump_count;
+    uint16_t ppsh_obj_write_count;
     uint32_t ppsh_last_helper_pc;
     uint32_t ppsh_last_flag_pc;
     uint32_t ppsh_exact_pc_mask;
