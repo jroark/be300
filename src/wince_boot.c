@@ -2737,6 +2737,107 @@ static void maybe_note_section3_caller_pc(machine_t *m, struct cpu *cpu,
     m->wince.section3_caller_probe_count++;
 }
 
+static void maybe_note_section3_source_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+    uint32_t global_desc = 0;
+    uint32_t s0 = 0;
+    uint32_t s1 = 0;
+    uint32_t s2 = 0;
+    uint32_t s0_00 = 0;
+    uint32_t s0_04 = 0;
+    uint32_t s0_8c = 0;
+    uint32_t s0_90 = 0;
+    bool global_ok = false;
+    bool s0_00_ok = false;
+    bool s0_04_ok = false;
+    bool s0_8c_ok = false;
+    bool s0_90_ok = false;
+    char global_buf[16];
+    char s0_buf[16];
+    char s1_buf[16];
+    char s2_buf[16];
+    char s0_00_buf[16];
+    char s0_04_buf[16];
+    char s0_8c_buf[16];
+    char s0_90_buf[16];
+    const char *tag;
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.section3_source_probe_count >= 12u)
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    if (pc32 != UINT32_C(0x80081AD0)
+        && pc32 != UINT32_C(0x80081C74)
+        && pc32 != UINT32_C(0x80081CC0)) {
+        return;
+    }
+
+    if (pc32 == UINT32_C(0x80081AD0)) {
+        uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        uint32_t a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+        uint32_t a2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+        uint32_t a3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3];
+
+        if (!(a0 == 0u && a1 == 1u && a2 == 0u && a3 == 0u))
+            return;
+        global_ok = load_va_word(m, UINT32_C(0x806797DC), &global_desc);
+        fprintf(stderr,
+            "[WINCE_SEC3_SRC] tag=entry pc=0x%08X ra=0x%08X sp=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X global=%s"
+            " sec0=0x%08X sec3=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            a0, a1, a2, a3,
+            format_word_or_unknown(global_buf, sizeof(global_buf),
+                global_ok, global_desc),
+            load_pa_word(m, 0x18C0u),
+            load_pa_word(m, 0x18CCu));
+        m->wince.section3_source_probe_count++;
+        return;
+    }
+
+    tag = pc32 == UINT32_C(0x80081C74) ? "a3_zero_path" : "return_path";
+    s0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0];
+    s1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1];
+    s2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2];
+    global_ok = load_va_word(m, UINT32_C(0x806797DC), &global_desc);
+    if (s0 >= UINT32_C(0x80000000) && s0 < UINT32_C(0x81000000)) {
+        s0_00_ok = load_va_word(m, s0 + 0x00u, &s0_00);
+        s0_04_ok = load_va_word(m, s0 + 0x04u, &s0_04);
+        s0_8c_ok = load_va_word(m, s0 + 0x8Cu, &s0_8c);
+        s0_90_ok = load_va_word(m, s0 + 0x90u, &s0_90);
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC3_SRC] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " s0=%s s1=%s s2=%s global=%s"
+        " s0+00=%s s0+04=%s s0+8c=%s s0+90=%s"
+        " sec0=0x%08X sec3=0x%08X\n",
+        tag,
+        pc32,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        format_word_or_unknown(s0_buf, sizeof(s0_buf), true, s0),
+        format_word_or_unknown(s1_buf, sizeof(s1_buf), true, s1),
+        format_word_or_unknown(s2_buf, sizeof(s2_buf), true, s2),
+        format_word_or_unknown(global_buf, sizeof(global_buf),
+            global_ok, global_desc),
+        format_word_or_unknown(s0_00_buf, sizeof(s0_00_buf), s0_00_ok, s0_00),
+        format_word_or_unknown(s0_04_buf, sizeof(s0_04_buf), s0_04_ok, s0_04),
+        format_word_or_unknown(s0_8c_buf, sizeof(s0_8c_buf), s0_8c_ok, s0_8c),
+        format_word_or_unknown(s0_90_buf, sizeof(s0_90_buf), s0_90_ok, s0_90),
+        load_pa_word(m, 0x18C0u),
+        load_pa_word(m, 0x18CCu));
+    if (s1 >= UINT32_C(0x80FE9CC0) && s1 < UINT32_C(0x80FE9D00))
+        dump_section3_descriptor_window(m, tag);
+    m->wince.section3_source_probe_count++;
+}
+
 static void maybe_note_section3_owner_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32)
 {
@@ -5803,6 +5904,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_note_section3_callback_pc(m, cpu, pc32);
     maybe_note_section3_order_pc(m, cpu, pc32);
     maybe_note_section3_caller_pc(m, cpu, pc32);
+    maybe_note_section3_source_pc(m, cpu, pc32);
     maybe_note_section3_owner_pc(m, cpu, pc32);
 }
 
