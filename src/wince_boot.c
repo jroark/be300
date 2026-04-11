@@ -922,6 +922,10 @@ static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
     static const ppsh_exact_pc_t targets[] = {
         { 0x80081A60u, "ppfs_list_walk" },
         { 0x80097EC0u, "ppfs_timeout_dispatch" },
+        { 0x8008C564u, "ppfs_tlb_reset" },
+        { 0x80099924u, "ppfs_evt_update" },
+        { 0x800A12B8u, "ppfs_cond_store" },
+        { 0x800A12E0u, "ppfs_inc_counter" },
     };
     uint32_t pc32;
     uint32_t sp;
@@ -932,9 +936,26 @@ static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
 
     if (!m || !cpu || !ppsh_trace_enabled(m))
         return;
+    if (m->wince.ppsh_cmd_seq_count == 0
+        && m->wince.ppsh_flag_transition_count == 0)
+        return;
 
     pc32 = canonicalize_nk_pc(raw_pc32);
     for (i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        uint32_t a0;
+        uint32_t a0w0 = 0;
+        uint32_t a0w1 = 0;
+        uint32_t a0w2 = 0;
+        uint32_t a0w3 = 0;
+        bool a0w0_ok = false;
+        bool a0w1_ok = false;
+        bool a0w2_ok = false;
+        bool a0w3_ok = false;
+        char a0w0_buf[16];
+        char a0w1_buf[16];
+        char a0w2_buf[16];
+        char a0w3_buf[16];
+
         if (pc32 != targets[i].pc)
             continue;
         if ((m->wince.ppsh_exact_pc_mask & (UINT32_C(1) << i)) != 0)
@@ -942,8 +963,15 @@ static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
 
         m->wince.ppsh_exact_pc_mask |= (UINT32_C(1) << i);
         sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+        a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
         ret_count = collect_stack_return_sites(m, sp, ret_offs, ret_addrs,
             sizeof(ret_addrs) / sizeof(ret_addrs[0]), 0x80u);
+        if (a0 != 0) {
+            a0w0_ok = load_va_word(m, a0 + 0u, &a0w0);
+            a0w1_ok = load_va_word(m, a0 + 4u, &a0w1);
+            a0w2_ok = load_va_word(m, a0 + 8u, &a0w2);
+            a0w3_ok = load_va_word(m, a0 + 12u, &a0w3);
+        }
 
         fprintf(stderr,
             "[PPSH_PC] %s pc=0x%08X ra=0x%08X sp=0x%08X"
@@ -964,6 +992,13 @@ static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4]);
+        fprintf(stderr,
+            "[PPSH_PC] %s a0_words=%s/%s/%s/%s\n",
+            targets[i].label,
+            format_word_or_unknown(a0w0_buf, sizeof(a0w0_buf), a0w0_ok, a0w0),
+            format_word_or_unknown(a0w1_buf, sizeof(a0w1_buf), a0w1_ok, a0w1),
+            format_word_or_unknown(a0w2_buf, sizeof(a0w2_buf), a0w2_ok, a0w2),
+            format_word_or_unknown(a0w3_buf, sizeof(a0w3_buf), a0w3_ok, a0w3));
         log_ppsh_timeout_state(m, targets[i].label);
         if (ret_count > 0) {
             size_t j;
