@@ -196,6 +196,8 @@ typedef struct {
     uint16_t section3_owner_write_count;
     uint16_t section3_desc_write_count;
     uint16_t section3_callback_probe_count;
+    uint16_t section3_head_probe_count;
+    uint16_t section3_head_write_count;
     bool     section3_page_watch_armed;
     bool     section3_step_trace_pending;
     bool     section3_step_trace_active;
