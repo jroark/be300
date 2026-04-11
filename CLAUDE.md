@@ -56,6 +56,8 @@ This applies to: code changes, diagnostic instrumentation, failed experiments, d
 
 Don't commit files unrelated to the change or build/testing artifacts
 
+**Commit message quoting:** Always use double quotes for `git commit -m "..."`. Never use single quotes, heredocs, or `$(cat <<'EOF'...)` — apostrophes and special characters in the message body break single-quoted shells. Keep commit message text free of literal single quotes (use `--` instead of `'`, or rephrase).
+
 ## Branch
 Stay on the current branch, don't create PRs.
 
