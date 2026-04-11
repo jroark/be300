@@ -2205,6 +2205,13 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
     uint32_t pc32, uint32_t sec3)
 {
     uint32_t raw_key;
+    uint32_t frame_ra = 0;
+    uint32_t frame_s0 = 0;
+    uint32_t frame_s1 = 0;
+    uint32_t frame_s2 = 0;
+    uint32_t frame_s3 = 0;
+    uint32_t slot_ptr = 0;
+    uint32_t slot_words[4] = {0};
     uint32_t key;
     uint32_t translated = 0;
     uint32_t masked = 0;
@@ -2217,6 +2224,13 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
     uint32_t obj = 0;
     uint32_t obj_90 = 0;
     bool translated_ok = false;
+    bool frame_ra_ok = false;
+    bool frame_s0_ok = false;
+    bool frame_s1_ok = false;
+    bool frame_s2_ok = false;
+    bool frame_s3_ok = false;
+    bool slot_ptr_ok = false;
+    bool slot_word_ok[4] = { false, false, false, false };
     bool base_ok = false;
     bool lo_ok = false;
     bool hi_ok = false;
@@ -2229,6 +2243,13 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
     unsigned char state_byte = 0;
     const char *reason = "ok";
     char key_buf[16];
+    char frame_ra_buf[16];
+    char frame_s0_buf[16];
+    char frame_s1_buf[16];
+    char frame_s2_buf[16];
+    char frame_s3_buf[16];
+    char slot_ptr_buf[16];
+    char slot_word_buf[4][16];
     char masked_buf[16];
     char base_buf[16];
     char lo_buf[16];
@@ -2248,6 +2269,24 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
         return;
 
     raw_key = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+    frame_s0_ok = load_va_word(m,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x14u, &frame_s0);
+    frame_s1_ok = load_va_word(m,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x18u, &frame_s1);
+    frame_s2_ok = load_va_word(m,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x1Cu, &frame_s2);
+    frame_s3_ok = load_va_word(m,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x20u, &frame_s3);
+    frame_ra_ok = load_va_word(m,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x24u, &frame_ra);
+    slot_ptr_ok = load_va_word(m,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x5Cu, &slot_ptr);
+    if (slot_ptr_ok && slot_ptr != 0u) {
+        for (unsigned i = 0; i < 4u; i++) {
+            slot_word_ok[i] = load_va_word(m,
+                slot_ptr + (uint32_t)(i * 4u), &slot_words[i]);
+        }
+    }
     key = raw_key;
 
     if (key >= 64u && key < 96u) {
@@ -2308,10 +2347,20 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
         snprintf(state_buf, sizeof(state_buf), "%02X", state_byte);
     else
         snprintf(state_buf, sizeof(state_buf), "??");
+    for (unsigned i = 0; i < 4u; i++) {
+        if (slot_word_ok[i])
+            snprintf(slot_word_buf[i], sizeof(slot_word_buf[i]), "%08X",
+                slot_words[i]);
+        else
+            snprintf(slot_word_buf[i], sizeof(slot_word_buf[i]), "????????");
+    }
 
     fprintf(stderr,
         "[WINCE_SEC3_GATE] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
-        " a0=0x%08X a1=0x%08X v0=0x%08X translated=%u key=%s masked=%s"
+        " a0=0x%08X a1=0x%08X v0=0x%08X"
+        " frame_ra=%s frame_s0=%s frame_s1=%s frame_s2=%s frame_s3=%s"
+        " translated=%u key=%s masked=%s"
+        " slot=%s slot0=%s slot1=%s slot2=%s slot3=%s"
         " base=%s lo=%s hi=%s entry=%s entry+8=%s state_ptr=%s state5=%s"
         " obj=%s obj+90=%s sec0=0x%08X sec3=0x%08X reason=%s\n",
         pc32 == UINT32_C(0x8009A9CC) ? "a9cc" : "a7f8",
@@ -2321,9 +2370,21 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
         raw_key,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+        format_word_or_unknown(frame_ra_buf, sizeof(frame_ra_buf),
+            frame_ra_ok, frame_ra),
+        format_word_or_unknown(frame_s0_buf, sizeof(frame_s0_buf),
+            frame_s0_ok, frame_s0),
+        format_word_or_unknown(frame_s1_buf, sizeof(frame_s1_buf),
+            frame_s1_ok, frame_s1),
+        format_word_or_unknown(frame_s2_buf, sizeof(frame_s2_buf),
+            frame_s2_ok, frame_s2),
+        format_word_or_unknown(frame_s3_buf, sizeof(frame_s3_buf),
+            frame_s3_ok, frame_s3),
         translated_ok ? 1u : 0u,
         format_word_or_unknown(key_buf, sizeof(key_buf), true, key),
         format_word_or_unknown(masked_buf, sizeof(masked_buf), true, masked),
+        format_word_or_unknown(slot_ptr_buf, sizeof(slot_ptr_buf), slot_ptr_ok, slot_ptr),
+        slot_word_buf[0], slot_word_buf[1], slot_word_buf[2], slot_word_buf[3],
         format_word_or_unknown(base_buf, sizeof(base_buf), base_ok, base),
         format_word_or_unknown(lo_buf, sizeof(lo_buf), lo_ok, range_lo),
         format_word_or_unknown(hi_buf, sizeof(hi_buf), hi_ok, range_hi),
@@ -2618,6 +2679,62 @@ static void maybe_note_section3_order_pc(machine_t *m, struct cpu *cpu,
     default:
         return;
     }
+}
+
+static void maybe_note_section3_caller_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+    uint32_t sp;
+    uint32_t stack88 = 0;
+    uint32_t buf_words[4] = { 0, 0, 0, 0 };
+    bool stack88_ok = false;
+    bool buf_ok[4] = { false, false, false, false };
+    char stack88_buf[16];
+    char buf_buf[4][16];
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.section3_caller_probe_count >= 8u)
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    if (pc32 != UINT32_C(0x8008707C) && pc32 != UINT32_C(0x80087084))
+        return;
+
+    sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+    stack88_ok = load_va_word(m, sp + 0x88u, &stack88);
+    for (unsigned i = 0; i < 4u; i++) {
+        buf_ok[i] = load_va_word(m, sp + 0x8Cu + (uint32_t)(i * 4u),
+            &buf_words[i]);
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC3_CALLER] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+        " out=%s buf0=%s buf1=%s buf2=%s buf3=%s"
+        " sec0=0x%08X sec3=0x%08X\n",
+        pc32 == UINT32_C(0x8008707C) ? "pre_816e0" : "post_816e0",
+        pc32,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        sp,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+        format_word_or_unknown(stack88_buf, sizeof(stack88_buf),
+            stack88_ok, stack88),
+        format_word_or_unknown(buf_buf[0], sizeof(buf_buf[0]),
+            buf_ok[0], buf_words[0]),
+        format_word_or_unknown(buf_buf[1], sizeof(buf_buf[1]),
+            buf_ok[1], buf_words[1]),
+        format_word_or_unknown(buf_buf[2], sizeof(buf_buf[2]),
+            buf_ok[2], buf_words[2]),
+        format_word_or_unknown(buf_buf[3], sizeof(buf_buf[3]),
+            buf_ok[3], buf_words[3]),
+        load_pa_word(m, 0x18C0u),
+        load_pa_word(m, 0x18CCu));
+    m->wince.section3_caller_probe_count++;
 }
 
 static void maybe_note_section3_owner_pc(machine_t *m, struct cpu *cpu,
@@ -5685,6 +5802,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_note_section3_install_pc(m, cpu, pc32);
     maybe_note_section3_callback_pc(m, cpu, pc32);
     maybe_note_section3_order_pc(m, cpu, pc32);
+    maybe_note_section3_caller_pc(m, cpu, pc32);
     maybe_note_section3_owner_pc(m, cpu, pc32);
 }
 
