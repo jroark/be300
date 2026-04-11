@@ -77,6 +77,10 @@ typedef struct {
     uint32_t last_tlb_post_pc;
     uint16_t last_tlb_post_repeat;
 
+    /* PPSH error flag detection (polled from tick, since dyntrans
+     * fast-path writes bypass the RAM hook) */
+    bool     ppsh_timeout_logged;
+
     /* Temporary instruction-by-instruction trace window around NK pre-init */
     bool     nk_step_trace_active;
     bool     nk_step_trace_done;
