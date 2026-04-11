@@ -28,6 +28,8 @@ static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
 static const char *format_word_or_unknown(char *buf, size_t buf_size, bool ok,
     uint32_t value);
 static void dump_section3_descriptor_window(machine_t *m, const char *tag);
+static void dump_section3_descriptor_at(machine_t *m, const char *tag,
+    uint32_t desc_ptr);
 static void dump_section3_context_head(machine_t *m, const char *tag,
     uint32_t pc32);
 
@@ -2096,16 +2098,31 @@ static void dump_section3_descriptor_window(machine_t *m, const char *tag)
 {
     uint32_t desc_ptr = 0;
     uint32_t desc_base = 0;
-    uint32_t words[8] = {0};
-    bool ok[8];
-    char word_buf[8][16];
-    size_t i;
 
     if (!load_section3_descriptor_focus(m, &desc_ptr, &desc_base)) {
         fprintf(stderr, "[WINCE_SEC3_DESC] tag=%s ptr=?\n",
             tag ? tag : "?");
         return;
     }
+    dump_section3_descriptor_at(m, tag, desc_ptr);
+}
+
+static void dump_section3_descriptor_at(machine_t *m, const char *tag,
+    uint32_t desc_ptr)
+{
+    uint32_t desc_base;
+    uint32_t words[8] = {0};
+    bool ok[8];
+    char word_buf[8][16];
+    size_t i;
+
+    if (!m || desc_ptr < UINT32_C(0x80000000) || desc_ptr >= UINT32_C(0x81000000)) {
+        fprintf(stderr, "[WINCE_SEC3_DESC] tag=%s ptr=%08X invalid\n",
+            tag ? tag : "?", desc_ptr);
+        return;
+    }
+
+    desc_base = desc_ptr & ~UINT32_C(0x1F);
 
     for (i = 0; i < 8; i++)
         ok[i] = load_va_word(m, desc_base + (uint32_t)(i * 4u), &words[i]);
@@ -2124,6 +2141,64 @@ static void dump_section3_descriptor_window(machine_t *m, const char *tag)
         desc_base,
         word_buf[0], word_buf[1], word_buf[2], word_buf[3],
         word_buf[4], word_buf[5], word_buf[6], word_buf[7]);
+}
+
+static bool resolve_section3_gate_entry(machine_t *m, uint32_t key_in,
+    uint32_t *key_out, uint32_t *entry_out, uint32_t *state_ptr_out,
+    bool *state_ok_out, unsigned char *state_byte_out, uint32_t *obj_out)
+{
+    uint32_t key = key_in;
+    uint32_t translated = 0;
+    uint32_t base = 0;
+    uint32_t range_lo = 0;
+    uint32_t range_hi = 0;
+    uint32_t entry = 0;
+    uint32_t entry_key = 0;
+    uint32_t state_ptr = 0;
+    uint32_t obj = 0;
+    unsigned char state_byte = 0;
+    bool state_ok = false;
+
+    if (!m)
+        return false;
+
+    if (key >= 64u && key < 96u) {
+        if (!load_va_word(m, UINT32_C(0xFFFFD704) + key * 4u, &translated))
+            return false;
+        key = translated;
+    }
+
+    if (key == 0)
+        return false;
+    if (!load_va_word(m, UINT32_C(0xFFFFDAC8), &base)
+        || !load_va_word(m, UINT32_C(0x80679540), &range_lo)
+        || !load_va_word(m, UINT32_C(0x80679544), &range_hi))
+        return false;
+
+    entry = (key & UINT32_C(0x001FFFFC)) + base;
+    if (entry < range_lo || entry >= range_hi)
+        return false;
+    if (!load_va_word(m, entry + 8u, &entry_key) || entry_key != key)
+        return false;
+
+    (void)load_va_word(m, entry + 0x14u, &state_ptr);
+    (void)load_va_word(m, entry + 0x18u, &obj);
+    if (state_ptr >= UINT32_C(0x80000000) && state_ptr < UINT32_C(0x81000000))
+        state_ok = load_va_bytes(m, state_ptr + 5u, &state_byte, 1u);
+
+    if (key_out)
+        *key_out = key;
+    if (entry_out)
+        *entry_out = entry;
+    if (state_ptr_out)
+        *state_ptr_out = state_ptr;
+    if (state_ok_out)
+        *state_ok_out = state_ok;
+    if (state_byte_out)
+        *state_byte_out = state_byte;
+    if (obj_out)
+        *obj_out = obj;
+    return true;
 }
 
 static bool load_section3_context_head(machine_t *m, uint32_t *ctx_ptr_out,
@@ -2279,6 +2354,130 @@ static void maybe_note_section3_callback_pc(machine_t *m, struct cpu *cpu,
         }
         dump_section3_descriptor_window(m, targets[i].label);
         m->wince.section3_callback_probe_count++;
+        return;
+    }
+}
+
+static void maybe_note_section3_order_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+    uint32_t sec3;
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.section3_order_probe_count >= 12u)
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    sec3 = load_pa_word(m, 0x18CCu);
+
+    switch (pc32) {
+    case 0x800A2520u: {
+        uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        uint32_t sec_idx = a0 >> 25;
+        uint32_t l1_idx = (a0 >> 16) & 0x1FFu;
+        uint32_t sub_idx = (a0 >> 12) & 0x0Fu;
+        uint32_t sec_base = 0;
+        uint32_t l1_val = 0;
+        uint32_t slot_0c = 0;
+        bool sec_ok = false;
+        bool l1_ok = false;
+        bool slot_ok = false;
+        char sec_buf[16];
+        char l1_buf[16];
+        char slot_buf[16];
+
+        if (sec_idx < 64u)
+            sec_ok = load_va_word(m, UINT32_C(0xFFFFD8C0) + sec_idx * 4u, &sec_base);
+        if (sec_ok)
+            l1_ok = load_va_word(m, sec_base + l1_idx * 4u, &l1_val);
+        if (l1_ok)
+            slot_ok = load_va_word(m, l1_val + sub_idx * 4u + 0x0Cu, &slot_0c);
+
+        fprintf(stderr,
+            "[WINCE_SEC3_ORDER] tag=producer_start pc=0x%08X ra=0x%08X"
+            " a0=0x%08X sec_idx=%u sec_base=%s l1_idx=0x%03X l1=%s"
+            " sub_idx=0x%X slot+0c=%s\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            a0,
+            sec_idx,
+            format_word_or_unknown(sec_buf, sizeof(sec_buf), sec_ok, sec_base),
+            l1_idx,
+            format_word_or_unknown(l1_buf, sizeof(l1_buf), l1_ok, l1_val),
+            sub_idx,
+            format_word_or_unknown(slot_buf, sizeof(slot_buf), slot_ok, slot_0c));
+        m->wince.section3_order_probe_count++;
+        return;
+    }
+
+    case 0x8009A9CCu:
+    case 0x8009A7F8u: {
+        uint32_t sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+        uint32_t a0_arg = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        uint32_t a1_arg = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+        uint32_t key = 0;
+        uint32_t entry = 0;
+        uint32_t state_ptr = 0;
+        uint32_t obj = 0;
+        uint32_t obj_90 = 0;
+        bool gate_ok = false;
+        bool state_ok = false;
+        bool obj90_ok = false;
+        unsigned char state_byte = 0;
+        char key_buf[16];
+        char entry_buf[16];
+        char state_ptr_buf[16];
+        char obj_buf[16];
+        char obj90_buf[16];
+        char a0_buf[16];
+        char state_buf[8];
+
+        if (!m->wince.section3_page_watch_armed
+            && sec3 != UINT32_C(0x80FE5000))
+            return;
+        gate_ok = resolve_section3_gate_entry(m, a0_arg, &key, &entry,
+            &state_ptr, &state_ok, &state_byte, &obj);
+        if (gate_ok
+            && obj >= UINT32_C(0x80000000)
+            && obj < UINT32_C(0x81000000)) {
+            obj90_ok = load_va_word(m, obj + 0x90u, &obj_90);
+        }
+        if (state_ok)
+            snprintf(state_buf, sizeof(state_buf), "%02X", state_byte);
+        else
+            snprintf(state_buf, sizeof(state_buf), "??");
+
+        fprintf(stderr,
+            "[WINCE_SEC3_ORDER] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+            " a0=%s a1=0x%08X key=%s entry=%s state_ptr=%s state5=%s"
+            " match4=%u obj=%s obj+90=%s sec0=0x%08X sec3=0x%08X\n",
+            pc32 == UINT32_C(0x8009A9CC) ? "consumer_a9cc" : "consumer_a7f8",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            format_word_or_unknown(a0_buf, sizeof(a0_buf), true, a0_arg),
+            a1_arg,
+            format_word_or_unknown(key_buf, sizeof(key_buf), gate_ok, key),
+            format_word_or_unknown(entry_buf, sizeof(entry_buf), gate_ok, entry),
+            format_word_or_unknown(state_ptr_buf, sizeof(state_ptr_buf), gate_ok, state_ptr),
+            state_buf,
+            state_ok && state_byte == 4u ? 1u : 0u,
+            format_word_or_unknown(obj_buf, sizeof(obj_buf), gate_ok, obj),
+            format_word_or_unknown(obj90_buf, sizeof(obj90_buf), obj90_ok, obj_90),
+            load_pa_word(m, 0x18C0u),
+            sec3);
+        if (gate_ok)
+            dump_section3_descriptor_window(m,
+                pc32 == UINT32_C(0x8009A9CC)
+                    ? "consumer_a9cc"
+                    : "consumer_a7f8");
+        m->wince.section3_order_probe_count++;
+        return;
+    }
+
+    default:
         return;
     }
 }
@@ -5345,6 +5544,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_note_exception_hot_pc(m, cpu, pc32);
     maybe_note_section3_install_pc(m, cpu, pc32);
     maybe_note_section3_callback_pc(m, cpu, pc32);
+    maybe_note_section3_order_pc(m, cpu, pc32);
     maybe_note_section3_owner_pc(m, cpu, pc32);
 }
 
