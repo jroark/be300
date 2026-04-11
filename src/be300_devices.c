@@ -79,6 +79,7 @@ struct be300_vrc4173_latch {
 };
 
 static struct be300_vrc4173_latch *g_be300_vrc4173_latch = NULL;
+static machine_t *g_be300_machine = NULL;  /* for PIU cross-device callback */
 
 static uint32_t be300_latch_peek_u32(struct be300_vrc4173_latch *d,
     uint32_t off)
@@ -96,6 +97,10 @@ struct be300_vrc4173_segment {
     struct be300_vrc4173_latch *latch;
     uint32_t offset_in_latch;    /* offset of this segment within the latch */
 };
+
+/* Forward declarations for cross-device callbacks */
+struct be300_input_device;
+static void piu_update_state(struct be300_input_device *d);
 
 #define WINCE_AUX_BASE  0x0C000120ULL
 #define WINCE_AUX_SIZE  0x00000500u
@@ -313,6 +318,12 @@ DEVICE_ACCESS(be300_vrc4173)
                     (unsigned long long)val, (uint32_t)cpu->pc);
         wince_boot_note_mmio_access(cpu->machine, cpu,
             VRC4173_LATCH_BASE + off, len, val, true);
+
+        /* PIU control registers at offsets 0x000-0x05F: re-evaluate
+         * scan sequencer state when NK.exe configures the PIU. */
+        if (off < 0x060 && g_be300_machine && g_be300_machine->touch_device)
+            piu_update_state(
+                (struct be300_input_device *)g_be300_machine->touch_device);
     } else {
         /*
          * WORKAROUND: ScCmcu registers (Casio companion MCU,
@@ -564,8 +575,9 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio,
      */
     {
         /* VRC4173 Core (PA 0x0A000000, offset 0x0000, 64 words) */
+        /* Offset 0x000 = PIUCNTREG: 0x002 = PIUPWR (hw dump, hardware.txt:239) */
         static const uint32_t core_regs[] = {
-            0x00000000, 0x00000000, 0x00000001, 0x00000000,
+            0x00000002, 0x00000000, 0x00000001, 0x00000000,
             0x0000003C, 0x0000000C, 0x0000000C, 0x00000000,
             0x0000000C, 0x00000000, 0x0000000C, 0x0000000C,
             0x0000000C, 0x0000003C, 0x00000000, 0x00000000,
@@ -834,10 +846,16 @@ static void piu_irq_update(struct be300_input_device *d, bool want)
 /*
  *  PIU scan sequencer state update after PIUCNTREG write.
  *  Follows the state transition diagram in VRC4173 manual Figure 9-4.
+ *
+ *  PIUCNTREG is at PA 0x0A000000 (VRC4173 PIU Base, offset 0x000),
+ *  handled by the VRC4173 latch — NOT by the touch device at PA 0x0A000300.
+ *  We read it from the latch so the state machine sees NK.exe's control writes.
  */
 static void piu_update_state(struct be300_input_device *d)
 {
-    uint16_t ctl = d->piu_regs[0];
+    uint32_t ctl32 = 0;
+    be300_vrc4173_latch_read_u32(0x0A000000, &ctl32);
+    uint16_t ctl = (uint16_t)ctl32;
 
     if (ctl & 0x0001) {
         /* PADRST: reset everything */
@@ -1074,6 +1092,7 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
     }
 
     m->touch_device = touch_d;
+    g_be300_machine = m;
 
     memory_device_register(gxm->memory, "be300_touch",
         0x0A000300ULL, 0x60,
