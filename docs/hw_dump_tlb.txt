@@ -1,0 +1,111 @@
+##############################################################################
+# TLB State Snapshots
+# Source: BEDiag dumps from real Casio BE-300 hardware
+##############################################################################
+
+#-----------------------------------------------------------------------------
+# [TLB_ENTRY] (90 entries)
+#-----------------------------------------------------------------------------
+[TLB_ENTRY] phase=init idx=0 lo0=0x00000001 lo1=0x0000011B mask=0x00001800 hi=0x00004000
+[TLB_ENTRY] phase=init idx=1 lo0=0x00000001 lo1=0x0000011F mask=0x00001800 hi=0xFFFFC000
+[TLB_ENTRY] phase=init idx=10 lo0=0x00000000 lo1=0x000C3D1E mask=0x00001800 hi=0x1006E001
+[TLB_ENTRY] phase=init idx=10 lo0=0x0000C91A lo1=0x0000CA1A mask=0x00001800 hi=0x01F8E001
+[TLB_ENTRY] phase=init idx=10 lo0=0x0006731E lo1=0x0006741E mask=0x00001800 hi=0x42004001
+[TLB_ENTRY] phase=init idx=11 lo0=0x00000000 lo1=0x000C3A1E mask=0x00001800 hi=0x1006E001
+[TLB_ENTRY] phase=init idx=11 lo0=0x0001381A lo1=0x0001391A mask=0x00001800 hi=0x00022001
+[TLB_ENTRY] phase=init idx=11 lo0=0x000D511E lo1=0x00000000 mask=0x00001800 hi=0x01FE6007
+[TLB_ENTRY] phase=init idx=12 lo0=0x0000C51A lo1=0x0000C61A mask=0x00001800 hi=0x01F8A001
+[TLB_ENTRY] phase=init idx=12 lo0=0x0000C71A lo1=0x0000C81A mask=0x00001800 hi=0x01F8C001
+[TLB_ENTRY] phase=init idx=12 lo0=0x0006871E lo1=0x0006881E mask=0x00001800 hi=0x42018001
+[TLB_ENTRY] phase=init idx=13 lo0=0x0000F11A lo1=0x0000F21A mask=0x00001800 hi=0x01FB6007
+[TLB_ENTRY] phase=init idx=13 lo0=0x0006731E lo1=0x0006741E mask=0x00001800 hi=0x42004001
+[TLB_ENTRY] phase=init idx=13 lo0=0x0006751E lo1=0x0006761E mask=0x00001800 hi=0x42006001
+[TLB_ENTRY] phase=init idx=14 lo0=0x0001031A lo1=0x0001041A mask=0x00001800 hi=0x01FC8007
+[TLB_ENTRY] phase=init idx=14 lo0=0x0001281A lo1=0x0001291A mask=0x00001800 hi=0x00012001
+[TLB_ENTRY] phase=init idx=14 lo0=0x0001361A lo1=0x0001371A mask=0x00001800 hi=0x00020001
+[TLB_ENTRY] phase=init idx=15 lo0=0x00014A1A lo1=0x000FEF1E mask=0x00001800 hi=0x00034001
+[TLB_ENTRY] phase=init idx=15 lo0=0x00066D16 lo1=0x0006701E mask=0x00001800 hi=0x42000001
+[TLB_ENTRY] phase=init idx=15 lo0=0x000D7A1E lo1=0x000C681E mask=0x00001800 hi=0x016E6007
+[TLB_ENTRY] phase=init idx=16 lo0=0x00000000 lo1=0x000C3D1E mask=0x00001800 hi=0x1006E007
+[TLB_ENTRY] phase=init idx=16 lo0=0x0000F51A lo1=0x0000F61A mask=0x00001800 hi=0x01FBA001
+[TLB_ENTRY] phase=init idx=16 lo0=0x000C6A1A lo1=0x000D791A mask=0x00001800 hi=0x016E2007
+[TLB_ENTRY] phase=init idx=17 lo0=0x00000000 lo1=0x0000BC1A mask=0x00001800 hi=0x01F80001
+[TLB_ENTRY] phase=init idx=17 lo0=0x0000F51A lo1=0x0000F61A mask=0x00001800 hi=0x01FBA001
+[TLB_ENTRY] phase=init idx=17 lo0=0x000C6A1A lo1=0x000D791A mask=0x00001800 hi=0x016E2001
+[TLB_ENTRY] phase=init idx=18 lo0=0x0000DB1A lo1=0x0000DC1A mask=0x00001800 hi=0x01FA0001
+[TLB_ENTRY] phase=init idx=18 lo0=0x0001031A lo1=0x0001041A mask=0x00001800 hi=0x01FC8007
+[TLB_ENTRY] phase=init idx=18 lo0=0x000C6A1A lo1=0x000D791A mask=0x00001800 hi=0x016E3000
+[TLB_ENTRY] phase=init idx=19 lo0=0x0000C51A lo1=0x0000C61A mask=0x00001800 hi=0x01F8A007
+[TLB_ENTRY] phase=init idx=19 lo0=0x000C391A lo1=0x000D621A mask=0x00001800 hi=0x01732007
+[TLB_ENTRY] phase=init idx=19 lo0=0x000FF61E lo1=0x00000000 mask=0x00001800 hi=0x01FE6001
+[TLB_ENTRY] phase=init idx=2 lo0=0x000C391A lo1=0x000D621A mask=0x00001800 hi=0x01733001
+[TLB_ENTRY] phase=init idx=2 lo0=0x000C3B1A lo1=0x000D481A mask=0x00001800 hi=0x01722000
+[TLB_ENTRY] phase=init idx=2 lo0=0x000C6A1A lo1=0x000D791A mask=0x00001800 hi=0x016E3001
+[TLB_ENTRY] phase=init idx=20 lo0=0x0000ED1A lo1=0x0000EE1A mask=0x00001800 hi=0x01FB2001
+[TLB_ENTRY] phase=init idx=20 lo0=0x00071D1E lo1=0x00071E1E mask=0x00001800 hi=0x420AE001
+[TLB_ENTRY] phase=init idx=20 lo0=0x000D631E lo1=0x000C371E mask=0x00001800 hi=0x01736007
+[TLB_ENTRY] phase=init idx=21 lo0=0x0000DF1A lo1=0x0000E01A mask=0x00001800 hi=0x01FA4007
+[TLB_ENTRY] phase=init idx=21 lo0=0x0001031A lo1=0x0001041A mask=0x00001800 hi=0x01FC8001
+[TLB_ENTRY] phase=init idx=21 lo0=0x000C391A lo1=0x000D621A mask=0x00001800 hi=0x01732001
+[TLB_ENTRY] phase=init idx=22 lo0=0x00013A1A lo1=0x00013B1A mask=0x00001800 hi=0x00024001
+[TLB_ENTRY] phase=init idx=22 lo0=0x000C391A lo1=0x000D621A mask=0x00001800 hi=0x01733000
+[TLB_ENTRY] phase=init idx=23 lo0=0x00000000 lo1=0x000C3B1A mask=0x00001800 hi=0x01730007
+[TLB_ENTRY] phase=init idx=23 lo0=0x00000000 lo1=0x000C6B1E mask=0x00001800 hi=0x1006E001
+[TLB_ENTRY] phase=init idx=23 lo0=0x0000C91A lo1=0x0000CA1A mask=0x00001800 hi=0x01F8E001
+[TLB_ENTRY] phase=init idx=24 lo0=0x00000000 lo1=0x000FEA1E mask=0x00001800 hi=0x0404E001
+[TLB_ENTRY] phase=init idx=24 lo0=0x00013A1A lo1=0x00013B1A mask=0x00001800 hi=0x00024001
+[TLB_ENTRY] phase=init idx=24 lo0=0x000FF41E lo1=0x000FF51E mask=0x00001800 hi=0x0003A001
+[TLB_ENTRY] phase=init idx=25 lo0=0x0000C51A lo1=0x0000C61A mask=0x00001800 hi=0x01F8A007
+[TLB_ENTRY] phase=init idx=25 lo0=0x00013C1A lo1=0x00013D1A mask=0x00001800 hi=0x00026001
+[TLB_ENTRY] phase=init idx=25 lo0=0x000C6D1E lo1=0x000D711E mask=0x00001800 hi=0x0174C007
+[TLB_ENTRY] phase=init idx=26 lo0=0x0000CF1A lo1=0x0000D01A mask=0x00001800 hi=0x01F94001
+[TLB_ENTRY] phase=init idx=26 lo0=0x0001341A lo1=0x0001351A mask=0x00001800 hi=0x0001E001
+[TLB_ENTRY] phase=init idx=26 lo0=0x000C3B1A lo1=0x000D481A mask=0x00001800 hi=0x01722001
+[TLB_ENTRY] phase=init idx=27 lo0=0x0007071E lo1=0x0007081E mask=0x00001800 hi=0x42098001
+[TLB_ENTRY] phase=init idx=27 lo0=0x000FE81E lo1=0x00000000 mask=0x00001800 hi=0x00050001
+[TLB_ENTRY] phase=init idx=27 lo0=0x000FF21E lo1=0x000FF31E mask=0x00001800 hi=0x00038001
+[TLB_ENTRY] phase=init idx=28 lo0=0x0001481A lo1=0x0001491A mask=0x00001800 hi=0x00032001
+[TLB_ENTRY] phase=init idx=28 lo0=0x00014A1A lo1=0x000FEF1E mask=0x00001800 hi=0x00034001
+[TLB_ENTRY] phase=init idx=28 lo0=0x000D801E lo1=0x00000000 mask=0x00001800 hi=0x01FE6007
+[TLB_ENTRY] phase=init idx=29 lo0=0x00000000 lo1=0x000FEA1E mask=0x00001800 hi=0x0404E001
+[TLB_ENTRY] phase=init idx=29 lo0=0x0001031A lo1=0x0001041A mask=0x00001800 hi=0x01FC8007
+[TLB_ENTRY] phase=init idx=29 lo0=0x0001481A lo1=0x0001491A mask=0x00001800 hi=0x00032001
+[TLB_ENTRY] phase=init idx=3 lo0=0x00000000 lo1=0x000C3D1E mask=0x00001800 hi=0x1006E000
+[TLB_ENTRY] phase=init idx=3 lo0=0x0001031A lo1=0x0001041A mask=0x00001800 hi=0x01FC8001
+[TLB_ENTRY] phase=init idx=30 lo0=0x0000D91A lo1=0x0000DA1A mask=0x00001800 hi=0x01F9E007
+[TLB_ENTRY] phase=init idx=30 lo0=0x000C6A1A lo1=0x000D791A mask=0x00001800 hi=0x016E2000
+[TLB_ENTRY] phase=init idx=30 lo0=0x000D491E lo1=0x000C391E mask=0x00001800 hi=0x01726007
+[TLB_ENTRY] phase=init idx=31 lo0=0x0006851E lo1=0x0006861E mask=0x00001800 hi=0x42016001
+[TLB_ENTRY] phase=init idx=31 lo0=0x0007091E lo1=0x00070A1E mask=0x00001800 hi=0x4209A001
+[TLB_ENTRY] phase=init idx=31 lo0=0x000C3B1A lo1=0x000D481A mask=0x00001800 hi=0x01722007
+[TLB_ENTRY] phase=init idx=4 lo0=0x0001381A lo1=0x0001391A mask=0x00001800 hi=0x00022001
+[TLB_ENTRY] phase=init idx=4 lo0=0x00014A1A lo1=0x000FEF1E mask=0x00001800 hi=0x00034001
+[TLB_ENTRY] phase=init idx=4 lo0=0x000C3B1A lo1=0x000D481A mask=0x00001800 hi=0x01723001
+[TLB_ENTRY] phase=init idx=5 lo0=0x0000C51A lo1=0x0000C61A mask=0x00001800 hi=0x01F8A001
+[TLB_ENTRY] phase=init idx=5 lo0=0x0007071E lo1=0x0007081E mask=0x00001800 hi=0x42098001
+[TLB_ENTRY] phase=init idx=5 lo0=0x00071B1E lo1=0x00071C1E mask=0x00001800 hi=0x420AC001
+[TLB_ENTRY] phase=init idx=6 lo0=0x00000000 lo1=0x000C3A1E mask=0x00001800 hi=0x1006E007
+[TLB_ENTRY] phase=init idx=6 lo0=0x0000CF1A lo1=0x0000D01A mask=0x00001800 hi=0x01F94001
+[TLB_ENTRY] phase=init idx=6 lo0=0x00066D16 lo1=0x0006701E mask=0x00001800 hi=0x42000001
+[TLB_ENTRY] phase=init idx=7 lo0=0x0000F11A lo1=0x0000F21A mask=0x00001800 hi=0x01FB6007
+[TLB_ENTRY] phase=init idx=7 lo0=0x0001481A lo1=0x0001491A mask=0x00001800 hi=0x00032001
+[TLB_ENTRY] phase=init idx=7 lo0=0x0006751E lo1=0x0006761E mask=0x00001800 hi=0x42006001
+[TLB_ENTRY] phase=init idx=8 lo0=0x0000C71A lo1=0x0000C81A mask=0x00001800 hi=0x01F8C001
+[TLB_ENTRY] phase=init idx=8 lo0=0x0000C91A lo1=0x0000CA1A mask=0x00001800 hi=0x01F8E001
+[TLB_ENTRY] phase=init idx=8 lo0=0x000FF61E lo1=0x00000000 mask=0x00001800 hi=0x01FE6001
+[TLB_ENTRY] phase=init idx=9 lo0=0x00000000 lo1=0x0000BC1A mask=0x00001800 hi=0x01F80001
+[TLB_ENTRY] phase=init idx=9 lo0=0x0007031E lo1=0x0007041E mask=0x00001800 hi=0x42094001
+[TLB_ENTRY] phase=init idx=9 lo0=0x000FF01E lo1=0x000FF11E mask=0x00001800 hi=0x00036001
+
+#-----------------------------------------------------------------------------
+# [TLB_MATCH] (3 entries)
+#-----------------------------------------------------------------------------
+[TLB_MATCH] phase=init label=callback_target_page VA=0x00016000 status=NO_MATCH
+[TLB_MATCH] phase=init label=helper_high_page VA=0xFFFFD000 idx=1 hi=0xFFFFC000 mask=0x00001800 lo=0x0000011F odd=1 valid=1 global=1 asid=0x00 leaf_bytes=0x00001000 pa_page=0x00001000
+[TLB_MATCH] phase=init label=user_obj_page VA=0x0818F000 status=NO_MATCH
+
+#-----------------------------------------------------------------------------
+# [TLB_TABLE] (1 entries)
+#-----------------------------------------------------------------------------
+[TLB_TABLE] phase=init slots=32 any_nonzero=1
+

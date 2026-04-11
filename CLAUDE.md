@@ -12,7 +12,11 @@ I also have another VM with Platform Builder 3.0.
 - `docs/Vr4131-um_200203.pdf` - NEC vr4131 SOC Users Manual
 - `docs/U14579EJ2V0UM00.pdf` - NEC vrc4173 Companion Chip Users Manual
 - `docs/hardware.txt` - notes from Linux4be project developers
-- `docs/hw_dump_combined.txt` - real hardware memory/register dumps from BEDiag tool
+- `docs/hw_dump_vr4131.txt` - VR4131 SoC register dumps (BCU, ICU, PMU/RTC, GIU, PCI) from real hardware
+- `docs/hw_dump_vrc4173.txt` - VRC4173 companion chip register dumps from real hardware
+- `docs/hw_dump_memory.txt` - SDRAM, exception vectors, boot params, ROM dumps from real hardware
+- `docs/hw_dump_tlb.txt` - TLB state snapshots from real hardware
+- `docs/hw_dump_diffs.txt` - Memory diffs, focus probes, region summaries from real hardware
 - `docs/BE300BootROM_v1.txt` - full 16KB ROM dump (PA 0x1FC00000, CRC32=0xFA3B5582)
 - `docs/be300_boot_rom.bin` - extracted ROM binary (embedded in emulator at build time via xxd)
 - `ce/bediag/` - BEDiag diagnostic tool source and output
