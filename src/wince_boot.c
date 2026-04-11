@@ -520,6 +520,13 @@ static void maybe_arm_fb_watch(machine_t *m, struct cpu *cpu,
         (unsigned)WINCE_FB_SAMPLE_BYTES);
 }
 
+void wince_boot_note_usermode_entry(machine_t *m)
+{
+    if (!m || !m->cpu || !m->wince.active || m->wince.fb_watch_armed)
+        return;
+    maybe_arm_fb_watch(m, m->cpu, "usermode_entry");
+}
+
 static void maybe_track_fb_runtime_changes(machine_t *m, struct cpu *cpu)
 {
     uint8_t current[WINCE_FB_SAMPLE_BYTES];
@@ -2895,6 +2902,15 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
 
     for (i = 0; i < len && i < 8; i++)
         val |= (uint64_t)data[i] << (8 * i);
+
+    /* Detect PPSH error flag write at PA 0x66001C (VA 0x8066001C).
+     * NK.exe sets this to 1 after ppsh_read_response timeout. */
+    if (is_write && paddr == 0x66001Cu && len == 4 && val == 1) {
+        fprintf(stderr,
+            "[PPSH_TIMEOUT] error_flag set PC=0x%08X instrs=%llu\n",
+            (uint32_t)cpu->pc,
+            (unsigned long long)cpu->ninstrs);
+    }
 
     if (is_write)
         maybe_log_tlb_table_write(m, cpu, paddr, (uint64_t)len, val);

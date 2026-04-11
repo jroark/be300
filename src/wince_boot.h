@@ -39,6 +39,7 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
     const unsigned char *data, size_t len, bool is_write);
 void wince_boot_note_mmio_access(struct machine *gxm, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t value, bool is_write);
+void wince_boot_note_usermode_entry(machine_t *m);
 void wince_boot_note_idle_transition(struct cpu *cpu, const char *event,
     const char *mode, uint32_t status, uint32_t cause, uint32_t enabled,
     uint32_t mask, uint32_t raw_pending, uint32_t count, uint32_t compare,

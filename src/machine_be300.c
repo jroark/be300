@@ -717,6 +717,7 @@ static bool be300_run_batch(machine_t *m)
         if (!usermode_logged && pc < 0x80000000ULL && pc > 0x1000ULL) {
             fprintf(stderr, "[BE300] *** USER MODE DETECTED: PC=0x%08" PRIx64 " ***\n", pc);
             usermode_logged = 1;
+            wince_boot_note_usermode_entry(m);
         }
     }
 
