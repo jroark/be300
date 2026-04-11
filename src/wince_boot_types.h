@@ -132,6 +132,10 @@ typedef struct {
     uint32_t ppsh_serial_stack3;
     uint16_t ppsh_serial_line_len;
     uint16_t ppsh_serial_msg_count;
+    uint16_t ppsh_helper_dump_count;
+    uint16_t ppsh_flag_dump_count;
+    uint32_t ppsh_last_helper_pc;
+    uint32_t ppsh_last_flag_pc;
     uint32_t ppsh_last_callsite_fmt;
     uint32_t ppsh_last_serial_dump_sp;
     char     ppsh_serial_line[160];

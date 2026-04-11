@@ -98,6 +98,10 @@ static bool load_utf16_ascii(machine_t *m, struct cpu *cpu, uint32_t va,
 static void maybe_log_ppsh_debug_message(machine_t *m, struct cpu *cpu,
     const char *source, uint32_t str_va, const char *ascii);
 static void maybe_flush_ppsh_serial_line(machine_t *m);
+static void maybe_dump_ppsh_helper_context(machine_t *m, struct cpu *cpu,
+    uint16_t cmd);
+static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
+    uint32_t old_flag, uint32_t new_flag);
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -661,6 +665,207 @@ static void maybe_flush_ppsh_serial_line(machine_t *m)
     }
 
     m->wince.ppsh_serial_line_len = 0;
+}
+
+static size_t collect_stack_return_sites(machine_t *m, uint32_t sp,
+    uint32_t *ret_offs, uint32_t *ret_addrs, size_t cap)
+{
+    size_t count = 0;
+    uint32_t off;
+
+    if (!m || sp == 0 || !ret_offs || !ret_addrs || cap == 0)
+        return 0;
+
+    for (off = 0; off < 0x40u; off += 4u) {
+        uint32_t word = 0;
+        size_t i;
+        bool seen = false;
+
+        if (!load_va_word(m, sp + off, &word))
+            continue;
+        if (word < 0x80060000u || word >= 0x81000000u)
+            continue;
+
+        for (i = 0; i < count; i++) {
+            if (ret_addrs[i] == word) {
+                seen = true;
+                break;
+            }
+        }
+        if (seen)
+            continue;
+
+        ret_offs[count] = off;
+        ret_addrs[count] = word;
+        count++;
+        if (count >= cap)
+            break;
+    }
+
+    return count;
+}
+
+static void maybe_dump_ppsh_helper_context(machine_t *m, struct cpu *cpu,
+    uint16_t cmd)
+{
+    uint32_t pc;
+    uint32_t ra;
+    uint32_t sp;
+    uint32_t caller;
+    uint32_t stk0 = 0;
+    uint32_t stk1 = 0;
+    uint32_t stk2 = 0;
+    uint32_t stk3 = 0;
+    uint32_t ret_offs[4] = {0};
+    uint32_t ret_addrs[4] = {0};
+    size_t ret_count = 0;
+
+    if (!m || !cpu)
+        return;
+
+    pc = (uint32_t)cpu->pc;
+    ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+    sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+    caller = ra >= 8u ? ra - 8u : 0u;
+    (void)load_va_word(m, sp + 0u, &stk0);
+    (void)load_va_word(m, sp + 4u, &stk1);
+    (void)load_va_word(m, sp + 8u, &stk2);
+    (void)load_va_word(m, sp + 12u, &stk3);
+    ret_count = collect_stack_return_sites(m, sp, ret_offs, ret_addrs,
+        sizeof(ret_addrs) / sizeof(ret_addrs[0]));
+
+    fprintf(stderr,
+        "[PPSH_HELPER] #%u cmd=0x%04X pc=0x%08X ra=0x%08X caller=0x%08X"
+        " sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+        " v0=0x%08X v1=0x%08X s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X s4=0x%08X"
+        " stack=%08X/%08X/%08X/%08X\n",
+        (unsigned)m->wince.ppsh_cmd_seq_count,
+        (unsigned)cmd,
+        pc,
+        ra,
+        caller,
+        sp,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4],
+        stk0, stk1, stk2, stk3);
+    if (ret_count > 0) {
+        size_t i;
+
+        fprintf(stderr,
+            "[PPSH_HELPER_RET] #%u", (unsigned)m->wince.ppsh_cmd_seq_count);
+        for (i = 0; i < ret_count; i++) {
+            fprintf(stderr, " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                i,
+                ret_addrs[i],
+                ret_offs[i],
+                ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
+        }
+        fputc('\n', stderr);
+    }
+
+    if (m->wince.ppsh_helper_dump_count >= 6u)
+        return;
+    if (pc == m->wince.ppsh_last_helper_pc)
+        return;
+
+    m->wince.ppsh_last_helper_pc = pc;
+    m->wince.ppsh_helper_dump_count++;
+    dump_code_window(m, pc, 8u, 12u);
+    if (caller != 0)
+        dump_code_window(m, caller, 8u, 12u);
+    if (ret_count > 1 && ret_addrs[1] >= 8u)
+        dump_code_window(m, ret_addrs[1] - 8u, 8u, 12u);
+    if (ret_count > 2 && ret_addrs[2] >= 8u)
+        dump_code_window(m, ret_addrs[2] - 8u, 8u, 12u);
+    if (sp != 0)
+        dump_va_window(m, "ppsh_helper_stack", sp, 0x40u);
+}
+
+static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
+    uint32_t old_flag, uint32_t new_flag)
+{
+    uint32_t pc;
+    uint32_t ra;
+    uint32_t sp;
+    uint32_t caller;
+    uint32_t ret_offs[4] = {0};
+    uint32_t ret_addrs[4] = {0};
+    size_t ret_count = 0;
+
+    if (!m || !cpu)
+        return;
+
+    pc = (uint32_t)cpu->pc;
+    ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+    sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+    caller = ra >= 8u ? ra - 8u : 0u;
+    ret_count = collect_stack_return_sites(m, sp, ret_offs, ret_addrs,
+        sizeof(ret_addrs) / sizeof(ret_addrs[0]));
+
+    fprintf(stderr,
+        "[PPSH_FLAG_CTX] #%u %u->%u pc=0x%08X ra=0x%08X caller=0x%08X"
+        " sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+        " v0=0x%08X v1=0x%08X s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X s4=0x%08X\n",
+        (unsigned)m->wince.ppsh_flag_transition_count,
+        old_flag,
+        new_flag,
+        pc,
+        ra,
+        caller,
+        sp,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4]);
+    if (ret_count > 0) {
+        size_t i;
+
+        fprintf(stderr, "[PPSH_FLAG_RET] #%u",
+            (unsigned)m->wince.ppsh_flag_transition_count);
+        for (i = 0; i < ret_count; i++) {
+            fprintf(stderr, " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                i,
+                ret_addrs[i],
+                ret_offs[i],
+                ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
+        }
+        fputc('\n', stderr);
+    }
+
+    if (m->wince.ppsh_flag_dump_count >= 6u)
+        return;
+    if (pc == m->wince.ppsh_last_flag_pc)
+        return;
+
+    m->wince.ppsh_last_flag_pc = pc;
+    m->wince.ppsh_flag_dump_count++;
+    dump_code_window(m, pc, 8u, 12u);
+    if (caller != 0)
+        dump_code_window(m, caller, 8u, 12u);
+    if (ret_count > 1 && ret_addrs[1] >= 8u)
+        dump_code_window(m, ret_addrs[1] - 8u, 8u, 12u);
+    if (ret_count > 2 && ret_addrs[2] >= 8u)
+        dump_code_window(m, ret_addrs[2] - 8u, 8u, 12u);
+    if (ret_count > 3 && ret_addrs[3] >= 8u)
+        dump_code_window(m, ret_addrs[3] - 8u, 8u, 12u);
+    if (sp != 0)
+        dump_va_window(m, "ppsh_flag_stack", sp, 0x40u);
 }
 
 static bool sample_framebuffer(machine_t *m, uint8_t *sample_out)
@@ -2763,6 +2968,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
                 (uint32_t)cpu->pc,
                 (unsigned long long)cpu->ninstrs);
             }
+            maybe_dump_ppsh_flag_context(m, cpu, m->wince.ppsh_flag_prev, flag);
             if (m->wince.ppsh_flag_prev == 1 && flag == 0) {
                 if (m->wince.ppsh_poll_active)
                     ppsh_close_poll_episode(m, cpu, (uint32_t)cpu->pc,
@@ -3355,6 +3561,7 @@ void wince_boot_note_ppsh_command(struct cpu *cpu, uint16_t cmd)
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
         (unsigned)count_active_sections(m),
         m->wince.fb_watch_armed ? 1u : 0u);
+    maybe_dump_ppsh_helper_context(m, cpu, cmd);
 }
 
 void wince_boot_note_ppsh_status_read(struct cpu *cpu, uint16_t status)
