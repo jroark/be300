@@ -19,6 +19,7 @@
 
 #include "be300.h"
 #include "hw/nand.h"
+#include "ppsh.h"
 #include "wince_boot.h"
 
 /*
@@ -98,6 +99,8 @@ struct be300_vrc4173_segment {
 
 #define WINCE_AUX_BASE  0x0C000120ULL
 #define WINCE_AUX_SIZE  0x00000500u
+#define PPSH_QUEUE_CAP  4096u
+#define PPSH_TEXT_RUN_CAP 128u
 
 struct be300_wince_aux {
     uint8_t bytes[WINCE_AUX_SIZE];
@@ -106,7 +109,154 @@ struct be300_wince_aux {
     uint16_t ppsh_data;         /* response data at offset 0x000 */
     bool     ppsh_response_pending; /* true after cmd dispatch until data read */
     bool     ppsh_enabled;    /* --ppsh: enable PPSH debug shell probe */
+    bool     ppsh_ack_pending;
+    bool     ppsh_tx_valid;
+    bool     ppsh_text_emitting;
+    uint8_t  ppsh_tx_byte;
+    uint8_t  ppsh_host_queue[PPSH_QUEUE_CAP];
+    size_t   ppsh_host_q_head;
+    size_t   ppsh_host_q_tail;
+    size_t   ppsh_host_q_count;
+    size_t   ppsh_guest_byte_count;
+    size_t   ppsh_host_byte_count;
+    size_t   ppsh_raw_log_count;
+    char     ppsh_text_run[PPSH_TEXT_RUN_CAP];
+    size_t   ppsh_text_run_len;
 };
+
+static struct be300_wince_aux *g_be300_wince_aux = NULL;
+
+static bool ppsh_is_printable(uint8_t byte)
+{
+    return (byte >= 0x20 && byte <= 0x7eu)
+        || byte == '\r'
+        || byte == '\n'
+        || byte == '\t';
+}
+
+static void ppsh_refresh_status(struct be300_wince_aux *d)
+{
+    uint16_t status;
+
+    if (!d)
+        return;
+
+    if (!d->ppsh_enabled) {
+        d->ppsh_status_520 = 0x0000;
+        memcpy(&d->bytes[0x400], &d->ppsh_status_520, sizeof(d->ppsh_status_520));
+        return;
+    }
+
+    status = d->ppsh_response_pending ? 0x2322u : 0x2320u;
+    if (d->ppsh_ack_pending || d->ppsh_host_q_count > 0)
+        status |= 0x1000u;
+
+    d->ppsh_status_520 = status;
+    memcpy(&d->bytes[0x400], &d->ppsh_status_520, sizeof(d->ppsh_status_520));
+}
+
+static void ppsh_text_break(struct be300_wince_aux *d)
+{
+    if (!d)
+        return;
+
+    d->ppsh_text_run_len = 0;
+    d->ppsh_text_emitting = false;
+}
+
+static void ppsh_guest_note_text_byte(struct be300_wince_aux *d, uint8_t byte)
+{
+    if (!d)
+        return;
+
+    if (!ppsh_is_printable(byte)) {
+        ppsh_text_break(d);
+        return;
+    }
+
+    if (d->ppsh_text_run_len >= PPSH_TEXT_RUN_CAP - 1)
+        ppsh_text_break(d);
+
+    d->ppsh_text_run[d->ppsh_text_run_len++] = (char)byte;
+    d->ppsh_text_run[d->ppsh_text_run_len] = '\0';
+
+    if (!d->ppsh_text_emitting && d->ppsh_text_run_len >= 4) {
+        fwrite(d->ppsh_text_run, 1, d->ppsh_text_run_len, stdout);
+        fflush(stdout);
+        d->ppsh_text_run_len = 0;
+        d->ppsh_text_emitting = true;
+        return;
+    }
+
+    if (d->ppsh_text_emitting) {
+        fputc(byte, stdout);
+        fflush(stdout);
+        d->ppsh_text_run_len = 0;
+    }
+}
+
+static void ppsh_guest_submit_byte(struct be300_wince_aux *d, uint8_t byte,
+    uint32_t pc)
+{
+    if (!d)
+        return;
+
+    d->ppsh_guest_byte_count++;
+
+    if (d->ppsh_guest_byte_count == 1) {
+        fprintf(stderr,
+            "[PPSH] guest transport traffic detected"
+            " at PC=0x%08X\n", pc);
+    }
+
+    if (d->log_mmio && d->ppsh_raw_log_count < 64) {
+        fprintf(stderr,
+            "[PPSH_TX] byte=0x%02X PC=0x%08X count=%zu\n",
+            byte, pc, d->ppsh_guest_byte_count);
+        d->ppsh_raw_log_count++;
+    }
+
+    ppsh_guest_note_text_byte(d, byte);
+}
+
+static size_t ppsh_queue_host_bytes(struct be300_wince_aux *d,
+    const uint8_t *buf, size_t len)
+{
+    size_t queued = 0;
+
+    if (!d || !d->ppsh_enabled || !buf)
+        return 0;
+
+    while (queued < len && d->ppsh_host_q_count < PPSH_QUEUE_CAP) {
+        d->ppsh_host_queue[d->ppsh_host_q_head] = buf[queued];
+        d->ppsh_host_q_head = (d->ppsh_host_q_head + 1u) % PPSH_QUEUE_CAP;
+        d->ppsh_host_q_count++;
+        queued++;
+    }
+
+    if (queued > 0) {
+        d->ppsh_host_byte_count += queued;
+        if (d->log_mmio) {
+            fprintf(stderr,
+                "[PPSH_RX] queued=%zu total=%zu pending=%zu\n",
+                queued, d->ppsh_host_byte_count, d->ppsh_host_q_count);
+        }
+    }
+
+    ppsh_refresh_status(d);
+    return queued;
+}
+
+static bool ppsh_pop_host_byte(struct be300_wince_aux *d, uint8_t *out)
+{
+    if (!d || !out || d->ppsh_host_q_count == 0)
+        return false;
+
+    *out = d->ppsh_host_queue[d->ppsh_host_q_tail];
+    d->ppsh_host_q_tail = (d->ppsh_host_q_tail + 1u) % PPSH_QUEUE_CAP;
+    d->ppsh_host_q_count--;
+    return true;
+}
 
 DEVICE_ACCESS(be300_vrc4173)
 {
@@ -212,6 +362,12 @@ DEVICE_ACCESS(be300_wince_aux)
         val = memory_readmax64(cpu, data, len);
         memcpy(&d->bytes[off], data, len);
 
+        if (off == 0x000) {
+            d->ppsh_data = (uint16_t)val;
+            d->ppsh_tx_byte = (uint8_t)(val & 0xffu);
+            d->ppsh_tx_valid = true;
+        }
+
         /*
          * NK's PPSH companion-MCU handshake uses 0x0C000520 as a small
          * status machine, not a constant ID register:
@@ -227,41 +383,31 @@ DEVICE_ACCESS(be300_wince_aux)
 
             switch (cmd) {
             case 0x3330:
-                /*
-                 * PPSH controller-ID probe.  Without --ppsh, return 0
-                 * so the probe check (status & 0x2320) != 0x2320 fails
-                 * — no debug hardware.  This prevents WinCE from
-                 * routing console I/O to the parallel port shell,
-                 * which blocks the normal GUI boot path.
-                 *
-                 * With --ppsh, return 0x2320 (or 0x3320 if response
-                 * pending) to enable the debug shell.
-                 */
-                if (d->ppsh_enabled) {
-                    d->ppsh_status_520 = d->ppsh_response_pending
-                        ? 0x3320 : 0x2320;
-                } else {
-                    d->ppsh_status_520 = 0x0000;
-                }
+                ppsh_refresh_status(d);
                 break;
             case 0x1100:
-                d->ppsh_status_520 = 0x2322;
                 d->ppsh_response_pending = true;
+                if (d->ppsh_enabled && d->ppsh_tx_valid) {
+                    ppsh_guest_submit_byte(d, d->ppsh_tx_byte,
+                        (uint32_t)cpu->pc);
+                }
+                d->ppsh_tx_valid = false;
+                ppsh_refresh_status(d);
                 break;
             case 0x9100:
-                d->ppsh_status_520 = 0x2322;
+                d->ppsh_response_pending = true;
+                ppsh_refresh_status(d);
                 break;
             case 0x9900:
-                d->ppsh_status_520 = 0x3320;  /* ready + data_avail (bit 0x1000) */
-                d->ppsh_data = 0x0100;        /* response: upper byte = 0x01 (ACK) */
+                d->ppsh_response_pending = false;
+                d->ppsh_ack_pending = true;
+                ppsh_refresh_status(d);
                 break;
             default:
-                d->ppsh_status_520 = 0x2320;
+                d->ppsh_response_pending = false;
+                ppsh_refresh_status(d);
                 break;
             }
-
-            memcpy(&d->bytes[off], &d->ppsh_status_520,
-                sizeof(d->ppsh_status_520));
         }
 
         if (d->log_mmio) {
@@ -279,9 +425,23 @@ DEVICE_ACCESS(be300_wince_aux)
          * Returns response data; reading clears bit 0x1000 (data_avail)
          * from the status register, matching real MCU mailbox semantics.
          */
-        if (off == 0x000 && len >= 2) {
-            val = d->ppsh_data;
-            memory_writemax64(cpu, data, len, val);
+        if (off == 0x000) {
+            uint16_t word = d->ppsh_data;
+            uint8_t byte = 0;
+
+            if (d->ppsh_ack_pending) {
+                word = 0x0100;
+                d->ppsh_ack_pending = false;
+            } else if (ppsh_pop_host_byte(d, &byte)) {
+                word = (uint16_t)byte << 8;
+            }
+
+            if (len >= 2)
+                memory_writemax64(cpu, data, len, word);
+            else
+                memory_writemax64(cpu, data, len, (word >> 8) & 0xffu);
+            val = len >= 2 ? word : ((word >> 8) & 0xffu);
+            ppsh_refresh_status(d);
         }
 
         /*
@@ -289,8 +449,7 @@ DEVICE_ACCESS(be300_wince_aux)
          * Reads return the current emulated companion-MCU status word.
          */
         if (off == 0x400 && len >= 2) {
-            memcpy(&d->bytes[off], &d->ppsh_status_520,
-                sizeof(d->ppsh_status_520));
+            ppsh_refresh_status(d);
             val = d->ppsh_status_520;
             memory_writemax64(cpu, data, len, val);
         }
@@ -305,6 +464,17 @@ DEVICE_ACCESS(be300_wince_aux)
     }
 
     return 1;
+}
+
+bool be300_ppsh_transport_ready(void)
+{
+    return g_be300_wince_aux
+        && g_be300_wince_aux->ppsh_enabled;
+}
+
+size_t be300_ppsh_queue_host_input(const uint8_t *buf, size_t len)
+{
+    return ppsh_queue_host_bytes(g_be300_wince_aux, buf, len);
 }
 
 bool be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out)
@@ -382,8 +552,9 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio,
     g_be300_vrc4173_latch = latch;
     CHECK_ALLOCATION(aux = calloc(1, sizeof(struct be300_wince_aux)));
     aux->log_mmio = log_mmio;
-    aux->ppsh_status_520 = 0x2320;
     aux->ppsh_enabled = enable_ppsh;
+    g_be300_wince_aux = aux;
+    ppsh_refresh_status(aux);
 
     /*
      * Pre-populate latch with real hardware register values from
@@ -533,6 +704,8 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio,
 
             for (unsigned i = 0; i < sizeof(aux_regs) / sizeof(aux_regs[0]); i++)
                 memcpy(&aux->bytes[aux_regs[i].off], &aux_regs[i].val, 4);
+
+            ppsh_refresh_status(aux);
         }
 
         fprintf(stderr,
