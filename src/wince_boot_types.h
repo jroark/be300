@@ -204,13 +204,16 @@ typedef struct {
     uint16_t section3_caller_probe_count;
     uint16_t section3_source_probe_count;
     uint16_t section3_obj_probe_count;
+    uint16_t section3_retobj_write_count;
     bool     section3_page_watch_armed;
+    bool     section3_retobj_watch_armed;
     bool     section3_step_trace_pending;
     bool     section3_step_trace_active;
     bool     section3_step_trace_done;
     uint16_t section3_step_trace_remaining;
     uint32_t section3_owner_pc_mask;
     uint32_t section3_callback_pc_mask;
+    uint32_t section3_retobj_watch_va;
     bool     systempatch_seen;
     bool     systempatch_first_exception_logged;
     bool     systempatch_process_logged;
