@@ -2201,6 +2201,144 @@ static bool resolve_section3_gate_entry(machine_t *m, uint32_t key_in,
     return true;
 }
 
+static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
+    uint32_t pc32, uint32_t sec3)
+{
+    uint32_t raw_key;
+    uint32_t key;
+    uint32_t translated = 0;
+    uint32_t masked = 0;
+    uint32_t base = 0;
+    uint32_t range_lo = 0;
+    uint32_t range_hi = 0;
+    uint32_t entry = 0;
+    uint32_t entry_key = 0;
+    uint32_t state_ptr = 0;
+    uint32_t obj = 0;
+    uint32_t obj_90 = 0;
+    bool translated_ok = false;
+    bool base_ok = false;
+    bool lo_ok = false;
+    bool hi_ok = false;
+    bool entry_ok = false;
+    bool entry_key_ok = false;
+    bool state_ptr_ok = false;
+    bool obj_ok = false;
+    bool obj90_ok = false;
+    bool state_ok = false;
+    unsigned char state_byte = 0;
+    const char *reason = "ok";
+    char key_buf[16];
+    char masked_buf[16];
+    char base_buf[16];
+    char lo_buf[16];
+    char hi_buf[16];
+    char entry_buf[16];
+    char entry_key_buf[16];
+    char state_ptr_buf[16];
+    char obj_buf[16];
+    char obj90_buf[16];
+    char state_buf[8];
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.section3_gate_probe_count >= 12u)
+        return;
+    if (pc32 != UINT32_C(0x8009A9CC) && pc32 != UINT32_C(0x8009A7F8))
+        return;
+
+    raw_key = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+    key = raw_key;
+
+    if (key >= 64u && key < 96u) {
+        translated_ok = load_va_word(m, UINT32_C(0xFFFFD704) + key * 4u, &translated);
+        if (translated_ok) {
+            key = translated;
+        } else {
+            reason = "trans_fail";
+        }
+    }
+
+    masked = key & UINT32_C(0x001FFFFC);
+    base_ok = load_va_word(m, UINT32_C(0xFFFFDAC8), &base);
+    lo_ok = load_va_word(m, UINT32_C(0x80679540), &range_lo);
+    hi_ok = load_va_word(m, UINT32_C(0x80679544), &range_hi);
+
+    if (!base_ok || !lo_ok || !hi_ok) {
+        reason = "base_bounds_fail";
+    } else {
+        entry = masked + base;
+        entry_ok = entry >= range_lo && entry < range_hi;
+        if (!entry_ok) {
+            reason = "entry_oob";
+        } else if (!load_va_word(m, entry + 8u, &entry_key)) {
+            reason = "entry_key_read_fail";
+        } else {
+            entry_key_ok = true;
+            if (entry_key != key) {
+                reason = "key_mismatch";
+            } else {
+                reason = "entry_match";
+            }
+            state_ptr_ok = load_va_word(m, entry + 0x14u, &state_ptr);
+            obj_ok = load_va_word(m, entry + 0x18u, &obj);
+            if (state_ptr_ok
+                && state_ptr >= UINT32_C(0x80000000)
+                && state_ptr < UINT32_C(0x81000000)) {
+                state_ok = load_va_bytes(m, state_ptr + 5u, &state_byte, 1u);
+                if (state_ok) {
+                    reason = state_byte == 4u ? "state4" : "state_not4";
+                } else {
+                    reason = "state_byte_fail";
+                }
+            } else if (!state_ptr_ok) {
+                reason = "state_ptr_fail";
+            } else {
+                reason = "state_ptr_badva";
+            }
+            if (obj_ok
+                && obj >= UINT32_C(0x80000000)
+                && obj < UINT32_C(0x81000000)) {
+                obj90_ok = load_va_word(m, obj + 0x90u, &obj_90);
+            }
+        }
+    }
+
+    if (state_ok)
+        snprintf(state_buf, sizeof(state_buf), "%02X", state_byte);
+    else
+        snprintf(state_buf, sizeof(state_buf), "??");
+
+    fprintf(stderr,
+        "[WINCE_SEC3_GATE] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " a0=0x%08X a1=0x%08X v0=0x%08X translated=%u key=%s masked=%s"
+        " base=%s lo=%s hi=%s entry=%s entry+8=%s state_ptr=%s state5=%s"
+        " obj=%s obj+90=%s sec0=0x%08X sec3=0x%08X reason=%s\n",
+        pc32 == UINT32_C(0x8009A9CC) ? "a9cc" : "a7f8",
+        pc32,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        raw_key,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+        translated_ok ? 1u : 0u,
+        format_word_or_unknown(key_buf, sizeof(key_buf), true, key),
+        format_word_or_unknown(masked_buf, sizeof(masked_buf), true, masked),
+        format_word_or_unknown(base_buf, sizeof(base_buf), base_ok, base),
+        format_word_or_unknown(lo_buf, sizeof(lo_buf), lo_ok, range_lo),
+        format_word_or_unknown(hi_buf, sizeof(hi_buf), hi_ok, range_hi),
+        format_word_or_unknown(entry_buf, sizeof(entry_buf), entry_ok, entry),
+        format_word_or_unknown(entry_key_buf, sizeof(entry_key_buf), entry_key_ok, entry_key),
+        format_word_or_unknown(state_ptr_buf, sizeof(state_ptr_buf), state_ptr_ok, state_ptr),
+        state_buf,
+        format_word_or_unknown(obj_buf, sizeof(obj_buf), obj_ok, obj),
+        format_word_or_unknown(obj90_buf, sizeof(obj90_buf), obj90_ok, obj_90),
+        load_pa_word(m, 0x18C0u),
+        sec3,
+        reason);
+    m->wince.section3_gate_probe_count++;
+}
+
 static bool load_section3_context_head(machine_t *m, uint32_t *ctx_ptr_out,
     uint32_t *head_ptr_out)
 {
@@ -3488,6 +3626,8 @@ static void maybe_log_section3_desc_read(machine_t *m, struct cpu *cpu,
         sec3,
         (uint64_t)cpu->pc,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    maybe_log_section3_gate_snapshot(m, cpu,
+        canonicalize_nk_pc((uint32_t)cpu->pc), sec3);
     dump_section3_descriptor_window(m, "desc_read");
     m->wince.section3_desc_read_count++;
 }
