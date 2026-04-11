@@ -136,8 +136,8 @@ typedef struct {
     uint16_t ppsh_flag_dump_count;
     uint32_t ppsh_last_helper_pc;
     uint32_t ppsh_last_flag_pc;
-    uint32_t ppsh_watch_dump_mask;
-    bool     ppsh_upper_path_dumped;
+    uint32_t ppsh_exact_pc_mask;
+    bool     ppsh_timeout_path_dumped;
     uint32_t ppsh_last_callsite_fmt;
     uint32_t ppsh_last_serial_dump_sp;
     char     ppsh_serial_line[160];
