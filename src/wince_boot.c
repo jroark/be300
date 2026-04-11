@@ -2572,6 +2572,50 @@ static void maybe_log_section3_raw_write(machine_t *m, struct cpu *cpu,
     m->wince.section3_raw_diag_count++;
 }
 
+static void maybe_log_section3_page_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    const uint32_t table_pa = UINT32_C(0x00FE5000);
+    const uint32_t table_va = UINT32_C(0x80FE5000);
+    const char *tag = "table";
+
+    if (!m || !cpu)
+        return;
+    if (!range_overlaps(paddr, (uint64_t)len, table_pa, 0x1000u))
+        return;
+    if (m->wince.section3_page_diag_count >= 64)
+        return;
+
+    if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7E4u, 4u)) {
+        tag = "slot7e4";
+    } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7E0u, 4u)) {
+        tag = "slot7e0";
+    } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7E8u, 4u)) {
+        tag = "slot7e8";
+    } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x694u, 4u)) {
+        tag = "slot694";
+    } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x000u, 4u)) {
+        tag = "slot000";
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC3_PAGE] W %s off=0x%03" PRIx64 " len=%zu val=0x%llX"
+        " PC=0x%08" PRIx64 " RA=0x%08X\n",
+        tag,
+        paddr - table_pa,
+        len,
+        (unsigned long long)val,
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+
+    if (strcmp(tag, "table") != 0) {
+        log_l2_table_state(m, "section3_page", table_va, UINT32_C(0x01F94B50));
+        log_section0_focus_window(m, "section3_page", table_va);
+    }
+
+    m->wince.section3_page_diag_count++;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Diagnostic / dump helpers                                           */
 /* ------------------------------------------------------------------ */
@@ -5016,6 +5060,8 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
 
     if (is_write)
         maybe_log_section3_raw_write(m, cpu, paddr, len, val);
+    if (is_write)
+        maybe_log_section3_page_write(m, cpu, paddr, len, val);
 
     maybe_log_section0_hot_slot_access(m, cpu, paddr, len, val, is_write);
 
