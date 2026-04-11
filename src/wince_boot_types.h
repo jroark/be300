@@ -208,6 +208,7 @@ typedef struct {
     uint16_t section3_queue_probe_count;
     uint16_t section3_focusobj_write_count;
     uint16_t section3_pool_write_count;
+    uint16_t section3_ctor_probe_count;
     uint16_t section3_retobj_write_count;
     bool     section3_page_watch_armed;
     bool     section3_retobj_watch_armed;

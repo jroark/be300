@@ -146,6 +146,8 @@ static void maybe_note_section3_worker_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
 static void maybe_log_section3_pool_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t val);
+static void maybe_log_section3_ctor_field_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val);
 static void maybe_log_section3_focus_obj_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t val);
 
@@ -4696,6 +4698,69 @@ static void maybe_log_section3_pool_write(machine_t *m, struct cpu *cpu,
     m->wince.section3_pool_write_count++;
 }
 
+static void maybe_log_section3_ctor_field_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    const uint32_t wrap_pa = UINT32_C(0x00FE9CDC);
+    const uint32_t wrap_va = UINT32_C(0x80FE9CDC);
+    const uint32_t payload_pa = UINT32_C(0x00FE9DA4);
+    const uint32_t payload_va = UINT32_C(0x80FE9DA4);
+    uint32_t sp;
+    uint32_t stack_words[4] = { 0 };
+    bool stack_ok[4] = { false };
+    uint32_t sec3;
+    const char *tag;
+
+    if (!m || !cpu)
+        return;
+    if (!range_overlaps(paddr, (uint64_t)len, wrap_pa + 0x14u, 8u)
+        && !range_overlaps(paddr, (uint64_t)len, payload_pa, 0x20u)) {
+        return;
+    }
+    if (m->wince.section3_ctor_probe_count >= 32u)
+        return;
+
+    sec3 = load_pa_word(m, 0x18CCu);
+    tag = range_overlaps(paddr, (uint64_t)len, wrap_pa + 0x14u, 8u)
+        ? "wrap_ctor"
+        : "payload_head";
+
+    fprintf(stderr,
+        "[WINCE_SEC3_CTOR_W] tag=%s off=0x%02" PRIx64 " len=%zu val=0x%llX"
+        " sec0=0x%08X sec3=0x%08X PC=0x%08" PRIx64 " RA=0x%08X\n",
+        tag,
+        paddr - (strcmp(tag, "wrap_ctor") == 0 ? wrap_pa : payload_pa),
+        len,
+        (unsigned long long)val,
+        load_pa_word(m, 0x18C0u),
+        sec3,
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+    for (unsigned i = 0; i < 4u; i++) {
+        stack_ok[i] = load_va_word(m, sp + i * 4u, &stack_words[i]);
+    }
+    fprintf(stderr,
+        "[WINCE_SEC3_CTOR_CTX] a0=0x%08X a1=0x%08X a2=0x%08X sp=0x%08X"
+        " s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X"
+        " stk0=%s stk1=%s stk2=%s stk3=%s\n",
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+        sp,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
+        format_word_or_unknown((char[16]){0}, 16, stack_ok[0], stack_words[0]),
+        format_word_or_unknown((char[16]){0}, 16, stack_ok[1], stack_words[1]),
+        format_word_or_unknown((char[16]){0}, 16, stack_ok[2], stack_words[2]),
+        format_word_or_unknown((char[16]){0}, 16, stack_ok[3], stack_words[3]));
+    dump_section3_wrap_window(m, "ctor_write", wrap_va);
+    dump_section3_retobj_window(m, "ctor_write", payload_va);
+    m->wince.section3_ctor_probe_count++;
+}
+
 static void maybe_log_section3_focus_obj_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t val)
 {
@@ -7316,6 +7381,8 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
         maybe_log_section3_desc_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_pool_write(m, cpu, paddr, len, val);
+    if (is_write)
+        maybe_log_section3_ctor_field_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_focus_obj_write(m, cpu, paddr, len, val);
     if (!is_write)
