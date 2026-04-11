@@ -21,6 +21,8 @@
 #include "memory.h"
 #include "mips_cpu_types.h"
 
+extern bool single_step;
+
 static machine_t *g_active_wince_machine = NULL;
 static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
 static const char *format_word_or_unknown(char *buf, size_t buf_size, bool ok,
@@ -2526,15 +2528,25 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
             if (value == UINT32_C(0x80FE5000) && old != value) {
                 m->wince.section3_page_watch_armed = true;
                 m->wince.section3_page_diag_count = 0;
+                if (!m->wince.section3_step_trace_done
+                    && !m->wince.section3_step_trace_active) {
+                    m->wince.section3_step_trace_pending = false;
+                    m->wince.section3_step_trace_active = true;
+                    m->wince.section3_step_trace_remaining = 96;
+                    single_step = true;
+                }
                 fprintf(stderr,
                     "[WINCE_SEC3_ARM] state=armed old=0x%08X new=0x%08X"
-                    " PC=0x%08X RA=0x%08X\n",
+                    " PC=0x%08X RA=0x%08X trace=%s rem=%u\n",
                     old,
                     value,
                     (uint32_t)cpu->pc,
-                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    m->wince.section3_step_trace_active ? "active" : "pending",
+                    (unsigned)m->wince.section3_step_trace_remaining);
             } else if (old == UINT32_C(0x80FE5000) && value != old) {
                 m->wince.section3_page_watch_armed = false;
+                m->wince.section3_step_trace_pending = false;
                 fprintf(stderr,
                     "[WINCE_SEC3_ARM] state=disarmed old=0x%08X new=0x%08X"
                     " PC=0x%08X RA=0x%08X\n",

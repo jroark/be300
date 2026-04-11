@@ -194,6 +194,10 @@ typedef struct {
     uint16_t section3_page_diag_count;
     uint16_t section3_install_probe_count;
     bool     section3_page_watch_armed;
+    bool     section3_step_trace_pending;
+    bool     section3_step_trace_active;
+    bool     section3_step_trace_done;
+    uint16_t section3_step_trace_remaining;
     bool     systempatch_seen;
     bool     systempatch_first_exception_logged;
     bool     systempatch_process_logged;
