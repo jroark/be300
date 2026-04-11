@@ -4633,25 +4633,22 @@ static void maybe_log_section3_desc_write(machine_t *m, struct cpu *cpu,
 static void maybe_log_section3_pool_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t val)
 {
-    const uint32_t pool_pa = UINT32_C(0x00FE9C00);
-    const uint32_t pool_va = UINT32_C(0x80FE9C00);
+    const uint32_t pool_pa = UINT32_C(0x00FE9CD0);
     const uint32_t wrap_va = UINT32_C(0x80FE9CDC);
     const uint32_t payload_va = UINT32_C(0x80FE9DA4);
     const uint32_t wrap_pa = UINT32_C(0x00FE9CDC);
     const uint32_t payload_pa = UINT32_C(0x00FE9DA4);
+    const uint32_t pool_len = UINT32_C(0x170);
     uint32_t sec3;
     const char *tag = "pool";
 
     if (!m || !cpu)
         return;
-    if (!range_overlaps(paddr, (uint64_t)len, pool_pa, 0x400u))
+    if (!range_overlaps(paddr, (uint64_t)len, pool_pa, pool_len))
         return;
 
     sec3 = load_pa_word(m, 0x18CCu);
-    if (!m->wince.section3_page_watch_armed
-        && sec3 != UINT32_C(0x80FE5000))
-        return;
-    if (m->wince.section3_pool_write_count >= 48u)
+    if (m->wince.section3_pool_write_count >= 64u)
         return;
 
     if (range_overlaps(paddr, (uint64_t)len, wrap_pa, 0x20u)) {
