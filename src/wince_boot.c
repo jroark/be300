@@ -7,6 +7,7 @@
 
 #include "wince_boot.h"
 
+#include <ctype.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -63,6 +64,27 @@ static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
 #define WINCE_PATH_PROBE_79898      UINT64_C(0x0000002000000000)
 #define WINCE_PATH_PROBE_79910      UINT64_C(0x0000004000000000)
 #define WINCE_PATH_PROBE_79990      UINT64_C(0x0000008000000000)
+#define WINCE_FB_REPORT_MAX         10u
+#define WINCE_FB_PC_RING_LIMIT      32u
+#define WINCE_ROMHDR_NMODS_OFF      0x10u
+#define WINCE_ROMHDR_RAMSTART_OFF   0x14u
+#define WINCE_ROMHDR_RAMFREE_OFF    0x18u
+#define WINCE_ROMHDR_RAMEND_OFF     0x1Cu
+#define WINCE_ROMHDR_COPYENTRIES_OFF 0x20u
+#define WINCE_ROMHDR_COPYOFFSET_OFF 0x24u
+#define WINCE_ROMHDR_NUMFILES_OFF   0x30u
+#define WINCE_ROMHDR_MODTABLE_OFF   0x54u
+#define WINCE_TOCENTRY_SIZE         0x20u
+#define WINCE_FILEENTRY_SIZE        0x1Cu
+
+static void dump_recent_pc_ring(machine_t *m, const char *tag, uint32_t limit);
+static void maybe_arm_fb_watch(machine_t *m, struct cpu *cpu,
+    const char *reason);
+static void maybe_track_fb_runtime_changes(machine_t *m, struct cpu *cpu);
+static void maybe_dump_toc_summary(machine_t *m, uint32_t ptoc);
+static bool try_discover_ptoc(machine_t *m, uint32_t *ptoc_out);
+static void wince_fb_write_observer(struct vfb_data *fb, struct cpu *cpu,
+    void *opaque, uint64_t relative_addr, size_t len);
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -316,6 +338,408 @@ static uint32_t load_table_word(machine_t *m, uint32_t table_va,
     return load_pa_word(m, table_va_to_pa(table_va) + offset);
 }
 
+static bool load_va_bytes(machine_t *m, uint32_t va, unsigned char *buf,
+    size_t len)
+{
+    if (!m || !m->cpu || !buf || len == 0)
+        return false;
+
+    return m->cpu->memory_rw(m->cpu, m->cpu->mem, va32_to_mips64(va), buf, len,
+        MEM_READ, CACHE_DATA | NO_EXCEPTIONS) != 0;
+}
+
+static bool load_guest_c_string(machine_t *m, uint32_t va_raw, char *out,
+    size_t out_len)
+{
+    uint32_t va;
+    size_t i;
+    size_t start = 0;
+
+    if (!m || !out || out_len == 0)
+        return false;
+
+    memset(out, 0, out_len);
+    va = va_raw & ~UINT32_C(1);
+
+    for (i = 0; i + 1 < out_len; i++) {
+        unsigned char ch = 0;
+
+        if (!load_va_bytes(m, va + (uint32_t)i, &ch, 1))
+            break;
+        out[i] = (char)ch;
+        if (ch == '\0')
+            break;
+    }
+
+    out[out_len - 1] = '\0';
+    while (out[start] != '\0'
+        && !isprint((unsigned char)out[start])) {
+        start++;
+    }
+    if (start != 0)
+        memmove(out, out + start, out_len - start);
+
+    return out[0] != '\0';
+}
+
+static bool sample_framebuffer(machine_t *m, uint8_t *sample_out)
+{
+    struct vfb_data *fb;
+    const unsigned char *src;
+    size_t span;
+    size_t copy_len;
+    size_t chunk;
+
+    if (!m || !sample_out || !m->gxe_machine)
+        return false;
+
+    fb = m->gxe_machine->fb;
+    if (!fb || !fb->framebuffer || fb->framebuffer_size == 0)
+        return false;
+
+    src = fb->framebuffer;
+    memset(sample_out, 0, WINCE_FB_SAMPLE_BYTES);
+    copy_len = fb->framebuffer_size < WINCE_FB_SAMPLE_CHUNK_BYTES
+        ? fb->framebuffer_size : WINCE_FB_SAMPLE_CHUNK_BYTES;
+    span = fb->framebuffer_size > WINCE_FB_SAMPLE_CHUNK_BYTES
+        ? fb->framebuffer_size - WINCE_FB_SAMPLE_CHUNK_BYTES : 0;
+
+    for (chunk = 0; chunk < WINCE_FB_SAMPLE_CHUNKS; chunk++) {
+        size_t src_off = 0;
+
+        if (WINCE_FB_SAMPLE_CHUNKS > 1 && span != 0) {
+            src_off = (span * chunk) / (WINCE_FB_SAMPLE_CHUNKS - 1);
+        }
+        memcpy(sample_out + chunk * WINCE_FB_SAMPLE_CHUNK_BYTES,
+            src + src_off, copy_len);
+    }
+
+    return true;
+}
+
+static bool toc_name_is_focus(const char *name)
+{
+    static const char *focus[] = {
+        "gwes",
+        "explorer",
+        "shell",
+        "filesys",
+        "device",
+        "touch",
+        "ddi",
+        "keybddr",
+    };
+    size_t i;
+
+    if (!name || name[0] == '\0')
+        return false;
+
+    for (i = 0; i < sizeof(focus) / sizeof(focus[0]); i++) {
+        if (strstr(name, focus[i]) != NULL)
+            return true;
+    }
+    return false;
+}
+
+static void dump_recent_pc_ring(machine_t *m, const char *tag, uint32_t limit)
+{
+    uint32_t total;
+    uint32_t count;
+    uint32_t start;
+    uint32_t i;
+
+    if (!m || !m->wince.pc_ring_active)
+        return;
+
+    total = m->wince.pc_ring_idx;
+    if (total == 0) {
+        fprintf(stderr, "[PC_RING] %s empty\n", tag ? tag : "recent");
+        return;
+    }
+
+    count = total < limit ? total : limit;
+    start = total - count;
+    fprintf(stderr, "[PC_RING] %s last %u of %u samples:\n",
+        tag ? tag : "recent", count, total);
+    for (i = 0; i < count; i++) {
+        uint32_t idx = (start + i) % WINCE_PC_RING_SIZE;
+        uint32_t pc = m->wince.pc_ring[idx];
+        uint32_t pa = pc & 0x1FFFFFFFu;
+        const char *region = "???";
+
+        if (pa >= 0x1FC00000u)
+            region = "ROM";
+        else if (pa >= 0xF00000u && pa < 0x1000000u)
+            region = "SPL";
+        else if (pa >= 0x60000u && pa < 0x100000u)
+            region = "NK";
+        else if (pa < 0x10000u)
+            region = "LOW";
+
+        fprintf(stderr,
+            "[PC_RING] %s [%2u] PC=0x%08X (%s) SP=0x%08X Status=0x%08X\n",
+            tag ? tag : "recent",
+            i,
+            pc,
+            region,
+            m->wince.pc_ring_sp[idx],
+            m->wince.pc_ring_status[idx]);
+    }
+}
+
+static void maybe_arm_fb_watch(machine_t *m, struct cpu *cpu,
+    const char *reason)
+{
+    struct vfb_data *fb;
+
+    if (!m || !cpu || !m->wince.active || m->wince.fb_watch_armed
+        || !m->gxe_machine) {
+        return;
+    }
+
+    fb = m->gxe_machine->fb;
+    if (!fb || !sample_framebuffer(m, m->wince.fb_watch_baseline))
+        return;
+
+    m->wince.fb_watch_armed = true;
+    m->wince.fb_watch_baseline_valid = true;
+    m->wince.fb_watch_report_count = 0;
+    m->wince.fb_write_diag_count = 0;
+    m->wince.fb_watch_pc_ring_dumped = false;
+    m->wince.fb_watch_arm_pc = (uint32_t)cpu->pc;
+    fb->write_observer = wince_fb_write_observer;
+    fb->write_observer_opaque = m;
+
+    fprintf(stderr,
+        "[WINCE_FB] watch armed reason=%s pc=0x%08X fb_base=0x%08" PRIx64
+        " size=%zu sample=%uB\n",
+        reason ? reason : "unknown",
+        (uint32_t)cpu->pc,
+        fb->baseaddr,
+        fb->framebuffer_size,
+        (unsigned)WINCE_FB_SAMPLE_BYTES);
+}
+
+static void maybe_track_fb_runtime_changes(machine_t *m, struct cpu *cpu)
+{
+    uint8_t current[WINCE_FB_SAMPLE_BYTES];
+    size_t i;
+
+    if (!m || !cpu || !m->wince.fb_watch_armed
+        || !m->wince.fb_watch_baseline_valid
+        || m->wince.fb_watch_report_count >= WINCE_FB_REPORT_MAX) {
+        return;
+    }
+    if (!sample_framebuffer(m, current))
+        return;
+    if (memcmp(current, m->wince.fb_watch_baseline,
+            WINCE_FB_SAMPLE_BYTES) == 0) {
+        return;
+    }
+
+    for (i = 0; i < WINCE_FB_SAMPLE_BYTES; i++) {
+        if (current[i] != m->wince.fb_watch_baseline[i]) {
+            m->wince.fb_watch_report_count++;
+            fprintf(stderr,
+                "[WINCE_FB] sample_change #%u pc=0x%08X ra=0x%08X"
+                " sp=0x%08X diff=%zu old=%02X new=%02X\n",
+                (unsigned)m->wince.fb_watch_report_count,
+                (uint32_t)cpu->pc,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+                i,
+                m->wince.fb_watch_baseline[i],
+                current[i]);
+            if (!m->wince.fb_watch_pc_ring_dumped) {
+                dump_recent_pc_ring(m, "fb_sample", WINCE_FB_PC_RING_LIMIT);
+                m->wince.fb_watch_pc_ring_dumped = true;
+            }
+            memcpy(m->wince.fb_watch_baseline, current,
+                WINCE_FB_SAMPLE_BYTES);
+            break;
+        }
+    }
+}
+
+static void wince_fb_write_observer(struct vfb_data *fb, struct cpu *cpu,
+    void *opaque, uint64_t relative_addr, size_t len)
+{
+    machine_t *m = (machine_t *)opaque;
+
+    if (!fb || !cpu || !m || !m->wince.active || !m->wince.fb_watch_armed)
+        return;
+
+    if (m->wince.fb_write_diag_count >= WINCE_FB_REPORT_MAX) {
+        fb->write_observer = NULL;
+        fb->write_observer_opaque = NULL;
+        return;
+    }
+
+    m->wince.fb_write_diag_count++;
+    fprintf(stderr,
+        "[WINCE_FB] direct_write #%u paddr=0x%08" PRIx64
+        " off=0x%08" PRIx64 " len=%zu pc=0x%08X ra=0x%08X\n",
+        (unsigned)m->wince.fb_write_diag_count,
+        fb->baseaddr + relative_addr,
+        relative_addr,
+        len,
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    if (!m->wince.fb_watch_pc_ring_dumped) {
+        dump_recent_pc_ring(m, "fb_write", WINCE_FB_PC_RING_LIMIT);
+        m->wince.fb_watch_pc_ring_dumped = true;
+    }
+
+    if (m->wince.fb_write_diag_count >= WINCE_FB_REPORT_MAX) {
+        fb->write_observer = NULL;
+        fb->write_observer_opaque = NULL;
+    }
+}
+
+static void maybe_dump_toc_summary(machine_t *m, uint32_t ptoc)
+{
+    uint32_t physfirst = 0;
+    uint32_t physlast = 0;
+    uint32_t nummods = 0;
+    uint32_t numfiles = 0;
+    uint32_t ramstart = 0;
+    uint32_t ramfree = 0;
+    uint32_t ramend = 0;
+    uint32_t copy_entries = 0;
+    uint32_t copy_offset = 0;
+    uint32_t mods_base;
+    uint32_t files_base;
+    uint32_t i;
+    uint32_t logged_mods = 0;
+    uint32_t logged_files = 0;
+
+    if (!m || m->wince.toc_dumped || ptoc == 0)
+        return;
+
+    m->wince.toc_dumped = true;
+    if (!load_va_word(m, ptoc + 0x08u, &physfirst)
+        || !load_va_word(m, ptoc + 0x0Cu, &physlast)
+        || !load_va_word(m, ptoc + WINCE_ROMHDR_NMODS_OFF, &nummods)
+        || !load_va_word(m, ptoc + WINCE_ROMHDR_NUMFILES_OFF, &numfiles)
+        || !load_va_word(m, ptoc + WINCE_ROMHDR_RAMSTART_OFF, &ramstart)
+        || !load_va_word(m, ptoc + WINCE_ROMHDR_RAMFREE_OFF, &ramfree)
+        || !load_va_word(m, ptoc + WINCE_ROMHDR_RAMEND_OFF, &ramend)
+        || !load_va_word(m, ptoc + WINCE_ROMHDR_COPYENTRIES_OFF, &copy_entries)
+        || !load_va_word(m, ptoc + WINCE_ROMHDR_COPYOFFSET_OFF, &copy_offset)) {
+        fprintf(stderr, "[WINCE_TOC] unable to read ROMHDR at pTOC=0x%08X\n",
+            ptoc);
+        return;
+    }
+
+    fprintf(stderr,
+        "[WINCE_TOC] pTOC=0x%08X physfirst=0x%08X physlast=0x%08X"
+        " nummods=%u numfiles=%u ramstart=0x%08X ramfree=0x%08X"
+        " ramend=0x%08X copy_entries=%u copy_offset=0x%08X\n",
+        ptoc, physfirst, physlast, nummods, numfiles, ramstart, ramfree,
+        ramend, copy_entries, copy_offset);
+
+    if (nummods == 0 || nummods > 256 || numfiles > 256)
+        return;
+
+    mods_base = ptoc + WINCE_ROMHDR_MODTABLE_OFF;
+    files_base = mods_base + nummods * WINCE_TOCENTRY_SIZE;
+
+    for (i = 0; i < nummods; i++) {
+        uint32_t entry = mods_base + i * WINCE_TOCENTRY_SIZE;
+        uint32_t attrs = 0;
+        uint32_t size = 0;
+        uint32_t name_ptr = 0;
+        uint32_t load_addr = 0;
+        char name[96];
+        bool focus;
+
+        if (!load_va_word(m, entry + 0x00u, &attrs)
+            || !load_va_word(m, entry + 0x0Cu, &size)
+            || !load_va_word(m, entry + 0x10u, &name_ptr)
+            || !load_va_word(m, entry + 0x1Cu, &load_addr)
+            || !load_guest_c_string(m, name_ptr, name, sizeof(name))) {
+            continue;
+        }
+
+        focus = toc_name_is_focus(name);
+        if (i >= 8 && !focus)
+            continue;
+        if (logged_mods >= 20 && !focus)
+            continue;
+
+        fprintf(stderr,
+            "[WINCE_TOC] mod[%u] attr=0x%08X size=0x%08X load=0x%08X"
+            " name=%s\n",
+            i, attrs, size, load_addr, name);
+        logged_mods++;
+    }
+
+    for (i = 0; i < numfiles; i++) {
+        uint32_t entry = files_base + i * WINCE_FILEENTRY_SIZE;
+        uint32_t attrs = 0;
+        uint32_t size = 0;
+        uint32_t csize = 0;
+        uint32_t name_ptr = 0;
+        char name[96];
+        bool focus;
+
+        if (!load_va_word(m, entry + 0x00u, &attrs)
+            || !load_va_word(m, entry + 0x0Cu, &size)
+            || !load_va_word(m, entry + 0x10u, &csize)
+            || !load_va_word(m, entry + 0x14u, &name_ptr)
+            || !load_guest_c_string(m, name_ptr, name, sizeof(name))) {
+            continue;
+        }
+
+        focus = toc_name_is_focus(name);
+        if (i >= 6 && !focus)
+            continue;
+        if (logged_files >= 12 && !focus)
+            continue;
+
+        fprintf(stderr,
+            "[WINCE_TOC] file[%u] attr=0x%08X size=0x%08X csize=0x%08X"
+            " name=%s\n",
+            i, attrs, size, csize, name);
+        logged_files++;
+    }
+}
+
+static bool try_discover_ptoc(machine_t *m, uint32_t *ptoc_out)
+{
+    static const uint32_t nk_bases[] = {
+        0x80060000u,
+        0x80029000u,
+    };
+    size_t i;
+
+    if (!m || !ptoc_out)
+        return false;
+
+    for (i = 0; i < sizeof(nk_bases) / sizeof(nk_bases[0]); i++) {
+        uint32_t sig = 0;
+        uint32_t ptoc = 0;
+        uint32_t physfirst = 0;
+        uint32_t physlast = 0;
+
+        if (!load_va_word(m, nk_bases[i] + 0x40u, &sig) || sig != 0x43454345u)
+            continue;
+        if (!load_va_word(m, nk_bases[i] + 0x44u, &ptoc))
+            continue;
+        if (!load_va_word(m, ptoc + 0x08u, &physfirst)
+            || !load_va_word(m, ptoc + 0x0Cu, &physlast)) {
+            continue;
+        }
+        if (physfirst != nk_bases[i] || physlast <= physfirst)
+            continue;
+
+        *ptoc_out = ptoc;
+        return true;
+    }
+
+    return false;
+}
+
 static void log_l2_table_state(machine_t *m, const char *tag,
     uint32_t table_va, uint32_t focus_vaddr)
 {
@@ -372,10 +796,24 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
 
         if (value != 0 && value != 0x8008BC18u && idx < 2) {
             uint32_t marker = load_table_word(m, value, 0x694u);
+            const char *kind = marker == 1u ? "shared" : "process";
             if (marker == 1u) {
                 m->wince.diag_shared_l2_table = value;
             } else if (value != m->wince.diag_shared_l2_table) {
                 m->wince.diag_process_l2_table = value;
+            }
+            if ((old == 0 || old == 0x8008BC18u)
+                && m->wince.process_map_diag_count < 32) {
+                fprintf(stderr,
+                    "[WINCE_PROCESS] section[%u] kind=%s table=0x%08X"
+                    " marker=0x%08X PC=0x%08X RA=0x%08X\n",
+                    idx,
+                    kind,
+                    value,
+                    marker,
+                    (uint32_t)cpu->pc,
+                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+                m->wince.process_map_diag_count++;
             }
             if (m->wince.section_write_diag_count <= 96)
                 log_l2_table_state(m, "section_write", value,
@@ -1023,6 +1461,11 @@ static void maybe_log_boot_path_probe(machine_t *m, uint32_t raw_pc32)
         format_half_or_unknown(b0104, sizeof(b0104), vr0104_ok, vr0104),
         format_half_or_unknown(b0144, sizeof(b0144), vr0144_ok, vr0144),
         format_half_or_unknown(bpmu, sizeof(bpmu), pmu_c0_ok, pmu_c0));
+
+    if (bit == WINCE_PATH_PROBE_947C8) {
+        maybe_dump_toc_summary(m,
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0]);
+    }
 
     /* Step 4: One-shot PSL dispatch table dump on scheduler_dispatch */
     if (bit == WINCE_PATH_PROBE_8B528) {
@@ -1849,6 +2292,23 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     maybe_track_low_vector_runtime_changes(m);
     maybe_note_first_exception(m);
     maybe_log_cold_boot_scheduler_probe(m, (uint32_t)cpu->pc);
+    if (!m->wince.toc_dumped && m->wince.cold_boot_copy_done) {
+        uint32_t ptoc = 0;
+
+        if (try_discover_ptoc(m, &ptoc))
+            maybe_dump_toc_summary(m, ptoc);
+    }
+    if (!m->wince.fb_watch_armed) {
+        uint32_t pc32 = (uint32_t)cpu->pc;
+
+        if (pc32 > 0x1000u && pc32 < 0x80000000u)
+            maybe_arm_fb_watch(m, cpu, "first_usermode_pc");
+        else if ((m->wince.cold_boot_pc_probes_logged
+                & WINCE_COLD_LATE_PROBE_LOGGED) != 0) {
+            maybe_arm_fb_watch(m, cpu, "cold_late_probe");
+        }
+    }
+    maybe_track_fb_runtime_changes(m, cpu);
 
     /* PIU pen-state change detection (generates VRIP PIU interrupt) */
     {
