@@ -2991,6 +2991,7 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 m->wince.section3_page_watch_armed = true;
                 m->wince.section3_page_diag_count = 0;
                 m->wince.section3_desc_write_count = 0;
+                m->wince.section3_desc_read_count = 0;
                 m->wince.section3_callback_probe_count = 0;
                 m->wince.section3_callback_pc_mask = 0;
                 if (!m->wince.section3_step_trace_done
@@ -3257,6 +3258,39 @@ static void maybe_log_section3_desc_write(machine_t *m, struct cpu *cpu,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
     dump_section3_descriptor_window(m, "desc_write");
     m->wince.section3_desc_write_count++;
+}
+
+static void maybe_log_section3_desc_read(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    const uint32_t desc_pa = UINT32_C(0x00FE9CC0);
+    const uint32_t desc_len = UINT32_C(0x40);
+    uint32_t sec3;
+
+    if (!m || !cpu)
+        return;
+    if (!range_overlaps(paddr, (uint64_t)len, desc_pa, desc_len))
+        return;
+
+    sec3 = load_pa_word(m, 0x18CCu);
+    if (!m->wince.section3_page_watch_armed
+        && sec3 != UINT32_C(0x80FE5000))
+        return;
+    if (m->wince.section3_desc_read_count >= 24u)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_SEC3_DESC_R] off=0x%02" PRIx64 " len=%zu val=0x%llX"
+        " sec0=0x%08X sec3=0x%08X PC=0x%08" PRIx64 " RA=0x%08X\n",
+        paddr - desc_pa,
+        len,
+        (unsigned long long)val,
+        load_pa_word(m, 0x18C0u),
+        sec3,
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    dump_section3_descriptor_window(m, "desc_read");
+    m->wince.section3_desc_read_count++;
 }
 
 static void maybe_log_section3_head_write(machine_t *m, struct cpu *cpu,
@@ -5688,6 +5722,7 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
     const char *name;
     uint64_t val = 0;
     uint16_t *count;
+    bool old_suppress;
     size_t i;
 
     if (!cpu || !cpu->machine || !data || len == 0)
@@ -5735,21 +5770,26 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
         }
     }
 
+    old_suppress = m->wince.suppress_watch_observer;
+    m->wince.suppress_watch_observer = true;
     if (is_write)
         maybe_log_section3_raw_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_page_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_desc_write(m, cpu, paddr, len, val);
+    if (!is_write)
+        maybe_log_section3_desc_read(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_head_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_owner_write(m, cpu, paddr, len, val);
 
-    maybe_log_section0_hot_slot_access(m, cpu, paddr, len, val, is_write);
+        maybe_log_section0_hot_slot_access(m, cpu, paddr, len, val, is_write);
 
     if (is_write)
         maybe_log_tlb_table_write(m, cpu, paddr, (uint64_t)len, val);
+    m->wince.suppress_watch_observer = old_suppress;
 
     if (!watched_ram_range_name(paddr, (uint64_t)len, &name))
         return;
