@@ -569,6 +569,78 @@ static void be300_dump_virtual_dword(machine_t *m, const char *label,
         value);
 }
 
+static void be300_dump_live_nk_image(machine_t *m, uint32_t entry_va,
+                                     uint32_t base_pa)
+{
+    uint32_t nk_pa = base_pa;
+    uint32_t nk_size = 0x00800000u;
+    uint32_t sig = 0;
+    uint32_t p_toc = 0;
+    uint32_t physfirst = 0;
+    uint32_t physlast = 0;
+    FILE *nk_fp;
+
+    if (!m || !m->cpu || base_pa == 0 || base_pa >= 0x00800000u)
+        return;
+
+    nk_fp = fopen("nk_decompressed.bin", "wb");
+
+    if (be300_read_u32_va(m,
+            0xffffffffA0000000ULL | (uint64_t)(base_pa + 0x40u),
+            &sig)
+        && sig == 0x43454345u
+        && be300_read_u32_va(m,
+            0xffffffffA0000000ULL | (uint64_t)(base_pa + 0x44u),
+            &p_toc)
+        && be300_read_u32_va(m, be300_sext32(p_toc + 0x08u), &physfirst)
+        && be300_read_u32_va(m, be300_sext32(p_toc + 0x0Cu), &physlast)
+        && physlast > physfirst) {
+        nk_pa = physfirst & 0x1FFFFFFFu;
+        nk_size = physlast - physfirst;
+    }
+
+    fprintf(stderr,
+        "[BE300] NK dump plan: entry=0x%08X base_pa=0x%08X"
+        " sig=0x%08X pTOC=0x%08X physfirst=0x%08X"
+        " physlast=0x%08X size=0x%08X\n",
+        entry_va, base_pa, sig, p_toc, physfirst, physlast, nk_size);
+
+    if (nk_fp) {
+        uint8_t page[4096];
+        uint32_t off = 0;
+
+        while (off < nk_size) {
+            uint32_t chunk = nk_size - off;
+            uint64_t va;
+
+            if (chunk > sizeof(page))
+                chunk = sizeof(page);
+            va = 0xffffffffA0000000ULL | (uint64_t)(nk_pa + off);
+            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
+                    va, page, chunk, MEM_READ, CACHE_NONE))
+                fwrite(page, 1, chunk, nk_fp);
+            else
+                break;
+            off += chunk;
+        }
+        fclose(nk_fp);
+        fprintf(stderr,
+            "[BE300] Dumped NK.exe (%u bytes) to nk_decompressed.bin\n",
+            off);
+    }
+
+    {
+        uint32_t sigw = 0;
+        uint64_t sig_va = 0xffffffffA0000000ULL | (uint64_t)(nk_pa + 0x40u);
+
+        if (be300_read_u32_va(m, sig_va, &sigw)) {
+            fprintf(stderr,
+                "[BE300] NK.exe ECEC check: 0x%08X %s\n",
+                sigw, sigw == 0x43454345u ? "OK" : "MISMATCH");
+        }
+    }
+}
+
 static void be300_runtime_start(machine_t *m)
 {
     struct machine *gxm = m->gxe_machine;
@@ -782,6 +854,8 @@ static bool be300_run_batch(machine_t *m)
             uint32_t entry_pa = entry & 0x1FFFFFFFu;
             if (entry_pa >= 0x60000u && entry_pa < 0x100000u
                 && !entry_poll_logged) {
+                uint32_t base_pa = entry_pa - 4u;
+
                 entry_poll_logged = 1;
                 m->wince.cold_boot_copy_done = true;
                 m->wince.cold_boot_redirected = true;
@@ -790,6 +864,7 @@ static bool be300_run_batch(machine_t *m)
                     "[BE300] *** NK.exe entry at PA_24FC=0x%08X"
                     " (PC=0x%08X batch=%d) ***\n",
                     entry, (uint32_t)m->cpu->pc, m->loop_count);
+                be300_dump_live_nk_image(m, entry, base_pa);
                 /* Dump boot signature PA 0x2700 */
                 {
                     uint8_t sig[16];
@@ -955,76 +1030,7 @@ static bool be300_run_batch(machine_t *m)
             fprintf(stderr,
                 "[BE300] *** NK.exe entry detected at PC=0x%08X batch=%d ***\n",
                 pc, m->loop_count);
-
-            /* Dump decompressed NK.exe binary for analysis */
-            {
-                uint32_t nk_pa = base_pa;
-                uint32_t nk_size = 0x00800000u;
-                uint32_t sig = 0;
-                uint32_t p_toc = 0;
-                uint32_t physfirst = 0;
-                uint32_t physlast = 0;
-                FILE *nk_fp = fopen("nk_decompressed.bin", "wb");
-
-                if (be300_read_u32_va(m,
-                        0xffffffffA0000000ULL | (uint64_t)(base_pa + 0x40u),
-                        &sig)
-                    && sig == 0x43454345u
-                    && be300_read_u32_va(m,
-                        0xffffffffA0000000ULL | (uint64_t)(base_pa + 0x44u),
-                        &p_toc)
-                    /*
-                     * Windows CE ROMHDR fields used here:
-                     * physfirst @ +0x08, physlast @ +0x0C.
-                     */
-                    && be300_read_u32_va(m, be300_sext32(p_toc + 0x08u),
-                        &physfirst)
-                    && be300_read_u32_va(m, be300_sext32(p_toc + 0x0Cu),
-                        &physlast)
-                    && physlast > physfirst) {
-                    nk_pa = physfirst & 0x1FFFFFFFu;
-                    nk_size = physlast - physfirst;
-                }
-
-                fprintf(stderr,
-                    "[BE300] NK dump plan: entry=0x%08X base_pa=0x%08X"
-                    " sig=0x%08X pTOC=0x%08X physfirst=0x%08X"
-                    " physlast=0x%08X size=0x%08X\n",
-                    entry_va, base_pa, sig, p_toc,
-                    physfirst, physlast, nk_size);
-
-                if (nk_fp) {
-                    uint8_t page[4096];
-                    uint32_t off = 0;
-                    while (off < nk_size) {
-                        uint32_t chunk = nk_size - off;
-                        if (chunk > sizeof(page)) chunk = sizeof(page);
-                        uint64_t va = 0xffffffffA0000000ULL | (nk_pa + off);
-                        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                                va, page, chunk, MEM_READ, CACHE_NONE))
-                            fwrite(page, 1, chunk, nk_fp);
-                        else
-                            break;
-                        off += chunk;
-                    }
-                    fclose(nk_fp);
-                    fprintf(stderr,
-                        "[BE300] Dumped NK.exe (%u bytes)"
-                        " to nk_decompressed.bin\n", off);
-                    /* Verify ECEC signature at the derived image base. */
-                    {
-                        uint32_t sigw = 0;
-                        uint64_t sig_va = 0xffffffffA0000000ULL
-                            | (uint64_t)(nk_pa + 0x40u);
-                        if (be300_read_u32_va(m, sig_va, &sigw)) {
-                            fprintf(stderr,
-                                "[BE300] NK.exe ECEC check: 0x%08X %s\n",
-                                sigw,
-                                sigw == 0x43454345u ? "OK" : "MISMATCH");
-                        }
-                    }
-                }
-            }
+            be300_dump_live_nk_image(m, entry_va, base_pa);
         }
     }
 

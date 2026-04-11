@@ -920,8 +920,16 @@ static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32)
 {
     static const ppsh_exact_pc_t targets[] = {
+        { 0x80097CC4u, "ppfs_evt_failfast_call" },
         { 0x80081A60u, "ppfs_list_walk" },
         { 0x80097EC0u, "ppfs_timeout_dispatch" },
+        { 0x80098C70u, "ppfs_evt_owner_scan" },
+        { 0x80098DACu, "ppfs_evt_wait_call" },
+        { 0x80098E08u, "ppfs_evt_state57" },
+        { 0x80098E20u, "ppfs_evt_retry_call" },
+        { 0x80098E44u, "ppfs_evt_payload_copy" },
+        { 0x80098EF4u, "ppfs_evt_final_call" },
+        { 0x800998C0u, "ppfs_evt_seed" },
         { 0x8008C564u, "ppfs_tlb_reset" },
         { 0x80099924u, "ppfs_evt_update" },
         { 0x800A12B8u, "ppfs_cond_store" },
