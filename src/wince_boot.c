@@ -30,6 +30,8 @@ static const char *format_word_or_unknown(char *buf, size_t buf_size, bool ok,
 static void dump_section3_descriptor_window(machine_t *m, const char *tag);
 static void dump_section3_descriptor_at(machine_t *m, const char *tag,
     uint32_t desc_ptr);
+static void dump_section3_wrap_window(machine_t *m, const char *tag,
+    uint32_t wrap_va);
 static void dump_section3_retobj_window(machine_t *m, const char *tag,
     uint32_t obj_va);
 static void dump_section3_context_head(machine_t *m, const char *tag,
@@ -142,6 +144,8 @@ static void maybe_note_section3_queue_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
 static void maybe_note_section3_worker_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
+static void maybe_log_section3_focus_obj_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val);
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -2149,6 +2153,40 @@ static void dump_section3_descriptor_at(machine_t *m, const char *tag,
         word_buf[4], word_buf[5], word_buf[6], word_buf[7]);
 }
 
+static void dump_section3_wrap_window(machine_t *m, const char *tag,
+    uint32_t wrap_va)
+{
+    static const uint32_t offsets[] = {
+        0x00u, 0x04u, 0x08u, 0x0Cu, 0x10u, 0x14u, 0x18u, 0x1Cu,
+    };
+    uint32_t words[sizeof(offsets) / sizeof(offsets[0])] = {0};
+    bool ok[sizeof(offsets) / sizeof(offsets[0])] = { false };
+    char buf[sizeof(offsets) / sizeof(offsets[0])][16];
+    size_t i;
+
+    if (!m || wrap_va < UINT32_C(0x80000000) || wrap_va >= UINT32_C(0x81000000)) {
+        fprintf(stderr, "[WINCE_SEC3_WRAP] tag=%s va=%08X invalid\n",
+            tag ? tag : "?", wrap_va);
+        return;
+    }
+
+    for (i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++)
+        ok[i] = load_va_word(m, wrap_va + offsets[i], &words[i]);
+    for (i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        if (ok[i])
+            snprintf(buf[i], sizeof(buf[i]), "%08X", words[i]);
+        else
+            snprintf(buf[i], sizeof(buf[i]), "????????");
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC3_WRAP] tag=%s va=0x%08X"
+        " +00=%s +04=%s +08=%s +0C=%s +10=%s +14=%s +18=%s +1C=%s\n",
+        tag ? tag : "?",
+        wrap_va,
+        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+}
+
 static void dump_section3_retobj_window(machine_t *m, const char *tag,
     uint32_t obj_va)
 {
@@ -2214,15 +2252,17 @@ static bool resolve_section3_gate_entry(machine_t *m, uint32_t key_in,
     if (key == 0)
         return false;
     if (!load_va_word(m, UINT32_C(0xFFFFDAC8), &base)
-        || !load_va_word(m, UINT32_C(0x80679540), &range_lo)
-        || !load_va_word(m, UINT32_C(0x80679544), &range_hi))
+        || !load_va_word(m, UINT32_C(0x80669540), &range_lo)
+        || !load_va_word(m, UINT32_C(0x80669544), &range_hi))
         return false;
 
-    entry = (key & UINT32_C(0x001FFFFC)) + base;
-    if (entry < range_lo || entry >= range_hi)
-        return false;
-    if (!load_va_word(m, entry + 8u, &entry_key) || entry_key != key)
-        return false;
+    entry = (key & UINT32_C(0x1FFFFFFC)) + base;
+    if (entry >= range_lo) {
+        if (entry >= range_hi)
+            return false;
+        if (!load_va_word(m, entry + 8u, &entry_key) || entry_key != key)
+            return false;
+    }
 
     (void)load_va_word(m, entry + 0x14u, &state_ptr);
     (void)load_va_word(m, entry + 0x18u, &obj);
@@ -2359,38 +2399,47 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
         }
     }
 
-    masked = key & UINT32_C(0x001FFFFC);
+    masked = key & UINT32_C(0x1FFFFFFC);
     base_ok = load_va_word(m, UINT32_C(0xFFFFDAC8), &base);
-    lo_ok = load_va_word(m, UINT32_C(0x80679540), &range_lo);
-    hi_ok = load_va_word(m, UINT32_C(0x80679544), &range_hi);
+    lo_ok = load_va_word(m, UINT32_C(0x80669540), &range_lo);
+    hi_ok = load_va_word(m, UINT32_C(0x80669544), &range_hi);
 
     if (!base_ok || !lo_ok || !hi_ok) {
         reason = "base_bounds_fail";
     } else {
         entry = masked + base;
-        entry_ok = entry >= range_lo && entry < range_hi;
-        if (!entry_ok) {
-            reason = "entry_oob";
-        } else if (!load_va_word(m, entry + 8u, &entry_key)) {
-            reason = "entry_key_read_fail";
-        } else {
-            entry_key_ok = true;
-            if (entry_key != key) {
-                reason = "key_mismatch";
+        entry_ok = true;
+        if (entry >= range_lo) {
+            if (entry >= range_hi) {
+                entry_ok = false;
+                reason = "entry_hi_oob";
+            } else if (!load_va_word(m, entry + 8u, &entry_key)) {
+                entry_ok = false;
+                reason = "entry_key_read_fail";
             } else {
-                reason = "entry_match";
+                entry_key_ok = true;
+                if (entry_key != key) {
+                    entry_ok = false;
+                    reason = "key_mismatch";
+                } else {
+                    reason = "entry_match";
+                }
             }
+        } else {
+            reason = "entry_below_lo";
+        }
+
+        if (entry_ok) {
             state_ptr_ok = load_va_word(m, entry + 0x14u, &state_ptr);
             obj_ok = load_va_word(m, entry + 0x18u, &obj);
             if (state_ptr_ok
                 && state_ptr >= UINT32_C(0x80000000)
                 && state_ptr < UINT32_C(0x81000000)) {
                 state_ok = load_va_bytes(m, state_ptr + 5u, &state_byte, 1u);
-                if (state_ok) {
+                if (state_ok)
                     reason = state_byte == 4u ? "state4" : "state_not4";
-                } else {
+                else
                     reason = "state_byte_fail";
-                }
             } else if (!state_ptr_ok) {
                 reason = "state_ptr_fail";
             } else {
@@ -2781,35 +2830,66 @@ static void maybe_note_section3_caller_pc(machine_t *m, struct cpu *cpu,
 {
     uint32_t pc32;
     uint32_t sp;
-    uint32_t stack88 = 0;
-    uint32_t buf_words[4] = { 0, 0, 0, 0 };
-    bool stack88_ok = false;
-    bool buf_ok[4] = { false, false, false, false };
+    uint32_t sec3;
+    uint32_t stack_words[10] = { 0 };
+    static const uint32_t stack_offsets[10] = {
+        0x88u, 0x8Cu, 0x90u, 0x94u, 0x98u,
+        0x9Cu, 0xA0u, 0xA4u, 0xA8u, 0xACu,
+    };
+    bool stack_ok[10] = { false };
+    uint32_t cp0_badvaddr;
+    uint32_t cp0_cause;
+    uint32_t cp0_epc;
+    const char *tag;
     char stack88_buf[16];
-    char buf_buf[4][16];
+    char stack_buf[9][16];
 
     if (!m || !cpu)
         return;
-    if (m->wince.section3_caller_probe_count >= 8u)
+    if (m->wince.section3_caller_probe_count >= 12u)
         return;
 
     pc32 = canonicalize_nk_pc(raw_pc32);
-    if (pc32 != UINT32_C(0x8008707C) && pc32 != UINT32_C(0x80087084))
+    if (pc32 != UINT32_C(0x8008707C)
+        && pc32 != UINT32_C(0x80087084)
+        && pc32 != UINT32_C(0x800870FC)
+        && pc32 != UINT32_C(0x80087104)
+        && pc32 != UINT32_C(0x80087200)) {
+        return;
+    }
+    sec3 = load_pa_word(m, 0x18CCu);
+    if (sec3 != UINT32_C(0x80FE5000))
         return;
 
     sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
-    stack88_ok = load_va_word(m, sp + 0x88u, &stack88);
-    for (unsigned i = 0; i < 4u; i++) {
-        buf_ok[i] = load_va_word(m, sp + 0x8Cu + (uint32_t)(i * 4u),
-            &buf_words[i]);
+    for (unsigned i = 0; i < 10u; i++) {
+        stack_ok[i] = load_va_word(m, sp + stack_offsets[i], &stack_words[i]);
     }
+    for (unsigned i = 0; i < 9u; i++) {
+        format_word_or_unknown(stack_buf[i], sizeof(stack_buf[i]),
+            stack_ok[i + 1], stack_words[i + 1]);
+    }
+    cp0_badvaddr = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR];
+    cp0_cause = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_CAUSE];
+    cp0_epc = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+    if (pc32 == UINT32_C(0x8008707C))
+        tag = "pre_816e0";
+    else if (pc32 == UINT32_C(0x80087084))
+        tag = "post_816e0";
+    else if (pc32 == UINT32_C(0x800870FC))
+        tag = "cleanup_cd4e";
+    else if (pc32 == UINT32_C(0x80087104))
+        tag = "cleanup_cd2a";
+    else
+        tag = "cleanup_c9ea";
 
     fprintf(stderr,
         "[WINCE_SEC3_CALLER] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
-        " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
-        " out=%s buf0=%s buf1=%s buf2=%s buf3=%s"
+        " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X s0=0x%08X"
+        " badvaddr=0x%08X cause=0x%08X epc=0x%08X"
+        " out=%s s8c=%s s90=%s s94=%s s98=%s s9c=%s sa0=%s sa4=%s sa8=%s sac=%s"
         " sec0=0x%08X sec3=0x%08X\n",
-        pc32 == UINT32_C(0x8008707C) ? "pre_816e0" : "post_816e0",
+        tag,
         pc32,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
         sp,
@@ -2817,18 +2897,16 @@ static void maybe_note_section3_caller_pc(machine_t *m, struct cpu *cpu,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+        cp0_badvaddr,
+        cp0_cause,
+        cp0_epc,
         format_word_or_unknown(stack88_buf, sizeof(stack88_buf),
-            stack88_ok, stack88),
-        format_word_or_unknown(buf_buf[0], sizeof(buf_buf[0]),
-            buf_ok[0], buf_words[0]),
-        format_word_or_unknown(buf_buf[1], sizeof(buf_buf[1]),
-            buf_ok[1], buf_words[1]),
-        format_word_or_unknown(buf_buf[2], sizeof(buf_buf[2]),
-            buf_ok[2], buf_words[2]),
-        format_word_or_unknown(buf_buf[3], sizeof(buf_buf[3]),
-            buf_ok[3], buf_words[3]),
+            stack_ok[0], stack_words[0]),
+        stack_buf[0], stack_buf[1], stack_buf[2], stack_buf[3],
+        stack_buf[4], stack_buf[5], stack_buf[6], stack_buf[7], stack_buf[8],
         load_pa_word(m, 0x18C0u),
-        load_pa_word(m, 0x18CCu));
+        sec3);
     m->wince.section3_caller_probe_count++;
 }
 
@@ -4546,6 +4624,61 @@ static void maybe_log_section3_desc_write(machine_t *m, struct cpu *cpu,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
     dump_section3_descriptor_window(m, "desc_write");
     m->wince.section3_desc_write_count++;
+}
+
+static void maybe_log_section3_focus_obj_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    uint32_t desc_base = 0;
+    uint32_t wrap_va;
+    uint32_t payload_va;
+    uint32_t wrap_pa;
+    uint32_t payload_pa;
+    uint32_t sec3;
+    const char *tag;
+
+    if (!m || !cpu)
+        return;
+    if (!load_section3_descriptor_focus(m, &wrap_va, &desc_base))
+        return;
+
+    wrap_va = desc_base + 0x1Cu;
+    payload_va = desc_base + 0xE4u;
+    wrap_pa = table_va_to_pa(wrap_va);
+    payload_pa = table_va_to_pa(payload_va);
+
+    if (!range_overlaps(paddr, (uint64_t)len, wrap_pa, 0x20u)
+        && !range_overlaps(paddr, (uint64_t)len, payload_pa, 0xA0u)) {
+        return;
+    }
+
+    sec3 = load_pa_word(m, 0x18CCu);
+    if (!m->wince.section3_page_watch_armed
+        && sec3 != UINT32_C(0x80FE5000))
+        return;
+    if (m->wince.section3_focusobj_write_count >= 32u)
+        return;
+
+    tag = range_overlaps(paddr, (uint64_t)len, wrap_pa, 0x20u)
+        ? "wrap"
+        : "payload";
+    fprintf(stderr,
+        "[WINCE_SEC3_OBJ_W] tag=%s off=0x%02" PRIx64 " len=%zu val=0x%llX"
+        " wrap=0x%08X payload=0x%08X"
+        " sec0=0x%08X sec3=0x%08X PC=0x%08" PRIx64 " RA=0x%08X\n",
+        tag,
+        paddr - (strcmp(tag, "wrap") == 0 ? wrap_pa : payload_pa),
+        len,
+        (unsigned long long)val,
+        wrap_va,
+        payload_va,
+        load_pa_word(m, 0x18C0u),
+        sec3,
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    dump_section3_wrap_window(m, tag, wrap_va);
+    dump_section3_retobj_window(m, tag, payload_va);
+    m->wince.section3_focusobj_write_count++;
 }
 
 static void maybe_log_section3_desc_read(machine_t *m, struct cpu *cpu,
@@ -7111,6 +7244,8 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
         maybe_log_section3_page_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_desc_write(m, cpu, paddr, len, val);
+    if (is_write)
+        maybe_log_section3_focus_obj_write(m, cpu, paddr, len, val);
     if (!is_write)
         maybe_log_section3_desc_read(m, cpu, paddr, len, val);
     if (is_write)
