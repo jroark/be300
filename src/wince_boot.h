@@ -38,6 +38,7 @@ bool wince_boot_arm_step_trace(struct cpu *cpu, uint32_t pc32);
 void wince_boot_note_ppsh_command(struct cpu *cpu, uint16_t cmd);
 void wince_boot_note_ppsh_status_read(struct cpu *cpu, uint16_t status);
 void wince_boot_note_ppsh_data_read(struct cpu *cpu, uint16_t word);
+void wince_boot_note_serial_tx(struct cpu *cpu, unsigned char ch);
 void wince_boot_log_summary(machine_t *m);
 void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
     const unsigned char *data, size_t len, bool is_write);

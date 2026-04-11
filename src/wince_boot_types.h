@@ -91,6 +91,8 @@ typedef struct {
     uint16_t ppsh_read_entry_count;
     uint16_t ppsh_poll_episode_count;
     uint16_t ppsh_poll_exit_count;
+    uint16_t ppsh_debug_msg_count;
+    uint16_t ppsh_debug_dump_count;
     uint16_t ppsh_flag_transition_count;
     uint16_t ppsh_flag_write_count;
     uint16_t ppsh_flag_set_count;
@@ -106,6 +108,14 @@ typedef struct {
     uint32_t ppsh_poll_entry_sp;
     uint32_t ppsh_poll_exit_pc;
     uint32_t ppsh_flag_prev;
+    uint32_t ppsh_last_debug_callsite;
+    uint32_t ppsh_serial_first_pc;
+    uint32_t ppsh_serial_first_ra;
+    uint32_t ppsh_serial_last_pc;
+    uint32_t ppsh_serial_last_ra;
+    uint16_t ppsh_serial_line_len;
+    uint16_t ppsh_serial_msg_count;
+    char     ppsh_serial_line[160];
 
     /* Temporary instruction-by-instruction trace window around NK pre-init */
     bool     nk_step_trace_active;
