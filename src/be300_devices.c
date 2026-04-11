@@ -369,6 +369,25 @@ DEVICE_ACCESS(be300_wince_aux)
     if (off + len > WINCE_AUX_SIZE)
         return 0;
 
+    /*
+     * When PPSH is disabled, simulate absent ISA device for PPSH registers.
+     * Only bus-error on the PPSH data (offset 0x000) and status (offset
+     * 0x400) registers — other offsets in this range may be probed by
+     * NK for non-PPSH purposes and should return 0x0000 normally.
+     * Returning 0 causes GXemul to raise a DBE exception (memory_rw.c:364),
+     * which NK's __try/__except probe catches immediately.
+     */
+    if (!d->ppsh_enabled && writeflag == MEM_READ
+        && (off == 0x000 || off == 0x400)) {
+        if (d->log_mmio) {
+            fprintf(stderr,
+                "[WINCE_AUX] R PA=0x%08X size=%zu BUSERR PC=0x%08X\n",
+                (uint32_t)(WINCE_AUX_BASE + off), len,
+                (uint32_t)cpu->pc);
+        }
+        return 0;  /* triggers DBE in memory_rw.c */
+    }
+
     if (writeflag == MEM_WRITE) {
         val = memory_readmax64(cpu, data, len);
         memcpy(&d->bytes[off], data, len);
