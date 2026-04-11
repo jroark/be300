@@ -29,6 +29,11 @@ I also have another VM with Platform Builder 3.0.
 - `loader.c` / `loader.h` — ELF kernel loader, NAND image file reader
 - `ui.c` / `ui.h` — SDL2 display, input handling, screenshot capture
 - `main.c` — CLI argument parsing, calls be300_create/be300_run/be300_destroy
+- `host_io.c` / `host_io.h` — Host I/O handling
+- `ppsh.h` — PPSH protocol definitions
+- `wince_boot.c` / `wince_boot.h` — WinCE cold-boot vector tracking and boot checkpoint logging
+- `wince_boot_types.h` — WinCE boot state machine flags
+- `be300_devices.c` — VRC4173 latch, PPSH debug shell, WinCE aux device
 
 **GXemul CPU engine (gxemul/)**
 - `gxemul/src/cpus/` — VR4131 MIPS CPU: instruction execution, CP0, TLB, dyntrans
@@ -117,7 +122,7 @@ Push with: `git push -u origin <current branch>`
 **WinCE restore images**
 - Raw sector data in logical block order (1004 blocks × 32 pages × 512 bytes = 16,449,536 bytes)
 - NANDWRITER writes these to NAND as-is (no transformation) with identity block mapping
-- RESTORE_IMAGES.md, contains details of the NAND images
+- `ce/restore_images/RESTORE_IMAGES.md` — contains details of the NAND images
 - `ce/restore_images/All_nand_300.bin` - WinCE 3.0 image (SPL v0.52)
 - `ce/restore_images/All_nand_Net.bin` - WinCE 4.0 (.NET) image
 - `ce/restore_images/org_CE_30.bin` - WinCE 3.0 image (SPL v0.60)
@@ -139,11 +144,10 @@ Push with: `git push -u origin <current branch>`
   - Does direct block copy — no data transformation (confirmed via Ghidra decompilation)
   - OOB per page: 0xAA 0x55 0x0F 0xFF + logical_block_id(4) + ECC(8)
 - `KLOADER.bin` - Standalone SPL bootloader (B000FF format, v0.62, 48KB) — used by NANDWRITER
-- `DevOSInstall.exe` - MIPS WinCE on-device OS installer (uses NANDAccess.dll)
+- `DevOSInstall.exe` - MIPS WinCE on-device OS installer (uses NANDAccess.dll from NAND FAT16 at offset 0x6DC4FB)
 - `Setup.exe` - x86 Win32 PC-side upgrade coordinator (pushes UpdateData.bin via ActiveSync)
 - `DevRestore.exe` / `DevBackup.exe` - MIPS WinCE data backup/restore
 - `BootInSafeModeWithPCC.exe` - MIPS WinCE safe mode boot
-- `NANDAccess.dll` - NAND sector read/write driver (exists in NAND FAT16 at offset 0x6DC4FB)
 
 **Boot ROM**
 - 16KB masked ROM at PA 0x1FC00000 (VA 0xBFC00000 kseg1, 0x9FC00000 kseg0)
@@ -457,7 +461,7 @@ It does NOT run during cold boot — resume_ctx (PA 0x2200) is NOT populated by 
 - VRC4173 ICU SYSINT1REG at offset 0x060 from VRC4173 base (0x0A000000) is **read-only** on real hardware — reflects active peripheral interrupt sources
 - Interrupt status registers in ranges 0x060-0x077, 0x1100-0x113F, 0x1B00-0x1B2F use **write-1-to-clear** semantics in the emulator
 - MSYSINT1 in dev_vr41xx.c must NOT force-enable ETIMER (bit 3) — prevents WinCE from controlling its own timer mask
-- The NAND controller has phase-aware behavior (`wince_mode` flag in nand_state_t): buffer registers 0xA4A0-0xA4AC and STATUS2 at 0xA4C0 return 0 during SPL (to avoid ECC errors), active data after NK.exe loads
+- The NAND controller buffer registers 0xA4A0-0xA4AC and STATUS2 at 0xA4C0 return data only when a stream transfer is active (mode-4/mode-5 kick populates the buffer); reads before any transfer return zero
 - The ROM-era NAND HW ECC engine (BOOT_ECC_IN at 0xC068 / BOOT_ECC_OUT at 0xC0A0-0xC0AC) outputs zero syndromes — correct for bit-perfect emulated NAND data. The real HW computes syndrome = stored_ECC XOR computed_ECC; since there are no bit errors, syndrome is zero. Previously echoing input ECC caused the ROM's software ECC (FUN_9fc01828) to corrupt data.
 
 **PPSH (Parallel Port Shell) — Debug Interface at PA 0x0C000120:**
@@ -498,11 +502,11 @@ It does NOT run during cold boot — resume_ctx (PA 0x2200) is NOT populated by 
 - `src/be300.h` — `nand_path`, `nand_data`, `nand_size` fields
 - `src/machine_be300.c` — WinCE boot path in `be300_create()`, NAND flash init, ROM loading, main emulation loop
 - `src/loader.c` — ELF kernel loader, NAND image file reader
-- `src/wince_boot.c` — WinCE cold-boot vector tracking, timer gating, diagnostic probes
+- `src/wince_boot.c` — WinCE cold-boot vector tracking and boot checkpoint logging
 - `src/wince_boot_types.h` — WinCE boot state machine flags
 - `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU, timer, GPIO, interrupt assert/deassert; `timer_tick()` increments `pending_timer_interrupts`, `DEVICE_TICK(vr41xx)` asserts interrupt line; timer interrupt is deasserted on RTCINTREG write (offset 0x13E)
 - `gxemul/src/devices/dev_ns16550.c` — VRC4173 SIU UART (GXemul native at 0x0A008680)
 - `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, RTCINTREG write-one-to-clear
-- `src/hw/nand.c` — NAND flash controller with SPL transfer engine, OOB synthesis, and phase-aware WinCE mode
+- `src/hw/nand.c` — NAND flash controller with SPL transfer engine and OOB synthesis
 - `src/hw/bcu.c` — Silenced unhandled register reads (SPL probes many)
 - `src/be300_devices.c` — VRC4173 latch, PPSH debug shell (0x0C000120/0x0C000520), WinCE aux device
