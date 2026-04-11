@@ -392,6 +392,7 @@ DEVICE_ACCESS(be300_wince_aux)
         if (off == 0x400 && len >= 2) {
             uint16_t cmd = (uint16_t)val;
 
+            wince_boot_note_ppsh_command(cpu, cmd);
             switch (cmd) {
             case 0x3330:
                 ppsh_refresh_status(d);
@@ -453,6 +454,7 @@ DEVICE_ACCESS(be300_wince_aux)
                 memory_writemax64(cpu, data, len, (word >> 8) & 0xffu);
             val = len >= 2 ? word : ((word >> 8) & 0xffu);
             ppsh_refresh_status(d);
+            wince_boot_note_ppsh_data_read(cpu, word);
         }
 
         /*
@@ -463,24 +465,7 @@ DEVICE_ACCESS(be300_wince_aux)
             ppsh_refresh_status(d);
             val = d->ppsh_status_520;
             memory_writemax64(cpu, data, len, val);
-
-            /* Diagnostic: track PPSH poll counter to detect clobber */
-            if (!d->ppsh_enabled) {
-                static uint64_t ppsh_poll_reads = 0;
-                uint32_t v0 = (uint32_t)cpu->cd.mips.gpr[2]; /* $v0 */
-                ppsh_poll_reads++;
-                if (ppsh_poll_reads <= 20
-                    || (ppsh_poll_reads <= 1000 && ppsh_poll_reads % 100 == 0)
-                    || ppsh_poll_reads % 100000 == 0) {
-                    fprintf(stderr,
-                        "[PPSH_POLL] #%llu PC=0x%08X v0=0x%08X"
-                        " SP=0x%08X RA=0x%08X\n",
-                        (unsigned long long)ppsh_poll_reads,
-                        (uint32_t)cpu->pc, v0,
-                        (uint32_t)cpu->cd.mips.gpr[29],
-                        (uint32_t)cpu->cd.mips.gpr[31]);
-                }
-            }
+            wince_boot_note_ppsh_status_read(cpu, (uint16_t)val);
         }
 
         if (d->log_mmio) {

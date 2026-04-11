@@ -9,6 +9,7 @@
 
 #include <ctype.h>
 #include <inttypes.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -66,6 +67,9 @@ static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
 #define WINCE_PATH_PROBE_79990      UINT64_C(0x0000008000000000)
 #define WINCE_FB_REPORT_MAX         10u
 #define WINCE_FB_PC_RING_LIMIT      32u
+#define WINCE_PPSH_FLOW_LOG_MAX     128u
+#define WINCE_PPSH_SEQ_MAX          32u
+#define WINCE_PPSH_SEQ_READ_LOG_MAX 6u
 #define WINCE_ROMHDR_NMODS_OFF      0x10u
 #define WINCE_ROMHDR_RAMSTART_OFF   0x14u
 #define WINCE_ROMHDR_RAMFREE_OFF    0x18u
@@ -102,6 +106,58 @@ static machine_t *wince_boot_from_gx(struct machine *gxm)
 static uint64_t va32_to_mips64(uint32_t va)
 {
     return (uint64_t)(int64_t)(int32_t)va;
+}
+
+static uint32_t canonicalize_nk_pc(uint32_t pc32)
+{
+    if ((pc32 & 0xE0000000u) == 0x80000000u
+        || (pc32 & 0xE0000000u) == 0xA0000000u) {
+        return (pc32 & 0x1FFFFFFFu) | 0x80000000u;
+    }
+    return pc32;
+}
+
+static uint32_t count_active_sections(machine_t *m)
+{
+    uint32_t count = 0;
+    unsigned i;
+
+    if (!m)
+        return 0;
+
+    for (i = 0; i < 64; i++) {
+        uint32_t entry = m->wince.section_table_shadow[i];
+
+        if (entry != 0 && entry != 0x8008BC18u)
+            count++;
+    }
+
+    return count;
+}
+
+static bool ppsh_trace_enabled(machine_t *m)
+{
+    if (!m || !m->wince.active || !m->wince.cold_boot_copy_done)
+        return false;
+    if (m->cfg.enable_ppsh || !m->wince.ppsh_trace_armed)
+        return false;
+    return true;
+}
+
+static bool ppsh_flow_log(machine_t *m, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!m)
+        return false;
+    if (m->wince.ppsh_flow_diag_count >= WINCE_PPSH_FLOW_LOG_MAX)
+        return false;
+
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    m->wince.ppsh_flow_diag_count++;
+    return true;
 }
 
 static uint32_t load_pa_word(machine_t *m, uint32_t pa)
@@ -487,6 +543,165 @@ static void dump_recent_pc_ring(machine_t *m, const char *tag, uint32_t limit)
     }
 }
 
+static void ppsh_finish_sequence(machine_t *m, const char *reason)
+{
+    if (!m || !m->wince.ppsh_seq_active)
+        return;
+
+    ppsh_flow_log(m,
+        "[PPSH_SEQ] #%u done reason=%s cmd=0x%04X"
+        " status_reads=%u data_reads=%u last_status=0x%04X"
+        " last_data=0x%04X sections=%u fb_watch=%u fb_events=%u\n",
+        (unsigned)m->wince.ppsh_cmd_seq_count,
+        reason ? reason : "unknown",
+        (unsigned)m->wince.ppsh_seq_cmd,
+        (unsigned)m->wince.ppsh_seq_status_reads,
+        (unsigned)m->wince.ppsh_seq_data_reads,
+        (unsigned)m->wince.ppsh_seq_last_status,
+        (unsigned)m->wince.ppsh_seq_last_data,
+        (unsigned)count_active_sections(m),
+        m->wince.fb_watch_armed ? 1u : 0u,
+        (unsigned)(m->wince.fb_watch_report_count
+            + m->wince.fb_write_diag_count));
+
+    m->wince.ppsh_seq_active = false;
+    m->wince.ppsh_seq_status_reads = 0;
+    m->wince.ppsh_seq_data_reads = 0;
+    m->wince.ppsh_seq_read_budget = 0;
+    m->wince.ppsh_seq_cmd = 0;
+    m->wince.ppsh_seq_start_pc = 0;
+    m->wince.ppsh_seq_last_status = 0;
+    m->wince.ppsh_seq_last_data = 0;
+}
+
+static void ppsh_close_poll_episode(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32, const char *reason)
+{
+    uint32_t pc32;
+
+    if (!m || !cpu || !m->wince.ppsh_poll_active)
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    m->wince.ppsh_poll_active = false;
+    m->wince.ppsh_poll_exit_count++;
+    m->wince.ppsh_poll_last_iters = m->wince.ppsh_poll_iters;
+    m->wince.ppsh_poll_exit_pc = pc32;
+    ppsh_flow_log(m,
+        "[PPSH_FLOW] poll_exit #%u episode=%u target=0x%08X"
+        " iters=%u reason=%s v0=0x%08X ra=0x%08X sp=0x%08X\n",
+        (unsigned)m->wince.ppsh_poll_exit_count,
+        (unsigned)m->wince.ppsh_poll_episode_count,
+        pc32,
+        (unsigned)m->wince.ppsh_poll_last_iters,
+        reason ? reason : "unknown",
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP]);
+    m->wince.ppsh_poll_iters = 0;
+    m->wince.ppsh_poll_next_milestone = 0;
+}
+
+static uint32_t ppsh_next_poll_milestone(uint32_t current)
+{
+    if (current < 10u)
+        return 10u;
+    if (current < 100u)
+        return 100u;
+    if (current < 1000u)
+        return 1000u;
+    if (current < 10000u)
+        return 10000u;
+    if (current < 100000u)
+        return 100000u;
+    if (current < 500000u)
+        return 500000u;
+    if (current < 1000000u)
+        return 1000000u;
+    return current + 1000000u;
+}
+
+static void maybe_trace_ppsh_helper_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+
+    if (!m || !cpu || !ppsh_trace_enabled(m))
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+
+    switch (pc32) {
+    case 0x800784F4u:
+        m->wince.ppsh_send_entry_count++;
+        ppsh_finish_sequence(m, "next_send_entry");
+        ppsh_flow_log(m,
+            "[PPSH_FLOW] send_command #%u pc=0x%08X ra=0x%08X"
+            " sp=0x%08X a0=0x%08X a1=0x%08X\n",
+            (unsigned)m->wince.ppsh_send_entry_count,
+            raw_pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1]);
+        break;
+    case 0x8007846Cu:
+        m->wince.ppsh_read_entry_count++;
+        ppsh_finish_sequence(m, "next_read_entry");
+        ppsh_flow_log(m,
+            "[PPSH_FLOW] read_response #%u pc=0x%08X ra=0x%08X"
+            " sp=0x%08X a0=0x%08X v0=0x%08X\n",
+            (unsigned)m->wince.ppsh_read_entry_count,
+            raw_pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0]);
+        break;
+    case 0x800785E8u:
+        if (!m->wince.ppsh_poll_active) {
+            m->wince.ppsh_poll_active = true;
+            m->wince.ppsh_poll_episode_count++;
+            m->wince.ppsh_poll_iters = 0;
+            m->wince.ppsh_poll_next_milestone = 1u;
+            m->wince.ppsh_poll_entry_ra =
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+            m->wince.ppsh_poll_entry_sp =
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+            ppsh_flow_log(m,
+                "[PPSH_FLOW] poll_start #%u pc=0x%08X ra=0x%08X"
+                " sp=0x%08X v0=0x%08X\n",
+                (unsigned)m->wince.ppsh_poll_episode_count,
+                raw_pc32,
+                m->wince.ppsh_poll_entry_ra,
+                m->wince.ppsh_poll_entry_sp,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0]);
+        }
+
+        m->wince.ppsh_poll_iters++;
+        if (m->wince.ppsh_poll_iters == m->wince.ppsh_poll_next_milestone) {
+            ppsh_flow_log(m,
+                "[PPSH_FLOW] poll_iter #%u episode=%u pc=0x%08X"
+                " v0=0x%08X ra=0x%08X sp=0x%08X\n",
+                (unsigned)m->wince.ppsh_poll_iters,
+                (unsigned)m->wince.ppsh_poll_episode_count,
+                raw_pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP]);
+            m->wince.ppsh_poll_next_milestone =
+                ppsh_next_poll_milestone(m->wince.ppsh_poll_iters);
+        }
+        break;
+    case 0x80078600u:
+    case 0x80078604u:
+        ppsh_close_poll_episode(m, cpu, raw_pc32, "helper_pc");
+        break;
+    default:
+        break;
+    }
+}
+
 static void maybe_arm_fb_watch(machine_t *m, struct cpu *cpu,
     const char *reason)
 {
@@ -522,9 +737,12 @@ static void maybe_arm_fb_watch(machine_t *m, struct cpu *cpu,
 
 void wince_boot_note_usermode_entry(machine_t *m)
 {
-    if (!m || !m->cpu || !m->wince.active || m->wince.fb_watch_armed)
+    if (!m || !m->cpu || !m->wince.active)
         return;
-    maybe_arm_fb_watch(m, m->cpu, "usermode_entry");
+
+    m->wince.ppsh_trace_armed = true;
+    if (!m->wince.fb_watch_armed)
+        maybe_arm_fb_watch(m, m->cpu, "usermode_entry");
 }
 
 static void maybe_track_fb_runtime_changes(machine_t *m, struct cpu *cpu)
@@ -2317,28 +2535,36 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
     }
     maybe_track_fb_runtime_changes(m, cpu);
 
-    /* PPSH error flag detection: poll PA 0x66001C (VA 0x8066001C).
-     * Detect both 0→1 (timeout set) and 1→0 (flag cleared) transitions.
-     * The RAM write hook misses these because dyntrans fast-path stores
-     * bypass memory_rw(). */
+    /* PPSH flag-word sampling: poll PA 0x66001C (VA 0x8066001C) as a
+     * secondary state signal. Dyntrans fast-path stores can bypass the
+     * RAM observer, so the tick hook remains the reliable transition view. */
     if (m->wince.cold_boot_copy_done) {
         uint32_t flag = load_pa_word(m, 0x66001Cu);
-        static uint32_t ppsh_flag_prev = 0;
-        static int ppsh_flag_transitions = 0;
-        if (flag != ppsh_flag_prev && ppsh_flag_transitions < 50) {
-            ppsh_flag_transitions++;
+        if (flag != m->wince.ppsh_flag_prev) {
+            if (m->wince.ppsh_flag_prev == 0 && flag == 1)
+                m->wince.ppsh_flag_set_count++;
+            else if (m->wince.ppsh_flag_prev == 1 && flag == 0)
+                m->wince.ppsh_flag_clear_count++;
+
+            m->wince.ppsh_flag_transition_count++;
+            if (m->wince.ppsh_flag_transition_count <= 50) {
             fprintf(stderr,
                 "[PPSH_FLAG] PA 0x66001C: %u→%u #%d"
                 " PC=0x%08X instrs=%llu\n",
-                ppsh_flag_prev, flag, ppsh_flag_transitions,
+                    m->wince.ppsh_flag_prev, flag,
+                    (int)m->wince.ppsh_flag_transition_count,
                 (uint32_t)cpu->pc,
                 (unsigned long long)cpu->ninstrs);
-            if (ppsh_flag_prev == 1 && flag == 0) {
+            }
+            if (m->wince.ppsh_flag_prev == 1 && flag == 0) {
+                if (m->wince.ppsh_poll_active)
+                    ppsh_close_poll_episode(m, cpu, (uint32_t)cpu->pc,
+                        "flag_clear");
                 fprintf(stderr,
                     "[PPSH_FLAG] *** FLAG CLEARED — dumping PC ring ***\n");
                 dump_recent_pc_ring(m, "ppsh_flag_cleared", 64);
             }
-            ppsh_flag_prev = flag;
+            m->wince.ppsh_flag_prev = flag;
         }
     }
 
@@ -2875,6 +3101,167 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_log_boot_path_probe(m, pc32);
 }
 
+void wince_boot_note_ppsh_command(struct cpu *cpu, uint16_t cmd)
+{
+    machine_t *m;
+
+    if (!cpu)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!ppsh_trace_enabled(m))
+        return;
+
+    if (m->wince.ppsh_poll_active)
+        ppsh_close_poll_episode(m, cpu, (uint32_t)cpu->pc, "next_command");
+
+    if (m->wince.ppsh_seq_active)
+        ppsh_finish_sequence(m, "next_command");
+
+    if (m->wince.ppsh_cmd_seq_count >= WINCE_PPSH_SEQ_MAX) {
+        if (!m->wince.ppsh_seq_cap_logged) {
+            fprintf(stderr,
+                "[PPSH_SEQ] sequence logging capped at %u commands\n",
+                (unsigned)WINCE_PPSH_SEQ_MAX);
+            m->wince.ppsh_seq_cap_logged = true;
+        }
+        return;
+    }
+
+    m->wince.ppsh_cmd_seq_count++;
+    m->wince.ppsh_seq_active = true;
+    m->wince.ppsh_seq_cmd = cmd;
+    m->wince.ppsh_seq_start_pc = (uint32_t)cpu->pc;
+    m->wince.ppsh_seq_last_status = 0;
+    m->wince.ppsh_seq_last_data = 0;
+    m->wince.ppsh_seq_status_reads = 0;
+    m->wince.ppsh_seq_data_reads = 0;
+    m->wince.ppsh_seq_read_budget = WINCE_PPSH_SEQ_READ_LOG_MAX;
+
+    ppsh_flow_log(m,
+        "[PPSH_SEQ] #%u start cmd=0x%04X pc=0x%08X"
+        " ra=0x%08X sp=0x%08X sections=%u fb_watch=%u\n",
+        (unsigned)m->wince.ppsh_cmd_seq_count,
+        (unsigned)cmd,
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        (unsigned)count_active_sections(m),
+        m->wince.fb_watch_armed ? 1u : 0u);
+}
+
+void wince_boot_note_ppsh_status_read(struct cpu *cpu, uint16_t status)
+{
+    machine_t *m;
+
+    if (!cpu)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!ppsh_trace_enabled(m) || !m->wince.ppsh_seq_active)
+        return;
+
+    maybe_trace_ppsh_helper_pc(m, cpu, (uint32_t)cpu->pc);
+    m->wince.ppsh_seq_last_status = status;
+    m->wince.ppsh_seq_status_reads++;
+    if (m->wince.ppsh_seq_read_budget == 0)
+        return;
+
+    ppsh_flow_log(m,
+        "[PPSH_SEQ] #%u status[%u]=0x%04X pc=0x%08X"
+        " v0=0x%08X ra=0x%08X\n",
+        (unsigned)m->wince.ppsh_cmd_seq_count,
+        (unsigned)m->wince.ppsh_seq_status_reads,
+        (unsigned)status,
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    m->wince.ppsh_seq_read_budget--;
+    if (m->wince.ppsh_seq_read_budget == 0)
+        ppsh_finish_sequence(m, "read_budget");
+}
+
+void wince_boot_note_ppsh_data_read(struct cpu *cpu, uint16_t word)
+{
+    machine_t *m;
+
+    if (!cpu)
+        return;
+
+    m = wince_boot_from_gx(cpu->machine);
+    if (!ppsh_trace_enabled(m) || !m->wince.ppsh_seq_active)
+        return;
+
+    m->wince.ppsh_seq_last_data = word;
+    m->wince.ppsh_seq_data_reads++;
+    if (m->wince.ppsh_seq_read_budget == 0)
+        return;
+
+    ppsh_flow_log(m,
+        "[PPSH_SEQ] #%u data[%u]=0x%04X pc=0x%08X"
+        " ra=0x%08X\n",
+        (unsigned)m->wince.ppsh_cmd_seq_count,
+        (unsigned)m->wince.ppsh_seq_data_reads,
+        (unsigned)word,
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    m->wince.ppsh_seq_read_budget--;
+    if (m->wince.ppsh_seq_read_budget == 0)
+        ppsh_finish_sequence(m, "read_budget");
+}
+
+void wince_boot_log_summary(machine_t *m)
+{
+    const char *classification = "unresolved";
+    uint32_t active_sections;
+    uint32_t fb_events;
+
+    if (!m || !m->wince.active)
+        return;
+
+    if (m->wince.ppsh_seq_active)
+        ppsh_finish_sequence(m, "shutdown");
+    if (m->wince.ppsh_poll_active && m->cpu)
+        ppsh_close_poll_episode(m, m->cpu, (uint32_t)m->cpu->pc, "shutdown");
+
+    active_sections = count_active_sections(m);
+    fb_events = (uint32_t)m->wince.fb_watch_report_count
+        + (uint32_t)m->wince.fb_write_diag_count;
+
+    if (m->wince.ppsh_poll_episode_count == 0) {
+        classification = "no_poll_loop_observed";
+    } else if (active_sections <= 1 && fb_events == 0
+        && m->wince.ppsh_flag_clear_count > 0) {
+        classification = "poll_loop_no_boot_progress";
+    } else if (active_sections > 1 || fb_events > 0) {
+        classification = "poll_loop_with_boot_progress";
+    } else if (m->wince.ppsh_flag_set_count > 0
+        && m->wince.ppsh_flag_clear_count == 0) {
+        classification = "flag_sets_without_clear";
+    }
+
+    fprintf(stderr,
+        "[PPSH_SUMMARY] class=%s send=%u read=%u poll_episodes=%u"
+        " poll_exits=%u last_iters=%u last_exit=0x%08X"
+        " seqs=%u flags=%u sets=%u clears=%u writes=%u"
+        " sections=%u fb_watch=%u fb_events=%u\n",
+        classification,
+        (unsigned)m->wince.ppsh_send_entry_count,
+        (unsigned)m->wince.ppsh_read_entry_count,
+        (unsigned)m->wince.ppsh_poll_episode_count,
+        (unsigned)m->wince.ppsh_poll_exit_count,
+        (unsigned)m->wince.ppsh_poll_last_iters,
+        m->wince.ppsh_poll_exit_pc,
+        (unsigned)m->wince.ppsh_cmd_seq_count,
+        (unsigned)m->wince.ppsh_flag_transition_count,
+        (unsigned)m->wince.ppsh_flag_set_count,
+        (unsigned)m->wince.ppsh_flag_clear_count,
+        (unsigned)m->wince.ppsh_flag_write_count,
+        (unsigned)active_sections,
+        m->wince.fb_watch_armed ? 1u : 0u,
+        (unsigned)fb_events);
+}
+
 bool wince_boot_arm_step_trace(struct cpu *cpu, uint32_t pc32)
 {
     machine_t *m;
@@ -2928,13 +3315,17 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
     for (i = 0; i < len && i < 8; i++)
         val |= (uint64_t)data[i] << (8 * i);
 
-    /* Detect PPSH error flag write at PA 0x66001C (VA 0x8066001C).
-     * NK.exe sets this to 1 after ppsh_read_response timeout. */
-    if (is_write && paddr == 0x66001Cu && len == 4 && val == 1) {
-        fprintf(stderr,
-            "[PPSH_TIMEOUT] error_flag set PC=0x%08X instrs=%llu\n",
-            (uint32_t)cpu->pc,
-            (unsigned long long)cpu->ninstrs);
+    if (is_write && paddr == 0x66001Cu && len == 4) {
+        m->wince.ppsh_flag_write_count++;
+        if (m->wince.ppsh_flag_write_count <= 8) {
+            fprintf(stderr,
+                "[PPSH_FLAG_WRITE] #%u value=0x%08llX"
+                " PC=0x%08X instrs=%llu\n",
+                (unsigned)m->wince.ppsh_flag_write_count,
+                (unsigned long long)val,
+                (uint32_t)cpu->pc,
+                (unsigned long long)cpu->ninstrs);
+        }
     }
 
     if (is_write)

@@ -77,9 +77,35 @@ typedef struct {
     uint32_t last_tlb_post_pc;
     uint16_t last_tlb_post_repeat;
 
-    /* PPSH error flag detection (polled from tick, since dyntrans
-     * fast-path writes bypass the RAM hook) */
-    bool     ppsh_timeout_logged;
+    /* PPSH loop attribution diagnostics */
+    bool     ppsh_trace_armed;
+    bool     ppsh_seq_active;
+    bool     ppsh_seq_cap_logged;
+    bool     ppsh_poll_active;
+    uint16_t ppsh_cmd_seq_count;
+    uint16_t ppsh_seq_status_reads;
+    uint16_t ppsh_seq_data_reads;
+    uint16_t ppsh_seq_read_budget;
+    uint16_t ppsh_flow_diag_count;
+    uint16_t ppsh_send_entry_count;
+    uint16_t ppsh_read_entry_count;
+    uint16_t ppsh_poll_episode_count;
+    uint16_t ppsh_poll_exit_count;
+    uint16_t ppsh_flag_transition_count;
+    uint16_t ppsh_flag_write_count;
+    uint16_t ppsh_flag_set_count;
+    uint16_t ppsh_flag_clear_count;
+    uint32_t ppsh_seq_cmd;
+    uint32_t ppsh_seq_start_pc;
+    uint32_t ppsh_seq_last_status;
+    uint32_t ppsh_seq_last_data;
+    uint32_t ppsh_poll_iters;
+    uint32_t ppsh_poll_last_iters;
+    uint32_t ppsh_poll_next_milestone;
+    uint32_t ppsh_poll_entry_ra;
+    uint32_t ppsh_poll_entry_sp;
+    uint32_t ppsh_poll_exit_pc;
+    uint32_t ppsh_flag_prev;
 
     /* Temporary instruction-by-instruction trace window around NK pre-init */
     bool     nk_step_trace_active;

@@ -652,6 +652,7 @@ static void be300_runtime_finalize(machine_t *m)
     m->runtime_stopped = true;
     m->runtime_finalized = true;
 
+    wince_boot_log_summary(m);
     fprintf(stderr, "[BE300] Emulation stopped after %" PRIi64 " instructions\n",
             m->cpu->ninstrs);
 }
