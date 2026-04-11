@@ -144,6 +144,8 @@ static void maybe_note_section3_queue_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
 static void maybe_note_section3_worker_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
+static void maybe_log_section3_pool_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val);
 static void maybe_log_section3_focus_obj_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t val);
 
@@ -4353,6 +4355,7 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 m->wince.section3_page_diag_count = 0;
                 m->wince.section3_desc_write_count = 0;
                 m->wince.section3_desc_read_count = 0;
+                m->wince.section3_pool_write_count = 0;
                 m->wince.section3_retobj_watch_armed = false;
                 m->wince.section3_retobj_watch_va = 0;
                 m->wince.section3_retobj_write_count = 0;
@@ -4378,6 +4381,7 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 m->wince.section3_page_watch_armed = false;
                 m->wince.section3_retobj_watch_armed = false;
                 m->wince.section3_retobj_watch_va = 0;
+                m->wince.section3_pool_write_count = 0;
                 m->wince.section3_step_trace_pending = false;
                 fprintf(stderr,
                     "[WINCE_SEC3_ARM] state=disarmed old=0x%08X new=0x%08X"
@@ -4624,6 +4628,75 @@ static void maybe_log_section3_desc_write(machine_t *m, struct cpu *cpu,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
     dump_section3_descriptor_window(m, "desc_write");
     m->wince.section3_desc_write_count++;
+}
+
+static void maybe_log_section3_pool_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    const uint32_t pool_pa = UINT32_C(0x00FE9C00);
+    const uint32_t pool_va = UINT32_C(0x80FE9C00);
+    const uint32_t wrap_va = UINT32_C(0x80FE9CDC);
+    const uint32_t payload_va = UINT32_C(0x80FE9DA4);
+    const uint32_t wrap_pa = UINT32_C(0x00FE9CDC);
+    const uint32_t payload_pa = UINT32_C(0x00FE9DA4);
+    uint32_t sec3;
+    const char *tag = "pool";
+
+    if (!m || !cpu)
+        return;
+    if (!range_overlaps(paddr, (uint64_t)len, pool_pa, 0x400u))
+        return;
+
+    sec3 = load_pa_word(m, 0x18CCu);
+    if (!m->wince.section3_page_watch_armed
+        && sec3 != UINT32_C(0x80FE5000))
+        return;
+    if (m->wince.section3_pool_write_count >= 48u)
+        return;
+
+    if (range_overlaps(paddr, (uint64_t)len, wrap_pa, 0x20u)) {
+        tag = "wrap";
+    } else if (range_overlaps(paddr, (uint64_t)len, payload_pa, 0xA0u)) {
+        tag = "payload";
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC3_POOL_W] tag=%s off=0x%03" PRIx64 " len=%zu val=0x%llX"
+        " sec0=0x%08X sec3=0x%08X PC=0x%08" PRIx64 " RA=0x%08X\n",
+        tag,
+        paddr - pool_pa,
+        len,
+        (unsigned long long)val,
+        load_pa_word(m, 0x18C0u),
+        sec3,
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    if (strcmp(tag, "wrap") == 0 || strcmp(tag, "payload") == 0) {
+        dump_section3_wrap_window(m, "pool_write", wrap_va);
+        dump_section3_retobj_window(m, "pool_write", payload_va);
+    }
+    if (range_overlaps(paddr, (uint64_t)len, wrap_pa + 0x14u, 8u)) {
+        fprintf(stderr,
+            "[WINCE_SEC3_POOL_W] wrap_ctor off=0x%02" PRIx64
+            " wrap=0x%08X payload=0x%08X state_ptr=0x%08X payload_ptr=0x%08X\n",
+            paddr - wrap_pa,
+            wrap_va,
+            payload_va,
+            load_pa_word(m, wrap_pa + 0x14u),
+            load_pa_word(m, wrap_pa + 0x18u));
+    }
+    if (range_overlaps(paddr, (uint64_t)len, payload_pa, 0x20u)) {
+        fprintf(stderr,
+            "[WINCE_SEC3_POOL_W] payload_head off=0x%02" PRIx64
+            " payload=0x%08X +00=0x%08X +04=0x%08X +08=0x%08X +0C=0x%08X\n",
+            paddr - payload_pa,
+            payload_va,
+            load_pa_word(m, payload_pa + 0x00u),
+            load_pa_word(m, payload_pa + 0x04u),
+            load_pa_word(m, payload_pa + 0x08u),
+            load_pa_word(m, payload_pa + 0x0Cu));
+    }
+    m->wince.section3_pool_write_count++;
 }
 
 static void maybe_log_section3_focus_obj_write(machine_t *m, struct cpu *cpu,
@@ -7244,6 +7317,8 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
         maybe_log_section3_page_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_desc_write(m, cpu, paddr, len, val);
+    if (is_write)
+        maybe_log_section3_pool_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_focus_obj_write(m, cpu, paddr, len, val);
     if (!is_write)
