@@ -485,6 +485,23 @@ static int be300_read_u32_va(machine_t *m, uint64_t va, uint32_t *value)
     return 1;
 }
 
+static uint32_t be300_read_u32_pa(machine_t *m, uint32_t pa)
+{
+    unsigned char buf[4];
+
+    if (!m || !m->cpu)
+        return 0;
+
+    if (!m->cpu->memory_rw(m->cpu, m->cpu->mem, pa, buf, sizeof(buf),
+        MEM_READ, PHYSICAL | NO_EXCEPTIONS | CACHE_DATA))
+        return 0;
+
+    return (uint32_t)buf[0]
+        | ((uint32_t)buf[1] << 8)
+        | ((uint32_t)buf[2] << 16)
+        | ((uint32_t)buf[3] << 24);
+}
+
 static void be300_dump_virtual_page(machine_t *m, const char *label,
                                     uint64_t va)
 {
@@ -748,6 +765,23 @@ static bool be300_run_batch(machine_t *m)
         uint32_t raw_pc = (uint32_t)m->cpu->pc;
         uint32_t canon_pc = be300_canonicalize_nk_pc(raw_pc);
 
+        if (m->wince.section3_step_trace_pending
+            && !m->wince.section3_step_trace_active) {
+            single_step = true;
+            m->wince.section3_step_trace_pending = false;
+            m->wince.section3_step_trace_active = true;
+            fprintf(stderr,
+                "[WINCE_SEC3_STEP] start rem=%u PC=0x%08X Canon=0x%08X"
+                " RA=0x%08X SP=0x%08X sec3=0x%08X page0=0x%08X\n",
+                (unsigned)m->wince.section3_step_trace_remaining,
+                raw_pc,
+                canon_pc,
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                be300_read_u32_pa(m, 0x18CCu),
+                be300_read_u32_pa(m, 0x00FE5000u));
+        }
+
         if (!m->wince.nk_step_trace_done
             && !m->wince.nk_step_trace_active
             && canon_pc >= 0x80079400u && canon_pc < 0x80079800u) {
@@ -775,6 +809,22 @@ static bool be300_run_batch(machine_t *m)
                 (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
                 (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
                 (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC]);
+        }
+
+        if (m->wince.section3_step_trace_active) {
+            fprintf(stderr,
+                "[WINCE_SEC3_STEP] pre rem=%u PC=0x%08X Canon=0x%08X"
+                " RA=0x%08X SP=0x%08X sec3=0x%08X page0=0x%08X"
+                " p694=0x%08X p7e4=0x%08X\n",
+                (unsigned)m->wince.section3_step_trace_remaining,
+                raw_pc,
+                canon_pc,
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                be300_read_u32_pa(m, 0x18CCu),
+                be300_read_u32_pa(m, 0x00FE5000u),
+                be300_read_u32_pa(m, 0x00FE5694u),
+                be300_read_u32_pa(m, 0x00FE57E4u));
         }
     }
 
@@ -1119,6 +1169,46 @@ static bool be300_run_batch(machine_t *m)
                 (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
                 (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
                 (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
+        }
+    }
+
+    if (m->wince.section3_step_trace_active) {
+        uint32_t raw_pc = (uint32_t)m->cpu->pc;
+        uint32_t canon_pc = be300_canonicalize_nk_pc(raw_pc);
+
+        fprintf(stderr,
+            "[WINCE_SEC3_STEP] post rem=%u PC=0x%08X Canon=0x%08X"
+            " RA=0x%08X SP=0x%08X sec3=0x%08X page0=0x%08X"
+            " p694=0x%08X p7e4=0x%08X\n",
+            (unsigned)m->wince.section3_step_trace_remaining,
+            raw_pc,
+            canon_pc,
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+            be300_read_u32_pa(m, 0x18CCu),
+            be300_read_u32_pa(m, 0x00FE5000u),
+            be300_read_u32_pa(m, 0x00FE5694u),
+            be300_read_u32_pa(m, 0x00FE57E4u));
+
+        if (m->wince.section3_step_trace_remaining > 0)
+            m->wince.section3_step_trace_remaining--;
+
+        if (m->wince.section3_step_trace_remaining == 0
+            || canon_pc < 0x80000000u
+            || canon_pc >= 0x800A8000u
+            || be300_read_u32_pa(m, 0x18CCu) != UINT32_C(0x80FE5000)) {
+            single_step = false;
+            m->wince.section3_step_trace_active = false;
+            m->wince.section3_step_trace_done = true;
+            fprintf(stderr,
+                "[WINCE_SEC3_STEP] stop PC=0x%08X Canon=0x%08X"
+                " RA=0x%08X SP=0x%08X sec3=0x%08X page0=0x%08X\n",
+                raw_pc,
+                canon_pc,
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                be300_read_u32_pa(m, 0x18CCu),
+                be300_read_u32_pa(m, 0x00FE5000u));
         }
     }
 
