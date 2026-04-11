@@ -186,6 +186,8 @@ typedef struct {
     uint16_t serial_exception_corr_count;
     uint16_t systempatch_context_diag_count;
     uint16_t hot_fault_probe_count;
+    uint16_t section0_focus_diag_count;
+    uint16_t section0_hot_slot_diag_count;
     bool     systempatch_seen;
     bool     systempatch_first_exception_logged;
     bool     systempatch_process_logged;
