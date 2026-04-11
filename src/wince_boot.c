@@ -72,6 +72,10 @@ static const char *format_word_or_unknown(char *buf, size_t buf_size, bool ok,
 #define WINCE_PPSH_FLOW_LOG_MAX     128u
 #define WINCE_PPSH_SEQ_MAX          32u
 #define WINCE_PPSH_SEQ_READ_LOG_MAX 6u
+#define WINCE_SERIAL_EXC_LOG_MAX    24u
+#define WINCE_SERIAL_CORR_LOG_MAX   24u
+#define WINCE_SYSTEMPATCH_CTX_MAX   12u
+#define WINCE_HOT_FAULT_PROBE_MAX   12u
 #define WINCE_ROMHDR_NMODS_OFF      0x10u
 #define WINCE_ROMHDR_RAMSTART_OFF   0x14u
 #define WINCE_ROMHDR_RAMFREE_OFF    0x18u
@@ -107,6 +111,20 @@ static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
 static void maybe_note_ppsh_exact_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
 static void log_ppsh_timeout_state(machine_t *m, const char *tag);
+static void reset_serial_exception_record(
+    wince_serial_exception_record_t *rec);
+static void maybe_commit_serial_exception(machine_t *m, const char *reason);
+static void maybe_record_serial_exception_line(machine_t *m,
+    const char *line);
+static void maybe_log_serial_exception_correlation(machine_t *m,
+    struct cpu *cpu, uint32_t exccode, uint32_t fault_vaddr,
+    const char *phase);
+static void maybe_log_systempatch_context(machine_t *m, const char *reason);
+static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32);
+static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
+    uint32_t probe_va, uint32_t fault_vaddr, uint32_t exccode,
+    const char *tag);
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -482,6 +500,102 @@ static bool load_utf16_ascii(machine_t *m, struct cpu *cpu, uint32_t va,
     return ascii[0] != '\0';
 }
 
+static const char *classify_va_space(uint32_t va)
+{
+    if (va == 0)
+        return "null";
+    if (va < 0x80000000u)
+        return "user";
+    if (va < 0xA0000000u)
+        return "kseg0";
+    if (va < 0xC0000000u)
+        return "kseg1";
+    if (va < 0xE0000000u)
+        return "sseg";
+    return "kseg2";
+}
+
+static bool parse_hex_field(const char *line, const char *key, uint32_t *out)
+{
+    const char *p;
+    unsigned value;
+
+    if (!line || !key || !out)
+        return false;
+
+    p = strstr(line, key);
+    if (!p)
+        return false;
+
+    p += strlen(key);
+    if (sscanf(p, "%x", &value) != 1)
+        return false;
+
+    *out = (uint32_t)value;
+    return true;
+}
+
+static bool parse_exception_code(const char *line, uint32_t *out)
+{
+    const char *p;
+    unsigned value;
+
+    if (!line || !out)
+        return false;
+
+    p = strstr(line, "Exception ");
+    if (!p)
+        return false;
+    p += 10;
+
+    if (sscanf(p, "%x", &value) != 1)
+        return false;
+
+    *out = (uint32_t)value;
+    return true;
+}
+
+static bool serial_exception_line_is_focus(const char *ascii)
+{
+    return ascii != NULL
+        && (strstr(ascii, "Exception ") != NULL
+            || strstr(ascii, "AKY=") != NULL
+            || strstr(ascii, "Process '") != NULL);
+}
+
+static bool serial_exception_record_equal(
+    const wince_serial_exception_record_t *a,
+    const wince_serial_exception_record_t *b)
+{
+    if (!a || !b)
+        return false;
+
+    return a->valid == b->valid
+        && a->code_valid == b->code_valid
+        && a->thread_valid == b->thread_valid
+        && a->proc_valid == b->proc_valid
+        && a->aky_valid == b->aky_valid
+        && a->pc_valid == b->pc_valid
+        && a->ra_valid == b->ra_valid
+        && a->bva_valid == b->bva_valid
+        && a->code == b->code
+        && a->thread == b->thread
+        && a->proc == b->proc
+        && a->aky == b->aky
+        && a->pc == b->pc
+        && a->ra == b->ra
+        && a->bva == b->bva
+        && strcmp(a->process_name, b->process_name) == 0;
+}
+
+static void reset_serial_exception_record(
+    wince_serial_exception_record_t *rec)
+{
+    if (!rec)
+        return;
+    memset(rec, 0, sizeof(*rec));
+}
+
 static bool ppsh_debug_message_is_focus(const char *ascii)
 {
     return ascii != NULL
@@ -543,6 +657,176 @@ static void maybe_log_ppsh_debug_message(machine_t *m, struct cpu *cpu,
     }
 }
 
+static void maybe_log_systempatch_context(machine_t *m, const char *reason)
+{
+    uint32_t cur_thrd = 0;
+    uint32_t sec0;
+    uint32_t sec1;
+    const char *sec1_kind = "default";
+    uint32_t proc_table = 0;
+
+    if (!m || !m->wince.systempatch_seen)
+        return;
+    if (m->wince.systempatch_context_diag_count >= WINCE_SYSTEMPATCH_CTX_MAX)
+        return;
+
+    sec0 = load_pa_word(m, 0x18C0u);
+    sec1 = load_pa_word(m, 0x18C4u);
+    (void)load_va_word(m, UINT32_C(0x80669844), &cur_thrd);
+
+    if (sec1 == m->wince.diag_shared_l2_table && sec1 != 0)
+        sec1_kind = "shared";
+    else if (sec1 != 0 && sec1 != 0x8008BC18u)
+        sec1_kind = "process";
+
+    if (sec0 != 0 && sec0 != 0x8008BC18u
+        && sec0 != m->wince.diag_shared_l2_table) {
+        proc_table = sec0;
+    } else if (sec1 != 0 && sec1 != 0x8008BC18u
+        && sec1 != m->wince.diag_shared_l2_table) {
+        proc_table = sec1;
+    }
+
+    fprintf(stderr,
+        "[WINCE_PROCESS] reason=%s serial_proc=0x%08X serial_thread=0x%08X"
+        " cur_thrd=0x%08X sec0=0x%08X sec1=0x%08X sec1_kind=%s"
+        " proc_table=0x%08X shared=0x%08X active_sections=%u\n",
+        reason ? reason : "?",
+        m->wince.serial_exc_last.proc_valid ? m->wince.serial_exc_last.proc : 0u,
+        m->wince.serial_exc_last.thread_valid ? m->wince.serial_exc_last.thread : 0u,
+        cur_thrd,
+        sec0,
+        sec1,
+        sec1_kind,
+        proc_table,
+        m->wince.diag_shared_l2_table,
+        (unsigned)count_active_sections(m));
+    m->wince.systempatch_context_diag_count++;
+}
+
+static void maybe_commit_serial_exception(machine_t *m, const char *reason)
+{
+    wince_serial_exception_record_t *pending;
+
+    if (!m)
+        return;
+
+    pending = &m->wince.serial_exc_pending;
+    if (!pending->thread_valid || !pending->pc_valid || !pending->bva_valid)
+        return;
+    if (!pending->code_valid && !pending->aky_valid)
+        return;
+
+    pending->valid = true;
+    if (serial_exception_record_equal(pending, &m->wince.serial_exc_last))
+        return;
+
+    m->wince.serial_exc_last = *pending;
+    if (m->wince.serial_exception_diag_count < WINCE_SERIAL_EXC_LOG_MAX) {
+        fprintf(stderr,
+            "[WINCE_EXC_SERIAL] reason=%s code=%s0x%03X"
+            " thread=0x%08X proc=%s0x%08X aky=%s0x%08X"
+            " pc=0x%08X ra=%s0x%08X bva=0x%08X process=\"%s\"\n",
+            reason ? reason : "?",
+            pending->code_valid ? "" : "?",
+            pending->code,
+            pending->thread,
+            pending->proc_valid ? "" : "?",
+            pending->proc,
+            pending->aky_valid ? "" : "?",
+            pending->aky,
+            pending->pc,
+            pending->ra_valid ? "" : "?",
+            pending->ra,
+            pending->bva,
+            pending->process_name[0] != '\0'
+                ? pending->process_name : "?");
+        m->wince.serial_exception_diag_count++;
+    }
+
+    if (strcmp(pending->process_name, "SystemPatchModule.exe") == 0) {
+        m->wince.systempatch_seen = true;
+        maybe_log_systempatch_context(m,
+            m->wince.systempatch_process_logged
+                ? "serial_exception"
+                : "serial_process");
+        m->wince.systempatch_process_logged = true;
+    }
+}
+
+static void maybe_record_serial_exception_line(machine_t *m, const char *line)
+{
+    wince_serial_exception_record_t *pending;
+    uint32_t value;
+    const char *p;
+
+    if (!m || !line || !serial_exception_line_is_focus(line))
+        return;
+
+    pending = &m->wince.serial_exc_pending;
+
+    if (strstr(line, "Exception ") != NULL) {
+        char saved_process[sizeof(pending->process_name)];
+        uint32_t saved_proc = pending->proc;
+        bool saved_proc_valid = pending->proc_valid;
+
+        memcpy(saved_process, pending->process_name, sizeof(saved_process));
+        reset_serial_exception_record(pending);
+        memcpy(pending->process_name, saved_process, sizeof(pending->process_name));
+        pending->proc = saved_proc;
+        pending->proc_valid = saved_proc_valid;
+    }
+
+    p = strstr(line, "Process '");
+    if (p != NULL) {
+        size_t len;
+
+        p += 9;
+        len = strcspn(p, "'");
+        if (len >= sizeof(pending->process_name))
+            len = sizeof(pending->process_name) - 1u;
+        memset(pending->process_name, 0, sizeof(pending->process_name));
+        memcpy(pending->process_name, p, len);
+        if (strcmp(pending->process_name, "SystemPatchModule.exe") == 0
+            && !m->wince.systempatch_process_logged) {
+            m->wince.systempatch_seen = true;
+            maybe_log_systempatch_context(m, "serial_process");
+            m->wince.systempatch_process_logged = true;
+        }
+    }
+
+    if (parse_exception_code(line, &value)) {
+        pending->code = value;
+        pending->code_valid = true;
+    }
+    if (parse_hex_field(line, "Thread=", &value)) {
+        pending->thread = value;
+        pending->thread_valid = true;
+    }
+    if (parse_hex_field(line, "Proc=", &value)) {
+        pending->proc = value;
+        pending->proc_valid = true;
+    }
+    if (parse_hex_field(line, "AKY=", &value)) {
+        pending->aky = value;
+        pending->aky_valid = true;
+    }
+    if (parse_hex_field(line, "PC=", &value)) {
+        pending->pc = canonicalize_nk_pc(value);
+        pending->pc_valid = true;
+    }
+    if (parse_hex_field(line, "RA=", &value)) {
+        pending->ra = canonicalize_nk_pc(value);
+        pending->ra_valid = true;
+    }
+    if (parse_hex_field(line, "BVA=", &value)) {
+        pending->bva = value;
+        pending->bva_valid = true;
+    }
+
+    maybe_commit_serial_exception(m, "serial_line");
+}
+
 static void maybe_flush_ppsh_serial_line(machine_t *m)
 {
     uint32_t fb_events;
@@ -557,6 +841,9 @@ static void maybe_flush_ppsh_serial_line(machine_t *m)
         return;
 
     m->wince.ppsh_serial_line[m->wince.ppsh_serial_line_len] = '\0';
+    if (serial_exception_line_is_focus(m->wince.ppsh_serial_line))
+        maybe_record_serial_exception_line(m, m->wince.ppsh_serial_line);
+
     if (!ppsh_debug_message_is_focus(m->wince.ppsh_serial_line)) {
         m->wince.ppsh_serial_line_len = 0;
         return;
@@ -1103,6 +1390,313 @@ static void log_ppsh_timeout_state(machine_t *m, const char *tag)
         format_word_or_unknown(c_buf[1], sizeof(c_buf[1]), obj97c0_ok[1], obj97c0[1]),
         format_word_or_unknown(c_buf[2], sizeof(c_buf[2]), obj97c0_ok[2], obj97c0[2]),
         format_word_or_unknown(c_buf[3], sizeof(c_buf[3]), obj97c0_ok[3], obj97c0[3]));
+}
+
+static void dump_pointer_bytes(machine_t *m, const char *label, uint32_t va)
+{
+    unsigned char buf[16];
+    size_t i;
+
+    if (!m || !label)
+        return;
+
+    memset(buf, 0, sizeof(buf));
+    if (!load_va_bytes(m, va, buf, sizeof(buf))) {
+        fprintf(stderr,
+            "[WINCE_PTR] %s va=0x%08X space=%s status=unmapped\n",
+            label, va, classify_va_space(va));
+        return;
+    }
+
+    fprintf(stderr,
+        "[WINCE_PTR] %s va=0x%08X space=%s bytes=",
+        label, va, classify_va_space(va));
+    for (i = 0; i < sizeof(buf); i++)
+        fprintf(stderr, "%02X", buf[i]);
+    fputc('\n', stderr);
+}
+
+static void maybe_log_serial_exception_correlation(machine_t *m,
+    struct cpu *cpu, uint32_t exccode, uint32_t fault_vaddr,
+    const char *phase)
+{
+    const wince_serial_exception_record_t *rec;
+    struct mips_coproc *cp0;
+    uint32_t epc;
+    bool exact_bva;
+    bool same_page;
+    bool epc_match;
+    bool ra_match;
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.serial_exception_corr_count >= WINCE_SERIAL_CORR_LOG_MAX)
+        return;
+
+    rec = &m->wince.serial_exc_last;
+    if (!rec->valid || !rec->pc_valid || !rec->bva_valid)
+        return;
+
+    cp0 = cpu->cd.mips.coproc[0];
+    if (!cp0)
+        return;
+
+    epc = (uint32_t)cp0->reg[COP0_EPC];
+    exact_bva = fault_vaddr == rec->bva;
+    same_page = (fault_vaddr & ~UINT32_C(0xFFF))
+        == (rec->bva & ~UINT32_C(0xFFF));
+    epc_match = canonicalize_nk_pc(epc) == canonicalize_nk_pc(rec->pc);
+    ra_match = rec->ra_valid
+        && canonicalize_nk_pc((uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA])
+            == canonicalize_nk_pc(rec->ra);
+
+    if (!exact_bva && !same_page && !epc_match && !ra_match)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_EXC_CORR] phase=%s exc=%u fault=0x%08X epc=0x%08X"
+        " serial_code=0x%03X serial_pc=0x%08X serial_ra=%s0x%08X"
+        " serial_bva=0x%08X page_match=%d exact_bva=%d epc_match=%d"
+        " ra_match=%d thread=0x%08X proc=%s0x%08X process=\"%s\"\n",
+        phase ? phase : "?",
+        exccode,
+        fault_vaddr,
+        epc,
+        rec->code,
+        rec->pc,
+        rec->ra_valid ? "" : "?",
+        rec->ra,
+        rec->bva,
+        same_page ? 1 : 0,
+        exact_bva ? 1 : 0,
+        epc_match ? 1 : 0,
+        ra_match ? 1 : 0,
+        rec->thread_valid ? rec->thread : 0u,
+        rec->proc_valid ? "" : "?",
+        rec->proc,
+        rec->process_name[0] != '\0' ? rec->process_name : "?");
+    m->wince.serial_exception_corr_count++;
+
+    if (m->wince.systempatch_seen && !m->wince.systempatch_first_exception_logged) {
+        maybe_log_systempatch_context(m, "first_correlated_exception");
+        m->wince.systempatch_first_exception_logged = true;
+    }
+}
+
+static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
+    uint32_t probe_va, uint32_t fault_vaddr, uint32_t exccode,
+    const char *tag)
+{
+    struct mips_coproc *cp0;
+    wince_hot_page_verdict_t *verdict;
+    uint32_t section_idx;
+    uint32_t section_val;
+    uint32_t l2_off;
+    uint32_t l2_val;
+    uint32_t pte_off;
+    uint32_t lo0 = 0;
+    uint32_t lo1 = 0;
+    uint32_t selected_lo;
+    bool odd_page;
+
+    if (!m || !cpu)
+        return;
+
+    if (probe_va == UINT32_C(0x01F94B50)) {
+        verdict = &m->wince.hot_page_01f94b50;
+    } else if (probe_va == UINT32_C(0x02041FA8)) {
+        verdict = &m->wince.hot_page_02041fa8;
+    } else {
+        return;
+    }
+
+    if (verdict->logged)
+        return;
+
+    cp0 = cpu->cd.mips.coproc[0];
+    if (!cp0)
+        return;
+
+    section_idx = (probe_va >> 25) & 0x3Fu;
+    section_val = load_pa_word(m, 0x18C0u + section_idx * 4u);
+    l2_off = (probe_va >> 14) & 0x7FCu;
+    l2_val = section_val != 0 ? load_table_word(m, section_val, l2_off) : 0;
+    pte_off = (probe_va >> 10) & 0x38u;
+    if ((int32_t)l2_val < 0) {
+        lo0 = load_table_word(m, l2_val, pte_off + 12u);
+        lo1 = load_table_word(m, l2_val, pte_off + 16u);
+    }
+
+    odd_page = ((probe_va >> 12) & 1u) != 0;
+    selected_lo = odd_page ? lo1 : lo0;
+
+    memset(verdict, 0, sizeof(*verdict));
+    verdict->seen = true;
+    verdict->logged = true;
+    verdict->probe_va = probe_va;
+    verdict->fault_va = fault_vaddr;
+    verdict->section_idx = section_idx;
+    verdict->section_val = section_val;
+    verdict->l2_off = l2_off;
+    verdict->l2_val = l2_val;
+    verdict->pte_off = pte_off;
+    verdict->lo0 = lo0;
+    verdict->lo1 = lo1;
+    verdict->selected_lo = selected_lo;
+    verdict->entryhi = (uint32_t)cp0->reg[COP0_ENTRYHI];
+    verdict->asid = verdict->entryhi & 0xFFu;
+    verdict->odd_page = odd_page;
+    verdict->selected_valid = (selected_lo & ENTRYLO_V) != 0;
+
+    fprintf(stderr,
+        "[WINCE_PAGE_VERDICT] tag=%s exc=%u probe=0x%08X fault=0x%08X"
+        " sec[%u]=0x%08X l2_off=0x%03X l2=0x%08X pte_off=0x%02X"
+        " lo0=0x%08X lo1=0x%08X selected=%s:0x%08X valid=%d"
+        " entryhi=0x%08X asid=%u\n",
+        tag ? tag : "?",
+        exccode,
+        probe_va,
+        fault_vaddr,
+        section_idx,
+        section_val,
+        l2_off,
+        l2_val,
+        pte_off,
+        lo0,
+        lo1,
+        odd_page ? "lo1" : "lo0",
+        selected_lo,
+        verdict->selected_valid ? 1 : 0,
+        verdict->entryhi,
+        verdict->asid);
+}
+
+static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+    uint32_t a0;
+    uint32_t a3;
+    uint32_t s1;
+    uint32_t s4;
+    uint32_t v104 = 0;
+    uint32_t v11c = 0;
+    uint32_t v120 = 0;
+    bool v104_ok = false;
+    bool v11c_ok = false;
+    bool v120_ok = false;
+    uint32_t dac0 = 0;
+    uint32_t dac0_18 = 0;
+    uint32_t dac0_1c = 0;
+    uint32_t dac0_38 = 0;
+    bool dac0_ok = false;
+    bool dac0_18_ok = false;
+    bool dac0_1c_ok = false;
+    bool dac0_38_ok = false;
+    char v104_buf[16];
+    char v11c_buf[16];
+    char v120_buf[16];
+    char dac0_buf[16];
+    char dac0_18_buf[16];
+    char dac0_1c_buf[16];
+    char dac0_38_buf[16];
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.hot_fault_probe_count >= WINCE_HOT_FAULT_PROBE_MAX)
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+    a3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3];
+    s1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1];
+    s4 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4];
+
+    switch (pc32) {
+    case 0x800A5794u:
+    case 0x800A57C0u:
+        fprintf(stderr,
+            "[WINCE_HOT_PC] label=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+            " s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X s4=0x%08X"
+            " s4_space=%s\n",
+            pc32 == 0x800A5794u ? "systempatch_fault_entry"
+                : "systempatch_fault_lw_s4",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            a0,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            a3,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+            s1,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
+            s4,
+            classify_va_space(s4));
+        dump_pointer_bytes(m, "fault_s4", s4);
+        dump_pointer_bytes(m, "fault_s1", s1);
+        dump_pointer_bytes(m, "fault_a3", a3);
+        dump_code_window(m, pc32, 4u, 8u);
+        if ((uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA] >= 8u)
+            dump_code_window(m,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA] - 8u, 4u, 8u);
+        maybe_log_systempatch_context(m, "hot_pc_a57c0");
+        m->wince.hot_fault_probe_count++;
+        return;
+
+    case 0x800A4078u:
+        fprintf(stderr,
+            "[WINCE_HOT_PC] label=systempatch_fault_return pc=0x%08X"
+            " sp=0x%08X v0=0x%08X v1=0x%08X a0=0x%08X a1=0x%08X"
+            " a2=0x%08X a3=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
+            a0,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            a3);
+        dump_code_window(m, pc32, 4u, 8u);
+        m->wince.hot_fault_probe_count++;
+        return;
+
+    case 0x80094FD4u:
+        v104_ok = load_va_word(m, a0 + 0x104u, &v104);
+        v11c_ok = load_va_word(m, a0 + 0x11Cu, &v11c);
+        v120_ok = load_va_word(m, a0 + 0x120u, &v120);
+        dac0_ok = load_va_word(m, UINT32_C(0xFFFFDAC0), &dac0);
+        if (dac0_ok && dac0 >= UINT32_C(0x80000000) && dac0 < UINT32_C(0x81000000)) {
+            dac0_18_ok = load_va_word(m, dac0 + 0x18u, &dac0_18);
+            dac0_1c_ok = load_va_word(m, dac0 + 0x1Cu, &dac0_1c);
+            dac0_38_ok = load_va_word(m, dac0 + 0x38u, &dac0_38);
+        }
+        fprintf(stderr,
+            "[WINCE_HOT_PC] label=systempatch_setup pc=0x%08X ra=0x%08X"
+            " sp=0x%08X a0=0x%08X a0+104=%s a0+11c=%s a0+120=%s"
+            " dac0=%s dac0+18=%s dac0+1c=%s dac0+38=%s\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            a0,
+            format_word_or_unknown(v104_buf, sizeof(v104_buf), v104_ok, v104),
+            format_word_or_unknown(v11c_buf, sizeof(v11c_buf), v11c_ok, v11c),
+            format_word_or_unknown(v120_buf, sizeof(v120_buf), v120_ok, v120),
+            format_word_or_unknown(dac0_buf, sizeof(dac0_buf), dac0_ok, dac0),
+            format_word_or_unknown(dac0_18_buf, sizeof(dac0_18_buf), dac0_18_ok, dac0_18),
+            format_word_or_unknown(dac0_1c_buf, sizeof(dac0_1c_buf), dac0_1c_ok, dac0_1c),
+            format_word_or_unknown(dac0_38_buf, sizeof(dac0_38_buf), dac0_38_ok, dac0_38));
+        dump_pointer_bytes(m, "setup_a0", a0);
+        dump_code_window(m, pc32, 4u, 8u);
+        maybe_log_systempatch_context(m, "hot_pc_94fd4");
+        m->wince.hot_fault_probe_count++;
+        return;
+
+    default:
+        return;
+    }
 }
 
 static bool sample_framebuffer(machine_t *m, uint8_t *sample_out)
@@ -1710,6 +2304,8 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
             if (m->wince.section_write_diag_count <= 96)
                 log_l2_table_state(m, "section_write", value,
                     idx == 0 ? 0x01A50000u : 0x0201FF00u);
+            if (m->wince.systempatch_seen)
+                maybe_log_systempatch_context(m, "section_write");
         }
     }
 
@@ -3584,6 +4180,17 @@ void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
 
+    maybe_log_serial_exception_correlation(m, cpu, exccode, vaddr, "post");
+    if (vaddr == UINT32_C(0x01F94B50))
+        maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x01F94B50), vaddr,
+            exccode, "post_fault");
+    if ((vaddr & ~UINT32_C(0xFFF)) == (UINT32_C(0x02041FA8) & ~UINT32_C(0xFFF))
+        || (m->wince.serial_exc_last.bva_valid
+            && m->wince.serial_exc_last.bva == UINT32_C(0x02041FA8))) {
+        maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x02041FA8), vaddr,
+            exccode, "post_fault");
+    }
+
     if (section_val != 0 && m->wince.tlb_post_diag_count < 32)
         log_l2_table_state(m, "post_fault", section_val, vaddr);
 
@@ -3750,6 +4357,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
 
     maybe_log_boot_path_probe(m, pc32);
     maybe_note_ppsh_exact_pc(m, cpu, pc32);
+    maybe_note_exception_hot_pc(m, cpu, pc32);
 }
 
 void wince_boot_note_ppsh_command(struct cpu *cpu, uint16_t cmd)
@@ -3957,6 +4565,8 @@ void wince_boot_note_serial_tx(struct cpu *cpu, unsigned char ch)
 void wince_boot_log_summary(machine_t *m)
 {
     const char *classification = "unresolved";
+    const char *exc_class = "unresolved";
+    const char *exc_reason = "no_hot_fault_data";
     uint32_t active_sections;
     uint32_t fb_events;
 
@@ -3968,6 +4578,24 @@ void wince_boot_log_summary(machine_t *m)
     if (m->wince.ppsh_poll_active && m->cpu)
         ppsh_close_poll_episode(m, m->cpu, (uint32_t)m->cpu->pc, "shutdown");
     maybe_flush_ppsh_serial_line(m);
+    if (m->cpu && !m->wince.hot_page_01f94b50.logged
+        && m->wince.serial_exc_last.bva_valid
+        && m->wince.serial_exc_last.bva == UINT32_C(0x01F94B50)) {
+        maybe_log_hot_page_verdict(m, m->cpu, UINT32_C(0x01F94B50),
+            m->wince.serial_exc_last.bva,
+            m->wince.serial_exc_last.code_valid
+                ? m->wince.serial_exc_last.code : 0u,
+            "shutdown");
+    }
+    if (m->cpu && !m->wince.hot_page_02041fa8.logged
+        && m->wince.serial_exc_last.bva_valid
+        && m->wince.serial_exc_last.bva == UINT32_C(0x02041FA8)) {
+        maybe_log_hot_page_verdict(m, m->cpu, UINT32_C(0x02041FA8),
+            m->wince.serial_exc_last.bva,
+            m->wince.serial_exc_last.code_valid
+                ? m->wince.serial_exc_last.code : 0u,
+            "shutdown");
+    }
 
     active_sections = count_active_sections(m);
     fb_events = (uint32_t)m->wince.fb_watch_report_count
@@ -4005,6 +4633,64 @@ void wince_boot_log_summary(machine_t *m)
         (unsigned)active_sections,
         m->wince.fb_watch_armed ? 1u : 0u,
         (unsigned)fb_events);
+
+    if (m->wince.hot_page_01f94b50.seen
+        && m->wince.hot_page_01f94b50.section_val != 0
+        && m->wince.hot_page_01f94b50.l2_val == 0) {
+        exc_class = "missing_or_stale_page_tables";
+        exc_reason = "01f94b50_l2_zero";
+    } else if (m->wince.hot_page_02041fa8.seen
+        && m->wince.hot_page_02041fa8.section_val != 0
+        && (m->wince.hot_page_02041fa8.l2_val == 0
+            || !m->wince.hot_page_02041fa8.selected_valid)) {
+        exc_class = "missing_or_stale_page_tables";
+        exc_reason = "02041fa8_page_invalid";
+    } else if ((m->wince.hot_page_01f94b50.seen
+            && m->wince.hot_page_01f94b50.selected_valid)
+        || (m->wince.hot_page_02041fa8.seen
+            && m->wince.hot_page_02041fa8.selected_valid)) {
+        exc_class = "refill_or_tlb_install_semantics";
+        exc_reason = "page_present_but_faulting";
+    } else if (m->wince.systempatch_seen && active_sections <= 1) {
+        exc_class = "wrong_process_section_context";
+        exc_reason = "systempatch_with_single_active_section";
+    } else if (m->wince.hot_fault_probe_count > 0) {
+        exc_class = "guest_pointer_or_object_corruption";
+        exc_reason = "hot_pc_probe_without_mapping_failure";
+    }
+
+    if (m->wince.serial_exc_last.valid) {
+        fprintf(stderr,
+            "[WINCE_EXC_SUMMARY] class=%s reason=%s serial_code=0x%03X"
+            " serial_pc=0x%08X serial_ra=%s0x%08X serial_bva=0x%08X"
+            " process=\"%s\" corr=%u hot_pc=%u sec0=0x%08X sec1=0x%08X"
+            " verdict01_l2=0x%08X verdict20_l2=0x%08X\n",
+            exc_class,
+            exc_reason,
+            m->wince.serial_exc_last.code,
+            m->wince.serial_exc_last.pc,
+            m->wince.serial_exc_last.ra_valid ? "" : "?",
+            m->wince.serial_exc_last.ra,
+            m->wince.serial_exc_last.bva,
+            m->wince.serial_exc_last.process_name[0] != '\0'
+                ? m->wince.serial_exc_last.process_name : "?",
+            (unsigned)m->wince.serial_exception_corr_count,
+            (unsigned)m->wince.hot_fault_probe_count,
+            load_pa_word(m, 0x18C0u),
+            load_pa_word(m, 0x18C4u),
+            m->wince.hot_page_01f94b50.l2_val,
+            m->wince.hot_page_02041fa8.l2_val);
+    } else {
+        fprintf(stderr,
+            "[WINCE_EXC_SUMMARY] class=%s reason=%s serial_code=none"
+            " corr=%u hot_pc=%u sec0=0x%08X sec1=0x%08X\n",
+            exc_class,
+            exc_reason,
+            (unsigned)m->wince.serial_exception_corr_count,
+            (unsigned)m->wince.hot_fault_probe_count,
+            load_pa_word(m, 0x18C0u),
+            load_pa_word(m, 0x18C4u));
+    }
 }
 
 bool wince_boot_arm_step_trace(struct cpu *cpu, uint32_t pc32)
