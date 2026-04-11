@@ -2448,6 +2448,26 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
             && (value == UINT32_C(0x80FE5000)
                 || old == UINT32_C(0x80FE5000))
             && m->wince.section3_focus_diag_count < 16) {
+            if (value == UINT32_C(0x80FE5000) && old != value) {
+                m->wince.section3_page_watch_armed = true;
+                m->wince.section3_page_diag_count = 0;
+                fprintf(stderr,
+                    "[WINCE_SEC3_ARM] state=armed old=0x%08X new=0x%08X"
+                    " PC=0x%08X RA=0x%08X\n",
+                    old,
+                    value,
+                    (uint32_t)cpu->pc,
+                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            } else if (old == UINT32_C(0x80FE5000) && value != old) {
+                m->wince.section3_page_watch_armed = false;
+                fprintf(stderr,
+                    "[WINCE_SEC3_ARM] state=disarmed old=0x%08X new=0x%08X"
+                    " PC=0x%08X RA=0x%08X\n",
+                    old,
+                    value,
+                    (uint32_t)cpu->pc,
+                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            }
             fprintf(stderr,
                 "[WINCE_SECTION3_TABLE] old=0x%08X new=0x%08X"
                 " PC=0x%08X RA=0x%08X\n",
@@ -2582,6 +2602,8 @@ static void maybe_log_section3_page_write(machine_t *m, struct cpu *cpu,
     if (!m || !cpu)
         return;
     if (!range_overlaps(paddr, (uint64_t)len, table_pa, 0x1000u))
+        return;
+    if (!m->wince.section3_page_watch_armed)
         return;
     if (m->wince.section3_page_diag_count >= 64)
         return;
