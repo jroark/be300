@@ -5,6 +5,10 @@
 
 #define WINCE_VECTOR_WORDS 8u
 #define WINCE_PC_RING_SIZE 512u
+#define WINCE_FB_SAMPLE_CHUNKS 8u
+#define WINCE_FB_SAMPLE_CHUNK_BYTES 16u
+#define WINCE_FB_SAMPLE_BYTES \
+    (WINCE_FB_SAMPLE_CHUNKS * WINCE_FB_SAMPLE_CHUNK_BYTES)
 
 typedef enum {
     WINCE_VECTOR_NONE = 0,
@@ -47,6 +51,15 @@ typedef struct {
     uint32_t pc_ring_status[WINCE_PC_RING_SIZE];
     uint32_t pc_ring_idx;
     bool     pc_ring_active;
+    bool     fb_watch_armed;
+    bool     fb_watch_baseline_valid;
+    bool     fb_watch_pc_ring_dumped;
+    bool     toc_dumped;
+    uint16_t fb_watch_report_count;
+    uint16_t fb_write_diag_count;
+    uint16_t process_map_diag_count;
+    uint32_t fb_watch_arm_pc;
+    uint8_t  fb_watch_baseline[WINCE_FB_SAMPLE_BYTES];
 
     /* Targeted RAM/MMIO watch counters */
     uint16_t ram_watch_read_count;
