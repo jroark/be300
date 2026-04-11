@@ -16,6 +16,44 @@ typedef enum {
 } wince_vector_owner_t;
 
 typedef struct {
+    bool valid;
+    bool code_valid;
+    bool thread_valid;
+    bool proc_valid;
+    bool aky_valid;
+    bool pc_valid;
+    bool ra_valid;
+    bool bva_valid;
+    uint32_t code;
+    uint32_t thread;
+    uint32_t proc;
+    uint32_t aky;
+    uint32_t pc;
+    uint32_t ra;
+    uint32_t bva;
+    char process_name[64];
+} wince_serial_exception_record_t;
+
+typedef struct {
+    bool seen;
+    bool logged;
+    uint32_t probe_va;
+    uint32_t fault_va;
+    uint32_t section_idx;
+    uint32_t section_val;
+    uint32_t l2_off;
+    uint32_t l2_val;
+    uint32_t pte_off;
+    uint32_t lo0;
+    uint32_t lo1;
+    uint32_t selected_lo;
+    uint32_t entryhi;
+    uint32_t asid;
+    bool odd_page;
+    bool selected_valid;
+} wince_hot_page_verdict_t;
+
+typedef struct {
     bool active;
 
     /* Checkpoint flags (one-shot logging) */
@@ -142,6 +180,20 @@ typedef struct {
     uint32_t ppsh_last_callsite_fmt;
     uint32_t ppsh_last_serial_dump_sp;
     char     ppsh_serial_line[160];
+
+    /* Serial exception and post-PPSH fault diagnostics */
+    uint16_t serial_exception_diag_count;
+    uint16_t serial_exception_corr_count;
+    uint16_t systempatch_context_diag_count;
+    uint16_t hot_fault_probe_count;
+    bool     systempatch_seen;
+    bool     systempatch_first_exception_logged;
+    bool     systempatch_process_logged;
+    bool     hot_fault_code_dumped;
+    wince_serial_exception_record_t serial_exc_pending;
+    wince_serial_exception_record_t serial_exc_last;
+    wince_hot_page_verdict_t hot_page_01f94b50;
+    wince_hot_page_verdict_t hot_page_02041fa8;
 
     /* Temporary instruction-by-instruction trace window around NK pre-init */
     bool     nk_step_trace_active;
