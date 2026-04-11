@@ -125,6 +125,10 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
 static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
     uint32_t probe_va, uint32_t fault_vaddr, uint32_t exccode,
     const char *tag);
+static void log_l2_table_state(machine_t *m, const char *tag,
+    uint32_t table_va, uint32_t focus_vaddr);
+static void log_section0_focus_window(machine_t *m, const char *tag,
+    uint32_t table_va);
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -1571,6 +1575,92 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
         verdict->asid);
 }
 
+static void maybe_note_section0_source_pc(machine_t *m, struct cpu *cpu,
+    uint32_t pc32)
+{
+    uint32_t obj;
+    uint32_t obj0c = 0;
+    uint32_t obj14 = 0;
+    uint32_t obj24 = 0;
+    uint32_t obj3c = 0;
+    uint32_t ctx08 = 0;
+    uint32_t ctx0c = 0;
+    uint32_t src_off = 0;
+    uint32_t src_idx = 0;
+    uint32_t src_slot_va = 0;
+    uint32_t src_slot_val = 0;
+    bool obj0c_ok = false;
+    bool obj14_ok = false;
+    bool obj24_ok = false;
+    bool obj3c_ok = false;
+    bool ctx08_ok = false;
+    bool ctx0c_ok = false;
+    bool src_slot_ok = false;
+    char obj0c_buf[16];
+    char obj14_buf[16];
+    char obj24_buf[16];
+    char obj3c_buf[16];
+    char ctx08_buf[16];
+    char ctx0c_buf[16];
+    char src_slot_buf[16];
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.section0_source_probe_count >= 12)
+        return;
+
+    obj = pc32 == UINT32_C(0x8008B594)
+        ? (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0]
+        : (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+
+    obj0c_ok = load_va_word(m, obj + 0x0Cu, &obj0c);
+    obj14_ok = load_va_word(m, obj + 0x14u, &obj14);
+    obj24_ok = load_va_word(m, obj + 0x24u, &obj24);
+    obj3c_ok = load_va_word(m, obj + 0x3Cu, &obj3c);
+    if (obj0c_ok && obj0c >= UINT32_C(0x80000000) && obj0c < UINT32_C(0x81000000)) {
+        ctx08_ok = load_va_word(m, obj0c + 0x08u, &ctx08);
+        ctx0c_ok = load_va_word(m, obj0c + 0x0Cu, &ctx0c);
+        if (ctx0c_ok) {
+            src_off = ctx0c >> 23;
+            src_idx = src_off >> 2;
+            src_slot_va = UINT32_C(0xFFFFD8C0) + src_off;
+            src_slot_ok = load_va_word(m, src_slot_va, &src_slot_val);
+        }
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC0_SRC] label=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " obj=0x%08X obj+0c=%s obj+14=%s obj+24=%s obj+3c=%s"
+        " ctx+08=%s ctx+0c=%s src_off=0x%03X src_idx=%u"
+        " src_slot=%s reg_t2=0x%08X reg_t0=0x%08X sec0_before=0x%08X\n",
+        pc32 == UINT32_C(0x8008B594) ? "scheduler_switch" : "thread_attach",
+        pc32,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        obj,
+        format_word_or_unknown(obj0c_buf, sizeof(obj0c_buf), obj0c_ok, obj0c),
+        format_word_or_unknown(obj14_buf, sizeof(obj14_buf), obj14_ok, obj14),
+        format_word_or_unknown(obj24_buf, sizeof(obj24_buf), obj24_ok, obj24),
+        format_word_or_unknown(obj3c_buf, sizeof(obj3c_buf), obj3c_ok, obj3c),
+        format_word_or_unknown(ctx08_buf, sizeof(ctx08_buf), ctx08_ok, ctx08),
+        format_word_or_unknown(ctx0c_buf, sizeof(ctx0c_buf), ctx0c_ok, ctx0c),
+        src_off,
+        src_idx,
+        format_word_or_unknown(src_slot_buf, sizeof(src_slot_buf), src_slot_ok,
+            src_slot_val),
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T2],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T0],
+        load_pa_word(m, 0x18C0u));
+    dump_code_window(m, pc32, 6u, 8u);
+    if (src_slot_ok && src_slot_val == UINT32_C(0x80FE5000)) {
+        log_l2_table_state(m, "sec0_src_slot", src_slot_val,
+            UINT32_C(0x01F94B50));
+        log_section0_focus_window(m, "sec0_src_slot", src_slot_val);
+    }
+
+    m->wince.section0_source_probe_count++;
+}
+
 static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32)
 {
@@ -2326,6 +2416,7 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 && (value == UINT32_C(0x80FE5000)
                     || old == UINT32_C(0x80FE5000))
                 && m->wince.section0_focus_diag_count < 16) {
+                uint32_t pc32 = canonicalize_nk_pc((uint32_t)cpu->pc);
                 fprintf(stderr,
                     "[WINCE_SECTION0_TABLE] old=0x%08X new=0x%08X"
                     " PC=0x%08X RA=0x%08X\n",
@@ -2343,10 +2434,38 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                         UINT32_C(0x01F94B50));
                     log_section0_focus_window(m, "section0_new", value);
                 }
+                if (pc32 == UINT32_C(0x8008B594)
+                    || pc32 == UINT32_C(0x8008B0DC)) {
+                    maybe_note_section0_source_pc(m, cpu, pc32);
+                }
                 m->wince.section0_focus_diag_count++;
             }
             if (m->wince.systempatch_seen)
                 maybe_log_systempatch_context(m, "section_write");
+        }
+
+        if (idx == 3
+            && (value == UINT32_C(0x80FE5000)
+                || old == UINT32_C(0x80FE5000))
+            && m->wince.section3_focus_diag_count < 16) {
+            fprintf(stderr,
+                "[WINCE_SECTION3_TABLE] old=0x%08X new=0x%08X"
+                " PC=0x%08X RA=0x%08X\n",
+                old,
+                value,
+                (uint32_t)cpu->pc,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            if (old == UINT32_C(0x80FE5000)) {
+                log_l2_table_state(m, "section3_old", old,
+                    UINT32_C(0x01F94B50));
+                log_section0_focus_window(m, "section3_old", old);
+            }
+            if (value == UINT32_C(0x80FE5000)) {
+                log_l2_table_state(m, "section3_new", value,
+                    UINT32_C(0x01F94B50));
+                log_section0_focus_window(m, "section3_new", value);
+            }
+            m->wince.section3_focus_diag_count++;
         }
     }
 
@@ -2428,6 +2547,29 @@ static void maybe_log_section0_hot_slot_access(machine_t *m, struct cpu *cpu,
     }
 
     m->wince.section0_hot_slot_diag_count++;
+}
+
+static void maybe_log_section3_raw_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    if (!m || !cpu)
+        return;
+    if (!range_overlaps(paddr, (uint64_t)len, 0x000018CCu, 4u))
+        return;
+    if (m->wince.section3_raw_diag_count >= 24)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_SEC3_RAW] W PA=0x%08" PRIx64 " len=%zu val=0x%llX"
+        " hit_sec3=%u PC=0x%08" PRIx64 " RA=0x%08X\n",
+        paddr,
+        len,
+        (unsigned long long)val,
+        1u,
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+
+    m->wince.section3_raw_diag_count++;
 }
 
 /* ------------------------------------------------------------------ */
@@ -4871,6 +5013,9 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
         }
     }
+
+    if (is_write)
+        maybe_log_section3_raw_write(m, cpu, paddr, len, val);
 
     maybe_log_section0_hot_slot_access(m, cpu, paddr, len, val, is_write);
 

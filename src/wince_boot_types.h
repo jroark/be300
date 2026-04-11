@@ -188,6 +188,9 @@ typedef struct {
     uint16_t hot_fault_probe_count;
     uint16_t section0_focus_diag_count;
     uint16_t section0_hot_slot_diag_count;
+    uint16_t section0_source_probe_count;
+    uint16_t section3_focus_diag_count;
+    uint16_t section3_raw_diag_count;
     bool     systempatch_seen;
     bool     systempatch_first_exception_logged;
     bool     systempatch_process_logged;
