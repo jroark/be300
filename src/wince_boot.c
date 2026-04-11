@@ -2838,6 +2838,109 @@ static void maybe_note_section3_source_pc(machine_t *m, struct cpu *cpu,
     m->wince.section3_source_probe_count++;
 }
 
+static void maybe_note_section3_obj_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+    uint32_t obj = 0;
+    uint32_t obj0 = 0;
+    uint32_t obj4 = 0;
+    uint32_t obj8 = 0;
+    uint32_t obj10 = 0;
+    uint32_t obj14 = 0;
+    uint32_t obj18 = 0;
+    uint32_t obj1c = 0;
+    uint32_t arg1_word0 = 0;
+    bool obj_ok = false;
+    bool obj0_ok = false;
+    bool obj4_ok = false;
+    bool obj8_ok = false;
+    bool obj10_ok = false;
+    bool obj14_ok = false;
+    bool obj18_ok = false;
+    bool obj1c_ok = false;
+    bool arg1_word0_ok = false;
+    const char *tag;
+    char obj_buf[16];
+    char obj0_buf[16];
+    char obj4_buf[16];
+    char obj8_buf[16];
+    char obj10_buf[16];
+    char obj14_buf[16];
+    char obj18_buf[16];
+    char obj1c_buf[16];
+    char arg1_buf[16];
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.section3_obj_probe_count >= 12u)
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    if (pc32 == UINT32_C(0x800A9F6C)) {
+        obj = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        obj_ok = obj >= UINT32_C(0x80000000) && obj < UINT32_C(0x81000000);
+        if (!obj_ok)
+            return;
+        obj14_ok = load_va_word(m, obj + 0x14u, &obj14);
+        if (!obj14_ok || obj14 != UINT32_C(0x80074C68))
+            return;
+
+        obj0_ok = load_va_word(m, obj + 0x00u, &obj0);
+        obj4_ok = load_va_word(m, obj + 0x04u, &obj4);
+        obj8_ok = load_va_word(m, obj + 0x08u, &obj8);
+        obj10_ok = load_va_word(m, obj + 0x10u, &obj10);
+        obj18_ok = load_va_word(m, obj + 0x18u, &obj18);
+        obj1c_ok = load_va_word(m, obj + 0x1Cu, &obj1c);
+        arg1_word0_ok = load_va_word(m,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1], &arg1_word0);
+        tag = "cb_entry";
+    } else if (pc32 == UINT32_C(0x8009A104) || pc32 == UINT32_C(0x8009A10C)) {
+        obj_ok = load_va_word(m,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x1Cu, &obj);
+        if (!obj_ok || obj < UINT32_C(0x80000000) || obj >= UINT32_C(0x81000000))
+            return;
+        obj14_ok = load_va_word(m, obj + 0x14u, &obj14);
+        if (!obj14_ok || obj14 != UINT32_C(0x80074C68))
+            return;
+
+        obj0_ok = load_va_word(m, obj + 0x00u, &obj0);
+        obj4_ok = load_va_word(m, obj + 0x04u, &obj4);
+        obj8_ok = load_va_word(m, obj + 0x08u, &obj8);
+        obj10_ok = load_va_word(m, obj + 0x10u, &obj10);
+        obj18_ok = load_va_word(m, obj + 0x18u, &obj18);
+        obj1c_ok = load_va_word(m, obj + 0x1Cu, &obj1c);
+        tag = pc32 == UINT32_C(0x8009A104) ? "post_cb" : "post_cb_delay";
+    } else {
+        return;
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC3_OBJ] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " v0=0x%08X a0=0x%08X a1=%s"
+        " obj=%s obj0=%s obj4=%s obj8=%s obj10=%s obj14=%s obj18=%s obj1c=%s"
+        " sec0=0x%08X sec3=0x%08X\n",
+        tag,
+        pc32,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+        format_word_or_unknown(arg1_buf, sizeof(arg1_buf),
+            arg1_word0_ok, arg1_word0),
+        format_word_or_unknown(obj_buf, sizeof(obj_buf), obj_ok, obj),
+        format_word_or_unknown(obj0_buf, sizeof(obj0_buf), obj0_ok, obj0),
+        format_word_or_unknown(obj4_buf, sizeof(obj4_buf), obj4_ok, obj4),
+        format_word_or_unknown(obj8_buf, sizeof(obj8_buf), obj8_ok, obj8),
+        format_word_or_unknown(obj10_buf, sizeof(obj10_buf), obj10_ok, obj10),
+        format_word_or_unknown(obj14_buf, sizeof(obj14_buf), obj14_ok, obj14),
+        format_word_or_unknown(obj18_buf, sizeof(obj18_buf), obj18_ok, obj18),
+        format_word_or_unknown(obj1c_buf, sizeof(obj1c_buf), obj1c_ok, obj1c),
+        load_pa_word(m, 0x18C0u),
+        load_pa_word(m, 0x18CCu));
+    m->wince.section3_obj_probe_count++;
+}
+
 static void maybe_note_section3_owner_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32)
 {
@@ -5905,6 +6008,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_note_section3_order_pc(m, cpu, pc32);
     maybe_note_section3_caller_pc(m, cpu, pc32);
     maybe_note_section3_source_pc(m, cpu, pc32);
+    maybe_note_section3_obj_pc(m, cpu, pc32);
     maybe_note_section3_owner_pc(m, cpu, pc32);
 }
 
