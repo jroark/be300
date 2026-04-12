@@ -46,6 +46,7 @@ typedef struct {
     uint32_t rtcl2;       /* calendar long-2 (stub)               */
     uint32_t tclock;      /* programmable tclock period (stub)    */
     uint16_t rtcint;      /* RTC interrupt status                 */
+    uint8_t  elapsed_compare_armed; /* ECMP interrupt enabled by guest */
     uint8_t  elapsed_compare_fired; /* ECMP compare has fired since last ECMP write */
     uint64_t etime_latched;   /* stable snapshot across multi-read sequence */
 } rtc_state_t;
