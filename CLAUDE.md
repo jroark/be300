@@ -497,6 +497,63 @@ It does NOT run during cold boot — resume_ctx (PA 0x2200) is NOT populated by 
 - `tools/disasm_nk_ctx.py` — disassemble NK code regions
 - Docker: `mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL nk_decompressed.bin`
 
+### Linux NAND Boot Tool (`tools/build_nand_linux.py`)
+
+Packages a Linux ELF kernel into a flashable 16MB NAND image that boots through
+the stock masked boot ROM. Enables Linux cold-boot from NAND on real hardware
+without modifying ROM, SPL, or emulator.
+
+**Usage:**
+```bash
+python3 tools/build_nand_linux.py \
+  --kernel kernels/vmlinux-pgui-demo \
+  --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" \
+  --output linux_nand.bin
+
+# Test in emulator (use --speed 0, wait 1-3 min for MIPS16 loader)
+./build-host/be300 --nand linux_nand.bin --speed 0
+```
+
+**Key design decisions:**
+
+- **Single expanded partition 1 holds the whole B000FF image.** The tool
+  rewrites the partition table at NAND page 0 so partition 1 covers the full
+  stub + kernel + bootinfo payload (partitions 2/3 are zeroed). The ROM's
+  native B000FF walker at `0x9FC00C21` (MIPS16) loads every record — no
+  custom SPL, no NAND-reading code in the stub.
+
+- **Tiny MIPS32 bootstrap stub at `0x80F00000`.** The B000FF entry record
+  points at an ~84-byte stub that (1) memcpy's the kernel from temp addresses
+  to its link addresses, (2) sets `$a0`=argc, `$a1`=argv, `$a2`=hpc_bootinfo,
+  (3) `jr` to kernel entry. **The stub never returns to ROM**, so the ROM's
+  WinCE-specific post-handoff (BINFS section copier, boot dispatcher callback
+  registration) never runs — we just don't care about those steps since
+  Linux has taken over.
+
+- **Kernel loaded to temp addresses + 0x200000.** The 2.4 kernels are linked
+  at VA `0x80001000` (PA `0x1000`), which **collides with the ROM's own stack
+  at PA `0x3800`**. If B000FF records write directly to the link address, the
+  walker corrupts its own stack mid-load and crashes in MIPS16 NAND code. The
+  tool shifts every segment up by `0x200000` for the B000FF load, then the
+  stub's memcpy copies it back to the final address after the ROM is done.
+
+- **hpc_bootinfo matches GXemul prom_emulation layout.** Built at VA
+  `0x80FFFF00` (RAM_top - 256) with magic `0x13536135`, fb_addr
+  `0x8A200000`, 240x320 RGB565 (`BIFB_D16_0000`), platid_cpu/machine matching
+  what `machine_hpcmips.c` sets for `MACHINE_HPCMIPS_CASIO_BE300`. `argv[]`
+  at `0x80FFFE00` (RAM_top - 512) with kernel name and cmdline strings.
+
+- **Use `--no-bootinfo` for 2.6 kernels.** The 2.6 kernel's `prom_init`
+  ignores bootloader args entirely (arcs_cmdline is hardcoded in
+  `be300_console_init`), so there's no point setting up argv/bootinfo.
+
+**Known emulator limitation:** The ROM's MIPS16 B000FF loader runs through
+GXemul's MIPS16 slow interpreter (no dyntrans). Loading a 2.2 MB Linux image
+takes **~1-3 min wall time at `--speed 0`** because it has to process ~4500
+NAND pages through the interpreter. On real hardware this is instant. During
+the load phase the fb is black and stdout is empty — this is expected; wait
+for the stub handoff before concluding anything is wrong.
+
 ### Key Files for WinCE Boot
 - `src/main.c` — `--nand` CLI flag, argument parsing
 - `src/be300.h` — `nand_path`, `nand_data`, `nand_size` fields

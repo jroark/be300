@@ -110,6 +110,58 @@ Options:
 ./be300 --nand ../ce/restore_images/All_nand_300.bin
 ```
 
+### Building a Linux-booting NAND image
+
+`tools/build_nand_linux.py` packages a Linux ELF kernel into a 16 MB NAND image
+that boots on real BE-300 hardware through the stock masked boot ROM (no
+modifications to ROM, SPL, or emulator required). The image can be flashed to
+NAND via `NANDWRITER.bin` (write it to CF card as `All_nand.bin`) or tested
+directly in the emulator with `--nand`.
+
+```bash
+# Build the image
+python3 tools/build_nand_linux.py \
+  --kernel kernels/vmlinux-pgui-demo \
+  --cmdline "console=tty0 console=ttyS0,9600 root=/dev/ram" \
+  --output linux_nand.bin
+
+# Test in the emulator (use --speed 0 so the MIPS16 ROM loader doesn't
+# dominate wall-clock time — see note below)
+./build-host/be300 --nand linux_nand.bin --speed 0
+```
+
+Options:
+- `--kernel <elf>`: Linux ELF32 MIPS LE kernel (kernels with embedded ramdisks work best).
+- `--cmdline "..."`: kernel command line (passed via argv[1], same format as `--kernel`).
+- `--output <file>`: 16 MB output image.
+- `--kernel-name <name>`: string used as argv[0] (default `vmlinux`).
+- `--entry-override 0x...`: override the kernel entry point from the ELF header.
+- `--no-bootinfo`: skip argv/hpc_bootinfo setup (for 2.6 kernels whose `prom_init` ignores bootloader args).
+
+How it works:
+
+1. **ROM → B000FF → stub → kernel chain.** The tool writes the kernel as a
+   large B000FF record stream into an expanded partition 1. The ROM's native
+   MIPS16 B000FF walker loads every record into RAM, then jumps to a tiny
+   (~84 byte) MIPS32 bootstrap stub.
+2. **Stub relocates + jumps.** Kernel segments are loaded to a temporary
+   address (`kernel_va + 0x200000`) so the B000FF walker doesn't overwrite
+   the ROM's own stack at PA 0x3800 mid-load. The stub then memcpys the
+   kernel to its real link address, sets `$a0`/`$a1`/`$a2` with argc / argv /
+   `hpc_bootinfo`, and jumps to the kernel entry point. It never returns to
+   ROM, so the ROM's WinCE-specific post-load handoff (section copier,
+   callback registrar) never runs.
+3. **Single-partition layout.** Partition 1 is expanded to cover the full
+   B000FF image (SPL + kernel + bootinfo). Partitions 2/3 are unused.
+
+**Emulator vs real hardware speed:** The ROM's MIPS16 loader runs through
+GXemul's MIPS16 slow interpreter (no dyntrans). Loading a ~2 MB Linux image
+takes **1–3 minutes of wall time** even at `--speed 0`, because the loader has
+to process ~4500 NAND pages through the interpreter. On real hardware this is
+instant. Use `--speed 0` and **wait for the kernel to boot** — you'll see black
+fb and empty stdout for the entire load phase, then kernel serial output and
+framebuffer console once the stub hands off.
+
 ## Cross-Development Toolchain (Docker)
 
 A Docker container provides MIPS cross-tools for analyzing kernels and WinCE

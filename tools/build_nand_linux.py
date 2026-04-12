@@ -58,6 +58,7 @@ FB_BITS = 16
 HPC_BOOTINFO_MAGIC = 0x13536135
 BIFB_D16_0000 = 5
 BI_CNUSE_BUILTIN = 1
+BI_CNUSE_SERIAL = 2
 
 # Platform IDs (from GXemul machine_hpcmips.c)
 PLATID_CPU = (
@@ -259,7 +260,7 @@ def build_bootinfo():
     struct.pack_into("<h", info, 14, FB_WIDTH)            # fb_width
     struct.pack_into("<h", info, 16, FB_HEIGHT)           # fb_height
     struct.pack_into("<h", info, 18, BIFB_D16_0000)       # fb_type
-    struct.pack_into("<h", info, 20, BI_CNUSE_BUILTIN)    # bi_cnuse
+    struct.pack_into("<h", info, 20, BI_CNUSE_SERIAL)     # bi_cnuse (matches GXemul ELF)
     # 1 byte padding from alignment
     struct.pack_into("<I", info, 24, PLATID_CPU)          # platid_cpu
     struct.pack_into("<I", info, 28, PLATID_MACHINE)      # platid_machine
