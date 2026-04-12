@@ -750,48 +750,6 @@ size_t be300_ppsh_queue_host_input(const uint8_t *buf, size_t len)
     return ppsh_queue_host_bytes(g_be300_wince_aux, buf, len);
 }
 
-size_t be300_ppsh_queue_host_text(const uint8_t *buf, size_t len)
-{
-    /* Build a type-0x0005 PPSH frame carrying `len` payload bytes:
-     *
-     *   AA 55 55 AA                               sync
-     *   05 00 00 00 FF FF FF FF LL LL LL LL       12-byte header
-     *   <payload>
-     *   00 5A A5 0A 1A                            5-byte trailer
-     *
-     * This mirrors the frame format the guest uses in the output
-     * direction. The check byte and subcode are unknown — we send
-     * zeros and hope the shell accepts them. */
-    if (!buf || len == 0 || len > 4096)
-        return 0;
-    if (!g_be300_wince_aux || !g_be300_wince_aux->ppsh_enabled)
-        return 0;
-
-    uint8_t frame[4 + 12 + 4096 + 5];
-    size_t fp = 0;
-    frame[fp++] = 0xAA;
-    frame[fp++] = 0x55;
-    frame[fp++] = 0x55;
-    frame[fp++] = 0xAA;
-    frame[fp++] = 0x05; frame[fp++] = 0x00;
-    frame[fp++] = 0x00; frame[fp++] = 0x00;
-    frame[fp++] = 0xFF; frame[fp++] = 0xFF; frame[fp++] = 0xFF; frame[fp++] = 0xFF;
-    frame[fp++] = (uint8_t)(len & 0xFF);
-    frame[fp++] = (uint8_t)((len >> 8) & 0xFF);
-    frame[fp++] = (uint8_t)((len >> 16) & 0xFF);
-    frame[fp++] = (uint8_t)((len >> 24) & 0xFF);
-    memcpy(&frame[fp], buf, len);
-    fp += len;
-    frame[fp++] = 0x00;
-    frame[fp++] = 0x5A;
-    frame[fp++] = 0xA5;
-    frame[fp++] = 0x0A;
-    frame[fp++] = 0x1A;
-
-    size_t queued = ppsh_queue_host_bytes(g_be300_wince_aux, frame, fp);
-    return queued >= fp ? len : 0;
-}
-
 bool be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out)
 {
     uint32_t off;
