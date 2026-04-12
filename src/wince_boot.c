@@ -146,6 +146,8 @@ static void maybe_note_section3_worker_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
 static void maybe_note_section3_type4_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
+static void maybe_note_section3_type4_gate_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32);
 static void maybe_log_section3_pool_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t val);
 static void maybe_log_section3_ctor_field_write(machine_t *m, struct cpu *cpu,
@@ -3660,6 +3662,7 @@ static void maybe_note_section3_type4_pc(machine_t *m, struct cpu *cpu,
         { 0x80081BE4u, "type4_wrap_call" },
         { 0x80081BECu, "type4_wrap_ret" },
         { 0x80081C14u, "type3_init_begin" },
+        { 0x80081C24u, "type3_pool_ret" },
         { 0x80081C54u, "type3_bind" },
         { 0x80081C84u, "type3_finalize" },
         { 0x80081CC0u, "type3_publish" },
@@ -3671,6 +3674,7 @@ static void maybe_note_section3_type4_pc(machine_t *m, struct cpu *cpu,
     uint32_t a0;
     uint32_t a1;
     uint32_t a2;
+    uint32_t v0;
     char s0_buf[16];
     char s1_buf[16];
     size_t i;
@@ -3691,10 +3695,11 @@ static void maybe_note_section3_type4_pc(machine_t *m, struct cpu *cpu,
         a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
         a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
         a2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+        v0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0];
 
         fprintf(stderr,
             "[WINCE_SEC3_TYPE4] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
-            " a0=0x%08X a1=0x%08X a2=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X v0=0x%08X"
             " s0=%s s1=%s s2=0x%08X sec0=0x%08X sec3=0x%08X\n",
             targets[i].label,
             pc32,
@@ -3703,6 +3708,7 @@ static void maybe_note_section3_type4_pc(machine_t *m, struct cpu *cpu,
             a0,
             a1,
             a2,
+            v0,
             format_word_or_unknown(s0_buf, sizeof(s0_buf),
                 s0 >= UINT32_C(0x80000000) && s0 < UINT32_C(0x81000000), s0),
             format_word_or_unknown(s1_buf, sizeof(s1_buf),
@@ -3720,6 +3726,107 @@ static void maybe_note_section3_type4_pc(machine_t *m, struct cpu *cpu,
     }
 }
 
+static void maybe_note_section3_type4_gate_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+    uint32_t wrap_va;
+    uint32_t payload_va;
+    uint32_t handle_va;
+    uint32_t handle_live = 0;
+    bool handle_live_ok = false;
+    uint32_t ra;
+    uint32_t a0;
+    uint32_t a1;
+    uint32_t a2;
+    uint32_t s0;
+    uint32_t s1;
+    uint32_t obj8c = 0;
+    uint32_t obj90 = 0;
+    bool obj8c_ok = false;
+    bool obj90_ok = false;
+    char obj8c_buf[16];
+    char obj90_buf[16];
+    const char *tag = NULL;
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.type4_gate_probe_count >= 12u)
+        return;
+
+    wrap_va = m->wince.type4_wrap_watch_va;
+    payload_va = m->wince.type4_payload_watch_va;
+    handle_va = m->wince.type4_handle_watch_va;
+    if (wrap_va == 0u || payload_va == 0u)
+        return;
+    handle_live_ok = load_va_word(m, wrap_va + 0x08u, &handle_live);
+    if (handle_live_ok && handle_live != 0u)
+        handle_va = handle_live;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+    a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+    a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+    a2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+    s0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0];
+    s1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1];
+
+    switch (pc32) {
+    case UINT32_C(0x800A1200):
+        if (ra != UINT32_C(0x80081C24) || s0 != payload_va)
+            return;
+        tag = "a1200_enter";
+        break;
+    case UINT32_C(0x8009A12C):
+        if (ra != UINT32_C(0x80081C40) || a0 != handle_va)
+            return;
+        tag = "a912c_enter";
+        break;
+    case UINT32_C(0x800A11B0):
+        if (a0 == wrap_va && a1 == 2u && ra == UINT32_C(0x8009A11C)) {
+            tag = "wrap_free_ctor_fail";
+        } else if (a0 == payload_va && a1 == 3u
+            && ra == UINT32_C(0x80081C0C)) {
+            tag = "payload_free_wrap_fail";
+        } else if (a0 == payload_va && a1 == 3u
+            && ra == UINT32_C(0x80081C4C)) {
+            tag = "payload_free_a1200_fail";
+        } else {
+            return;
+        }
+        break;
+    default:
+        return;
+    }
+
+    obj8c_ok = load_va_word(m, payload_va + 0x8Cu, &obj8c);
+    obj90_ok = load_va_word(m, payload_va + 0x90u, &obj90);
+    fprintf(stderr,
+        "[WINCE_TYPE4_GATE] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " a0=0x%08X a1=0x%08X a2=0x%08X s0=0x%08X s1=0x%08X"
+        " wrap=0x%08X handle=0x%08X payload=0x%08X"
+        " sec0=0x%08X sec3=0x%08X obj8c=%s obj90=%s\n",
+        tag,
+        pc32,
+        ra,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        a0,
+        a1,
+        a2,
+        s0,
+        s1,
+        wrap_va,
+        handle_va,
+        payload_va,
+        load_pa_word(m, 0x18C0u),
+        load_pa_word(m, 0x18CCu),
+        format_word_or_unknown(obj8c_buf, sizeof(obj8c_buf), obj8c_ok, obj8c),
+        format_word_or_unknown(obj90_buf, sizeof(obj90_buf), obj90_ok, obj90));
+    dump_section3_wrap_window(m, tag, wrap_va);
+    dump_section3_retobj_window(m, tag, payload_va);
+    m->wince.type4_gate_probe_count++;
+}
+
 static void maybe_note_section3_owner_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32)
 {
@@ -3732,6 +3839,7 @@ static void maybe_note_section3_owner_pc(machine_t *m, struct cpu *cpu,
         { 0x80084214u, "owner_state_88" },
         { 0x80084274u, "owner_state_post" },
         { 0x800845C4u, "owner_state_tail" },
+        { 0x800845D4u, "owner_state_entry" },
         { 0x800819A4u, "owner_retpath" },
     };
     uint32_t pc32;
@@ -4863,6 +4971,36 @@ static void maybe_log_section3_ctor_field_write(machine_t *m, struct cpu *cpu,
             stack_ok[3], stack_words[3]));
     dump_section3_wrap_window(m, "ctor_write", wrap_va);
     dump_section3_retobj_window(m, "ctor_write", payload_va);
+    if (strcmp(tag, "wrap_ctor") == 0
+        && paddr == wrap_pa + 0x18u
+        && saved_ra_ok
+        && saved_ra == UINT32_C(0x80081BEC)
+        && saved_arg0_ok
+        && saved_arg0 == UINT32_C(0x80074C68)
+        && saved_arg1_ok
+        && saved_arg1 == UINT32_C(0x80FE9DA4)
+        && !m->wince.type4_step_trace_active
+        && !m->wince.type4_step_trace_done) {
+        m->wince.type4_wrap_watch_va = wrap_va;
+        m->wince.type4_payload_watch_va = payload_va;
+        m->wince.type4_handle_watch_va = load_pa_word(m, wrap_pa + 0x08u);
+        m->wince.type4_step_trace_pending = false;
+        m->wince.type4_step_trace_active = true;
+        m->wince.type4_step_trace_remaining = 192u;
+        single_step = true;
+        fprintf(stderr,
+            "[WINCE_TYPE4_STEP] armed pc=0x%08X saved_ra=0x%08X"
+            " wrap=0x%08X handle=0x%08X payload=0x%08X rem=%u trace=active"
+            " sp=0x%08X ra=0x%08X\n",
+            canonicalize_nk_pc((uint32_t)cpu->pc),
+            saved_ra,
+            wrap_va,
+            m->wince.type4_handle_watch_va,
+            payload_va,
+            (unsigned)m->wince.type4_step_trace_remaining,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    }
     m->wince.section3_ctor_probe_count++;
 }
 
@@ -7052,6 +7190,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_note_section3_queue_pc(m, cpu, pc32);
     maybe_note_section3_worker_pc(m, cpu, pc32);
     maybe_note_section3_type4_pc(m, cpu, pc32);
+    maybe_note_section3_type4_gate_pc(m, cpu, pc32);
     maybe_note_section3_owner_pc(m, cpu, pc32);
 }
 

@@ -210,6 +210,7 @@ typedef struct {
     uint16_t section3_pool_write_count;
     uint16_t section3_ctor_probe_count;
     uint16_t section3_type4_probe_count;
+    uint16_t type4_gate_probe_count;
     uint16_t section3_retobj_write_count;
     bool     section3_page_watch_armed;
     bool     section3_retobj_watch_armed;
@@ -217,6 +218,13 @@ typedef struct {
     bool     section3_step_trace_active;
     bool     section3_step_trace_done;
     uint16_t section3_step_trace_remaining;
+    bool     type4_step_trace_pending;
+    bool     type4_step_trace_active;
+    bool     type4_step_trace_done;
+    uint16_t type4_step_trace_remaining;
+    uint32_t type4_wrap_watch_va;
+    uint32_t type4_payload_watch_va;
+    uint32_t type4_handle_watch_va;
     uint32_t section3_owner_pc_mask;
     uint32_t section3_callback_pc_mask;
     uint32_t section3_retobj_watch_va;
