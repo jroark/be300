@@ -202,6 +202,143 @@ void be300_ppsh_set_output_sink(be300_ppsh_output_sink_t sink, void *ctx)
     g_ppsh_output_ctx  = ctx;
 }
 
+/*
+ * PPSH frame parser
+ * =================
+ *
+ * Every byte the guest writes through 0x0C000120/0x0C000520 is part of a
+ * framed binary protocol, not raw shell text. Observed layout:
+ *
+ *   AA 55 55 AA                       sync preamble
+ *   tt tt ss ss ff ff ff ff ll ll ll ll   12-byte header (type tttt = 0x0005)
+ *   <ll payload bytes>                length-prefixed payload (ASCII text)
+ *   cc 5A A5 0A 1A                    5-byte trailer (cc = frame check?)
+ *
+ *   AA 55 55 AA                       sync
+ *   02 00 xx xx xx xx xx xx           8-byte header (type = 0x0002)
+ *   <NUL-terminated string>           payload
+ *   cc 5A A5 0A 1A                    trailer
+ *
+ * We strip the framing and pass only payload bytes to the sink / stdout.
+ * On corruption we resync at the next AA 55 55 AA pattern.
+ */
+enum ppsh_frame_state {
+    FRM_SYNC0, FRM_SYNC1, FRM_SYNC2, FRM_SYNC3,
+    FRM_HEADER,
+    FRM_PAYLOAD_LEN,
+    FRM_PAYLOAD_NUL,
+    FRM_TRAILER,
+};
+
+static struct {
+    enum ppsh_frame_state state;
+    uint16_t type;
+    uint32_t length;
+    int      hdr_idx;      /* bytes consumed within header */
+    int      hdr_total;    /* header length for this frame type */
+    int      trailer_left;
+} g_pframe = { FRM_SYNC0, 0, 0, 0, 0, 0 };
+
+static void ppsh_frame_reset(uint8_t byte)
+{
+    g_pframe.state = (byte == 0xAA) ? FRM_SYNC1 : FRM_SYNC0;
+    g_pframe.type = 0;
+    g_pframe.length = 0;
+    g_pframe.hdr_idx = 0;
+    g_pframe.hdr_total = 0;
+    g_pframe.trailer_left = 0;
+}
+
+static void ppsh_emit_byte(uint8_t byte)
+{
+    if (g_ppsh_output_sink) {
+        g_ppsh_output_sink(g_ppsh_output_ctx, &byte, 1);
+    } else {
+        fputc((int)byte, stdout);
+        fflush(stdout);
+    }
+}
+
+static void ppsh_frame_feed(uint8_t byte)
+{
+    switch (g_pframe.state) {
+    case FRM_SYNC0:
+        if (byte == 0xAA) g_pframe.state = FRM_SYNC1;
+        return;
+    case FRM_SYNC1:
+        if (byte == 0x55) g_pframe.state = FRM_SYNC2;
+        else ppsh_frame_reset(byte);
+        return;
+    case FRM_SYNC2:
+        if (byte == 0x55) g_pframe.state = FRM_SYNC3;
+        else ppsh_frame_reset(byte);
+        return;
+    case FRM_SYNC3:
+        if (byte == 0xAA) {
+            g_pframe.state = FRM_HEADER;
+            g_pframe.hdr_idx = 0;
+            g_pframe.type = 0;
+            g_pframe.length = 0;
+            g_pframe.hdr_total = 8;  /* tentative; upgraded for type 5 */
+        } else {
+            ppsh_frame_reset(byte);
+        }
+        return;
+
+    case FRM_HEADER:
+        if (g_pframe.hdr_idx == 0) g_pframe.type = byte;
+        else if (g_pframe.hdr_idx == 1) g_pframe.type |= (uint16_t)byte << 8;
+        if (g_pframe.hdr_idx == 1 && g_pframe.type == 0x0005)
+            g_pframe.hdr_total = 12;
+        if (g_pframe.type == 0x0005 && g_pframe.hdr_idx >= 8
+            && g_pframe.hdr_idx <= 11) {
+            int shift = (g_pframe.hdr_idx - 8) * 8;
+            g_pframe.length |= (uint32_t)byte << shift;
+        }
+        g_pframe.hdr_idx++;
+        if (g_pframe.hdr_idx >= g_pframe.hdr_total) {
+            if (g_pframe.type == 0x0005) {
+                if (g_pframe.length == 0 || g_pframe.length > 4096) {
+                    /* sanity — drop the frame */
+                    g_pframe.state = FRM_TRAILER;
+                    g_pframe.trailer_left = 5;
+                } else {
+                    g_pframe.state = FRM_PAYLOAD_LEN;
+                }
+            } else {
+                g_pframe.state = FRM_PAYLOAD_NUL;
+            }
+        }
+        return;
+
+    case FRM_PAYLOAD_LEN:
+        ppsh_emit_byte(byte);
+        if (g_pframe.length > 0 && --g_pframe.length == 0) {
+            g_pframe.state = FRM_TRAILER;
+            g_pframe.trailer_left = 5;
+        }
+        return;
+
+    case FRM_PAYLOAD_NUL:
+        if (byte == 0x00) {
+            /* Type-2 messages are standalone debug-print strings — append
+             * a newline so they don't glue onto the following frame. */
+            ppsh_emit_byte('\r');
+            ppsh_emit_byte('\n');
+            g_pframe.state = FRM_TRAILER;
+            g_pframe.trailer_left = 5;
+        } else {
+            ppsh_emit_byte(byte);
+        }
+        return;
+
+    case FRM_TRAILER:
+        if (--g_pframe.trailer_left <= 0)
+            g_pframe.state = FRM_SYNC0;
+        return;
+    }
+}
+
 static bool ppsh_is_printable(uint8_t byte)
 {
     return (byte >= 0x20 && byte <= 0x7eu)
@@ -245,38 +382,12 @@ static void ppsh_guest_note_text_byte(struct be300_wince_aux *d, uint8_t byte)
 {
     if (!d)
         return;
+    (void)ppsh_is_printable;
+    (void)ppsh_text_break;
 
-    if (g_ppsh_output_sink) {
-        /* Dedicated PPSH console: deliver every byte (including control
-         * codes) so the terminal can run its own escape-state machine. */
-        g_ppsh_output_sink(g_ppsh_output_ctx, &byte, 1);
-        return;
-    }
-
-    if (!ppsh_is_printable(byte)) {
-        ppsh_text_break(d);
-        return;
-    }
-
-    if (d->ppsh_text_run_len >= PPSH_TEXT_RUN_CAP - 1)
-        ppsh_text_break(d);
-
-    d->ppsh_text_run[d->ppsh_text_run_len++] = (char)byte;
-    d->ppsh_text_run[d->ppsh_text_run_len] = '\0';
-
-    if (!d->ppsh_text_emitting && d->ppsh_text_run_len >= 4) {
-        fwrite(d->ppsh_text_run, 1, d->ppsh_text_run_len, stdout);
-        fflush(stdout);
-        d->ppsh_text_run_len = 0;
-        d->ppsh_text_emitting = true;
-        return;
-    }
-
-    if (d->ppsh_text_emitting) {
-        fputc(byte, stdout);
-        fflush(stdout);
-        d->ppsh_text_run_len = 0;
-    }
+    /* Feed through the PPSH frame parser — only decoded payload bytes
+     * reach the sink / stdout. */
+    ppsh_frame_feed(byte);
 }
 
 static void ppsh_guest_submit_byte(struct be300_wince_aux *d, uint8_t byte,
