@@ -222,6 +222,13 @@ typedef struct {
     bool     type4_step_trace_active;
     bool     type4_step_trace_done;
     uint16_t type4_step_trace_remaining;
+    uint16_t type4_order_next;
+    uint16_t type4_order_ctor_seq;
+    uint16_t type4_order_link_seq;
+    uint16_t type4_order_state_seq;
+    uint16_t type4_order_payload_seq;
+    uint16_t type4_order_enqueue_seq;
+    uint16_t type4_order_cleanup_seq;
     uint32_t type4_wrap_watch_va;
     uint32_t type4_payload_watch_va;
     uint32_t type4_handle_watch_va;

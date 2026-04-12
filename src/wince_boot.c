@@ -148,12 +148,16 @@ static void maybe_note_section3_type4_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
 static void maybe_note_section3_type4_gate_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
+static void note_type4_order_event(machine_t *m, struct cpu *cpu,
+    uint16_t *slot, const char *tag);
 static void maybe_log_section3_pool_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t val);
 static void maybe_log_section3_ctor_field_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t val);
 static void maybe_log_section3_focus_obj_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t val);
+static uint32_t load_pa_word(machine_t *m, uint32_t pa);
+static bool load_va_word(machine_t *m, uint32_t va, uint32_t *out);
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
@@ -180,6 +184,42 @@ static uint32_t canonicalize_nk_pc(uint32_t pc32)
         return (pc32 & 0x1FFFFFFFu) | 0x80000000u;
     }
     return pc32;
+}
+
+static void note_type4_order_event(machine_t *m, struct cpu *cpu,
+    uint16_t *slot, const char *tag)
+{
+    uint32_t handle = 0;
+    bool handle_ok = false;
+    char handle_buf[16];
+
+    if (!m || !cpu || !slot || !tag)
+        return;
+    if (*slot != 0u)
+        return;
+    if (m->wince.type4_wrap_watch_va == 0u
+        || m->wince.type4_payload_watch_va == 0u)
+        return;
+
+    if (m->wince.type4_order_next != UINT16_MAX)
+        m->wince.type4_order_next++;
+    *slot = m->wince.type4_order_next;
+
+    handle_ok = load_va_word(m, m->wince.type4_wrap_watch_va + 0x08u, &handle);
+    fprintf(stderr,
+        "[WINCE_TYPE4_ORDER] seq=%u tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " wrap=0x%08X handle=%s payload=0x%08X"
+        " sec0=0x%08X sec3=0x%08X\n",
+        (unsigned)*slot,
+        tag,
+        canonicalize_nk_pc((uint32_t)cpu->pc),
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        m->wince.type4_wrap_watch_va,
+        format_word_or_unknown(handle_buf, sizeof(handle_buf), handle_ok, handle),
+        m->wince.type4_payload_watch_va,
+        load_pa_word(m, 0x18C0u),
+        load_pa_word(m, 0x18CCu));
 }
 
 static uint32_t count_active_sections(machine_t *m)
@@ -3646,6 +3686,9 @@ static void maybe_note_section3_worker_pc(machine_t *m, struct cpu *cpu,
             || pc32 == UINT32_C(0x80084120)) {
             dump_section3_retobj_window(m, targets[i].label, watch);
         }
+        if (pc32 == UINT32_C(0x80083BE8))
+            note_type4_order_event(m, cpu,
+                &m->wince.type4_order_enqueue_seq, "worker_enqueue");
 
         m->wince.section3_worker_probe_count++;
         return;
@@ -3778,9 +3821,9 @@ static void maybe_note_section3_type4_gate_pc(machine_t *m, struct cpu *cpu,
         tag = "a1200_enter";
         break;
     case UINT32_C(0x8009A12C):
-        if (ra != UINT32_C(0x80081C40) || a0 != handle_va)
+        if (a0 != handle_va)
             return;
-        tag = "a912c_enter";
+        tag = (ra == UINT32_C(0x80081C40)) ? "a912c_enter" : "a912c_live";
         break;
     case UINT32_C(0x800A11B0):
         if (a0 == wrap_va && a1 == 2u && ra == UINT32_C(0x8009A11C)) {
@@ -3824,6 +3867,9 @@ static void maybe_note_section3_type4_gate_pc(machine_t *m, struct cpu *cpu,
         format_word_or_unknown(obj90_buf, sizeof(obj90_buf), obj90_ok, obj90));
     dump_section3_wrap_window(m, tag, wrap_va);
     dump_section3_retobj_window(m, tag, payload_va);
+    if (pc32 == UINT32_C(0x8009A12C))
+        note_type4_order_event(m, cpu,
+            &m->wince.type4_order_cleanup_seq, "handle_cleanup");
     m->wince.type4_gate_probe_count++;
 }
 
@@ -4984,6 +5030,8 @@ static void maybe_log_section3_ctor_field_write(machine_t *m, struct cpu *cpu,
         m->wince.type4_wrap_watch_va = wrap_va;
         m->wince.type4_payload_watch_va = payload_va;
         m->wince.type4_handle_watch_va = load_pa_word(m, wrap_pa + 0x08u);
+        note_type4_order_event(m, cpu,
+            &m->wince.type4_order_ctor_seq, "wrap_ctor");
         m->wince.type4_step_trace_pending = false;
         m->wince.type4_step_trace_active = true;
         m->wince.type4_step_trace_remaining = 192u;
@@ -5056,6 +5104,13 @@ static void maybe_log_section3_focus_obj_write(machine_t *m, struct cpu *cpu,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
     dump_section3_wrap_window(m, tag, wrap_va);
     dump_section3_retobj_window(m, tag, payload_va);
+    if (strcmp(tag, "wrap") == 0
+        && range_overlaps(paddr, (uint64_t)len, wrap_pa + 0x04u, 4u)
+        && m->wince.type4_wrap_watch_va == wrap_va
+        && m->wince.type4_payload_watch_va == payload_va) {
+        note_type4_order_event(m, cpu,
+            &m->wince.type4_order_link_seq, "wrap_link");
+    }
     m->wince.section3_focusobj_write_count++;
 }
 
@@ -5064,12 +5119,20 @@ static void maybe_log_section3_desc_read(machine_t *m, struct cpu *cpu,
 {
     const uint32_t desc_pa = UINT32_C(0x00FE9CC0);
     const uint32_t desc_len = UINT32_C(0x40);
+    uint64_t off;
     uint32_t sec3;
 
     if (!m || !cpu)
         return;
     if (!range_overlaps(paddr, (uint64_t)len, desc_pa, desc_len))
         return;
+
+    off = paddr - desc_pa;
+    if (m->wince.type4_wrap_watch_va != 0u
+        && off != 0x30u
+        && off != 0x34u) {
+        return;
+    }
 
     sec3 = load_pa_word(m, 0x18CCu);
     if (!m->wince.section3_page_watch_armed
@@ -5081,13 +5144,26 @@ static void maybe_log_section3_desc_read(machine_t *m, struct cpu *cpu,
     fprintf(stderr,
         "[WINCE_SEC3_DESC_R] off=0x%02" PRIx64 " len=%zu val=0x%llX"
         " sec0=0x%08X sec3=0x%08X PC=0x%08" PRIx64 " RA=0x%08X\n",
-        paddr - desc_pa,
+        off,
         len,
         (unsigned long long)val,
         load_pa_word(m, 0x18C0u),
         sec3,
         (uint64_t)cpu->pc,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    if (off == 0x30u
+        && canonicalize_nk_pc((uint32_t)cpu->pc) == UINT32_C(0x8009A9CC)) {
+        note_type4_order_event(m, cpu,
+            &m->wince.type4_order_state_seq, "consumer_state");
+    } else if (off == 0x34u) {
+        uint32_t pc32 = canonicalize_nk_pc((uint32_t)cpu->pc);
+        if (pc32 == UINT32_C(0x8009A7F8)
+            || pc32 == UINT32_C(0x8009A778)
+            || pc32 == UINT32_C(0x8009A850)) {
+            note_type4_order_event(m, cpu,
+                &m->wince.type4_order_payload_seq, "consumer_payload");
+        }
+    }
     maybe_log_section3_gate_snapshot(m, cpu,
         canonicalize_nk_pc((uint32_t)cpu->pc), sec3);
     dump_section3_descriptor_window(m, "desc_read");
@@ -7401,6 +7477,7 @@ void wince_boot_log_summary(machine_t *m)
     const char *classification = "unresolved";
     const char *exc_class = "unresolved";
     const char *exc_reason = "no_hot_fault_data";
+    const char *type4_order = "incomplete";
     uint32_t active_sections;
     uint32_t fb_events;
 
@@ -7467,6 +7544,35 @@ void wince_boot_log_summary(machine_t *m)
         (unsigned)active_sections,
         m->wince.fb_watch_armed ? 1u : 0u,
         (unsigned)fb_events);
+
+    if (m->wince.type4_order_payload_seq != 0u
+        && m->wince.type4_order_enqueue_seq == 0u) {
+        type4_order = "consumer_without_enqueue";
+    } else if (m->wince.type4_order_cleanup_seq != 0u
+        && m->wince.type4_order_enqueue_seq == 0u) {
+        type4_order = "cleanup_without_enqueue";
+    } else if (m->wince.type4_order_payload_seq != 0u
+        && m->wince.type4_order_enqueue_seq != 0u) {
+        type4_order =
+            (m->wince.type4_order_payload_seq < m->wince.type4_order_enqueue_seq)
+            ? "consumer_before_enqueue"
+            : "enqueue_before_consumer";
+    } else if (m->wince.type4_order_enqueue_seq != 0u) {
+        type4_order = "enqueue_without_consumer";
+    }
+    fprintf(stderr,
+        "[WINCE_TYPE4_SUMMARY] order=%s ctor=%u link=%u state=%u payload=%u"
+        " enqueue=%u cleanup=%u wrap=0x%08X handle=0x%08X payload_va=0x%08X\n",
+        type4_order,
+        (unsigned)m->wince.type4_order_ctor_seq,
+        (unsigned)m->wince.type4_order_link_seq,
+        (unsigned)m->wince.type4_order_state_seq,
+        (unsigned)m->wince.type4_order_payload_seq,
+        (unsigned)m->wince.type4_order_enqueue_seq,
+        (unsigned)m->wince.type4_order_cleanup_seq,
+        m->wince.type4_wrap_watch_va,
+        m->wince.type4_handle_watch_va,
+        m->wince.type4_payload_watch_va);
 
     if (m->wince.hot_page_01f94b50.seen
         && m->wince.hot_page_01f94b50.section_val != 0
