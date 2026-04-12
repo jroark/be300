@@ -18,13 +18,15 @@ static void usage(const char *prog)
         "  --debug-serial        Capture NK.exe debug printf to stdout\n"
         "  --strict-hardware     Accepted for compatibility; no-op\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
+        "  --cf <image>          Attach a FAT16 CF image\n"
+        "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
         "  --speed <mhz>        Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
         "  -h, --help            Show this help\n"
         "\n"
         "ROM image (positional arg) is loaded at PA 0x1FC00000 (MIPS reset vector).\n"
-        "--kernel, --nand, and rom.bin are mutually exclusive.\n",
+        "--kernel, --restore/--nand, and rom.bin are mutually exclusive.\n",
         prog);
 }
 
@@ -40,11 +42,13 @@ int main(int argc, char *argv[])
         .log_nand_legacy = false,
         .debug_serial   = false,
         .enable_ppsh    = false,
+        .restore        = false,
         .rom_path       = NULL,
         .kernel_path    = NULL,
         .cmdline        = NULL,
         .ram_path       = NULL,
         .nand_path      = NULL,
+        .cf_path        = NULL,
         .sdram_size     = 16u * 1024u * 1024u,
         .target_mhz     = 166u,
     };
@@ -68,6 +72,10 @@ int main(int argc, char *argv[])
             /* Accepted so existing strict-hardware scripts keep running. */
         } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {
             cfg.nand_path = argv[++i];
+        } else if (strcmp(argv[i], "--cf") == 0 && i + 1 < argc) {
+            cfg.cf_path = argv[++i];
+        } else if (strcmp(argv[i], "--restore") == 0) {
+            cfg.restore = true;
         } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
             cfg.ram_path = argv[++i];
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
@@ -92,17 +100,22 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (!cfg.kernel_path && !cfg.rom_path && !cfg.nand_path) {
-        fprintf(stderr, "Error: must specify --kernel, --nand, or a ROM image\n");
+    if (!cfg.kernel_path && !cfg.rom_path && !cfg.nand_path && !cfg.restore) {
+        fprintf(stderr, "Error: must specify --kernel, --nand, --restore, or a ROM image\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (cfg.restore && !cfg.cf_path) {
+        fprintf(stderr, "Error: --restore requires --cf <image>\n");
         usage(argv[0]);
         return 1;
     }
     {
         int boot_modes = (cfg.kernel_path ? 1 : 0) +
                          (cfg.rom_path    ? 1 : 0) +
-                         (cfg.nand_path   ? 1 : 0);
+                         ((cfg.nand_path || cfg.restore) ? 1 : 0);
         if (boot_modes > 1) {
-            fprintf(stderr, "Error: --kernel, --nand, and rom.bin are mutually exclusive\n");
+            fprintf(stderr, "Error: --kernel, --restore/--nand, and rom.bin are mutually exclusive\n");
             usage(argv[0]);
             return 1;
         }

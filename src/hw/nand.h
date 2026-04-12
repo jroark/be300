@@ -11,6 +11,11 @@
 #define NAND_XFER_END     0xA500u
 #define NAND_BOOT_BASE    0xC000u   /* ROM-era transfer engine control/status */
 #define NAND_BOOT_END     0xC100u
+#define NAND_RESTORE_BUF_BASE  0x0B00u   /* NANDWRITER page buffer window */
+#define NAND_RESTORE_BUF_END   0x0D00u
+#define NAND_RESTORE_BASE      0x0C00u
+#define NAND_RESTORE_SIDE_BASE 0x0980u   /* NANDWRITER sideband control */
+#define NAND_RESTORE_SIDE_END  0x0990u
 #define NAND_CMD_BASE     0xAC00u   /* Legacy command/address registers */
 #define NAND_CMD_END      0xAC50u
 #define NAND_ENABLE_BASE  0xB100u   /* Legacy enable registers */
@@ -47,6 +52,30 @@
 #define NAND_REG_BOOT_ECC_OUT_END  0xC0B0u
 #define NAND_REG_BOOT_STATUS2      0xC0C0u
 
+/* NANDWRITER restore-engine registers in the VRC4173 C-window */
+#define NAND_REG_RESTORE_C00      0x0C00u
+#define NAND_REG_RESTORE_C04      0x0C04u
+#define NAND_REG_RESTORE_C08      0x0C08u
+#define NAND_REG_RESTORE_C0C      0x0C0Cu
+#define NAND_REG_RESTORE_C10      0x0C10u
+#define NAND_REG_RESTORE_C14      0x0C14u
+#define NAND_REG_RESTORE_C20      0x0C20u
+#define NAND_REG_RESTORE_C24      0x0C24u
+#define NAND_REG_RESTORE_C2C      0x0C2Cu
+#define NAND_REG_RESTORE_C30      0x0C30u
+#define NAND_REG_RESTORE_C34      0x0C34u
+#define NAND_REG_RESTORE_C38      0x0C38u
+#define NAND_REG_RESTORE_C3C      0x0C3Cu
+#define NAND_REG_RESTORE_C40      0x0C40u
+#define NAND_REG_RESTORE_C48      0x0C48u
+#define NAND_REG_RESTORE_C4C      0x0C4Cu
+#define NAND_REG_RESTORE_C60      0x0C60u
+#define NAND_REG_RESTORE_C64      0x0C64u
+#define NAND_REG_RESTORE_C68      0x0C68u
+#define NAND_REG_RESTORE_CA0      0x0CA0u
+#define NAND_REG_RESTORE_CAC      0x0CACu
+#define NAND_REG_RESTORE_CC0      0x0CC0u
+
 /* Individual legacy data-port registers */
 #define NAND_REG_PORTCTL  0xD7F8u   /* Port control / command latch */
 #define NAND_REG_DEVID    0xD7FAu   /* Device ID probe register */
@@ -70,12 +99,18 @@
 #define NAND_PAGE_RAW     (NAND_PAGE_DATA + NAND_PAGE_OOB)
 #define NAND_BLOCK_PAGES  32u
 #define NAND_BLOCK_COUNT  1024u
+#define NAND_IMAGE_SIZE   (NAND_BLOCK_COUNT * NAND_BLOCK_PAGES * NAND_PAGE_DATA)
 
 /* NAND commands */
 #define NAND_CMD_READ0    0x00u   /* Read area A (column 0-255) */
 #define NAND_CMD_READ1    0x01u   /* Read area B (column 256-511) */
 #define NAND_CMD_READOOB  0x50u   /* Read OOB area */
+#define NAND_CMD_STATUS   0x70u   /* Read status */
+#define NAND_CMD_SEQIN    0x80u   /* Program setup */
 #define NAND_CMD_READID   0x90u   /* Read device ID */
+#define NAND_CMD_PAGEPROG 0x10u   /* Program confirm */
+#define NAND_CMD_ERASE1   0x60u   /* Erase setup */
+#define NAND_CMD_ERASE2   0xD0u   /* Erase confirm */
 #define NAND_CMD_RESET    0xFFu   /* Reset */
 
 typedef enum {
@@ -83,11 +118,16 @@ typedef enum {
     NAND_STATE_READ_DATA,
     NAND_STATE_READ_OOB,
     NAND_STATE_READ_ID,
+    NAND_STATE_READ_STATUS,
+    NAND_STATE_PROGRAM_DATA,
+    NAND_STATE_ERASE_SETUP,
 } nand_cmd_state_t;
 
 typedef struct {
-    const uint8_t *image;       /* pointer to NAND image data (NULL = no image) */
+    uint8_t       *image;       /* pointer to NAND image data (NULL = no image) */
     size_t         image_size;
+    bool           dirty;
+    int8_t         block_data_state[NAND_BLOCK_COUNT]; /* -1 unknown, 0 blank, 1 contains data */
 
     /* State machine */
     nand_cmd_state_t state;
@@ -131,6 +171,12 @@ typedef struct {
     bool     legacy_status7_ff_armed;      /* one-shot 0xFF escape has been emitted */
     uint8_t  xfer_buffer[16];              /* mode-4/ECC result buffer (0xA4A0-0xA4AC) */
     uint8_t  xfer_ecc_count;               /* six 10-bit ECC inputs via 0xA468 */
+    uint8_t  xfer_phase;                   /* legacy A414 phase latch */
+    uint8_t  xfer_pending_byte;            /* pending command/address data byte */
+    uint8_t  xfer_last_cmd;                /* committed A400 command byte */
+    uint8_t  xfer_data_bytes[8];           /* queued A420 readback bytes */
+    uint8_t  xfer_data_count;              /* queued A420 byte count */
+    uint8_t  xfer_data_pos;                /* queued A420 byte cursor */
     uint8_t  dio_mode;                     /* D002 control: 0x80=CLE, 0x01=ALE, 0=data */
     uint8_t  dio_last_write;              /* last byte written to D000 (for echo-back) */
 
@@ -141,9 +187,34 @@ typedef struct {
     uint32_t dma_cursor;                  /* byte cursor into current FIFO transfer */
     uint32_t dma_total_bytes;             /* total bytes available for FIFO reads */
     bool     dma_active;                  /* true when data is available for FIFO reads */
+    uint8_t  status_value;
+    uint8_t  program_buffer[NAND_PAGE_RAW];
+    uint32_t program_column;
+    uint32_t program_length;
+
+    /* NANDWRITER restore-engine state (0x0A000B00 / 0x0A000C00 window) */
+    uint32_t restore_regs[0x800];
+    uint8_t  restore_page_buffer[NAND_PAGE_RAW];
+    uint32_t restore_page_addr;
+    uint32_t restore_stream_pos;
+    uint32_t restore_stream_limit;
+    uint32_t restore_stream_base;
+    uint8_t  restore_phase;
+    uint8_t  restore_mode;
+    uint8_t  restore_last_cmd;
+    uint8_t  restore_addr_bytes[4];
+    uint8_t  restore_addr_count;
+    uint16_t restore_ecc_words[6];
+    uint8_t  restore_ecc_count;
+    bool     restore_status_ok;
 } nand_state_t;
 
-void     nand_init(nand_state_t *s, const uint8_t *image, size_t size);
+void     nand_init(nand_state_t *s, uint8_t *image, size_t size);
 uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, uint32_t pc);
 void     nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                     uint64_t value, bool log, uint32_t pc);
+bool     nand_restore_handles_offset(uint32_t offset);
+uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size,
+                           bool log, uint32_t pc);
+void     nand_restore_write(nand_state_t *s, uint32_t offset, unsigned size,
+                            uint64_t value, bool log, uint32_t pc);

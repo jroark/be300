@@ -28,3 +28,4 @@ int loader_load_elf_from_memory(machine_t *m, const void *data, size_t data_len,
  * and stores the data in m->nand_data / m->nand_size.
  */
 int loader_load_nand_image(machine_t *m, const char *path);
+int loader_create_blank_nand_image(machine_t *m);

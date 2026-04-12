@@ -1,7 +1,7 @@
 /*
  *  be300_devices.c — GXemul DEVICE_ACCESS wrappers for BE-300 peripherals.
  *
- *  Registers our hw/*.c peripheral state structs as GXemul memory-mapped
+ *  Registers our hardware peripheral state structs as GXemul memory-mapped
  *  devices at the VRC4173 companion chip address range.
  *
  *  The VR4131 internal I/O (BCU, CMU, PMU, ICU, RTC, GPIO, SIU) is handled
@@ -18,6 +18,7 @@
 #include "misc.h"
 
 #include "be300.h"
+#include "hw/cf.h"
 #include "hw/nand.h"
 #include "ppsh.h"
 #include "wince_boot.h"
@@ -32,8 +33,14 @@
 
 struct be300_nand_device {
     nand_state_t *nand;
+    cf_state_t   *cf;
     bool          log_mmio;
     uint32_t      reg_offset;   /* byte offset of this segment from 0x0A00A000 */
+};
+
+struct be300_cf_window_device {
+    cf_state_t *cf;
+    bool        log_mmio;
 };
 
 DEVICE_ACCESS(be300_nand)
@@ -41,6 +48,38 @@ DEVICE_ACCESS(be300_nand)
     struct be300_nand_device *d = (struct be300_nand_device *)extra;
     uint32_t offset = (uint32_t)relative_addr + 0xA000 + d->reg_offset;
     uint32_t pc = (uint32_t)cpu->pc;
+
+    if (offset >= 0xA03Cu && offset < 0xA040u && d->cf) {
+        if (writeflag == MEM_WRITE) {
+            uint64_t val = memory_readmax64(cpu, data, len);
+            if (val == 0 || (val & 0x22u) == 0)
+                cf_clear_irq(d->cf);
+            wince_boot_note_mmio_access(cpu->machine, cpu,
+                0x0A000000ULL + offset, len, val, true);
+        } else {
+            uint64_t val = cf_card_state_bits(d->cf);
+            memory_writemax64(cpu, data, len, val);
+            wince_boot_note_mmio_access(cpu->machine, cpu,
+                0x0A000000ULL + offset, len, val, false);
+        }
+        return 1;
+    }
+
+    if (d->cf && cf_boot_handles_rom_offset(d->cf, offset)) {
+        if (writeflag == MEM_WRITE) {
+            uint64_t val = memory_readmax64(cpu, data, len);
+            cf_boot_write(d->cf, offset, (unsigned)len, val, d->log_mmio, pc);
+            wince_boot_note_mmio_access(cpu->machine, cpu,
+                0x0A000000ULL + offset, len, val, true);
+        } else {
+            uint64_t val = cf_boot_read(d->cf, offset, (unsigned)len,
+                d->log_mmio, pc);
+            memory_writemax64(cpu, data, len, val);
+            wince_boot_note_mmio_access(cpu->machine, cpu,
+                0x0A000000ULL + offset, len, val, false);
+        }
+        return 1;
+    }
 
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
@@ -53,6 +92,29 @@ DEVICE_ACCESS(be300_nand)
         memory_writemax64(cpu, data, len, val);
         wince_boot_note_mmio_access(cpu->machine, cpu,
             0x0A000000ULL + offset, len, val, false);
+    }
+
+    return 1;
+}
+
+DEVICE_ACCESS(be300_cf_window)
+{
+    struct be300_cf_window_device *d =
+        (struct be300_cf_window_device *)extra;
+    uint32_t offset = (uint32_t)relative_addr;
+
+    if (writeflag == MEM_WRITE) {
+        uint64_t val = memory_readmax64(cpu, data, len);
+        cf_window_write(d->cf, offset, (unsigned)len, val, d->log_mmio,
+            (uint32_t)cpu->pc);
+        wince_boot_note_mmio_access(cpu->machine, cpu,
+            PA_ROM_BASE + offset, len, val, true);
+    } else {
+        uint64_t val = cf_window_read(d->cf, offset, (unsigned)len,
+            d->log_mmio, (uint32_t)cpu->pc);
+        memory_writemax64(cpu, data, len, val);
+        wince_boot_note_mmio_access(cpu->machine, cpu,
+            PA_ROM_BASE + offset, len, val, false);
     }
 
     return 1;
@@ -276,6 +338,27 @@ DEVICE_ACCESS(be300_vrc4173)
         uint64_t val = memory_readmax64(cpu, data, len);
         bool suspend_latch = false;
 
+        if (g_be300_machine &&
+            nand_restore_handles_offset(off)) {
+            nand_restore_write(&g_be300_machine->nand, off, (unsigned)len,
+                val, d->log_mmio, (uint32_t)cpu->pc);
+            wince_boot_note_mmio_access(cpu->machine, cpu,
+                VRC4173_LATCH_BASE + off, len, val, true);
+            return 1;
+        }
+
+        if (g_be300_machine && off >= 0x1000u && off < 0x2000u) {
+            cf_companion_write(&g_be300_machine->cf, off - 0x1000u,
+                (unsigned)len, val, d->log_mmio, (uint32_t)cpu->pc);
+            memcpy(&d->bytes[off], data, len);
+            wince_boot_note_mmio_access(cpu->machine, cpu,
+                VRC4173_LATCH_BASE + off, len, val, true);
+            return 1;
+        }
+
+        if (g_be300_machine && (off == 0x0010u || off == 0x0014u))
+            cf_clear_irq(&g_be300_machine->cf);
+
         if ((off <= 0x1120 && off + len > 0x1120) ||
             (off <= 0x112C && off + len > 0x112C) ||
             (off <= 0x1B20 && off + len > 0x1B20)) {
@@ -325,6 +408,35 @@ DEVICE_ACCESS(be300_vrc4173)
             piu_update_state(
                 (struct be300_input_device *)g_be300_machine->touch_device);
     } else {
+        if (g_be300_machine && off == 0x0004u) {
+            uint64_t val = be300_latch_peek_u32(d, off)
+                | cf_giu_source_bits(&g_be300_machine->cf);
+            memory_writemax64(cpu, data, len, val);
+            wince_boot_note_mmio_access(cpu->machine, cpu,
+                VRC4173_LATCH_BASE + off, len, val, false);
+            return 1;
+        }
+
+        if (g_be300_machine &&
+            nand_restore_handles_offset(off)) {
+            uint64_t val = nand_restore_read(&g_be300_machine->nand, off,
+                (unsigned)len, d->log_mmio, (uint32_t)cpu->pc);
+            memory_writemax64(cpu, data, len, val);
+            wince_boot_note_mmio_access(cpu->machine, cpu,
+                VRC4173_LATCH_BASE + off, len, val, false);
+            return 1;
+        }
+
+        if (g_be300_machine && off >= 0x1000u && off < 0x2000u) {
+            uint64_t val = cf_companion_read(&g_be300_machine->cf,
+                off - 0x1000u, (unsigned)len, d->log_mmio,
+                (uint32_t)cpu->pc);
+            memory_writemax64(cpu, data, len, val);
+            wince_boot_note_mmio_access(cpu->machine, cpu,
+                VRC4173_LATCH_BASE + off, len, val, false);
+            return 1;
+        }
+
         /*
          * WORKAROUND: ScCmcu registers (Casio companion MCU,
          * PA 0x0A007800-0x0A00783F).
@@ -537,7 +649,8 @@ bool be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out)
  *  Register the NAND flash controller as a GXemul device.
  *  Called from machine_be300.c after NAND image is loaded.
  */
-void be300_register_nand(struct machine *gxm, nand_state_t *nand, bool log_mmio)
+void be300_register_nand(struct machine *gxm, nand_state_t *nand,
+                         cf_state_t *cf, bool log_mmio)
 {
     /*
      * NAND registers span PA 0x0A00A000-0x0A00D800.
@@ -549,13 +662,13 @@ void be300_register_nand(struct machine *gxm, nand_state_t *nand, bool log_mmio)
      */
     struct be300_nand_device *lo, *hi;
     CHECK_ALLOCATION(lo = malloc(sizeof(struct be300_nand_device)));
-    lo->nand = nand;  lo->log_mmio = log_mmio;  lo->reg_offset = 0x0000;
+    lo->nand = nand;  lo->cf = cf;  lo->log_mmio = log_mmio;  lo->reg_offset = 0x0000;
     memory_device_register(gxm->memory, "be300_nand_lo",
         0x0A00A000ULL, 0x40,
         dev_be300_nand_access, (void *)lo, DM_DEFAULT, NULL);
 
     CHECK_ALLOCATION(hi = malloc(sizeof(struct be300_nand_device)));
-    hi->nand = nand;  hi->log_mmio = log_mmio;  hi->reg_offset = 0x0050;
+    hi->nand = nand;  hi->cf = cf;  hi->log_mmio = log_mmio;  hi->reg_offset = 0x0050;
     memory_device_register(gxm->memory, "be300_nand_hi",
         0x0A00A050ULL, 0x37B0,
         dev_be300_nand_access, (void *)hi, DM_DEFAULT, NULL);
@@ -575,7 +688,8 @@ void be300_register_nand(struct machine *gxm, nand_state_t *nand, bool log_mmio)
  *  Segment A: 0x0A000000 - 0x0A008000 (below SIU/NAND)
  *  Segment B: 0x0A00E000 - 0x0A020000 (above NAND)
  */
-void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio,
+void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
+                                  bool log_mmio,
                                   bool enable_ppsh)
 {
     struct be300_vrc4173_latch *latch;
@@ -583,6 +697,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio,
     CHECK_ALLOCATION(latch = calloc(1, sizeof(struct be300_vrc4173_latch)));
     latch->log_mmio = log_mmio;
     g_be300_vrc4173_latch = latch;
+    g_be300_machine = m;
     CHECK_ALLOCATION(aux = calloc(1, sizeof(struct be300_wince_aux)));
     aux->log_mmio = log_mmio;
     aux->ppsh_enabled = enable_ppsh;
@@ -819,6 +934,23 @@ void be300_register_vrc4173_latch(struct machine *gxm, bool log_mmio,
 
     fprintf(stderr,
         "[BE300] Registered VRC4173 latch plus WinCE 0x0C000120 alias\n");
+}
+
+void be300_register_cf_window(struct machine *gxm, machine_t *m, bool log_mmio)
+{
+    struct be300_cf_window_device *d;
+
+    CHECK_ALLOCATION(d = calloc(1, sizeof(*d)));
+    d->cf = &m->cf;
+    d->log_mmio = log_mmio;
+
+    memory_device_register(gxm->memory, "be300_cf_window",
+        PA_ROM_BASE, CF_WINDOW_SIZE,
+        dev_be300_cf_window_access, (void *)d, DM_DEFAULT, NULL);
+
+    fprintf(stderr,
+        "[BE300] Registered CF window at PA 0x%08X (%s)\n",
+        PA_ROM_BASE, cf_present(&m->cf) ? "card present" : "no card");
 }
 
 

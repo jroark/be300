@@ -353,35 +353,70 @@ int loader_load_elf(machine_t *m, const char *path,
 int loader_load_nand_image(machine_t *m, const char *path)
 {
     FILE *f = fopen(path, "rb");
+    uint8_t *data;
+    size_t alloc_size;
+    size_t bytes_read;
+    long fsize;
+
     if (!f) {
         fprintf(stderr, "[LOADER] Cannot open NAND image: %s\n", path);
         return -1;
     }
 
     fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
+    fsize = ftell(f);
     rewind(f);
 
-    if (fsize <= 0) {
-        fprintf(stderr, "[LOADER] NAND image empty\n");
+    if (fsize < 0) {
+        fclose(f);
+        return -1;
+    }
+    if ((uint64_t)fsize > NAND_IMAGE_SIZE) {
+        fprintf(stderr, "[LOADER] NAND image too large (%ld bytes)\n", fsize);
         fclose(f);
         return -1;
     }
 
-    uint8_t *data = malloc((size_t)fsize);
+    alloc_size = NAND_IMAGE_SIZE;
+    data = malloc(alloc_size);
     if (!data) {
-        fprintf(stderr, "[LOADER] OOM reading NAND (%ld bytes)\n", fsize);
+        fprintf(stderr, "[LOADER] OOM reading NAND (%zu bytes)\n", alloc_size);
         fclose(f);
         return -1;
     }
-    if ((long)fread(data, 1, (size_t)fsize, f) != fsize) {
+
+    memset(data, 0xFF, alloc_size);
+    bytes_read = fread(data, 1, (size_t)fsize, f);
+    if ((long)bytes_read != fsize) {
         fprintf(stderr, "[LOADER] Short read from NAND image\n");
         free(data); fclose(f); return -1;
     }
     fclose(f);
 
     m->nand_data = data;
-    m->nand_size = (size_t)fsize;
-    fprintf(stderr, "[LOADER] NAND image loaded: %ld bytes\n", fsize);
+    m->nand_size = alloc_size;
+    fprintf(stderr,
+        "[LOADER] NAND image loaded: file=%ld bytes backing=%zu bytes\n",
+        fsize, alloc_size);
+    return 0;
+}
+
+int loader_create_blank_nand_image(machine_t *m)
+{
+    uint8_t *data;
+
+    if (!m)
+        return -1;
+
+    data = malloc(NAND_IMAGE_SIZE);
+    if (!data)
+        return -1;
+
+    memset(data, 0xFF, NAND_IMAGE_SIZE);
+    m->nand_data = data;
+    m->nand_size = NAND_IMAGE_SIZE;
+    fprintf(stderr,
+        "[LOADER] Blank NAND image created: %u bytes\n",
+        (unsigned)NAND_IMAGE_SIZE);
     return 0;
 }

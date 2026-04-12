@@ -39,6 +39,10 @@ extern volatile bool emul_shutdown;
 extern volatile bool emul_executing;
 extern bool single_step;
 
+static bool be300_restore_main_trace_active = false;
+static bool be300_restore_main_trace_done = false;
+static unsigned be300_restore_main_trace_remaining = 0;
+
 static uint32_t be300_canonicalize_nk_pc(uint32_t pc)
 {
     if ((pc & 0xE0000000u) == 0x80000000u
@@ -134,6 +138,155 @@ static void be300_set_linux_boot_strings(machine_t *m,
 
     gxm->bootstr = gxm->boot_kernel_filename;
     gxm->bootarg = gxm->boot_string_argument[0] ? gxm->boot_string_argument : NULL;
+}
+
+static bool be300_uses_rom_boot(const machine_config_t *cfg)
+{
+    return cfg && (cfg->nand_path || cfg->restore);
+}
+
+static bool be300_nand_image_looks_bootable(const machine_t *m)
+{
+    static const uint8_t spl_sig[] = { 'B', '0', '0', '0', 'F', 'F', '\n' };
+
+    if (!m || !m->nand_data || m->nand_size < 0x4000u + sizeof(spl_sig))
+        return false;
+
+    return memcmp(m->nand_data + 0x4000u, spl_sig, sizeof(spl_sig)) == 0;
+}
+
+static bool be300_read_guest_cstring(machine_t *m, uint32_t va,
+                                     char *out, size_t out_sz)
+{
+    size_t pos = 0;
+
+    if (!m || !m->cpu || !out || out_sz == 0)
+        return false;
+
+    while (pos + 1 < out_sz) {
+        uint8_t ch = 0;
+        uint64_t gva = 0xFFFFFFFF00000000ULL | (uint64_t)va;
+
+        if (!m->cpu->memory_rw(m->cpu, m->cpu->mem, gva, &ch, 1,
+                MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
+            return false;
+
+        out[pos++] = (char)ch;
+        va++;
+        if (ch == '\0')
+            return true;
+    }
+
+    out[out_sz - 1] = '\0';
+    return true;
+}
+
+static void be300_trace_restore_format(machine_t *m)
+{
+    static uint32_t last_ra = 0;
+    static unsigned log_count = 0;
+    uint32_t pc;
+    uint32_t ra;
+    uint32_t fmt_va;
+    uint32_t a1;
+    uint32_t a2;
+    uint32_t a3;
+    char fmt[160];
+
+    if (!m || m->boot_mode != BE300_BOOT_RESTORE || log_count >= 256)
+        return;
+
+    pc = be300_canonicalize_nk_pc((uint32_t)m->cpu->pc);
+    if (pc != 0x80E04428u)
+        return;
+
+    ra = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA];
+    if (ra == last_ra)
+        return;
+    last_ra = ra;
+
+    fmt_va = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0];
+    a1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1];
+    a2 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A2];
+    a3 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A3];
+
+    if (!be300_read_guest_cstring(m, fmt_va, fmt, sizeof(fmt)))
+        snprintf(fmt, sizeof(fmt), "<unreadable @0x%08X>", fmt_va);
+
+    fprintf(stderr,
+        "[RESTORE_FMT] ra=0x%08X fmt=\"%s\" a1=0x%08X a2=0x%08X a3=0x%08X\n",
+        ra, fmt, a1, a2, a3);
+    log_count++;
+}
+
+static void be300_trace_restore_checkpoints(machine_t *m)
+{
+    static const struct {
+        uint32_t pc;
+        const char *name;
+    } checkpoints[] = {
+        { 0x80E03374u, "area_lookup_ret" },
+        { 0x80E033D8u, "all_nand_lookup_ret" },
+        { 0x80E034D8u, "have_all_nand" },
+        { 0x80E03770u, "volume_read_ret" },
+        { 0x80E03DF4u, "nandcoldboot_enter" },
+        { 0x80E03E00u, "restore_return" },
+        { 0x80E04364u, "main_result_check" },
+    };
+    static uint32_t seen[(sizeof(checkpoints) / sizeof(checkpoints[0]))];
+    uint32_t pc;
+    size_t i;
+
+    if (!m || m->boot_mode != BE300_BOOT_RESTORE)
+        return;
+
+    pc = be300_canonicalize_nk_pc((uint32_t)m->cpu->pc);
+    for (i = 0; i < sizeof(checkpoints) / sizeof(checkpoints[0]); i++) {
+        if (pc != checkpoints[i].pc || seen[i] == pc)
+            continue;
+
+        seen[i] = pc;
+        fprintf(stderr,
+            "[RESTORE_CKPT] %s pc=0x%08X v0=0x%08X v1=0x%08X"
+            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+            " s0=0x%08X s1=0x%08X s6=0x%08X s7=0x%08X"
+            " ra=0x%08X sp=0x%08X\n",
+            checkpoints[i].name,
+            pc,
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V1],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A3],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S0],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S1],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S6],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S7],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]);
+    }
+}
+
+static void be300_sync_nand_image(machine_t *m)
+{
+    FILE *f;
+
+    if (!m || !m->nand_data || !m->cfg.nand_path || !m->nand.dirty)
+        return;
+
+    f = fopen(m->cfg.nand_path, "wb");
+    if (!f) {
+        fprintf(stderr, "[BE300] Failed to save NAND image: %s\n",
+            m->cfg.nand_path);
+        return;
+    }
+    if (fwrite(m->nand_data, 1, m->nand_size, f) != m->nand_size)
+        fprintf(stderr, "[BE300] Short write while saving NAND image\n");
+    fclose(f);
+    m->nand.dirty = false;
+    fprintf(stderr, "[BE300] NAND image saved: %s (%zu bytes)\n",
+        m->cfg.nand_path, m->nand_size);
 }
 
 static void be300_refresh_linux_bootinfo(machine_t *m)
@@ -299,7 +452,7 @@ machine_t *be300_create(const machine_config_t *cfg)
     gxm->physical_ram_in_mb = cfg->sdram_size / (1024 * 1024);
     /* Enable prom emulation for Linux (sets up hpc_bootinfo, argc/argv),
      * but disable for NAND boot (SPL doesn't use NetBSD boot convention) */
-    gxm->prom_emulation = cfg->nand_path ? 0 : 1;
+    gxm->prom_emulation = be300_uses_rom_boot(cfg) ? 0 : 1;
     gxm->boot_kernel_filename = cfg->kernel_path ? strdup(cfg->kernel_path) : strdup("");
     gxm->boot_string_argument = cfg->cmdline ? strdup(cfg->cmdline) : strdup("");
 
@@ -350,6 +503,10 @@ machine_t *be300_create(const machine_config_t *cfg)
     rtc_init(&m->rtc);
     gpio_init(&m->gpio);
     nand_init(&m->nand, NULL, 0);
+    cf_init(&m->cf);
+
+    if (cfg->restore)
+        m->btn_set2 = 0x80u;
 
     /*
      * Load kernel or NAND image.
@@ -361,19 +518,44 @@ machine_t *be300_create(const machine_config_t *cfg)
             return NULL;
         }
 
-    } else if (cfg->nand_path) {
-        if (loader_load_nand_image(m, cfg->nand_path) != 0) {
-            fprintf(stderr, "[BE300] Failed to load NAND image\n");
+    } else if (cfg->nand_path || cfg->restore) {
+        if (cfg->nand_path) {
+            if (loader_load_nand_image(m, cfg->nand_path) != 0) {
+                fprintf(stderr, "[BE300] Failed to load NAND image\n");
+                free(m);
+                return NULL;
+            }
+        } else if (loader_create_blank_nand_image(m) != 0) {
+            fprintf(stderr, "[BE300] Failed to create blank NAND image\n");
             free(m);
             return NULL;
+        }
+
+        if (cfg->cf_path && cf_load_image(&m->cf, cfg->cf_path) != 0) {
+            fprintf(stderr, "[BE300] Failed to load CF image\n");
+            free(m);
+            return NULL;
+        }
+
+        if (cfg->cf_path) {
+            bool nand_bootable = be300_nand_image_looks_bootable(m);
+            bool cf_boot_visible = cfg->restore || !nand_bootable;
+
+            cf_set_boot_visibility(&m->cf, cf_boot_visible);
+            fprintf(stderr,
+                "[BE300] CF ROM path %s (%s)\n",
+                cf_boot_visible ? "enabled" : "disabled",
+                cfg->restore ? "--restore" :
+                (nand_bootable ? "bootable NAND present" : "NAND not bootable"));
         }
 
         /* True cold boot: start at ROM reset vector.
          * The ROM will read NAND, load the SPL, run the MIPS16
          * section copier and boot dispatcher, then jump to NK.exe. */
         m->cpu->pc = 0xffffffffBFC00000ULL;
-        m->boot_mode = BE300_BOOT_NAND;
-        fprintf(stderr, "[BE300] Cold boot: PC=0xBFC00000 (ROM reset vector)\n");
+        m->boot_mode = cfg->restore ? BE300_BOOT_RESTORE : BE300_BOOT_NAND;
+        fprintf(stderr, "[BE300] %s: PC=0xBFC00000 (ROM reset vector)\n",
+            cfg->restore ? "Restore boot" : "Cold boot");
 
         /* Re-initialize NAND controller with image data */
         if (m->nand_data) {
@@ -392,11 +574,6 @@ machine_t *be300_create(const machine_config_t *cfg)
          * memory or run the scheduler.
          */
         dev_ram_init(gxm, 0x1FC00000, 0x4000, DEV_RAM_RAM, 0, NULL);
-
-        /* CF/ROM window at PA 0x1E000000: NK.exe XIP scanner probes
-         * VA 0x9E000000 for "RTBL" signature.  Zero-fill makes the
-         * check fail cleanly (no CF card inserted). */
-        dev_ram_init(gxm, 0x1E000000, 4096, DEV_RAM_RAM, 0x0, "cf_window");
 
         /*
          * Load the real BE-300 boot ROM into PA 0x1FC00000.
@@ -424,13 +601,17 @@ machine_t *be300_create(const machine_config_t *cfg)
 
         fprintf(stderr, "[BE300] ROM-era TLB preloads disabled\n");
 
+        extern void be300_register_cf_window(struct machine *, machine_t *, bool);
+        be300_register_cf_window(gxm, m, cfg->log_mmio);
+
         /* Register VRC4173 latch (catch-all); pre-split to leave gaps for input device */
-        extern void be300_register_vrc4173_latch(struct machine *, bool, bool);
-        be300_register_vrc4173_latch(gxm, cfg->log_mmio, cfg->enable_ppsh);
+        extern void be300_register_vrc4173_latch(struct machine *, machine_t *, bool, bool);
+        be300_register_vrc4173_latch(gxm, m, cfg->log_mmio, cfg->enable_ppsh);
 
         /* Register NAND flash; pre-split to leave gap at 0x0A00A040 for input device */
-        extern void be300_register_nand(struct machine *, nand_state_t *, bool);
-        be300_register_nand(gxm, &m->nand, cfg->log_mmio);
+        extern void be300_register_nand(struct machine *, nand_state_t *,
+            cf_state_t *, bool);
+        be300_register_nand(gxm, &m->nand, &m->cf, cfg->log_mmio);
 
         /* Register input devices AFTER latch/NAND (fills pre-carved gaps) */
         extern void be300_register_input(struct machine *, machine_t *, bool);
@@ -868,7 +1049,33 @@ static bool be300_run_batch(machine_t *m)
                 be300_read_u32_pa(m, 0x00FE9E30u),
                 be300_read_u32_pa(m, 0x00FE9E34u));
         }
+
+        {
+            if (m->boot_mode == BE300_BOOT_RESTORE
+                && !be300_restore_main_trace_done
+                && !be300_restore_main_trace_active
+                && canon_pc >= 0x80E0331Cu
+                && canon_pc < 0x80E04400u) {
+                single_step = true;
+                be300_restore_main_trace_active = true;
+                be300_restore_main_trace_remaining = 1024;
+                fprintf(stderr,
+                    "[RESTORE_STEP] start PC=0x%08X RA=0x%08X SP=0x%08X"
+                    " v0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X\n",
+                    canon_pc,
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V0],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A2],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A3]);
+            }
+        }
     }
+
+    be300_trace_restore_format(m);
+    be300_trace_restore_checkpoints(m);
 
     if (m->loop_count % 1000 == 0) {
         fprintf(stderr, "[BE300] Loop batch %d, PC=0x%08" PRIx64 "\n",
@@ -1251,6 +1458,47 @@ static bool be300_run_batch(machine_t *m)
                 (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
                 be300_read_u32_pa(m, 0x18CCu),
                 be300_read_u32_pa(m, 0x00FE5000u));
+        }
+    }
+
+    {
+        uint32_t raw_pc = (uint32_t)m->cpu->pc;
+        uint32_t canon_pc = be300_canonicalize_nk_pc(raw_pc);
+
+        if (m->boot_mode == BE300_BOOT_RESTORE
+            && be300_restore_main_trace_active) {
+            fprintf(stderr,
+                "[RESTORE_STEP] post rem=%u PC=0x%08X RA=0x%08X SP=0x%08X"
+                " v0=0x%08X v1=0x%08X a0=0x%08X a1=0x%08X"
+                " a2=0x%08X a3=0x%08X\n",
+                be300_restore_main_trace_remaining,
+                canon_pc,
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V0],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V1],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A2],
+                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A3]);
+
+            if (be300_restore_main_trace_remaining > 0)
+                be300_restore_main_trace_remaining--;
+
+            if (be300_restore_main_trace_remaining == 0
+                || canon_pc < 0x80E0331Cu
+                || canon_pc >= 0x80E04400u) {
+                single_step = false;
+                be300_restore_main_trace_active = false;
+                be300_restore_main_trace_done = true;
+                fprintf(stderr,
+                    "[RESTORE_STEP] stop PC=0x%08X RA=0x%08X SP=0x%08X"
+                    " v0=0x%08X\n",
+                    canon_pc,
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
+                    (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V0]);
+            }
         }
     }
 
@@ -1862,11 +2110,14 @@ machine_t *be300_create_web(uint32_t sdram_mb, uint32_t target_mhz,
         .sfb_5bit_green = sfb_5bit_green,
         .log_nand_legacy = false,
         .debug_serial = false,
+        .enable_ppsh = false,
+        .restore = false,
         .rom_path = NULL,
         .kernel_path = NULL,
         .cmdline = NULL,
         .ram_path = NULL,
         .nand_path = NULL,
+        .cf_path = NULL,
         .sdram_size = (sdram_mb ? sdram_mb : 16u) * 1024u * 1024u,
         .target_mhz = target_mhz,
     };
@@ -1993,11 +2244,14 @@ void be300_destroy(machine_t *m)
     be300_runtime_finalize(m);
 
     wince_boot_detach_machine(m);
+    be300_sync_nand_image(m);
+    cf_save_image(&m->cf);
 
     if (m->nand_data) {
         free(m->nand_data);
         m->nand_data = NULL;
     }
+    cf_destroy(&m->cf);
 
     free(m);
 
