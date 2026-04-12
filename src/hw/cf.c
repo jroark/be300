@@ -123,6 +123,8 @@ static void cf_reset_taskfile(cf_state_t *s)
     s->data_length = 0;
     s->data_pos = 0;
     s->pending_write = false;
+    s->transfer_lba = 0;
+    s->transfer_remaining = 0;
 }
 
 static void cf_arm_boot_status(cf_state_t *s)
@@ -315,6 +317,15 @@ static uint32_t cf_current_lba(const cf_state_t *s)
         | ((uint32_t)(s->drive_head & 0x0Fu) << 24);
 }
 
+static void cf_set_current_lba(cf_state_t *s, uint32_t lba)
+{
+    s->sector_number = (uint8_t)(lba & 0xFFu);
+    s->cylinder_low = (uint8_t)((lba >> 8) & 0xFFu);
+    s->cylinder_high = (uint8_t)((lba >> 16) & 0xFFu);
+    s->drive_head = (uint8_t)((s->drive_head & 0xF0u) |
+        ((lba >> 24) & 0x0Fu));
+}
+
 static void cf_set_ready(cf_state_t *s)
 {
     s->status_reg = s->attached ? (CF_ST_DRDY | CF_ST_DSC) : 0;
@@ -327,6 +338,7 @@ static void cf_set_error(cf_state_t *s, uint8_t err)
     s->data_length = 0;
     s->data_pos = 0;
     s->pending_write = false;
+    s->transfer_remaining = 0;
 }
 
 static void cf_put_word_le(uint8_t *buf, size_t word_index, uint16_t value)
@@ -381,6 +393,55 @@ static int cf_prepare_identify(cf_state_t *s)
     s->data_length = CF_SECTOR_SIZE;
     s->data_pos = 0;
     s->pending_write = false;
+    s->transfer_remaining = 0;
+    s->status_reg = CF_ST_DRDY | CF_ST_DSC | CF_ST_DRQ;
+    return 0;
+}
+
+static void cf_finish_transfer(cf_state_t *s)
+{
+    s->data_length = 0;
+    s->data_pos = 0;
+    s->pending_write = false;
+    s->transfer_remaining = 0;
+    cf_set_ready(s);
+}
+
+static void cf_update_taskfile_after_sector(cf_state_t *s, uint32_t next_lba,
+                                            uint16_t remaining)
+{
+    cf_set_current_lba(s, next_lba);
+    s->sector_count = remaining == 256u ? 0u : (uint8_t)(remaining & 0xFFu);
+}
+
+static int cf_load_read_sector(cf_state_t *s)
+{
+    size_t off = (size_t)s->transfer_lba * CF_SECTOR_SIZE;
+
+    if (cf_reserve_buffer(s, CF_SECTOR_SIZE) != 0)
+        return -1;
+    if (off + CF_SECTOR_SIZE > s->image_size) {
+        cf_set_error(s, 0x10u);
+        return -1;
+    }
+
+    memcpy(s->data_buffer, s->image + off, CF_SECTOR_SIZE);
+    s->data_length = CF_SECTOR_SIZE;
+    s->data_pos = 0;
+    s->pending_write = false;
+    s->status_reg = CF_ST_DRDY | CF_ST_DSC | CF_ST_DRQ;
+    return 0;
+}
+
+static int cf_prepare_write_sector(cf_state_t *s)
+{
+    if (cf_reserve_buffer(s, CF_SECTOR_SIZE) != 0)
+        return -1;
+
+    memset(s->data_buffer, 0, CF_SECTOR_SIZE);
+    s->data_length = CF_SECTOR_SIZE;
+    s->data_pos = 0;
+    s->pending_write = true;
     s->status_reg = CF_ST_DRDY | CF_ST_DSC | CF_ST_DRQ;
     return 0;
 }
@@ -389,7 +450,6 @@ static int cf_prepare_read(cf_state_t *s)
 {
     uint32_t lba;
     uint32_t sectors;
-    size_t bytes;
 
     if (!(s->drive_head & CF_DH_LBA)) {
         cf_set_error(s, 0x04u);
@@ -398,28 +458,21 @@ static int cf_prepare_read(cf_state_t *s)
 
     lba = cf_current_lba(s);
     sectors = s->sector_count ? s->sector_count : 256u;
-    bytes = (size_t)sectors * CF_SECTOR_SIZE;
 
-    if ((uint64_t)lba * CF_SECTOR_SIZE + bytes > s->image_size) {
+    if (((uint64_t)lba + sectors) * CF_SECTOR_SIZE > s->image_size) {
         cf_set_error(s, 0x10u);
         return -1;
     }
-    if (cf_reserve_buffer(s, bytes) != 0)
-        return -1;
 
-    memcpy(s->data_buffer, s->image + (size_t)lba * CF_SECTOR_SIZE, bytes);
-    s->data_length = bytes;
-    s->data_pos = 0;
-    s->pending_write = false;
-    s->status_reg = CF_ST_DRDY | CF_ST_DSC | CF_ST_DRQ;
-    return 0;
+    s->transfer_lba = lba;
+    s->transfer_remaining = (uint16_t)sectors;
+    return cf_load_read_sector(s);
 }
 
 static int cf_begin_write(cf_state_t *s)
 {
     uint32_t lba;
     uint32_t sectors;
-    size_t bytes;
 
     if (!(s->drive_head & CF_DH_LBA)) {
         cf_set_error(s, 0x04u);
@@ -428,21 +481,15 @@ static int cf_begin_write(cf_state_t *s)
 
     lba = cf_current_lba(s);
     sectors = s->sector_count ? s->sector_count : 256u;
-    bytes = (size_t)sectors * CF_SECTOR_SIZE;
 
-    if ((uint64_t)lba * CF_SECTOR_SIZE + bytes > s->image_size) {
+    if (((uint64_t)lba + sectors) * CF_SECTOR_SIZE > s->image_size) {
         cf_set_error(s, 0x10u);
         return -1;
     }
-    if (cf_reserve_buffer(s, bytes) != 0)
-        return -1;
 
-    memset(s->data_buffer, 0, bytes);
-    s->data_length = bytes;
-    s->data_pos = 0;
-    s->pending_write = true;
-    s->status_reg = CF_ST_DRDY | CF_ST_DSC | CF_ST_DRQ;
-    return 0;
+    s->transfer_lba = lba;
+    s->transfer_remaining = (uint16_t)sectors;
+    return cf_prepare_write_sector(s);
 }
 
 static void cf_execute_command(cf_state_t *s, uint8_t cmd)
@@ -500,10 +547,21 @@ static uint64_t cf_data_read(cf_state_t *s, unsigned size)
     }
 
     if (s->data_pos >= s->data_length) {
-        s->data_length = 0;
-        s->data_pos = 0;
-        s->pending_write = false;
-        cf_set_ready(s);
+        uint32_t next_lba = s->transfer_lba + 1u;
+        uint16_t remaining = s->transfer_remaining;
+
+        if (remaining > 0)
+            remaining--;
+        cf_update_taskfile_after_sector(s, next_lba, remaining);
+        s->transfer_lba = next_lba;
+        s->transfer_remaining = remaining;
+
+        if (remaining > 0) {
+            if (cf_load_read_sector(s) != 0)
+                cf_set_error(s, 0x10u);
+        } else {
+            cf_finish_transfer(s);
+        }
     }
 
     return val;
@@ -511,13 +569,25 @@ static uint64_t cf_data_read(cf_state_t *s, unsigned size)
 
 static void cf_commit_write(cf_state_t *s)
 {
-    uint32_t lba = cf_current_lba(s);
+    uint32_t next_lba = s->transfer_lba + 1u;
+    uint16_t remaining = s->transfer_remaining;
 
-    memcpy(s->image + (size_t)lba * CF_SECTOR_SIZE, s->data_buffer,
-        s->data_length);
+    memcpy(s->image + (size_t)s->transfer_lba * CF_SECTOR_SIZE, s->data_buffer,
+        CF_SECTOR_SIZE);
     s->dirty = true;
-    s->pending_write = false;
-    cf_set_ready(s);
+
+    if (remaining > 0)
+        remaining--;
+    cf_update_taskfile_after_sector(s, next_lba, remaining);
+    s->transfer_lba = next_lba;
+    s->transfer_remaining = remaining;
+
+    if (remaining > 0) {
+        if (cf_prepare_write_sector(s) != 0)
+            cf_set_error(s, 0x10u);
+    } else {
+        cf_finish_transfer(s);
+    }
 }
 
 static void cf_data_write(cf_state_t *s, unsigned size, uint64_t value)
@@ -588,8 +658,10 @@ static uint8_t cf_read_reg8(cf_state_t *s, int reg, bool is_alt, bool boot_path)
 }
 
 static void cf_write_reg8(cf_state_t *s, int reg, bool is_alt, bool boot_path,
-                          uint8_t value)
+                          uint8_t value, uint32_t pc)
 {
+    (void)pc;
+
     if (is_alt) {
         s->device_control = value;
         if (boot_path && s->boot_visible && value == 0) {
@@ -746,7 +818,7 @@ void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
     } else if (reg >= 0) {
         for (i = 0; i < size; i++)
             cf_write_reg8(s, reg, is_alt, false,
-                (uint8_t)((value >> (8u * i)) & 0xFFu));
+                (uint8_t)((value >> (8u * i)) & 0xFFu), pc);
     }
 
     if (log) {
@@ -808,7 +880,7 @@ void cf_boot_write(cf_state_t *s, uint32_t offset, unsigned size,
     } else if (reg >= 0) {
         for (i = 0; i < size; i++) {
             cf_write_reg8(s, reg, is_alt, true,
-                (uint8_t)((value >> (8u * i)) & 0xFFu));
+                (uint8_t)((value >> (8u * i)) & 0xFFu), pc);
         }
     }
 

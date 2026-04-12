@@ -25,6 +25,8 @@ typedef struct {
     size_t   data_length;
     size_t   data_pos;
     bool     pending_write;
+    uint32_t transfer_lba;
+    uint16_t transfer_remaining;
 
     uint8_t  error_reg;
     uint8_t  feature_reg;

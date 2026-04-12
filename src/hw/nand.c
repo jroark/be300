@@ -658,6 +658,35 @@ static uint32_t nand_xfer_col_addr(const nand_state_t *s)
     return (uint32_t)s->xfer_addr_bytes[0];
 }
 
+static uint32_t nand_xfer_block_addr(const nand_state_t *s)
+{
+    if (s->xfer_addr_count < 2)
+        return s->page_addr / NAND_BLOCK_PAGES;
+
+    uint32_t block = ((uint32_t)(s->xfer_addr_bytes[0] >> 5) & 0x7u)
+                   | ((uint32_t)s->xfer_addr_bytes[1] << 3);
+
+    if (s->xfer_addr_count >= 3)
+        block |= ((uint32_t)s->xfer_addr_bytes[2] << 11);
+    return block;
+}
+
+static void nand_xfer_latch_addr_state(nand_state_t *s)
+{
+    if (s->xfer_last_cmd == NAND_CMD_READ0 ||
+        s->xfer_last_cmd == NAND_CMD_READ1 ||
+        s->xfer_last_cmd == NAND_CMD_READOOB ||
+        s->xfer_last_cmd == NAND_CMD_SEQIN) {
+        if (s->xfer_addr_count >= 3) {
+            s->page_addr = nand_xfer_row_addr(s);
+            s->column = nand_xfer_col_addr(s);
+        }
+    } else if (s->xfer_last_cmd == NAND_CMD_ERASE1) {
+        if (s->xfer_addr_count >= 2)
+            s->page_addr = nand_xfer_block_addr(s) * NAND_BLOCK_PAGES;
+    }
+}
+
 static void nand_xfer_prepare_readid(nand_state_t *s)
 {
     nand_xfer_clear_data(s);
@@ -683,22 +712,26 @@ static void nand_xfer_commit_phase(nand_state_t *s)
             s->state = NAND_STATE_READ_DATA;
             s->column = 0;
             s->xfer_addr_count = 0;
+            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_READ1:
             s->state = NAND_STATE_READ_DATA;
             s->column = 256;
             s->xfer_addr_count = 0;
+            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_READOOB:
             s->state = NAND_STATE_READ_OOB;
             s->xfer_addr_count = 0;
+            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_READID:
             s->state = NAND_STATE_READ_ID;
             s->xfer_addr_count = 0;
+            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
             nand_xfer_clear_data(s);
             s->ready = true;
             break;
@@ -713,12 +746,14 @@ static void nand_xfer_commit_phase(nand_state_t *s)
             s->program_column = 0;
             s->program_length = 0;
             s->xfer_addr_count = 0;
+            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
             memset(s->program_buffer, 0xFF, sizeof(s->program_buffer));
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_ERASE1:
             s->state = NAND_STATE_ERASE_SETUP;
             s->xfer_addr_count = 0;
+            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_PAGEPROG:
@@ -731,7 +766,7 @@ static void nand_xfer_commit_phase(nand_state_t *s)
             break;
         case NAND_CMD_ERASE2:
             if (s->state == NAND_STATE_ERASE_SETUP) {
-                s->page_addr = nand_xfer_row_addr(s);
+                s->page_addr = nand_xfer_block_addr(s) * NAND_BLOCK_PAGES;
                 nand_commit_erase(s);
             }
             s->state = NAND_STATE_IDLE;
@@ -763,7 +798,7 @@ static void nand_xfer_commit_phase(nand_state_t *s)
             s->page_addr = nand_xfer_row_addr(s);
             s->column = nand_xfer_col_addr(s);
         } else if (s->xfer_last_cmd == NAND_CMD_ERASE1) {
-            s->page_addr = nand_xfer_row_addr(s);
+            s->page_addr = nand_xfer_block_addr(s) * NAND_BLOCK_PAGES;
         }
         s->ready = true;
         break;
@@ -1114,6 +1149,8 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                                    | ((uint32_t)s->xfer_addr_bytes[1] << 8)
                                    | ((uint32_t)s->xfer_addr_bytes[2] << 16);
                 }
+
+                nand_xfer_latch_addr_state(s);
             }
         } else if (offset == NAND_REG_XFER_ACK) {
             nand_xfer_commit_phase(s);
@@ -1127,8 +1164,8 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
              *   0x01 = prepare for buffer read
              *   0x04 = 8-byte OOB/trailer into buffer regs
              *   0x05 = 520-byte stream burst via 0xB000
-             *   0x06 = 16-byte program-side OOB write window via 0xB000
-             *   0x07 = 512-byte program-data write window via 0xB000
+             *   0x06 = final 8-byte OOB/ECC write window via 0xB000
+             *   0x07 = 520-byte program burst (512 data + first 8 OOB)
              */
             if (data_byte == 0x00u || data_byte == 0x01u) {
                 s->xfer_ecc_count = 0;
@@ -1184,14 +1221,15 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                     nand_stream_start_log_count++;
                 }
             } else if (data_byte == 0x06u) {
-                s->stream_base = NAND_PAGE_DATA;
+                s->stream_base = NAND_PAGE_DATA + 8u;
                 s->stream_cursor = 0;
-                s->stream_limit = NAND_PAGE_OOB;
+                s->stream_limit = 8u;
                 s->stream_active = false;
             } else if (data_byte == 0x07u) {
+                nand_xfer_latch_addr_state(s);
                 s->stream_base = 0;
                 s->stream_cursor = 0;
-                s->stream_limit = NAND_PAGE_DATA;
+                s->stream_limit = NAND_PAGE_DATA + 8u;
                 s->stream_active = false;
             }
             s->ready = true;
@@ -1690,6 +1728,11 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 idx = s->stream_base + s->stream_cursor;
                 if (idx < sizeof(s->program_buffer))
                     s->program_buffer[idx] = (uint8_t)((value >> (8u * i)) & 0xFFu);
+                if (idx < NAND_PAGE_DATA) {
+                    uint32_t used = idx + 1u;
+                    if (used > s->program_length)
+                        s->program_length = used;
+                }
                 s->stream_cursor++;
             }
             return;
