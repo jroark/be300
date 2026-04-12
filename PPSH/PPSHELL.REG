@@ -1,7 +1,0 @@
-REGEDIT4
-
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\PPShell]
-"Type"=hex:01,00,00,00
-"Start"=hex:02,00,00,00
-"Group"="Extended Base"
-"ErrorControl"=hex:01,00,00,00
