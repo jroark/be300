@@ -122,6 +122,7 @@ set(BE300_SOURCES
     src/hw/rtc.c
     src/hw/gpio.c
     src/hw/nand.c
+    src/hw/cf.c
 )
 
 # Main executable

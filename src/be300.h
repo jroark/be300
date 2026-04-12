@@ -20,6 +20,7 @@
 #include "hw/rtc.h"
 #include "hw/gpio.h"
 #include "hw/nand.h"
+#include "hw/cf.h"
 #include "wince_boot_types.h"
 
 /* Forward declarations for GXemul types */
@@ -58,12 +59,14 @@ typedef struct {
     bool        log_nand_legacy;
     bool        debug_serial;
     bool        enable_ppsh;
+    bool        restore;
 
     const char *rom_path;
     const char *kernel_path;
     const char *cmdline;
     const char *ram_path;
     const char *nand_path;
+    const char *cf_path;
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* target CPU speed in MHz; 0 = unthrottled (default: 166) */
 } machine_config_t;
@@ -73,6 +76,7 @@ typedef enum {
     BE300_BOOT_LINUX_PATH,
     BE300_BOOT_LINUX_MEMORY,
     BE300_BOOT_NAND,
+    BE300_BOOT_RESTORE,
     BE300_BOOT_ROM,
 } be300_boot_mode_t;
 
@@ -101,6 +105,7 @@ typedef struct be300_state {
 
     /* NAND flash controller (VRC4173) */
     nand_state_t nand;
+    cf_state_t   cf;
 
     /* NAND image data (loaded from file) */
     uint8_t     *nand_data;

@@ -11,6 +11,42 @@ static uint8_t nand_image_byte(const nand_state_t *s, uint32_t off)
     return s->image[off];
 }
 
+static bool nand_block_has_data(nand_state_t *s, uint32_t block)
+{
+    uint32_t start_off;
+    uint32_t limit;
+
+    if (block >= NAND_BLOCK_COUNT)
+        return false;
+
+    if (s->block_data_state[block] >= 0)
+        return s->block_data_state[block] != 0;
+
+    if (!s->image) {
+        s->block_data_state[block] = 0;
+        return false;
+    }
+
+    start_off = block * NAND_BLOCK_PAGES * NAND_PAGE_DATA;
+    limit = NAND_BLOCK_PAGES * NAND_PAGE_DATA;
+    if (start_off >= s->image_size) {
+        s->block_data_state[block] = 0;
+        return false;
+    }
+    if (limit > s->image_size - start_off)
+        limit = (uint32_t)(s->image_size - start_off);
+
+    for (uint32_t i = 0; i < limit; i++) {
+        if (s->image[start_off + i] != 0xFFu) {
+            s->block_data_state[block] = 1;
+            return true;
+        }
+    }
+
+    s->block_data_state[block] = 0;
+    return false;
+}
+
 static bool nand_sector_has_fat16_bpb(const nand_state_t *s, uint32_t sector)
 {
     uint32_t off = sector * NAND_PAGE_DATA;
@@ -110,7 +146,7 @@ static bool nand_pc_in_boot_rom(uint32_t pc)
            norm_pc < UINT32_C(0x9FC04000);
 }
 
-static uint8_t nand_dma_byte(const nand_state_t *s, uint32_t byte_off,
+static uint8_t nand_dma_byte(nand_state_t *s, uint32_t byte_off,
                              uint32_t pc)
 {
     if (byte_off < NAND_PAGE_DATA && !nand_pc_in_boot_rom(pc)) {
@@ -131,7 +167,7 @@ static uint8_t nand_dma_byte(const nand_state_t *s, uint32_t byte_off,
     return nand_image_byte(s, byte_off);
 }
 
-static uint8_t nand_stream_oob_byte(const nand_state_t *s,
+static uint8_t nand_stream_oob_byte(nand_state_t *s,
                                     uint32_t page, uint32_t oob_idx)
 {
     uint32_t block = page / NAND_BLOCK_PAGES;
@@ -148,7 +184,9 @@ static uint8_t nand_stream_oob_byte(const nand_state_t *s,
      *   OOB[0..1] = 0x55AA (little-endian: AA 55),
      *   OOB[2] = 0x0F, OOB[4..7] = logical block id.
      */
-    if (page_in_block < 5 && block < NAND_BLOCK_COUNT) {
+    if (page_in_block < 5 &&
+        block < NAND_BLOCK_COUNT &&
+        nand_block_has_data(s, block)) {
         switch (oob_idx) {
         case 0: return 0xAAu;
         case 1: return 0x55u;
@@ -164,7 +202,7 @@ static uint8_t nand_stream_oob_byte(const nand_state_t *s,
     return 0xFFu;
 }
 
-static uint8_t nand_stream_byte(const nand_state_t *s, uint32_t cursor_pos)
+static uint8_t nand_stream_byte(nand_state_t *s, uint32_t cursor_pos)
 {
     uint32_t absolute = s->stream_col + cursor_pos;
     uint32_t page = s->stream_page + (absolute / NAND_PAGE_RAW);
@@ -177,14 +215,336 @@ static uint8_t nand_stream_byte(const nand_state_t *s, uint32_t cursor_pos)
     return nand_stream_oob_byte(s, page, in_page - NAND_PAGE_DATA);
 }
 
-void nand_init(nand_state_t *s, const uint8_t *image, size_t size)
+static uint32_t nand_restore_reg_index(uint32_t offset)
+{
+    return offset >> 2;
+}
+
+static uint32_t nand_restore_get_reg(const nand_state_t *s, uint32_t offset)
+{
+    uint32_t idx = nand_restore_reg_index(offset);
+
+    if (idx >= sizeof(s->restore_regs) / sizeof(s->restore_regs[0]))
+        return 0;
+    return s->restore_regs[idx];
+}
+
+static void nand_restore_set_reg(nand_state_t *s, uint32_t offset, uint32_t value)
+{
+    uint32_t idx = nand_restore_reg_index(offset);
+
+    if (idx < sizeof(s->restore_regs) / sizeof(s->restore_regs[0]))
+        s->restore_regs[idx] = value;
+}
+
+static void nand_restore_set_ready(nand_state_t *s, bool ready)
+{
+    uint32_t reg = nand_restore_get_reg(s, NAND_REG_RESTORE_C40);
+
+    if (ready)
+        reg |= 0x00000001u;
+    else
+        reg &= ~0x00000001u;
+    nand_restore_set_reg(s, NAND_REG_RESTORE_C40, reg);
+}
+
+static void nand_restore_seed_regs(nand_state_t *s)
+{
+    static const struct {
+        uint16_t off;
+        uint32_t val;
+    } seed[] = {
+        { 0x0980u, 0x00000001u }, { 0x0984u, 0x00000202u },
+        { 0x0988u, 0x00000F70u }, { 0x098Cu, 0x00000000u },
+        { 0x0C00u, 0x00000020u }, { 0x0C04u, 0x00000002u },
+        { 0x0C08u, 0x00000050u }, { 0x0C0Cu, 0x000000F1u },
+        { 0x0C10u, 0x00000002u }, { 0x0C14u, 0x00000000u },
+        { 0x0C18u, 0x00000000u }, { 0x0C1Cu, 0x00000000u },
+        { 0x0C20u, 0x00000000u }, { 0x0C24u, 0x00000014u },
+        { 0x0C28u, 0x00000000u }, { 0x0C2Cu, 0x00000001u },
+        { 0x0C30u, 0x0000E000u }, { 0x0C34u, 0x000001FFu },
+        { 0x0C38u, 0x00000000u }, { 0x0C3Cu, 0x00001F1Fu },
+        { 0x0C40u, 0x00000500u }, { 0x0C44u, 0x00000000u },
+        { 0x0C48u, 0x0000030Fu }, { 0x0C4Cu, 0x00000000u },
+        { 0x1100u, 0x00000001u }, { 0x1104u, 0x00000001u },
+        { 0x1108u, 0x00000001u }, { 0x110Cu, 0x00000001u },
+        { 0x1128u, 0x00000001u },
+        { 0x1B20u, 0x00000001u },
+        { 0x1CC0u, 0x00000001u }, { 0x1CC4u, 0x00000201u },
+        { 0x1CC8u, 0x00001000u }, { 0x1CCCu, 0x00000000u },
+    };
+    size_t i;
+
+    memset(s->restore_regs, 0, sizeof(s->restore_regs));
+    memset(s->restore_page_buffer, 0xFF, sizeof(s->restore_page_buffer));
+    s->restore_page_addr = 0;
+    s->restore_stream_pos = 0;
+    s->restore_stream_limit = 0;
+    s->restore_stream_base = 0;
+    s->restore_phase = 0;
+    s->restore_mode = 0;
+    s->restore_last_cmd = 0;
+    s->restore_addr_count = 0;
+    s->restore_ecc_count = 0;
+    s->restore_status_ok = true;
+
+    for (i = 0; i < sizeof(seed) / sizeof(seed[0]); i++)
+        nand_restore_set_reg(s, seed[i].off, seed[i].val);
+}
+
+static uint32_t nand_restore_page_from_addr(const nand_state_t *s)
+{
+    if (s->restore_addr_count < 3)
+        return s->restore_page_addr;
+
+    return (uint32_t)s->restore_addr_bytes[1]
+         | ((uint32_t)s->restore_addr_bytes[2] << 8);
+}
+
+static uint32_t nand_restore_block_from_addr(const nand_state_t *s)
+{
+    if (s->restore_addr_count < 2)
+        return s->restore_page_addr / NAND_BLOCK_PAGES;
+
+    return ((uint32_t)(s->restore_addr_bytes[0] >> 5) & 0x7u)
+         | ((uint32_t)s->restore_addr_bytes[1] << 3);
+}
+
+static void nand_restore_fill_page_buffer(nand_state_t *s, uint32_t page)
+{
+    uint32_t page_off;
+
+    memset(s->restore_page_buffer, 0xFF, sizeof(s->restore_page_buffer));
+    if (!s->image || page >= NAND_BLOCK_COUNT * NAND_BLOCK_PAGES)
+        return;
+
+    page_off = page * NAND_PAGE_DATA;
+    if (page_off + NAND_PAGE_DATA <= s->image_size)
+        memcpy(s->restore_page_buffer, s->image + page_off, NAND_PAGE_DATA);
+
+    for (uint32_t i = 0; i < NAND_PAGE_OOB; i++)
+        s->restore_page_buffer[NAND_PAGE_DATA + i] =
+            nand_stream_oob_byte(s, page, i);
+}
+
+static void nand_restore_begin_read(nand_state_t *s)
+{
+    uint32_t page = nand_restore_page_from_addr(s);
+
+    s->restore_page_addr = page;
+    nand_restore_fill_page_buffer(s, page);
+    s->restore_stream_base = 0;
+    s->restore_stream_pos = 0;
+    s->restore_stream_limit = 0;
+    s->restore_status_ok = page < NAND_BLOCK_COUNT * NAND_BLOCK_PAGES;
+    nand_restore_set_reg(s, NAND_REG_RESTORE_C20,
+        s->restore_status_ok ? 0x00000001u : 0x00000000u);
+    nand_restore_set_ready(s, true);
+}
+
+static void nand_restore_begin_program(nand_state_t *s)
+{
+    s->restore_page_addr = nand_restore_page_from_addr(s);
+    memset(s->restore_page_buffer, 0xFF, sizeof(s->restore_page_buffer));
+    s->restore_stream_base = 0;
+    s->restore_stream_pos = 0;
+    s->restore_stream_limit = 0;
+    s->restore_status_ok = true;
+    nand_restore_set_reg(s, NAND_REG_RESTORE_C20, 0x00000000u);
+    nand_restore_set_reg(s, NAND_REG_RESTORE_CC0, 0x00000000u);
+    nand_restore_set_ready(s, true);
+}
+
+static void nand_restore_commit_program(nand_state_t *s)
+{
+    uint32_t page_off;
+    uint32_t block;
+
+    if (!s->image || s->restore_page_addr >= NAND_BLOCK_COUNT * NAND_BLOCK_PAGES) {
+        s->restore_status_ok = false;
+        nand_restore_set_reg(s, NAND_REG_RESTORE_C20, 0x00000000u);
+        nand_restore_set_ready(s, true);
+        return;
+    }
+
+    page_off = s->restore_page_addr * NAND_PAGE_DATA;
+    for (uint32_t i = 0; i < NAND_PAGE_DATA && (page_off + i) < s->image_size; i++)
+        s->image[page_off + i] &= s->restore_page_buffer[i];
+
+    s->dirty = true;
+    block = s->restore_page_addr / NAND_BLOCK_PAGES;
+    if (block < NAND_BLOCK_COUNT)
+        s->block_data_state[block] = -1;
+    s->restore_status_ok = true;
+    nand_restore_set_reg(s, NAND_REG_RESTORE_C20, 0x00000001u);
+    nand_restore_set_ready(s, true);
+}
+
+static void nand_restore_commit_erase(nand_state_t *s)
+{
+    uint32_t block = nand_restore_block_from_addr(s);
+    uint32_t start_page;
+    uint32_t start_off;
+
+    if (!s->image || block >= NAND_BLOCK_COUNT) {
+        s->restore_status_ok = false;
+        nand_restore_set_reg(s, NAND_REG_RESTORE_C20, 0x00000000u);
+        nand_restore_set_ready(s, true);
+        return;
+    }
+
+    start_page = block * NAND_BLOCK_PAGES;
+    start_off = start_page * NAND_PAGE_DATA;
+    memset(s->image + start_off, 0xFF, NAND_BLOCK_PAGES * NAND_PAGE_DATA);
+    s->dirty = true;
+    s->block_data_state[block] = 0;
+    s->restore_status_ok = true;
+    nand_restore_set_reg(s, NAND_REG_RESTORE_C20, 0x00000001u);
+    nand_restore_set_ready(s, true);
+}
+
+static void nand_restore_prepare_mode(nand_state_t *s, uint8_t mode)
+{
+    s->restore_mode = mode;
+    s->restore_stream_pos = 0;
+    s->restore_ecc_count = 0;
+
+    switch (mode) {
+    case 0x04u:
+        s->restore_stream_base = NAND_PAGE_DATA + 8u;
+        s->restore_stream_limit = 8u;
+        nand_restore_set_ready(s, true);
+        break;
+    case 0x05u:
+        if (s->restore_last_cmd == NAND_CMD_READ0)
+            nand_restore_begin_read(s);
+        s->restore_stream_base = 0;
+        s->restore_stream_limit = NAND_PAGE_DATA + 8u;
+        nand_restore_set_ready(s, true);
+        break;
+    case 0x06u:
+        /*
+         * NANDWRITER uses mode 6 after loading a page worth of data into the
+         * B-window. Expose a zero syndrome / ECC payload and switch the buffer
+         * cursor to the OOB write window so the subsequent 16-byte write lands
+         * at page_buffer[512..527].
+         */
+        nand_restore_set_reg(s, NAND_REG_RESTORE_CA0, 0x00000000u);
+        nand_restore_set_reg(s, NAND_REG_RESTORE_CA0 + 0x04u, 0x00000000u);
+        nand_restore_set_reg(s, NAND_REG_RESTORE_CA0 + 0x08u, 0x00000000u);
+        nand_restore_set_reg(s, NAND_REG_RESTORE_CA0 + 0x0Cu, 0x00000000u);
+        nand_restore_set_reg(s, NAND_REG_RESTORE_CC0, 0x00000001u);
+        s->restore_stream_base = NAND_PAGE_DATA;
+        s->restore_stream_limit = NAND_PAGE_OOB;
+        nand_restore_set_ready(s, true);
+        break;
+    case 0x07u:
+        s->restore_stream_base = 0;
+        s->restore_stream_limit = NAND_PAGE_DATA;
+        nand_restore_set_ready(s, true);
+        break;
+    case 0x01u:
+        nand_restore_set_reg(s, NAND_REG_RESTORE_CC0, 0x00000000u);
+        nand_restore_set_ready(s, true);
+        break;
+    default:
+        nand_restore_set_ready(s, true);
+        break;
+    }
+}
+
+static uint64_t nand_restore_buffer_read(nand_state_t *s, unsigned size)
+{
+    uint64_t val = 0;
+
+    for (unsigned i = 0; i < size; i++) {
+        uint8_t byte = 0xFFu;
+
+        if (s->restore_stream_pos < s->restore_stream_limit) {
+            uint32_t idx = s->restore_stream_base + s->restore_stream_pos;
+            if (idx < sizeof(s->restore_page_buffer))
+                byte = s->restore_page_buffer[idx];
+            s->restore_stream_pos++;
+        }
+        val |= (uint64_t)byte << (8u * i);
+    }
+
+    return val;
+}
+
+static void nand_restore_buffer_write(nand_state_t *s, unsigned size,
+                                      uint64_t value)
+{
+    for (unsigned i = 0; i < size; i++) {
+        uint32_t idx;
+
+        if (s->restore_stream_pos >= s->restore_stream_limit)
+            break;
+
+        idx = s->restore_stream_base + s->restore_stream_pos;
+        if (idx < sizeof(s->restore_page_buffer))
+            s->restore_page_buffer[idx] = (uint8_t)((value >> (8u * i)) & 0xFFu);
+        s->restore_stream_pos++;
+    }
+}
+
+static void nand_commit_program(nand_state_t *s)
+{
+    uint32_t page_off;
+    uint32_t limit;
+    uint32_t i;
+    uint32_t block;
+
+    if (!s->image || s->page_addr >= (NAND_BLOCK_COUNT * NAND_BLOCK_PAGES))
+        return;
+
+    page_off = s->page_addr * NAND_PAGE_DATA;
+    limit = s->program_length;
+    if (s->program_column + limit > NAND_PAGE_DATA)
+        limit = (s->program_column < NAND_PAGE_DATA)
+            ? (NAND_PAGE_DATA - s->program_column) : 0;
+
+    for (i = 0; i < limit; i++)
+        s->image[page_off + s->program_column + i] &= s->program_buffer[i];
+
+    if (limit > 0) {
+        s->dirty = true;
+        block = s->page_addr / NAND_BLOCK_PAGES;
+        if (block < NAND_BLOCK_COUNT)
+            s->block_data_state[block] = -1;
+    }
+}
+
+static void nand_commit_erase(nand_state_t *s)
+{
+    uint32_t block;
+    uint32_t start_page;
+    uint32_t start_off;
+
+    if (!s->image)
+        return;
+
+    block = s->page_addr / NAND_BLOCK_PAGES;
+    if (block >= NAND_BLOCK_COUNT)
+        return;
+
+    start_page = block * NAND_BLOCK_PAGES;
+    start_off = start_page * NAND_PAGE_DATA;
+    memset(s->image + start_off, 0xFF, NAND_BLOCK_PAGES * NAND_PAGE_DATA);
+    s->dirty = true;
+    s->block_data_state[block] = 0;
+}
+
+void nand_init(nand_state_t *s, uint8_t *image, size_t size)
 {
     memset(s, 0, sizeof(*s));
     s->image      = image;
     s->image_size = size;
     s->ready      = true;
     s->state      = NAND_STATE_IDLE;
+    s->status_value = 0xC0u;
     s->portctl    = 0;
+    memset(s->block_data_state, -1, sizeof(s->block_data_state));
     memset(s->legacy_regs, 0x40, sizeof(s->legacy_regs));
 
     /*
@@ -238,6 +598,8 @@ void nand_init(nand_state_t *s, const uint8_t *image, size_t size)
             memcpy(&s->strap_regs[rel], &strap_init[i].val, sizeof(uint32_t));
         }
     }
+
+    nand_restore_seed_regs(s);
 }
 
 /* Resolve current page_addr + column into a byte offset in the NAND image.
@@ -270,6 +632,144 @@ static void nand_setup_transfer(nand_state_t *s)
         break;
     }
     s->xfer_cursor = 0;
+}
+
+static void nand_xfer_clear_data(nand_state_t *s)
+{
+    s->xfer_data_count = 0;
+    s->xfer_data_pos = 0;
+    memset(s->xfer_data_bytes, 0, sizeof(s->xfer_data_bytes));
+}
+
+static void nand_xfer_push_data(nand_state_t *s, uint8_t byte)
+{
+    if (s->xfer_data_count < sizeof(s->xfer_data_bytes))
+        s->xfer_data_bytes[s->xfer_data_count++] = byte;
+}
+
+static uint32_t nand_xfer_row_addr(const nand_state_t *s)
+{
+    return (uint32_t)s->xfer_addr_bytes[1]
+         | ((uint32_t)s->xfer_addr_bytes[2] << 8);
+}
+
+static uint32_t nand_xfer_col_addr(const nand_state_t *s)
+{
+    return (uint32_t)s->xfer_addr_bytes[0];
+}
+
+static void nand_xfer_prepare_readid(nand_state_t *s)
+{
+    nand_xfer_clear_data(s);
+    nand_xfer_push_data(s, 0xECu);
+    nand_xfer_push_data(s, 0x73u);
+}
+
+static void nand_xfer_prepare_status(nand_state_t *s)
+{
+    nand_xfer_clear_data(s);
+    nand_xfer_push_data(s, s->status_value);
+}
+
+static void nand_xfer_commit_phase(nand_state_t *s)
+{
+    uint8_t byte = s->xfer_pending_byte;
+
+    switch (s->xfer_phase) {
+    case 0x03u:
+        s->xfer_last_cmd = byte;
+        switch (byte) {
+        case NAND_CMD_READ0:
+            s->state = NAND_STATE_READ_DATA;
+            s->column = 0;
+            s->xfer_addr_count = 0;
+            nand_xfer_clear_data(s);
+            break;
+        case NAND_CMD_READ1:
+            s->state = NAND_STATE_READ_DATA;
+            s->column = 256;
+            s->xfer_addr_count = 0;
+            nand_xfer_clear_data(s);
+            break;
+        case NAND_CMD_READOOB:
+            s->state = NAND_STATE_READ_OOB;
+            s->xfer_addr_count = 0;
+            nand_xfer_clear_data(s);
+            break;
+        case NAND_CMD_READID:
+            s->state = NAND_STATE_READ_ID;
+            s->xfer_addr_count = 0;
+            nand_xfer_clear_data(s);
+            s->ready = true;
+            break;
+        case NAND_CMD_STATUS:
+            s->state = NAND_STATE_READ_STATUS;
+            s->ready = true;
+            nand_xfer_prepare_status(s);
+            break;
+        case NAND_CMD_SEQIN:
+            s->state = NAND_STATE_PROGRAM_DATA;
+            s->column = 0;
+            s->program_column = 0;
+            s->program_length = 0;
+            s->xfer_addr_count = 0;
+            memset(s->program_buffer, 0xFF, sizeof(s->program_buffer));
+            nand_xfer_clear_data(s);
+            break;
+        case NAND_CMD_ERASE1:
+            s->state = NAND_STATE_ERASE_SETUP;
+            s->xfer_addr_count = 0;
+            nand_xfer_clear_data(s);
+            break;
+        case NAND_CMD_PAGEPROG:
+            if (s->state == NAND_STATE_PROGRAM_DATA)
+                nand_commit_program(s);
+            s->state = NAND_STATE_IDLE;
+            s->status_value = 0xC0u;
+            s->ready = true;
+            nand_xfer_prepare_status(s);
+            break;
+        case NAND_CMD_ERASE2:
+            if (s->state == NAND_STATE_ERASE_SETUP) {
+                s->page_addr = nand_xfer_row_addr(s);
+                nand_commit_erase(s);
+            }
+            s->state = NAND_STATE_IDLE;
+            s->status_value = 0xC0u;
+            s->ready = true;
+            nand_xfer_prepare_status(s);
+            break;
+        case NAND_CMD_RESET:
+            s->state = NAND_STATE_IDLE;
+            s->ready = true;
+            s->status_value = 0xC0u;
+            nand_xfer_clear_data(s);
+            break;
+        default:
+            nand_xfer_clear_data(s);
+            s->ready = true;
+            break;
+        }
+        break;
+    case 0x06u:
+        if (s->xfer_last_cmd == NAND_CMD_READID) {
+            nand_xfer_prepare_readid(s);
+        } else if (s->xfer_last_cmd == NAND_CMD_STATUS) {
+            nand_xfer_prepare_status(s);
+        } else if (s->xfer_last_cmd == NAND_CMD_READ0 ||
+                   s->xfer_last_cmd == NAND_CMD_READ1 ||
+                   s->xfer_last_cmd == NAND_CMD_READOOB ||
+                   s->xfer_last_cmd == NAND_CMD_SEQIN) {
+            s->page_addr = nand_xfer_row_addr(s);
+            s->column = nand_xfer_col_addr(s);
+        } else if (s->xfer_last_cmd == NAND_CMD_ERASE1) {
+            s->page_addr = nand_xfer_row_addr(s);
+        }
+        s->ready = true;
+        break;
+    default:
+        break;
+    }
 }
 
 /* Stream read used by SPL transfer engine through 0xB000 window. */
@@ -379,6 +879,178 @@ static int nand_dma_status_diag_count = 0;
 static int nand_dma_write_diag_count = 0;
 #define NAND_DMA_WRITE_DIAG_MAX 96
 
+bool nand_restore_handles_offset(uint32_t offset)
+{
+    if ((offset >= NAND_RESTORE_BUF_BASE && offset < NAND_RESTORE_BUF_END) ||
+        (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END))
+        return true;
+
+    switch (offset) {
+    case 0x1100u:
+    case 0x1104u:
+    case 0x1108u:
+    case 0x110Cu:
+    case 0x1128u:
+    case 0x1B20u:
+    case 0x1CC0u:
+    case 0x1CC4u:
+    case 0x1CC8u:
+    case 0x1CCCu:
+        return true;
+    default:
+        return false;
+    }
+}
+
+uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size,
+                           bool log, uint32_t pc)
+{
+    uint64_t val = 0;
+
+    if (offset >= NAND_RESTORE_BUF_BASE && offset < NAND_RESTORE_BASE) {
+        val = nand_restore_buffer_read(s, size);
+        goto out;
+    }
+
+    if (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END) {
+        uint32_t reg = nand_restore_get_reg(s, offset);
+        for (unsigned i = 0; i < size; i++)
+            val |= (uint64_t)((reg >> (8u * i)) & 0xFFu) << (8u * i);
+        goto out;
+    }
+
+    if (offset >= NAND_REG_RESTORE_C00 && offset <= NAND_REG_RESTORE_CC0) {
+        uint32_t reg = nand_restore_get_reg(s, offset);
+
+        if (offset == NAND_REG_RESTORE_C20 && s->restore_last_cmd == NAND_CMD_STATUS)
+            reg = s->restore_status_ok ? 0x00000001u : 0x00000000u;
+
+        for (unsigned i = 0; i < size; i++)
+            val |= (uint64_t)((reg >> (8u * i)) & 0xFFu) << (8u * i);
+        goto out;
+    }
+
+out:
+    if (log) {
+        fprintf(stderr,
+            "[NAND_RESTORE] R%u offset=0x%04X -> 0x%08" PRIX64
+            " pc=0x%08X mode=0x%02X cmd=0x%02X page=0x%04X pos=%u/%u\n",
+            size * 8, offset, val, pc, s->restore_mode, s->restore_last_cmd,
+            s->restore_page_addr, s->restore_stream_pos, s->restore_stream_limit);
+    }
+    return val;
+}
+
+void nand_restore_write(nand_state_t *s, uint32_t offset, unsigned size,
+                        uint64_t value, bool log, uint32_t pc)
+{
+    if (offset >= NAND_RESTORE_BUF_BASE && offset < NAND_RESTORE_BASE) {
+        nand_restore_buffer_write(s, size, value);
+        goto out;
+    }
+
+    if (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END) {
+        nand_restore_set_reg(s, offset, (uint32_t)value);
+        goto out;
+    }
+
+    if (offset == 0x1100u || offset == 0x1104u || offset == 0x1108u ||
+        offset == 0x110Cu || offset == 0x1128u || offset == 0x1B20u ||
+        offset == 0x1CC0u || offset == 0x1CC4u || offset == 0x1CC8u ||
+        offset == 0x1CCCu) {
+        nand_restore_set_reg(s, offset, (uint32_t)value);
+        goto out;
+    }
+
+    if (offset == NAND_REG_RESTORE_C14) {
+        s->restore_phase = (uint8_t)(value & 0xFFu);
+        nand_restore_set_reg(s, offset, (uint32_t)value);
+        goto out;
+    }
+
+    if (offset == NAND_REG_RESTORE_C20) {
+        uint8_t byte = (uint8_t)(value & 0xFFu);
+
+        nand_restore_set_reg(s, offset, (uint32_t)value);
+        if (s->restore_phase == 0x03u) {
+            s->restore_last_cmd = byte;
+            if (byte == NAND_CMD_READ0) {
+                s->restore_addr_count = 0;
+                s->restore_status_ok = true;
+                nand_restore_set_ready(s, false);
+            } else if (byte == NAND_CMD_SEQIN) {
+                s->restore_addr_count = 0;
+                nand_restore_begin_program(s);
+            } else if (byte == NAND_CMD_ERASE1) {
+                s->restore_addr_count = 0;
+                s->restore_status_ok = true;
+                nand_restore_set_ready(s, false);
+            } else if (byte == NAND_CMD_ERASE2) {
+                nand_restore_commit_erase(s);
+            } else if (byte == NAND_CMD_PAGEPROG) {
+                nand_restore_commit_program(s);
+            } else if (byte == NAND_CMD_STATUS) {
+                nand_restore_set_reg(s, offset,
+                    s->restore_status_ok ? 0x00000001u : 0x00000000u);
+                nand_restore_set_ready(s, true);
+            }
+        } else if (s->restore_phase == 0x06u) {
+            if (s->restore_addr_count < sizeof(s->restore_addr_bytes))
+                s->restore_addr_bytes[s->restore_addr_count++] = byte;
+            else {
+                memmove(s->restore_addr_bytes, s->restore_addr_bytes + 1,
+                    sizeof(s->restore_addr_bytes) - 1);
+                s->restore_addr_bytes[sizeof(s->restore_addr_bytes) - 1] = byte;
+            }
+
+            if (s->restore_last_cmd == NAND_CMD_READ0 ||
+                s->restore_last_cmd == NAND_CMD_SEQIN) {
+                s->restore_page_addr = nand_restore_page_from_addr(s);
+            } else if (s->restore_last_cmd == NAND_CMD_ERASE1) {
+                s->restore_page_addr =
+                    nand_restore_block_from_addr(s) * NAND_BLOCK_PAGES;
+            }
+        }
+        goto out;
+    }
+
+    if (offset == NAND_REG_RESTORE_C64) {
+        nand_restore_set_reg(s, offset, (uint32_t)value);
+        nand_restore_prepare_mode(s, (uint8_t)(value & 0xFFu));
+        goto out;
+    }
+
+    if (offset == NAND_REG_RESTORE_C68) {
+        nand_restore_set_reg(s, offset, (uint32_t)value);
+        if (s->restore_mode == 0x01u && s->restore_ecc_count < 6) {
+            s->restore_ecc_words[s->restore_ecc_count++] =
+                (uint16_t)(value & 0x03FFu);
+            if (s->restore_ecc_count >= 6) {
+                nand_restore_set_reg(s, NAND_REG_RESTORE_CA0, 0x00000000u);
+                nand_restore_set_reg(s, NAND_REG_RESTORE_CA0 + 0x04u, 0x00000000u);
+                nand_restore_set_reg(s, NAND_REG_RESTORE_CA0 + 0x08u, 0x00000000u);
+                nand_restore_set_reg(s, NAND_REG_RESTORE_CA0 + 0x0Cu, 0x00000000u);
+                nand_restore_set_reg(s, NAND_REG_RESTORE_CC0, 0x00000001u);
+            }
+        }
+        goto out;
+    }
+
+    if (offset >= NAND_REG_RESTORE_C00 && offset <= NAND_REG_RESTORE_CC0) {
+        nand_restore_set_reg(s, offset, (uint32_t)value);
+        goto out;
+    }
+
+out:
+    if (log) {
+        fprintf(stderr,
+            "[NAND_RESTORE] W%u offset=0x%04X val=0x%08" PRIX64
+            " pc=0x%08X phase=0x%02X mode=0x%02X cmd=0x%02X page=0x%04X\n",
+            size * 8, offset, value, pc, s->restore_phase, s->restore_mode,
+            s->restore_last_cmd, s->restore_page_addr);
+    }
+}
+
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 uint64_t value, bool log, uint32_t pc)
 {
@@ -420,24 +1092,31 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             s->xfer_regs[idx] = (uint32_t)value;
 
         if (offset == NAND_REG_XFER_CMD) {
-            /* SPL traces show only subcommands 0x03/0x06 open address phases. */
+            s->xfer_phase = data_byte;
+            /* SPL traces show only subcommands 0x03/0x06 open command/address phases. */
             if (data_byte == 0x03u || data_byte == 0x06u)
                 s->xfer_addr_count = 0;
         } else if (offset == NAND_REG_XFER_ADDR) {
-            /* A420 feeds a 24-bit byte address (little-endian). */
-            if (s->xfer_addr_count < sizeof(s->xfer_addr_bytes)) {
-                s->xfer_addr_bytes[s->xfer_addr_count++] = data_byte;
-            } else {
-                memmove(s->xfer_addr_bytes, s->xfer_addr_bytes + 1,
-                        sizeof(s->xfer_addr_bytes) - 1);
-                s->xfer_addr_bytes[sizeof(s->xfer_addr_bytes) - 1] = data_byte;
-            }
+            s->xfer_pending_byte = data_byte;
 
-            if (s->xfer_addr_count >= 3) {
-                s->xfer_addr24 = (uint32_t)s->xfer_addr_bytes[0]
-                               | ((uint32_t)s->xfer_addr_bytes[1] << 8)
-                               | ((uint32_t)s->xfer_addr_bytes[2] << 16);
+            if (s->xfer_phase == 0x06u) {
+                /* A420 feeds a 24-bit byte address (little-endian). */
+                if (s->xfer_addr_count < sizeof(s->xfer_addr_bytes)) {
+                    s->xfer_addr_bytes[s->xfer_addr_count++] = data_byte;
+                } else {
+                    memmove(s->xfer_addr_bytes, s->xfer_addr_bytes + 1,
+                            sizeof(s->xfer_addr_bytes) - 1);
+                    s->xfer_addr_bytes[sizeof(s->xfer_addr_bytes) - 1] = data_byte;
+                }
+
+                if (s->xfer_addr_count >= 3) {
+                    s->xfer_addr24 = (uint32_t)s->xfer_addr_bytes[0]
+                                   | ((uint32_t)s->xfer_addr_bytes[1] << 8)
+                                   | ((uint32_t)s->xfer_addr_bytes[2] << 16);
+                }
             }
+        } else if (offset == NAND_REG_XFER_ACK) {
+            nand_xfer_commit_phase(s);
         } else if (offset == NAND_REG_XFER_KICK) {
             /* Engine kick toggles busy->ready in our simplified model. */
             s->ready = false;
@@ -448,11 +1127,17 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
              *   0x01 = prepare for buffer read
              *   0x04 = 8-byte OOB/trailer into buffer regs
              *   0x05 = 520-byte stream burst via 0xB000
+             *   0x06 = 16-byte program-side OOB write window via 0xB000
+             *   0x07 = 512-byte program-data write window via 0xB000
              */
             if (data_byte == 0x00u || data_byte == 0x01u) {
                 s->xfer_ecc_count = 0;
                 memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
                 s->xfer_regs[(NAND_REG_XFER_STATUS2 - NAND_XFER_BASE) >> 2] = 0;
+                s->stream_base = 0;
+                s->stream_cursor = 0;
+                s->stream_limit = 0;
+                s->stream_active = false;
             } else if (data_byte == 0x04u) {
                 /*
                  * Mode-4 fills the small result buffer from the current
@@ -498,6 +1183,16 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                             row, col, s->stream_base);
                     nand_stream_start_log_count++;
                 }
+            } else if (data_byte == 0x06u) {
+                s->stream_base = NAND_PAGE_DATA;
+                s->stream_cursor = 0;
+                s->stream_limit = NAND_PAGE_OOB;
+                s->stream_active = false;
+            } else if (data_byte == 0x07u) {
+                s->stream_base = 0;
+                s->stream_cursor = 0;
+                s->stream_limit = NAND_PAGE_DATA;
+                s->stream_active = false;
             }
             s->ready = true;
         } else if (offset == NAND_REG_XFER_MISC) {
@@ -723,6 +1418,34 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 nand_setup_transfer(s);
                 s->ready = true;
                 break;
+            case NAND_CMD_STATUS:
+                s->state = NAND_STATE_READ_STATUS;
+                s->ready = true;
+                break;
+            case NAND_CMD_SEQIN:
+                s->state = NAND_STATE_PROGRAM_DATA;
+                s->column = 0;
+                s->program_column = 0;
+                s->program_length = 0;
+                memset(s->program_buffer, 0xFF, sizeof(s->program_buffer));
+                break;
+            case NAND_CMD_ERASE1:
+                s->state = NAND_STATE_ERASE_SETUP;
+                break;
+            case NAND_CMD_PAGEPROG:
+                if (s->state == NAND_STATE_PROGRAM_DATA)
+                    nand_commit_program(s);
+                s->state = NAND_STATE_IDLE;
+                s->ready = true;
+                s->status_value = 0xC0u;
+                break;
+            case NAND_CMD_ERASE2:
+                if (s->state == NAND_STATE_ERASE_SETUP)
+                    nand_commit_erase(s);
+                s->state = NAND_STATE_IDLE;
+                s->ready = true;
+                s->status_value = 0xC0u;
+                break;
             case NAND_CMD_RESET:
                 s->state = NAND_STATE_IDLE;
                 s->ready = true;
@@ -759,9 +1482,20 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 break;
             }
             s->addr_cycle++;
-            if (s->addr_cycle >= 3 && s->state != NAND_STATE_READ_ID) {
+            if (s->addr_cycle >= 3 &&
+                (s->state == NAND_STATE_READ_DATA ||
+                 s->state == NAND_STATE_READ_OOB)) {
                 nand_setup_transfer(s);
                 s->ready = true;
+            } else if (s->addr_cycle == 1 && s->state == NAND_STATE_PROGRAM_DATA) {
+                s->program_column = s->column;
+            }
+        } else if (s->state == NAND_STATE_PROGRAM_DATA) {
+            for (unsigned i = 0; i < size; i++) {
+                if ((s->program_column + s->program_length) >= sizeof(s->program_buffer))
+                    break;
+                s->program_buffer[s->program_length++] =
+                    (uint8_t)((value >> (8u * i)) & 0xFFu);
             }
         }
         return;
@@ -791,6 +1525,34 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             s->state = NAND_STATE_READ_ID;
             nand_setup_transfer(s);
             s->ready = true;
+            break;
+        case NAND_CMD_STATUS:
+            s->state = NAND_STATE_READ_STATUS;
+            s->ready = true;
+            break;
+        case NAND_CMD_SEQIN:
+            s->state = NAND_STATE_PROGRAM_DATA;
+            s->column = 0;
+            s->program_column = 0;
+            s->program_length = 0;
+            memset(s->program_buffer, 0xFF, sizeof(s->program_buffer));
+            break;
+        case NAND_CMD_ERASE1:
+            s->state = NAND_STATE_ERASE_SETUP;
+            break;
+        case NAND_CMD_PAGEPROG:
+            if (s->state == NAND_STATE_PROGRAM_DATA)
+                nand_commit_program(s);
+            s->state = NAND_STATE_IDLE;
+            s->ready = true;
+            s->status_value = 0xC0u;
+            break;
+        case NAND_CMD_ERASE2:
+            if (s->state == NAND_STATE_ERASE_SETUP)
+                nand_commit_erase(s);
+            s->state = NAND_STATE_IDLE;
+            s->ready = true;
+            s->status_value = 0xC0u;
             break;
         case NAND_CMD_RESET:
             s->state = NAND_STATE_IDLE;
@@ -830,9 +1592,13 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         s->addr_cycle++;
 
         /* After all address cycles, set up the transfer */
-        if (s->addr_cycle >= 3 && s->state != NAND_STATE_READ_ID) {
+        if (s->addr_cycle >= 3 &&
+            (s->state == NAND_STATE_READ_DATA ||
+             s->state == NAND_STATE_READ_OOB)) {
             nand_setup_transfer(s);
             s->ready = true;
+        } else if (s->addr_cycle == 1 && s->state == NAND_STATE_PROGRAM_DATA) {
+            s->program_column = s->column;
         }
         return;
     }
@@ -850,6 +1616,16 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
 
     /* Indexed legacy data register writes (D7F8 selects byte register). */
     if (offset == NAND_REG_DATA) {
+        if (s->state == NAND_STATE_PROGRAM_DATA) {
+            for (unsigned i = 0; i < size; i++) {
+                if ((s->program_column + s->program_length) >= sizeof(s->program_buffer))
+                    break;
+                s->program_buffer[s->program_length++] =
+                    (uint8_t)((value >> (8u * i)) & 0xFFu);
+            }
+            return;
+        }
+
         uint32_t idx = (uint8_t)(s->portctl & 0xFFu);
         for (unsigned i = 0; i < size; i++) {
             uint8_t ri = (uint8_t)(idx + i);
@@ -900,6 +1676,26 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         return;
     }
 
+    /* Legacy/program stream window (0xB000): sequential page/OOB writes. */
+    if (offset >= NAND_STREAM_BASE && offset < NAND_STREAM_END) {
+        uint32_t mode = s->xfer_regs[(NAND_REG_XFER_MODE - NAND_XFER_BASE) >> 2];
+
+        if ((mode == 0x06u || mode == 0x07u) && s->stream_limit != 0) {
+            for (unsigned i = 0; i < size; i++) {
+                uint32_t idx;
+
+                if (s->stream_cursor >= s->stream_limit)
+                    break;
+
+                idx = s->stream_base + s->stream_cursor;
+                if (idx < sizeof(s->program_buffer))
+                    s->program_buffer[idx] = (uint8_t)((value >> (8u * i)) & 0xFFu);
+                s->stream_cursor++;
+            }
+            return;
+        }
+    }
+
     /* Status/ready register write — some controllers allow clearing */
     if (offset == NAND_REG_READY) {
         return;
@@ -931,6 +1727,12 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
         uint32_t idx = (offset - NAND_XFER_BASE) >> 2;
         if (offset == NAND_REG_XFER_STATUS) {
             val = s->ready ? 0x00000001u : 0u;
+        } else if (offset == NAND_REG_XFER_ACK) {
+            nand_xfer_commit_phase(s);
+            val = 0;
+        } else if (offset == NAND_REG_XFER_ADDR &&
+                   s->xfer_data_pos < s->xfer_data_count) {
+            val = s->xfer_data_bytes[s->xfer_data_pos++];
         } else if (offset == NAND_REG_XFER_STATUS2) {
             val = s->xfer_regs[idx];
         } else if (offset >= NAND_REG_BUFFER_BASE &&
@@ -992,6 +1794,10 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                         (unsigned)(val & 0xFF), pc);
                 nand_idx_log_count++;
             }
+            goto out;
+        }
+        if (s->state == NAND_STATE_READ_STATUS) {
+            val = s->status_value;
             goto out;
         }
         if (s->state == NAND_STATE_READ_DATA ||
@@ -1065,6 +1871,11 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
              s->state == NAND_STATE_READ_OOB ||
              s->state == NAND_STATE_READ_ID) &&
             (s->xfer_length > 0);
+
+        if (s->state == NAND_STATE_READ_STATUS) {
+            val = s->status_value;
+            goto out;
+        }
 
         if (data_mode) {
             if (!s->image || s->xfer_cursor >= s->xfer_length) {
@@ -1190,6 +2001,10 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
 
     /* Status register */
     if (offset == NAND_REG_STATUS) {
+        if (s->state == NAND_STATE_READ_STATUS) {
+            val = s->status_value;
+            goto out;
+        }
         /* At the EBOOT NIC probe sites, return "not ready" to skip NE2000Init.
          * The SPL reads D7FE and tests bit 0x80 to decide whether to enter the
          * EDBG loop (infinite, no timeout). Clearing bit 0x80 makes it take
