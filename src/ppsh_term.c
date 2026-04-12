@@ -232,8 +232,10 @@ static void term_putc(ppsh_term_t *t, uint8_t ch)
         break;
     }
 
+    /* Silently drop non-printables we don't recognize above — matches the
+     * original stdout filter in be300_devices.c. */
     if (ch < 0x20 || ch > 0x7E)
-        ch = '?';
+        return;
 
     if (t->cursor_col >= TERM_COLS) {
         t->cursor_col = 0;

@@ -94,14 +94,15 @@ static void be300_ppsh_poll_host_input(machine_t *m)
     uint8_t cooked[256];
     size_t raw_len;
     size_t cooked_len = 0;
-    size_t queued;
 
-    if (!m || !m->cfg.enable_ppsh || !be300_ppsh_transport_ready())
+    if (!m || !m->cfg.enable_ppsh)
         return;
 
     if (m->ppsh_term) {
         raw_len = ppsh_term_read(m->ppsh_term, raw, sizeof(raw));
     } else {
+        if (!be300_ppsh_transport_ready())
+            return;
         raw_len = host_io_read_stdin_nonblocking(raw, sizeof(raw));
     }
     if (raw_len == 0)
@@ -118,11 +119,41 @@ static void be300_ppsh_poll_host_input(machine_t *m)
         }
     }
 
-    queued = be300_ppsh_queue_host_input(cooked, cooked_len);
-    if (m->cfg.log_mmio && queued > 0) {
-        fprintf(stderr,
-            "[PPSH] queued %zu host byte%s for guest transport\n",
-            queued, queued == 1 ? "" : "s");
+    if (m->ppsh_term && m->gxe_machine) {
+        /* Push directly into the NS16550 RX FIFO(s) the WinCE kernel
+         * actually polls for debug-shell input. The PPSH MMIO host
+         * queue is a dead end — PPSH is the Parallel Port File System
+         * RPC, not an interactive shell transport.
+         *
+         * NK.exe's OEMWriteDebugByte / OEMReadDebugByte use the VR4131
+         * DSIU at PA 0x0F000820 (see FUN_80078308 / ~0x80078354 in
+         * nk_decompressed.bin). dev_vr41xx.c registers that UART as
+         * an ns16550 and stashes its console handle in
+         * dev_vr41xx_dsiu_console_handle so we can push there. We
+         * also mirror to main_console_handle (VRC4173 SIU) as a
+         * safety net in case the platform build routes debug I/O
+         * through the companion-chip UART instead. */
+        extern int dev_vr41xx_dsiu_console_handle;
+        int main_h = m->gxe_machine->main_console_handle;
+        int dsiu_h = dev_vr41xx_dsiu_console_handle;
+        for (size_t i = 0; i < cooked_len; i++) {
+            if (dsiu_h >= 0)
+                console_makeavail(dsiu_h, (char)cooked[i]);
+            if (main_h != dsiu_h && main_h >= 0)
+                console_makeavail(main_h, (char)cooked[i]);
+            if (m->cfg.log_mmio) {
+                fprintf(stderr,
+                    "[PPSH_TERM_TX_UART] byte=0x%02X main=%d dsiu=%d\n",
+                    cooked[i], main_h, dsiu_h);
+            }
+        }
+    } else if (be300_ppsh_transport_ready()) {
+        size_t queued = be300_ppsh_queue_host_input(cooked, cooked_len);
+        if (m->cfg.log_mmio && queued > 0) {
+            fprintf(stderr,
+                "[PPSH] queued %zu host byte%s for guest transport\n",
+                queued, queued == 1 ? "" : "s");
+        }
     }
 }
 
