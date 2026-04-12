@@ -31,8 +31,9 @@
 
 #define ICU_SYSINT1_ADDR        0xAF000080
 #define ICU_MSYSINT1_ADDR       0xAF00008C
-#define ICU_SRC_RTC_MASK        0x0004
-#define ICU_SYSINT1_RTCL1_SEEN  0x0008
+#define ICU_MASK_RTCL1_DOC      0x0004
+#define ICU_MASK_TIMER_CPU      0x0008
+#define ICU_SYSINT1_TIMER_SEEN  0x0008
 
 #define RTC_RTCL1L_ADDR         0xAF000110
 #define RTC_RTCINT_ADDR         0xAF00013E
@@ -58,6 +59,7 @@
 
 #define OBS_STATUS_IE           0x0001
 #define OBS_MSYSINT1            0x0002
+#define OBS_MSYSINT1_DOC        0x0100
 #define OBS_RTCINTREG           0x0004
 #define OBS_SYSINT1             0x0008
 #define OBS_CAUSE_IP2           0x0010
@@ -166,6 +168,13 @@ _start:
     nop
     jal     sample_interrupt_observation
     nop
+    lui     $t0, %hi(irq_count)
+    lw      $t0, %lo(irq_count)($t0)
+    beqz    $t0, 1f
+    nop
+    jal     consumer_check
+    nop
+1:
     jal     finish_object
     nop
     lui     $a0, %hi(msg_done)
@@ -238,11 +247,6 @@ handle_irq:
 1:
     sw      $zero, %lo(irq_path_ok)($k1)
 2:
-#if !REPRO_IRQ_PROBE
-    jal     consumer_check
-    nop
-#endif
-
     li      $k1, RTCINT_RTCLONG1
     lui     $k0, %hi(RTC_RTCINT_ADDR)
     sh      $k1, %lo(RTC_RTCINT_ADDR)($k0)
@@ -318,7 +322,7 @@ arm_rtcl1_timer:
     lui     $t0, %hi(RTC_RTCL1L_ADDR)
     sh      $t1, %lo(RTC_RTCL1L_ADDR)($t0)
 
-    li      $t1, ICU_SRC_RTC_MASK
+    li      $t1, ICU_MASK_TIMER_CPU
     lui     $t0, %hi(ICU_MSYSINT1_ADDR)
     sh      $t1, %lo(ICU_MSYSINT1_ADDR)($t0)
     jr      $ra
@@ -346,25 +350,32 @@ sample_interrupt_observation:
 3:
     lui     $t0, %hi(ICU_MSYSINT1_ADDR)
     lhu     $t0, %lo(ICU_MSYSINT1_ADDR)($t0)
-    andi    $t1, $t0, ICU_SRC_RTC_MASK
+    andi    $t1, $t0, ICU_MASK_TIMER_CPU
     beqz    $t1, 4f
     nop
     ori     $t7, $t7, OBS_MSYSINT1
 4:
+    lui     $t0, %hi(ICU_MSYSINT1_ADDR)
+    lhu     $t0, %lo(ICU_MSYSINT1_ADDR)($t0)
+    andi    $t1, $t0, ICU_MASK_RTCL1_DOC
+    beqz    $t1, 5f
+    nop
+    ori     $t7, $t7, OBS_MSYSINT1_DOC
+5:
     lui     $t0, %hi(RTC_RTCINT_ADDR)
     lhu     $t0, %lo(RTC_RTCINT_ADDR)($t0)
     andi    $t1, $t0, RTCINT_RTCLONG1
-    beqz    $t1, 5f
-    nop
-    ori     $t7, $t7, OBS_RTCINTREG
-5:
-    lui     $t0, %hi(ICU_SYSINT1_ADDR)
-    lhu     $t0, %lo(ICU_SYSINT1_ADDR)($t0)
-    andi    $t1, $t0, ICU_SYSINT1_RTCL1_SEEN
     beqz    $t1, 6f
     nop
-    ori     $t7, $t7, OBS_SYSINT1
+    ori     $t7, $t7, OBS_RTCINTREG
 6:
+    lui     $t0, %hi(ICU_SYSINT1_ADDR)
+    lhu     $t0, %lo(ICU_SYSINT1_ADDR)($t0)
+    andi    $t1, $t0, ICU_SYSINT1_TIMER_SEEN
+    beqz    $t1, 7f
+    nop
+    ori     $t7, $t7, OBS_SYSINT1
+7:
     mfc0    $t0, $13             /* Cause */
     nop
     andi    $t1, $t0, CAUSE_IP2_BIT
@@ -498,70 +509,81 @@ print_observations:
 2:
     lui     $t0, %hi(obs_flags)
     lw      $t1, %lo(obs_flags)($t0)
-    li      $t2, OBS_RTCINTREG
+    li      $t2, OBS_MSYSINT1_DOC
     and     $t3, $t1, $t2
     beqz    $t3, 3f
     nop
-    lui     $a0, %hi(msg_seen_rtcint)
-    addiu   $a0, $a0, %lo(msg_seen_rtcint)
+    lui     $a0, %hi(msg_seen_msysint1_doc)
+    addiu   $a0, $a0, %lo(msg_seen_msysint1_doc)
     jal     puts
     nop
 3:
     lui     $t0, %hi(obs_flags)
     lw      $t1, %lo(obs_flags)($t0)
-    li      $t2, OBS_SYSINT1
+    li      $t2, OBS_RTCINTREG
     and     $t3, $t1, $t2
     beqz    $t3, 4f
     nop
-    lui     $a0, %hi(msg_seen_sysint1)
-    addiu   $a0, $a0, %lo(msg_seen_sysint1)
+    lui     $a0, %hi(msg_seen_rtcint)
+    addiu   $a0, $a0, %lo(msg_seen_rtcint)
     jal     puts
     nop
 4:
     lui     $t0, %hi(obs_flags)
     lw      $t1, %lo(obs_flags)($t0)
-    li      $t2, OBS_CAUSE_IP2
+    li      $t2, OBS_SYSINT1
     and     $t3, $t1, $t2
     beqz    $t3, 5f
     nop
-    lui     $a0, %hi(msg_seen_cause_ip2)
-    addiu   $a0, $a0, %lo(msg_seen_cause_ip2)
+    lui     $a0, %hi(msg_seen_sysint1)
+    addiu   $a0, $a0, %lo(msg_seen_sysint1)
     jal     puts
     nop
 5:
     lui     $t0, %hi(obs_flags)
     lw      $t1, %lo(obs_flags)($t0)
-    li      $t2, OBS_VECTOR
+    li      $t2, OBS_CAUSE_IP2
     and     $t3, $t1, $t2
     beqz    $t3, 6f
     nop
-    lui     $a0, %hi(msg_seen_vector)
-    addiu   $a0, $a0, %lo(msg_seen_vector)
+    lui     $a0, %hi(msg_seen_cause_ip2)
+    addiu   $a0, $a0, %lo(msg_seen_cause_ip2)
     jal     puts
     nop
 6:
     lui     $t0, %hi(obs_flags)
     lw      $t1, %lo(obs_flags)($t0)
-    li      $t2, OBS_STATUS_EXL
+    li      $t2, OBS_VECTOR
     and     $t3, $t1, $t2
     beqz    $t3, 7f
     nop
-    lui     $a0, %hi(msg_seen_status_exl)
-    addiu   $a0, $a0, %lo(msg_seen_status_exl)
+    lui     $a0, %hi(msg_seen_vector)
+    addiu   $a0, $a0, %lo(msg_seen_vector)
     jal     puts
     nop
 7:
     lui     $t0, %hi(obs_flags)
     lw      $t1, %lo(obs_flags)($t0)
-    li      $t2, OBS_STATUS_ERL
+    li      $t2, OBS_STATUS_EXL
     and     $t3, $t1, $t2
     beqz    $t3, 8f
+    nop
+    lui     $a0, %hi(msg_seen_status_exl)
+    addiu   $a0, $a0, %lo(msg_seen_status_exl)
+    jal     puts
+    nop
+8:
+    lui     $t0, %hi(obs_flags)
+    lw      $t1, %lo(obs_flags)($t0)
+    li      $t2, OBS_STATUS_ERL
+    and     $t3, $t1, $t2
+    beqz    $t3, 9f
     nop
     lui     $a0, %hi(msg_seen_status_erl)
     addiu   $a0, $a0, %lo(msg_seen_status_erl)
     jal     puts
     nop
-8:
+9:
     lw      $ra, 4($sp)
     addiu   $sp, $sp, 8
     jr      $ra
@@ -667,19 +689,13 @@ print_timer_verdict:
     beqz    $t3, 5f
     nop
 
-    lui     $t0, %hi(irq_path_ok)
-    lw      $t0, %lo(irq_path_ok)($t0)
-    beqz    $t0, 2f
-    nop
     li      $t2, RESULT_EARLY
-    beq     $t1, $t2, 3f
+    beq     $t1, $t2, 2f
     nop
     li      $t2, RESULT_READY
-    beq     $t1, $t2, 4f
+    beq     $t1, $t2, 3f
     nop
-    lui     $a0, %hi(msg_verdict_timer_vector_noresult)
-    addiu   $a0, $a0, %lo(msg_verdict_timer_vector_noresult)
-    b       8f
+    b       4f
     nop
 1:
     lui     $a0, %hi(msg_verdict_spurious)
@@ -687,18 +703,18 @@ print_timer_verdict:
     b       8f
     nop
 2:
-    lui     $a0, %hi(msg_verdict_timer_vector_badirq)
-    addiu   $a0, $a0, %lo(msg_verdict_timer_vector_badirq)
-    b       8f
-    nop
-3:
     lui     $a0, %hi(msg_verdict_timer_vector_early)
     addiu   $a0, $a0, %lo(msg_verdict_timer_vector_early)
     b       8f
     nop
-4:
+3:
     lui     $a0, %hi(msg_verdict_timer_vector_ready)
     addiu   $a0, $a0, %lo(msg_verdict_timer_vector_ready)
+    b       8f
+    nop
+4:
+    lui     $a0, %hi(msg_verdict_timer_vector_noresult)
+    addiu   $a0, $a0, %lo(msg_verdict_timer_vector_noresult)
     b       8f
     nop
 5:
@@ -807,6 +823,8 @@ msg_seen_status_ie:
     .asciiz "SEEN=STATUS_IE\n"
 msg_seen_msysint1:
     .asciiz "SEEN=MSYSINT1\n"
+msg_seen_msysint1_doc:
+    .asciiz "SEEN=MSYSINT1_DOCBIT\n"
 msg_seen_rtcint:
     .asciiz "SEEN=RTCINTREG\n"
 msg_seen_sysint1:
