@@ -482,22 +482,20 @@ DEVICE_ACCESS(be300_wince_aux)
         return 0;
 
     /*
-     * When PPSH is disabled, simulate absent ISA device for PPSH registers.
-     * Only bus-error on the PPSH data (offset 0x000) and status (offset
-     * 0x400) registers — other offsets in this range may be probed by
-     * NK for non-PPSH purposes and should return 0x0000 normally.
-     * Returning 0 causes GXemul to raise a DBE exception (memory_rw.c:364),
-     * which NK's __try/__except probe catches immediately.
+     * When PPSH is disabled, model an absent controller by returning zeros
+     * from the probe registers rather than injecting a DBE. NK probes this
+     * path during normal GUI boot and expects a clean "not present" status.
      */
     if (!d->ppsh_enabled && writeflag == MEM_READ
         && (off == 0x000 || off == 0x400)) {
+        memset(data, 0, len);
         if (d->log_mmio) {
             fprintf(stderr,
-                "[WINCE_AUX] R PA=0x%08X size=%zu BUSERR PC=0x%08X\n",
+                "[WINCE_AUX] R PA=0x%08X size=%zu val=0x0 PC=0x%08X\n",
                 (uint32_t)(WINCE_AUX_BASE + off), len,
                 (uint32_t)cpu->pc);
         }
-        return 0;  /* triggers DBE in memory_rw.c */
+        return 1;
     }
 
     if (writeflag == MEM_WRITE) {

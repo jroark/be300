@@ -86,6 +86,7 @@ static void dump_section3_context_head(machine_t *m, const char *tag,
 #define WINCE_SERIAL_EXC_LOG_MAX    24u
 #define WINCE_SERIAL_CORR_LOG_MAX   24u
 #define WINCE_SYSTEMPATCH_CTX_MAX   12u
+#define WINCE_SYSTEMPATCH_THREAD_CTX_MAX 32u
 #define WINCE_HOT_FAULT_PROBE_MAX   12u
 #define WINCE_ROMHDR_NMODS_OFF      0x10u
 #define WINCE_ROMHDR_RAMSTART_OFF   0x14u
@@ -115,6 +116,8 @@ static bool load_utf16_ascii(machine_t *m, struct cpu *cpu, uint32_t va,
 static void maybe_log_ppsh_debug_message(machine_t *m, struct cpu *cpu,
     const char *source, uint32_t str_va, const char *ascii);
 static void maybe_flush_ppsh_serial_line(machine_t *m);
+static void maybe_sample_systempatch_thread_context(machine_t *m,
+    struct cpu *cpu);
 static void maybe_dump_ppsh_helper_context(machine_t *m, struct cpu *cpu,
     uint16_t cmd);
 static void maybe_dump_ppsh_flag_context(machine_t *m, struct cpu *cpu,
@@ -773,6 +776,166 @@ static void maybe_log_systempatch_context(machine_t *m, const char *reason)
         m->wince.diag_shared_l2_table,
         (unsigned)count_active_sections(m));
     m->wince.systempatch_context_diag_count++;
+}
+
+static void maybe_sample_systempatch_thread_context(machine_t *m,
+    struct cpu *cpu)
+{
+    uint32_t sec0;
+    uint32_t sec1;
+    uint32_t sec3;
+    uint32_t cur_thrd = 0;
+    uint32_t obj00 = 0;
+    uint32_t obj04 = 0;
+    uint32_t obj0c = 0;
+    uint32_t obj14 = 0;
+    uint32_t obj24 = 0;
+    uint32_t obj3c = 0;
+    uint32_t ctx08 = 0;
+    uint32_t ctx0c = 0;
+    uint32_t src_off = 0;
+    uint32_t src_idx = 0;
+    uint32_t src_slot = 0;
+    bool cur_ok = false;
+    bool obj00_ok = false;
+    bool obj04_ok = false;
+    bool obj0c_ok = false;
+    bool obj14_ok = false;
+    bool obj24_ok = false;
+    bool obj3c_ok = false;
+    bool ctx08_ok = false;
+    bool ctx0c_ok = false;
+    bool src_slot_ok = false;
+    bool relevant;
+    bool changed;
+    char cur_buf[16];
+    char obj00_buf[16];
+    char obj04_buf[16];
+    char obj0c_buf[16];
+    char obj14_buf[16];
+    char obj24_buf[16];
+    char obj3c_buf[16];
+    char ctx08_buf[16];
+    char ctx0c_buf[16];
+    char src_slot_buf[16];
+
+    if (!m || !cpu || !m->wince.active)
+        return;
+
+    sec0 = load_pa_word(m, 0x18C0u);
+    sec1 = load_pa_word(m, 0x18C4u);
+    sec3 = load_pa_word(m, 0x18CCu);
+    relevant = m->wince.systempatch_seen
+        || sec0 == UINT32_C(0x80FE5000)
+        || sec3 == UINT32_C(0x80FE5000);
+    if (!relevant)
+        return;
+    if (m->wince.systempatch_thread_ctx_diag_count
+        >= WINCE_SYSTEMPATCH_THREAD_CTX_MAX) {
+        return;
+    }
+
+    cur_ok = load_va_word(m, UINT32_C(0x80669844), &cur_thrd);
+    if (cur_ok && cur_thrd >= UINT32_C(0x80000000)
+        && cur_thrd < UINT32_C(0x81000000)) {
+        obj0c_ok = load_va_word(m, cur_thrd + 0x0Cu, &obj0c);
+        obj14_ok = load_va_word(m, cur_thrd + 0x14u, &obj14);
+        obj24_ok = load_va_word(m, cur_thrd + 0x24u, &obj24);
+        obj3c_ok = load_va_word(m, cur_thrd + 0x3Cu, &obj3c);
+        if (obj0c_ok && obj0c >= UINT32_C(0x80000000)
+            && obj0c < UINT32_C(0x81000000)) {
+            obj00_ok = load_va_word(m, obj0c + 0x00u, &obj00);
+            obj04_ok = load_va_word(m, obj0c + 0x04u, &obj04);
+            ctx08_ok = load_va_word(m, obj0c + 0x08u, &ctx08);
+            ctx0c_ok = load_va_word(m, obj0c + 0x0Cu, &ctx0c);
+            if (ctx0c_ok) {
+                src_off = ctx0c >> 23;
+                src_idx = src_off >> 2;
+                if (src_off < 0x100u) {
+                    src_slot = load_pa_word(m, 0x18C0u + src_off);
+                    src_slot_ok = true;
+                }
+            }
+        }
+    }
+
+    changed = !m->wince.systempatch_thread_ctx_valid
+        || m->wince.systempatch_last_cur_thrd != cur_thrd
+        || m->wince.systempatch_last_obj00 != obj00
+        || m->wince.systempatch_last_obj04 != obj04
+        || m->wince.systempatch_last_obj0c != obj0c
+        || m->wince.systempatch_last_obj14 != obj14
+        || m->wince.systempatch_last_obj24 != obj24
+        || m->wince.systempatch_last_obj3c != obj3c
+        || m->wince.systempatch_last_ctx08 != ctx08
+        || m->wince.systempatch_last_ctx0c != ctx0c
+        || m->wince.systempatch_last_src_slot != src_slot
+        || m->wince.systempatch_last_sec0 != sec0
+        || m->wince.systempatch_last_sec1 != sec1
+        || m->wince.systempatch_last_sec3 != sec3;
+    if (!changed)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_THREAD_CTX] reason=%s cur_thrd=%s obj+00=%s obj+04=%s"
+        " obj+0c=%s obj+14=%s obj+24=%s obj+3c=%s"
+        " ctx+08=%s ctx+0c=%s asid=%s0x%02X"
+        " src_off=0x%03X src_idx=%u src_slot=%s"
+        " sec0=0x%08X sec1=0x%08X sec3=0x%08X"
+        " pc=0x%08X ra=0x%08X sp=0x%08X\n",
+        m->wince.systempatch_seen ? "systempatch" : "sec3_attach",
+        format_word_or_unknown(cur_buf, sizeof(cur_buf), cur_ok, cur_thrd),
+        format_word_or_unknown(obj00_buf, sizeof(obj00_buf), obj00_ok, obj00),
+        format_word_or_unknown(obj04_buf, sizeof(obj04_buf), obj04_ok, obj04),
+        format_word_or_unknown(obj0c_buf, sizeof(obj0c_buf), obj0c_ok, obj0c),
+        format_word_or_unknown(obj14_buf, sizeof(obj14_buf), obj14_ok, obj14),
+        format_word_or_unknown(obj24_buf, sizeof(obj24_buf), obj24_ok, obj24),
+        format_word_or_unknown(obj3c_buf, sizeof(obj3c_buf), obj3c_ok, obj3c),
+        format_word_or_unknown(ctx08_buf, sizeof(ctx08_buf), ctx08_ok, ctx08),
+        format_word_or_unknown(ctx0c_buf, sizeof(ctx0c_buf), ctx0c_ok, ctx0c),
+        obj00_ok ? "" : "?",
+        obj00_ok ? (obj00 & 0xFFu) : 0u,
+        src_off,
+        src_idx,
+        format_word_or_unknown(src_slot_buf, sizeof(src_slot_buf), src_slot_ok,
+            src_slot),
+        sec0,
+        sec1,
+        sec3,
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP]);
+    if (!m->wince.systempatch_thread_ctx_valid
+        || m->wince.systempatch_last_obj0c != obj0c
+        || m->wince.systempatch_last_ctx0c != ctx0c
+        || m->wince.systempatch_last_src_slot != src_slot) {
+        dump_code_window(m, (uint32_t)cpu->pc, 4u, 8u);
+        if (cpu->cd.mips.gpr[MIPS_GPR_RA] >= 8u) {
+            dump_code_window(m,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA] - 8u, 4u, 8u);
+        }
+    }
+    if (sec0 == UINT32_C(0x80FE5000) || sec3 == UINT32_C(0x80FE5000)) {
+        log_l2_table_state(m, "thread_ctx", UINT32_C(0x80FE5000),
+            UINT32_C(0x01F94B50));
+        log_section0_focus_window(m, "thread_ctx", UINT32_C(0x80FE5000));
+    }
+
+    m->wince.systempatch_thread_ctx_valid = true;
+    m->wince.systempatch_last_cur_thrd = cur_thrd;
+    m->wince.systempatch_last_obj00 = obj00;
+    m->wince.systempatch_last_obj04 = obj04;
+    m->wince.systempatch_last_obj0c = obj0c;
+    m->wince.systempatch_last_obj14 = obj14;
+    m->wince.systempatch_last_obj24 = obj24;
+    m->wince.systempatch_last_obj3c = obj3c;
+    m->wince.systempatch_last_ctx08 = ctx08;
+    m->wince.systempatch_last_ctx0c = ctx0c;
+    m->wince.systempatch_last_src_slot = src_slot;
+    m->wince.systempatch_last_sec0 = sec0;
+    m->wince.systempatch_last_sec1 = sec1;
+    m->wince.systempatch_last_sec3 = sec3;
+    m->wince.systempatch_thread_ctx_diag_count++;
 }
 
 static void maybe_commit_serial_exception(machine_t *m, const char *reason)
@@ -4921,6 +5084,162 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
     }
 }
 
+static void maybe_log_systempatch_thread_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    uint32_t cur_thread_pa = 0;
+    uint32_t obj_pa = 0;
+    const char *tag = NULL;
+    uint32_t old = 0;
+    bool old_known = false;
+    bool log_new_obj = false;
+    uint32_t new_obj = 0;
+    uint32_t new_obj00 = 0;
+    uint32_t new_obj04 = 0;
+    uint32_t new_ctx08 = 0;
+    uint32_t new_ctx0c = 0;
+    uint32_t new_src_off = 0;
+    uint32_t new_src_idx = 0;
+    uint32_t new_src_slot = 0;
+    bool new_obj00_ok = false;
+    bool new_obj04_ok = false;
+    bool new_ctx08_ok = false;
+    bool new_ctx0c_ok = false;
+    bool new_src_slot_ok = false;
+    char new_obj00_buf[16];
+    char new_obj04_buf[16];
+    char new_ctx08_buf[16];
+    char new_ctx0c_buf[16];
+    char new_src_slot_buf[16];
+
+    if (!m || !cpu)
+        return;
+    if (!m->wince.section3_page_watch_armed
+        && !m->wince.systempatch_thread_ctx_valid) {
+        return;
+    }
+    if (m->wince.systempatch_thread_write_count >= 32)
+        return;
+
+    if (m->wince.systempatch_last_cur_thrd >= UINT32_C(0x80000000)
+        && m->wince.systempatch_last_cur_thrd < UINT32_C(0x81000000)) {
+        cur_thread_pa = m->wince.systempatch_last_cur_thrd & 0x1FFFFFFFu;
+        if (range_overlaps(paddr, (uint64_t)len, cur_thread_pa + 0x0Cu, 4u)) {
+            tag = "thread+0c";
+            old = m->wince.systempatch_last_obj0c;
+            old_known = m->wince.systempatch_thread_ctx_valid;
+        } else if (range_overlaps(paddr, (uint64_t)len,
+            cur_thread_pa + 0x14u, 4u)) {
+            tag = "thread+14";
+            old = m->wince.systempatch_last_obj14;
+            old_known = m->wince.systempatch_thread_ctx_valid;
+        } else if (range_overlaps(paddr, (uint64_t)len,
+            cur_thread_pa + 0x24u, 4u)) {
+            tag = "thread+24";
+            old = m->wince.systempatch_last_obj24;
+            old_known = m->wince.systempatch_thread_ctx_valid;
+        } else if (range_overlaps(paddr, (uint64_t)len,
+            cur_thread_pa + 0x3Cu, 4u)) {
+            tag = "thread+3c";
+            old = m->wince.systempatch_last_obj3c;
+            old_known = m->wince.systempatch_thread_ctx_valid;
+        }
+    }
+
+    if (tag == NULL && m->wince.systempatch_last_obj0c >= UINT32_C(0x80000000)
+        && m->wince.systempatch_last_obj0c < UINT32_C(0x81000000)) {
+        obj_pa = m->wince.systempatch_last_obj0c & 0x1FFFFFFFu;
+        if (range_overlaps(paddr, (uint64_t)len, obj_pa + 0x00u, 4u)) {
+            tag = "ctx+00";
+            old = m->wince.systempatch_last_obj00;
+            old_known = m->wince.systempatch_thread_ctx_valid;
+        } else if (range_overlaps(paddr, (uint64_t)len,
+            obj_pa + 0x04u, 4u)) {
+            tag = "ctx+04";
+            old = m->wince.systempatch_last_obj04;
+            old_known = m->wince.systempatch_thread_ctx_valid;
+        } else if (range_overlaps(paddr, (uint64_t)len, obj_pa + 0x08u, 4u)) {
+            tag = "ctx+08";
+            old = m->wince.systempatch_last_ctx08;
+            old_known = m->wince.systempatch_thread_ctx_valid;
+        } else if (range_overlaps(paddr, (uint64_t)len, obj_pa + 0x0Cu, 4u)) {
+            tag = "ctx+0c";
+            old = m->wince.systempatch_last_ctx0c;
+            old_known = m->wince.systempatch_thread_ctx_valid;
+        }
+    }
+
+    if (tag == NULL)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_THREAD_W] tag=%s PA=0x%08" PRIx64 " len=%zu"
+        " old=%s0x%08X new=0x%08llX cur_thrd=0x%08X obj0c=0x%08X"
+        " sec0=0x%08X sec3=0x%08X PC=0x%08" PRIx64 " RA=0x%08X\n",
+        tag,
+        paddr,
+        len,
+        old_known ? "" : "?",
+        old,
+        (unsigned long long)val,
+        m->wince.systempatch_last_cur_thrd,
+        m->wince.systempatch_last_obj0c,
+        load_pa_word(m, 0x18C0u),
+        load_pa_word(m, 0x18CCu),
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+
+    if (strcmp(tag, "thread+0c") == 0) {
+        new_obj = (uint32_t)val;
+        if (new_obj >= UINT32_C(0x80000000)
+            && new_obj < UINT32_C(0x81000000)) {
+            log_new_obj = true;
+            new_obj00_ok = load_va_word(m, new_obj + 0x00u, &new_obj00);
+            new_obj04_ok = load_va_word(m, new_obj + 0x04u, &new_obj04);
+            new_ctx08_ok = load_va_word(m, new_obj + 0x08u, &new_ctx08);
+            new_ctx0c_ok = load_va_word(m, new_obj + 0x0Cu, &new_ctx0c);
+            if (new_ctx0c_ok) {
+                new_src_off = new_ctx0c >> 23;
+                new_src_idx = new_src_off >> 2;
+                if (new_src_off < 0x100u) {
+                    new_src_slot = load_pa_word(m, 0x18C0u + new_src_off);
+                    new_src_slot_ok = true;
+                }
+            }
+        }
+    }
+
+    if (log_new_obj) {
+        fprintf(stderr,
+            "[WINCE_THREAD_W_CTX] new_obj=0x%08X obj+00=%s obj+04=%s"
+            " ctx+08=%s ctx+0c=%s asid=%s0x%02X"
+            " src_off=0x%03X src_idx=%u src_slot=%s"
+            " sec0=0x%08X sec3=0x%08X PC=0x%08" PRIx64
+            " RA=0x%08X\n",
+            new_obj,
+            format_word_or_unknown(new_obj00_buf, sizeof(new_obj00_buf),
+                new_obj00_ok, new_obj00),
+            format_word_or_unknown(new_obj04_buf, sizeof(new_obj04_buf),
+                new_obj04_ok, new_obj04),
+            format_word_or_unknown(new_ctx08_buf, sizeof(new_ctx08_buf),
+                new_ctx08_ok, new_ctx08),
+            format_word_or_unknown(new_ctx0c_buf, sizeof(new_ctx0c_buf),
+                new_ctx0c_ok, new_ctx0c),
+            new_obj00_ok ? "" : "?",
+            new_obj00_ok ? (new_obj00 & 0xFFu) : 0u,
+            new_src_off,
+            new_src_idx,
+            format_word_or_unknown(new_src_slot_buf,
+                sizeof(new_src_slot_buf), new_src_slot_ok, new_src_slot),
+            load_pa_word(m, 0x18C0u),
+            load_pa_word(m, 0x18CCu),
+            (uint64_t)cpu->pc,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    }
+
+    m->wince.systempatch_thread_write_count++;
+}
+
 static void maybe_log_section0_hot_slot_access(machine_t *m, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t val, bool is_write)
 {
@@ -4940,33 +5259,35 @@ static void maybe_log_section0_hot_slot_access(machine_t *m, struct cpu *cpu,
         tag = "slot7e0";
     } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7E8u, 4u)) {
         tag = "slot7e8";
+    } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7F0u, 4u)) {
+        tag = "slot7f0";
+    } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7F4u, 4u)) {
+        tag = "slot7f4";
+    } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7F8u, 4u)) {
+        tag = "slot7f8";
     } else if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x694u, 4u)) {
         tag = "slot694";
-    } else if (!is_write) {
-        return;
-    } else {
-        tag = "table";
     }
+    if (tag == NULL)
+        return;
 
-    if (m->wince.section0_hot_slot_diag_count >= 48)
+    if (m->wince.section0_hot_slot_diag_count >= 96)
         return;
 
     fprintf(stderr,
         "[WINCE_SEC0_RAM] %c %s off=0x%03" PRIx64 " len=%zu val=0x%llX"
-        " sec0=0x%08X PC=0x%08" PRIx64 " RA=0x%08X\n",
+        " sec0=0x%08X sec3=0x%08X PC=0x%08" PRIx64 " RA=0x%08X\n",
         is_write ? 'W' : 'R',
         tag,
         paddr - table_pa,
         len,
         (unsigned long long)val,
         load_pa_word(m, 0x18C0u),
+        load_pa_word(m, 0x18CCu),
         (uint64_t)cpu->pc,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
-
-    if (strcmp(tag, "table") != 0) {
-        log_l2_table_state(m, tag, table_va, UINT32_C(0x01F94B50));
-        log_section0_focus_window(m, tag, table_va);
-    }
+    log_l2_table_state(m, tag, table_va, UINT32_C(0x01F94B50));
+    log_section0_focus_window(m, tag, table_va);
 
     m->wince.section0_hot_slot_diag_count++;
 }
@@ -5117,7 +5438,7 @@ static void maybe_log_section3_pool_write(machine_t *m, struct cpu *cpu,
     const uint32_t payload_va = UINT32_C(0x80FE9DA4);
     const uint32_t wrap_pa = UINT32_C(0x00FE9CDC);
     const uint32_t payload_pa = UINT32_C(0x00FE9DA4);
-    const uint32_t pool_len = UINT32_C(0x170);
+    const uint32_t pool_len = UINT32_C(0x180);
     uint32_t sec3;
     const char *tag = "pool";
 
@@ -6949,6 +7270,7 @@ void wince_boot_on_vr41xx_tick(struct machine *gxm, struct cpu *cpu)
         }
     }
     maybe_track_fb_runtime_changes(m, cpu);
+    maybe_sample_systempatch_thread_context(m, cpu);
 
     /* PPSH flag-word sampling: poll PA 0x66001C (VA 0x8066001C) as a
      * secondary state signal. Dyntrans fast-path stores can bypass the
@@ -8016,8 +8338,9 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
         maybe_log_section3_head_write(m, cpu, paddr, len, val);
     if (is_write)
         maybe_log_section3_owner_write(m, cpu, paddr, len, val);
-
-        maybe_log_section0_hot_slot_access(m, cpu, paddr, len, val, is_write);
+    if (is_write)
+        maybe_log_systempatch_thread_write(m, cpu, paddr, len, val);
+    maybe_log_section0_hot_slot_access(m, cpu, paddr, len, val, is_write);
 
     if (is_write)
         maybe_log_tlb_table_write(m, cpu, paddr, (uint64_t)len, val);
