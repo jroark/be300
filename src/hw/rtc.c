@@ -3,6 +3,8 @@
 
 static inline void rtc_update_elapsed_irq(rtc_state_t *s)
 {
+    if (!s->elapsed_compare_armed)
+        return;
     if (s->etime < s->ecmp)
         return;
     if (s->elapsed_compare_fired)
@@ -14,6 +16,7 @@ static inline void rtc_update_elapsed_irq(rtc_state_t *s)
 
 static inline void rtc_rearm_elapsed_irq(rtc_state_t *s)
 {
+    s->elapsed_compare_armed = 1;
     s->elapsed_compare_fired = 0;
     rtc_update_elapsed_irq(s);
 }
@@ -77,6 +80,7 @@ void rtc_init(rtc_state_t *s)
     s->rtcl2 = 0;
     s->tclock = 0;
     s->rtcint = 0;
+    s->elapsed_compare_armed = 0;
     s->elapsed_compare_fired = 0;
 }
 
