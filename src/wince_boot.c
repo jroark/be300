@@ -148,6 +148,8 @@ static void maybe_note_section3_type4_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
 static void maybe_note_section3_type4_gate_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
+static void maybe_note_section3_type4_state_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32);
 static void note_type4_order_event(machine_t *m, struct cpu *cpu,
     uint16_t *slot, const char *tag);
 static void maybe_log_section3_pool_write(machine_t *m, struct cpu *cpu,
@@ -3907,6 +3909,221 @@ static void maybe_note_section3_type4_gate_pc(machine_t *m, struct cpu *cpu,
     m->wince.type4_gate_probe_count++;
 }
 
+static void maybe_note_section3_type4_state_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+    uint32_t wrap_va;
+    uint32_t payload_va;
+    uint32_t live_handle = 0;
+    bool live_handle_ok = false;
+    uint32_t entry_key = 0;
+    uint32_t entry = 0;
+    uint32_t state_ptr = 0;
+    uint32_t obj = 0;
+    bool state_ok = false;
+    unsigned char state_byte = 0;
+    uint32_t state_words[6] = {0};
+    bool state_words_ok[6] = { false };
+    unsigned char state18 = 0;
+    unsigned char state19 = 0;
+    bool state18_ok = false;
+    bool state19_ok = false;
+    uint32_t obj88 = 0;
+    uint32_t obj8c = 0;
+    uint32_t obj90 = 0;
+    uint32_t obj9c = 0;
+    bool obj88_ok = false;
+    bool obj8c_ok = false;
+    bool obj90_ok = false;
+    bool obj9c_ok = false;
+    uint32_t a0;
+    uint32_t a1;
+    uint32_t a2;
+    uint32_t a3;
+    uint32_t ra;
+    uint32_t sp;
+    uint32_t sec0;
+    uint32_t sec3;
+    char live_handle_buf[16];
+    char state_ptr_buf[16];
+    char obj_buf[16];
+    char obj88_buf[16];
+    char obj8c_buf[16];
+    char obj90_buf[16];
+    char obj9c_buf[16];
+    char state5_buf[3];
+    char state18_buf[3];
+    char state19_buf[3];
+    char statew_buf[6][16];
+    const char *tag = NULL;
+    size_t i;
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.type4_state_probe_count >= 16u)
+        return;
+
+    wrap_va = m->wince.type4_wrap_watch_va;
+    payload_va = m->wince.type4_payload_watch_va;
+    if (wrap_va == 0u || payload_va == 0u)
+        return;
+
+    live_handle_ok = load_va_word(m, wrap_va + 0x08u, &live_handle);
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+    a1 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1];
+    a2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2];
+    a3 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3];
+    ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+    sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+
+    switch (pc32) {
+    case UINT32_C(0x8008130C):
+        if (!live_handle_ok || a0 != live_handle)
+            return;
+        switch (a1) {
+        case 1u:
+            tag = "envt_mode1";
+            break;
+        case 2u:
+            tag = "envt_mode2";
+            break;
+        case 3u:
+            tag = "envt_mode3";
+            break;
+        default:
+            tag = "envt_modeX";
+            break;
+        }
+        break;
+    case UINT32_C(0x8008A544):
+        if (!live_handle_ok || a0 != live_handle)
+            return;
+        tag = "envt_kick";
+        break;
+    case UINT32_C(0x8008406C):
+        if (a0 != payload_va)
+            return;
+        tag = "state4_splice";
+        state_ptr = a1;
+        break;
+    case UINT32_C(0x80085554):
+        if (a0 != payload_va)
+            return;
+        tag = "payload_busy";
+        break;
+    default:
+        return;
+    }
+
+    if (live_handle_ok && live_handle != 0u) {
+        uint32_t resolved_key = 0;
+        uint32_t resolved_entry = 0;
+        uint32_t resolved_state_ptr = 0;
+        uint32_t resolved_obj = 0;
+        bool resolved_state_ok = false;
+        unsigned char resolved_state_byte = 0;
+
+        if (resolve_section3_gate_entry(m, live_handle,
+            &resolved_key, &resolved_entry, &resolved_state_ptr,
+            &resolved_state_ok, &resolved_state_byte, &resolved_obj)) {
+            entry_key = resolved_key;
+            entry = resolved_entry;
+            if (state_ptr == 0u)
+                state_ptr = resolved_state_ptr;
+            state_ok = resolved_state_ok;
+            state_byte = resolved_state_byte;
+            obj = resolved_obj;
+        }
+    }
+
+    if (state_ptr >= UINT32_C(0x80000000) && state_ptr < UINT32_C(0x81000000)) {
+        static const uint32_t state_offsets[] = {
+            0x00u, 0x04u, 0x08u, 0x0Cu, 0x10u, 0x14u,
+        };
+
+        for (i = 0; i < sizeof(state_offsets) / sizeof(state_offsets[0]); i++) {
+            state_words_ok[i] = load_va_word(m, state_ptr + state_offsets[i],
+                &state_words[i]);
+        }
+        state18_ok = load_va_bytes(m, state_ptr + 0x18u, &state18, 1u);
+        state19_ok = load_va_bytes(m, state_ptr + 0x19u, &state19, 1u);
+    }
+
+    if (obj == 0u)
+        obj = payload_va;
+    if (obj >= UINT32_C(0x80000000) && obj < UINT32_C(0x81000000)) {
+        obj88_ok = load_va_word(m, obj + 0x88u, &obj88);
+        obj8c_ok = load_va_word(m, obj + 0x8Cu, &obj8c);
+        obj90_ok = load_va_word(m, obj + 0x90u, &obj90);
+        obj9c_ok = load_va_word(m, obj + 0x9Cu, &obj9c);
+    }
+
+    for (i = 0; i < 6u; i++)
+        format_word_or_unknown(statew_buf[i], sizeof(statew_buf[i]),
+            state_words_ok[i], state_words[i]);
+    if (state_ok) {
+        snprintf(state5_buf, sizeof(state5_buf), "%02X", state_byte);
+    } else {
+        snprintf(state5_buf, sizeof(state5_buf), "??");
+    }
+    if (state18_ok) {
+        snprintf(state18_buf, sizeof(state18_buf), "%02X", state18);
+    } else {
+        snprintf(state18_buf, sizeof(state18_buf), "??");
+    }
+    if (state19_ok) {
+        snprintf(state19_buf, sizeof(state19_buf), "%02X", state19);
+    } else {
+        snprintf(state19_buf, sizeof(state19_buf), "??");
+    }
+
+    sec0 = load_pa_word(m, 0x18C0u);
+    sec3 = load_pa_word(m, 0x18CCu);
+    fprintf(stderr,
+        "[WINCE_TYPE4_STATE] tag=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+        " wrap=0x%08X handle=%s key=0x%08X entry=0x%08X"
+        " state=%s state5=%s st0=%s st4=%s st8=%s stc=%s st10=%s st14=%s"
+        " st18=%s st19=%s obj=%s obj88=%s obj8c=%s obj90=%s obj9c=%s"
+        " sec0=0x%08X sec3=0x%08X\n",
+        tag,
+        pc32,
+        ra,
+        sp,
+        a0,
+        a1,
+        a2,
+        a3,
+        wrap_va,
+        format_word_or_unknown(live_handle_buf, sizeof(live_handle_buf),
+            live_handle_ok, live_handle),
+        entry_key,
+        entry,
+        format_word_or_unknown(state_ptr_buf, sizeof(state_ptr_buf),
+            state_ptr >= UINT32_C(0x80000000) && state_ptr < UINT32_C(0x81000000),
+            state_ptr),
+        state5_buf,
+        statew_buf[0], statew_buf[1], statew_buf[2], statew_buf[3],
+        statew_buf[4], statew_buf[5],
+        state18_buf,
+        state19_buf,
+        format_word_or_unknown(obj_buf, sizeof(obj_buf),
+            obj >= UINT32_C(0x80000000) && obj < UINT32_C(0x81000000), obj),
+        format_word_or_unknown(obj88_buf, sizeof(obj88_buf), obj88_ok, obj88),
+        format_word_or_unknown(obj8c_buf, sizeof(obj8c_buf), obj8c_ok, obj8c),
+        format_word_or_unknown(obj90_buf, sizeof(obj90_buf), obj90_ok, obj90),
+        format_word_or_unknown(obj9c_buf, sizeof(obj9c_buf), obj9c_ok, obj9c),
+        sec0,
+        sec3);
+    dump_section3_wrap_window(m, tag, wrap_va);
+    dump_section3_retobj_window(m, tag, payload_va);
+    if (state_ptr >= UINT32_C(0x80000000) && state_ptr < UINT32_C(0x81000000))
+        dump_va_window(m, tag, state_ptr, 0x20u);
+    m->wince.type4_state_probe_count++;
+}
+
 static void maybe_note_section3_owner_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32)
 {
@@ -7321,6 +7538,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_note_section3_worker_pc(m, cpu, pc32);
     maybe_note_section3_type4_pc(m, cpu, pc32);
     maybe_note_section3_type4_gate_pc(m, cpu, pc32);
+    maybe_note_section3_type4_state_pc(m, cpu, pc32);
     maybe_note_section3_owner_pc(m, cpu, pc32);
 }
 
