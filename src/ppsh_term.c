@@ -24,7 +24,12 @@
 #define TERM_ROWS   25
 #define GLYPH_W     8
 #define GLYPH_H     8
-#define WIN_SCALE   2
+/* Logical cell size rendered in the window. Doubling the glyph height
+ * from 8 to 16 makes the terminal look like a standard 80x25 console
+ * instead of being horizontally stretched. */
+#define CELL_W      (GLYPH_W)
+#define CELL_H      (GLYPH_H * 2)
+#define WIN_SCALE   1
 
 #define IN_RING_CAP 4096
 
@@ -134,22 +139,30 @@ static const uint8_t font8x8[96][8] = {
     /* 0x7F     */ {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
 };
 
+enum esc_state {
+    ESC_NONE = 0,
+    ESC_SEEN,       /* saw ESC, waiting for next byte */
+    ESC_CSI,        /* ESC [ ..., consume until final byte 0x40..0x7E */
+};
+
 struct ppsh_term {
     SDL_Window   *window;
     SDL_Renderer *renderer;
     SDL_Texture  *texture;
     uint32_t      window_id;
-    uint32_t     *pixels;       /* TERM_COLS*GLYPH_W x TERM_ROWS*GLYPH_H ARGB */
+    uint32_t     *pixels;       /* TERM_COLS*CELL_W x TERM_ROWS*CELL_H ARGB */
 
     uint8_t  grid[TERM_ROWS][TERM_COLS];
     int      cursor_row;
     int      cursor_col;
     bool     dirty;
+    enum esc_state esc;
 
     uint8_t  in_ring[IN_RING_CAP];
     size_t   in_head;
     size_t   in_tail;
     size_t   in_count;
+    size_t   in_logged;
 
     uint32_t last_render_tick;
     uint32_t blink_origin_tick;
@@ -177,6 +190,25 @@ static void term_newline(ppsh_term_t *t)
 
 static void term_putc(ppsh_term_t *t, uint8_t ch)
 {
+    /* Minimal ESC / CSI state machine so shell-issued escape sequences
+     * (terminal ID queries, colour codes, etc.) don't leak their trailing
+     * bytes onto the screen as literal characters. We don't interpret
+     * any of them — we just swallow the sequence. */
+    if (t->esc == ESC_SEEN) {
+        if (ch == '[') { t->esc = ESC_CSI; return; }
+        t->esc = ESC_NONE;
+        return;
+    }
+    if (t->esc == ESC_CSI) {
+        if (ch >= 0x40 && ch <= 0x7E)
+            t->esc = ESC_NONE;
+        return;
+    }
+    if (ch == 0x1B) {
+        t->esc = ESC_SEEN;
+        return;
+    }
+
     switch (ch) {
     case '\r':
         t->cursor_col = 0;
@@ -223,12 +255,18 @@ static void draw_cell(ppsh_term_t *t, int row, int col, uint8_t ch,
     uint32_t bg = 0xFF000000u;
     if (inverse) { uint32_t tmp = fg; fg = bg; bg = tmp; }
 
-    int stride = TERM_COLS * GLYPH_W;
-    uint32_t *base = &t->pixels[(row * GLYPH_H) * stride + col * GLYPH_W];
+    int stride = TERM_COLS * CELL_W;
+    uint32_t *base = &t->pixels[(row * CELL_H) * stride + col * CELL_W];
+    /* Draw each glyph row twice to achieve 8x16 logical cells. */
     for (int y = 0; y < GLYPH_H; y++) {
         uint8_t bits = bm[y];
-        for (int x = 0; x < GLYPH_W; x++)
-            base[y * stride + x] = (bits & (1u << x)) ? fg : bg;
+        uint32_t *row0 = &base[(y * 2 + 0) * stride];
+        uint32_t *row1 = &base[(y * 2 + 1) * stride];
+        for (int x = 0; x < CELL_W; x++) {
+            uint32_t px = (bits & (1u << x)) ? fg : bg;
+            row0[x] = px;
+            row1[x] = px;
+        }
     }
 }
 
@@ -261,8 +299,8 @@ ppsh_term_t *ppsh_term_create(const char *title)
     if (!t)
         return NULL;
 
-    int win_w = TERM_COLS * GLYPH_W * WIN_SCALE;
-    int win_h = TERM_ROWS * GLYPH_H * WIN_SCALE;
+    int win_w = TERM_COLS * CELL_W * WIN_SCALE;
+    int win_h = TERM_ROWS * CELL_H * WIN_SCALE;
     t->window = SDL_CreateWindow(
         title ? title : "BE-300 PPSH",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -288,12 +326,12 @@ ppsh_term_t *ppsh_term_create(const char *title)
         return NULL;
     }
     SDL_RenderSetLogicalSize(t->renderer,
-        TERM_COLS * GLYPH_W, TERM_ROWS * GLYPH_H);
+        TERM_COLS * CELL_W, TERM_ROWS * CELL_H);
 
     t->texture = SDL_CreateTexture(t->renderer,
         SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STREAMING,
-        TERM_COLS * GLYPH_W, TERM_ROWS * GLYPH_H);
+        TERM_COLS * CELL_W, TERM_ROWS * CELL_H);
     if (!t->texture) {
         fprintf(stderr, "[PPSH_TERM] SDL_CreateTexture failed: %s\n",
             SDL_GetError());
@@ -303,8 +341,8 @@ ppsh_term_t *ppsh_term_create(const char *title)
         return NULL;
     }
 
-    size_t px_count = (size_t)TERM_COLS * GLYPH_W
-                    * (size_t)TERM_ROWS * GLYPH_H;
+    size_t px_count = (size_t)TERM_COLS * CELL_W
+                    * (size_t)TERM_ROWS * CELL_H;
     t->pixels = calloc(px_count, sizeof(uint32_t));
     if (!t->pixels) {
         SDL_DestroyTexture(t->texture);
@@ -323,6 +361,8 @@ ppsh_term_t *ppsh_term_create(const char *title)
     t->dirty = true;
 
     SDL_StartTextInput();
+    SDL_RaiseWindow(t->window);
+    SDL_SetWindowInputFocus(t->window);
 
     fprintf(stderr,
         "[PPSH_TERM] opened %dx%d console window (id=%u)\n",
@@ -360,6 +400,10 @@ static void in_push(ppsh_term_t *t, uint8_t b)
     t->in_ring[t->in_head] = b;
     t->in_head = (t->in_head + 1u) % IN_RING_CAP;
     t->in_count++;
+    if (t->in_logged < 8) {
+        fprintf(stderr, "[PPSH_TERM] queued input byte 0x%02X\n", b);
+        t->in_logged++;
+    }
 }
 
 size_t ppsh_term_read(ppsh_term_t *t, uint8_t *buf, size_t cap)
@@ -461,7 +505,7 @@ void ppsh_term_render(ppsh_term_t *t)
     if (t->dirty) {
         redraw_all(t);
         SDL_UpdateTexture(t->texture, NULL, t->pixels,
-            TERM_COLS * GLYPH_W * (int)sizeof(uint32_t));
+            TERM_COLS * CELL_W * (int)sizeof(uint32_t));
         t->dirty = false;
     }
 

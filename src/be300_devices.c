@@ -246,14 +246,15 @@ static void ppsh_guest_note_text_byte(struct be300_wince_aux *d, uint8_t byte)
     if (!d)
         return;
 
-    if (!ppsh_is_printable(byte)) {
-        ppsh_text_break(d);
+    if (g_ppsh_output_sink) {
+        /* Dedicated PPSH console: deliver every byte (including control
+         * codes) so the terminal can run its own escape-state machine. */
+        g_ppsh_output_sink(g_ppsh_output_ctx, &byte, 1);
         return;
     }
 
-    if (g_ppsh_output_sink) {
-        /* Dedicated PPSH console: deliver each byte as soon as it lands. */
-        g_ppsh_output_sink(g_ppsh_output_ctx, &byte, 1);
+    if (!ppsh_is_printable(byte)) {
+        ppsh_text_break(d);
         return;
     }
 
