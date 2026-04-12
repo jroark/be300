@@ -2240,7 +2240,8 @@ static void dump_section3_retobj_window(machine_t *m, const char *tag,
 {
     static const uint32_t offsets[] = {
         0x00u, 0x04u, 0x08u, 0x0Cu, 0x10u, 0x14u, 0x18u,
-        0x48u, 0x4Cu, 0x50u, 0x54u, 0x58u, 0x90u,
+        0x48u, 0x4Cu, 0x50u, 0x54u, 0x58u,
+        0x88u, 0x8Cu, 0x90u, 0x9Cu,
     };
     uint32_t words[sizeof(offsets) / sizeof(offsets[0])] = {0};
     bool ok[sizeof(offsets) / sizeof(offsets[0])] = { false };
@@ -2265,11 +2266,13 @@ static void dump_section3_retobj_window(machine_t *m, const char *tag,
     fprintf(stderr,
         "[WINCE_SEC3_RETOBJ] tag=%s va=0x%08X"
         " +00=%s +04=%s +08=%s +0C=%s +10=%s +14=%s +18=%s"
-        " +48=%s +4C=%s +50=%s +54=%s +58=%s +90=%s\n",
+        " +48=%s +4C=%s +50=%s +54=%s +58=%s"
+        " +88=%s +8C=%s +90=%s +9C=%s\n",
         tag ? tag : "?",
         obj_va,
         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6],
-        buf[7], buf[8], buf[9], buf[10], buf[11], buf[12]);
+        buf[7], buf[8], buf[9], buf[10], buf[11],
+        buf[12], buf[13], buf[14], buf[15]);
 }
 
 static bool resolve_section3_gate_entry(machine_t *m, uint32_t key_in,
@@ -2353,13 +2356,19 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
     uint32_t entry_key = 0;
     uint32_t state_ptr = 0;
     uint32_t obj = 0;
+    uint32_t obj_88 = 0;
+    uint32_t obj_8c = 0;
     uint32_t obj_90 = 0;
+    uint32_t obj_9c = 0;
     uint32_t retobj = 0;
     uint32_t retobj_00 = 0;
     uint32_t retobj_04 = 0;
     uint32_t retobj_08 = 0;
     uint32_t retobj_0c = 0;
+    uint32_t retobj_88 = 0;
+    uint32_t retobj_8c = 0;
     uint32_t retobj_90 = 0;
+    uint32_t retobj_9c = 0;
     bool translated_ok = false;
     bool frame_ra_ok = false;
     bool frame_s0_ok = false;
@@ -2375,13 +2384,19 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
     bool entry_key_ok = false;
     bool state_ptr_ok = false;
     bool obj_ok = false;
+    bool obj88_ok = false;
+    bool obj8c_ok = false;
     bool obj90_ok = false;
+    bool obj9c_ok = false;
     bool retobj_ok = false;
     bool retobj_00_ok = false;
     bool retobj_04_ok = false;
     bool retobj_08_ok = false;
     bool retobj_0c_ok = false;
+    bool retobj_88_ok = false;
+    bool retobj_8c_ok = false;
     bool retobj_90_ok = false;
+    bool retobj_9c_ok = false;
     bool state_ok = false;
     unsigned char state_byte = 0;
     const char *reason = "ok";
@@ -2401,13 +2416,19 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
     char entry_key_buf[16];
     char state_ptr_buf[16];
     char obj_buf[16];
+    char obj88_buf[16];
+    char obj8c_buf[16];
     char obj90_buf[16];
+    char obj9c_buf[16];
     char retobj_buf[16];
     char retobj_00_buf[16];
     char retobj_04_buf[16];
     char retobj_08_buf[16];
     char retobj_0c_buf[16];
+    char retobj_88_buf[16];
+    char retobj_8c_buf[16];
     char retobj_90_buf[16];
+    char retobj_9c_buf[16];
     char state_buf[8];
 
     if (!m || !cpu)
@@ -2496,7 +2517,10 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
             if (obj_ok
                 && obj >= UINT32_C(0x80000000)
                 && obj < UINT32_C(0x81000000)) {
+                obj88_ok = load_va_word(m, obj + 0x88u, &obj_88);
+                obj8c_ok = load_va_word(m, obj + 0x8Cu, &obj_8c);
                 obj90_ok = load_va_word(m, obj + 0x90u, &obj_90);
+                obj9c_ok = load_va_word(m, obj + 0x9Cu, &obj_9c);
             }
         }
     }
@@ -2512,7 +2536,10 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
         retobj_04_ok = load_va_word(m, retobj + 0x04u, &retobj_04);
         retobj_08_ok = load_va_word(m, retobj + 0x08u, &retobj_08);
         retobj_0c_ok = load_va_word(m, retobj + 0x0Cu, &retobj_0c);
+        retobj_88_ok = load_va_word(m, retobj + 0x88u, &retobj_88);
+        retobj_8c_ok = load_va_word(m, retobj + 0x8Cu, &retobj_8c);
         retobj_90_ok = load_va_word(m, retobj + 0x90u, &retobj_90);
+        retobj_9c_ok = load_va_word(m, retobj + 0x9Cu, &retobj_9c);
         if (pc32 == UINT32_C(0x8009A7F8)
             && !m->wince.section3_retobj_watch_armed
             && retobj >= UINT32_C(0x80660000)) {
@@ -2546,8 +2573,9 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
         " translated=%u key=%s masked=%s"
         " slot=%s slot0=%s slot1=%s slot2=%s slot3=%s"
         " base=%s lo=%s hi=%s entry=%s entry+8=%s state_ptr=%s state5=%s"
-        " obj=%s obj+90=%s"
-        " ret=%s ret0=%s ret4=%s ret8=%s retc=%s ret+90=%s"
+        " obj=%s obj+88=%s obj+8c=%s obj+90=%s obj+9c=%s"
+        " ret=%s ret0=%s ret4=%s ret8=%s retc=%s"
+        " ret+88=%s ret+8c=%s ret+90=%s ret+9c=%s"
         " sec0=0x%08X sec3=0x%08X reason=%s\n",
         pc32 == UINT32_C(0x8009A9CC) ? "a9cc" : "a7f8",
         pc32,
@@ -2579,13 +2607,19 @@ static void maybe_log_section3_gate_snapshot(machine_t *m, struct cpu *cpu,
         format_word_or_unknown(state_ptr_buf, sizeof(state_ptr_buf), state_ptr_ok, state_ptr),
         state_buf,
         format_word_or_unknown(obj_buf, sizeof(obj_buf), obj_ok, obj),
+        format_word_or_unknown(obj88_buf, sizeof(obj88_buf), obj88_ok, obj_88),
+        format_word_or_unknown(obj8c_buf, sizeof(obj8c_buf), obj8c_ok, obj_8c),
         format_word_or_unknown(obj90_buf, sizeof(obj90_buf), obj90_ok, obj_90),
+        format_word_or_unknown(obj9c_buf, sizeof(obj9c_buf), obj9c_ok, obj_9c),
         format_word_or_unknown(retobj_buf, sizeof(retobj_buf), retobj_ok, retobj),
         format_word_or_unknown(retobj_00_buf, sizeof(retobj_00_buf), retobj_00_ok, retobj_00),
         format_word_or_unknown(retobj_04_buf, sizeof(retobj_04_buf), retobj_04_ok, retobj_04),
         format_word_or_unknown(retobj_08_buf, sizeof(retobj_08_buf), retobj_08_ok, retobj_08),
         format_word_or_unknown(retobj_0c_buf, sizeof(retobj_0c_buf), retobj_0c_ok, retobj_0c),
+        format_word_or_unknown(retobj_88_buf, sizeof(retobj_88_buf), retobj_88_ok, retobj_88),
+        format_word_or_unknown(retobj_8c_buf, sizeof(retobj_8c_buf), retobj_8c_ok, retobj_8c),
         format_word_or_unknown(retobj_90_buf, sizeof(retobj_90_buf), retobj_90_ok, retobj_90),
+        format_word_or_unknown(retobj_9c_buf, sizeof(retobj_9c_buf), retobj_9c_ok, retobj_9c),
         load_pa_word(m, 0x18C0u),
         sec3,
         reason);
@@ -4921,6 +4955,25 @@ static void maybe_log_section3_pool_write(machine_t *m, struct cpu *cpu,
             load_pa_word(m, payload_pa + 0x08u),
             load_pa_word(m, payload_pa + 0x0Cu));
     }
+    if (strcmp(tag, "payload") == 0
+        && m->wince.type4_payload_watch_va == payload_va
+        && range_overlaps(paddr, (uint64_t)len, payload_pa + 0x88u, 0x18u)
+        && m->wince.type4_ready_write_count < 16u) {
+        fprintf(stderr,
+            "[WINCE_TYPE4_READY_W] off=0x%02" PRIx64 " len=%zu val=0x%llX"
+            " payload=0x%08X sec0=0x%08X sec3=0x%08X"
+            " PC=0x%08" PRIx64 " RA=0x%08X\n",
+            paddr - payload_pa,
+            len,
+            (unsigned long long)val,
+            payload_va,
+            load_pa_word(m, 0x18C0u),
+            sec3,
+            (uint64_t)cpu->pc,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+        dump_section3_retobj_window(m, "type4_ready_write", payload_va);
+        m->wince.type4_ready_write_count++;
+    }
     m->wince.section3_pool_write_count++;
 }
 
@@ -5030,6 +5083,7 @@ static void maybe_log_section3_ctor_field_write(machine_t *m, struct cpu *cpu,
         m->wince.type4_wrap_watch_va = wrap_va;
         m->wince.type4_payload_watch_va = payload_va;
         m->wince.type4_handle_watch_va = load_pa_word(m, wrap_pa + 0x08u);
+        m->wince.type4_ready_write_count = 0;
         note_type4_order_event(m, cpu,
             &m->wince.type4_order_ctor_seq, "wrap_ctor");
         m->wince.type4_step_trace_pending = false;

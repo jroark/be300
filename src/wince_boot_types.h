@@ -229,6 +229,7 @@ typedef struct {
     uint16_t type4_order_payload_seq;
     uint16_t type4_order_enqueue_seq;
     uint16_t type4_order_cleanup_seq;
+    uint16_t type4_ready_write_count;
     uint32_t type4_wrap_watch_va;
     uint32_t type4_payload_watch_va;
     uint32_t type4_handle_watch_va;
