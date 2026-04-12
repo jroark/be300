@@ -193,12 +193,22 @@ struct be300_wince_aux {
 
 static struct be300_wince_aux *g_be300_wince_aux = NULL;
 
+static be300_ppsh_output_sink_t g_ppsh_output_sink = NULL;
+static void                    *g_ppsh_output_ctx  = NULL;
+
+void be300_ppsh_set_output_sink(be300_ppsh_output_sink_t sink, void *ctx)
+{
+    g_ppsh_output_sink = sink;
+    g_ppsh_output_ctx  = ctx;
+}
+
 static bool ppsh_is_printable(uint8_t byte)
 {
     return (byte >= 0x20 && byte <= 0x7eu)
         || byte == '\r'
         || byte == '\n'
-        || byte == '\t';
+        || byte == '\t'
+        || byte == '\b';
 }
 
 static void ppsh_refresh_status(struct be300_wince_aux *d)
@@ -238,6 +248,12 @@ static void ppsh_guest_note_text_byte(struct be300_wince_aux *d, uint8_t byte)
 
     if (!ppsh_is_printable(byte)) {
         ppsh_text_break(d);
+        return;
+    }
+
+    if (g_ppsh_output_sink) {
+        /* Dedicated PPSH console: deliver each byte as soon as it lands. */
+        g_ppsh_output_sink(g_ppsh_output_ctx, &byte, 1);
         return;
     }
 

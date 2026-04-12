@@ -8,6 +8,7 @@
  */
 
 #include "ui.h"
+#include "ppsh_term.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -142,7 +143,36 @@ void ui_update(machine_t *m)
 
     /* Poll events */
     SDL_Event ev;
+    uint32_t main_window_id = SDL_GetWindowID((SDL_Window *)m->sdl_window);
+    uint32_t term_window_id = ppsh_term_window_id(m->ppsh_term);
     while (SDL_PollEvent(&ev)) {
+        /* Route events destined for the PPSH console window to its handler
+         * and skip the main UI's input handling for them. SDL_QUIT carries
+         * no window ID and is handled once below. */
+        uint32_t ev_wid = 0;
+        switch (ev.type) {
+        case SDL_KEYDOWN:
+        case SDL_KEYUP:        ev_wid = ev.key.windowID; break;
+        case SDL_TEXTINPUT:    ev_wid = ev.text.windowID; break;
+        case SDL_TEXTEDITING:  ev_wid = ev.edit.windowID; break;
+        case SDL_MOUSEBUTTONDOWN:
+        case SDL_MOUSEBUTTONUP: ev_wid = ev.button.windowID; break;
+        case SDL_MOUSEMOTION:  ev_wid = ev.motion.windowID; break;
+        case SDL_MOUSEWHEEL:   ev_wid = ev.wheel.windowID; break;
+        case SDL_WINDOWEVENT:  ev_wid = ev.window.windowID; break;
+        default: break;
+        }
+        if (term_window_id != 0 && ev_wid != 0
+            && ev_wid == term_window_id) {
+            ppsh_term_handle_sdl_event(m->ppsh_term, &ev);
+            continue;
+        }
+        if (ev_wid != 0 && main_window_id != 0
+            && ev_wid != main_window_id) {
+            /* Event for some other SDL window — ignore. */
+            continue;
+        }
+
         switch (ev.type) {
         case SDL_QUIT:
             quit_requested = true;

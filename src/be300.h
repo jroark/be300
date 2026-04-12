@@ -137,6 +137,10 @@ typedef struct be300_state {
     void        *sdl_renderer;
     void        *sdl_texture;
 
+    /* Dedicated PPSH console window (NULL unless --ppsh and SDL available).
+     * Owned by machine_be300.c; ui.c forwards per-window SDL events. */
+    struct ppsh_term *ppsh_term;
+
     /* Boot/runtime host state */
     be300_boot_mode_t boot_mode;
     bool         input_registered;

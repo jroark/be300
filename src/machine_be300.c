@@ -16,6 +16,7 @@
 #include "host_io.h"
 #include "loader.h"
 #include "ppsh.h"
+#include "ppsh_term.h"
 #include "ui.h"
 #include "wince_boot.h"
 
@@ -78,6 +79,15 @@ static void be300_serial_sink(int ch, void *user_data)
     be300_serial_ring_push((machine_t *)user_data, ch);
 }
 
+static void be300_ppsh_term_output_sink(void *ctx, const uint8_t *buf,
+    size_t n)
+{
+    machine_t *m = (machine_t *)ctx;
+    if (!m)
+        return;
+    ppsh_term_write(m->ppsh_term, buf, n);
+}
+
 static void be300_ppsh_poll_host_input(machine_t *m)
 {
     unsigned char raw[128];
@@ -89,7 +99,11 @@ static void be300_ppsh_poll_host_input(machine_t *m)
     if (!m || !m->cfg.enable_ppsh || !be300_ppsh_transport_ready())
         return;
 
-    raw_len = host_io_read_stdin_nonblocking(raw, sizeof(raw));
+    if (m->ppsh_term) {
+        raw_len = ppsh_term_read(m->ppsh_term, raw, sizeof(raw));
+    } else {
+        raw_len = host_io_read_stdin_nonblocking(raw, sizeof(raw));
+    }
     if (raw_len == 0)
         return;
 
@@ -890,12 +904,30 @@ static void be300_runtime_start(machine_t *m)
     host_io_reset_stdin_state();
     host_io_set_serial_sink(be300_serial_sink, m);
     host_io_set_stdout_enabled(m->mirror_serial_to_stdout);
-    host_io_set_console_stdin_enabled(!m->cfg.enable_ppsh);
+
+    if (m->cfg.enable_ppsh && m->use_builtin_ui && !m->ppsh_term) {
+        m->ppsh_term = ppsh_term_create("BE-300 PPSH");
+        if (m->ppsh_term) {
+            be300_ppsh_set_output_sink(be300_ppsh_term_output_sink, m);
+        } else {
+            fprintf(stderr,
+                "[PPSH] ppsh_term_create failed — falling back to stdio\n");
+        }
+    }
+
+    /* Keep stdin available as a fallback when the SDL console is absent. */
+    host_io_set_console_stdin_enabled(
+        !m->cfg.enable_ppsh || m->ppsh_term == NULL);
 
     if (m->cfg.enable_ppsh) {
-        fprintf(stderr,
-            "[PPSH] console bridge enabled"
-            " (stdin is line-buffered unless the caller supplies raw input)\n");
+        if (m->ppsh_term) {
+            fprintf(stderr,
+                "[PPSH] shell I/O routed to dedicated console window\n");
+        } else {
+            fprintf(stderr,
+                "[PPSH] console bridge enabled"
+                " (stdin is line-buffered unless the caller supplies raw input)\n");
+        }
     }
 }
 
@@ -906,6 +938,12 @@ static void be300_runtime_finalize(machine_t *m)
 
     if (m->save_exit_screenshot)
         ui_save_screenshot(m);
+
+    if (m->ppsh_term) {
+        be300_ppsh_set_output_sink(NULL, NULL);
+        ppsh_term_destroy(m->ppsh_term);
+        m->ppsh_term = NULL;
+    }
 
     if (m->use_builtin_ui)
         ui_destroy(m);
@@ -1593,6 +1631,8 @@ static bool be300_run_batch(machine_t *m)
     be300_ppsh_poll_host_input(m);
     if (m->use_builtin_ui)
         ui_update(m);
+    if (m->ppsh_term)
+        ppsh_term_render(m->ppsh_term);
 
     if (m->use_builtin_ui && ui_should_quit(m)) {
         fprintf(stderr, "[BE300] Loop exit: ui_should_quit is true\n");
