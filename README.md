@@ -113,10 +113,12 @@ Options:
 ### Building a Linux-booting NAND image
 
 `tools/build_nand_linux.py` packages a Linux ELF kernel into a 16 MB NAND image
-that boots on real BE-300 hardware through the stock masked boot ROM (no
-modifications to ROM, SPL, or emulator required). The image can be flashed to
-NAND via `NANDWRITER.bin` (write it to CF card as `All_nand.bin`) or tested
-directly in the emulator with `--nand`.
+that boots through the stock masked boot ROM, with no modifications to ROM,
+SPL, or emulator. **This has only been verified in the emulator — it has NOT
+been tested on real hardware.** In principle it could be flashed via
+`NANDWRITER.bin` (written to CF card as `All_nand.bin`), but that path is
+unverified and may fail for reasons the emulator doesn't exercise (NAND ECC,
+OOB layout, actual ROM timing, etc.).
 
 ```bash
 # Build the image
