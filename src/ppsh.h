@@ -7,6 +7,12 @@
 bool be300_ppsh_transport_ready(void);
 size_t be300_ppsh_queue_host_input(const uint8_t *buf, size_t len);
 
+/* Wrap `len` text bytes in a PPSH type-0x0005 frame and push the framed
+ * bytes into the host->guest input queue. Mirrors the output framing
+ * observed in the guest->host direction. Returns the number of payload
+ * bytes queued (not including framing overhead). */
+size_t be300_ppsh_queue_host_text(const uint8_t *buf, size_t len);
+
 /*
  * Redirect guest-side PPSH shell output. When a sink is installed, PPSH
  * bytes are delivered to `sink(ctx, buf, len)` instead of being printed

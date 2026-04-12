@@ -118,7 +118,7 @@ static void be300_ppsh_poll_host_input(machine_t *m)
         }
     }
 
-    queued = be300_ppsh_queue_host_input(cooked, cooked_len);
+    queued = be300_ppsh_queue_host_text(cooked, cooked_len);
     if (m->cfg.log_mmio && queued > 0) {
         fprintf(stderr,
             "[PPSH] queued %zu host byte%s for guest transport\n",
