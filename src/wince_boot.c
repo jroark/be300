@@ -3232,35 +3232,33 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
     }
 
     case 0x80096E88u:
-        if (!m->wince.verify_helper_entry_dumped) {
-            m->wince.verify_helper_entry_dumped = true;
-            {
-                uint32_t a3v = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3];
-                uint32_t stk4 = 0;
-                (void)load_va_word(m, sp + 0x50u, &stk4);
+        if (m->wince.verify_helper_entry_count < 8u) {
+            uint32_t rav = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+            uint32_t stk4 = 0;
+            m->wince.verify_helper_entry_count++;
+            (void)load_va_word(m, sp + 0x50u, &stk4);
+            fprintf(stderr,
+                "[WINCE_VERIFY_ENTRY] #%u pc=0x%08X ra=0x%08X"
+                " sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
+                " a3=0x%08X stk_arg4=0x%08X\n",
+                (unsigned)m->wince.verify_helper_entry_count,
+                pc32, rav, sp,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+                stk4);
+            if (ret_count > 0) {
                 fprintf(stderr,
-                    "[WINCE_VERIFY_ENTRY] pc=0x%08X ra=0x%08X sp=0x%08X"
-                    " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
-                    " stk_arg4=0x%08X\n",
-                    pc32,
-                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
-                    sp,
-                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
-                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
-                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
-                    a3v,
-                    stk4);
-                if (ret_count > 0) {
+                    "[WINCE_CB_RET] label=verify_helper_#%u",
+                    (unsigned)m->wince.verify_helper_entry_count);
+                for (i = 0; i < ret_count; i++) {
                     fprintf(stderr,
-                        "[WINCE_CB_RET] label=verify_helper_entry");
-                    for (i = 0; i < ret_count; i++) {
-                        fprintf(stderr,
-                            " ret%zu=%#010x@+0x%02X callsite=0x%08X",
-                            i, ret_addrs[i], ret_offs[i],
-                            ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
-                    }
-                    fputc('\n', stderr);
+                        " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                        i, ret_addrs[i], ret_offs[i],
+                        ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
                 }
+                fputc('\n', stderr);
             }
             m->wince.callback_slot_diag_count++;
         }
@@ -6621,6 +6619,22 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 "[WINCE_L2W_PROBE] Phase N: shared address resolver"
                 " 0x80096CC8:\n");
             dump_code_window(m, UINT32_C(0x80096CC8), 0u, 28u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase O: opcode jump table"
+                " 0x80075714..0x80075794 (32 entries):\n");
+            {
+                unsigned k;
+                for (k = 0; k < 32u; k++) {
+                    uint32_t v = 0;
+                    uint32_t va = UINT32_C(0x80075714)
+                                  + (uint32_t)(k * 4u);
+                    bool ok = load_va_word(m, va, &v);
+                    fprintf(stderr,
+                        "[WINCE_JUMPTBL] opcode=%u va=0x%08X"
+                        " handler=0x%08X%s\n",
+                        k + 1u, va, v, ok ? "" : " (unmapped)");
+                }
+            }
         }
         if (n >= 25u && n <= 40u) {
             struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
