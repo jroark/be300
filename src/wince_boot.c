@@ -6485,6 +6485,14 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 "[WINCE_L2W_PROBE] outer caller prologue 0x800980C0"
                 " (entry of function containing 0x8009813C):\n");
             dump_code_window(m, UINT32_C(0x80098000), 0u, 48u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase I: real prologue window"
+                " 0x80097FC0..0x80098000:\n");
+            dump_code_window(m, UINT32_C(0x80097FE0), 8u, 8u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase I: helper 0x80096E88 (v0"
+                " gates second walker):\n");
+            dump_code_window(m, UINT32_C(0x80096E88), 0u, 24u);
         }
         if (n >= 25u && n <= 40u) {
             struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
