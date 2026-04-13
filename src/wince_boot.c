@@ -6570,6 +6570,18 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 "[WINCE_L2W_PROBE] Phase L: extended body"
                 " 0x8008DA20..0x8008DAA0:\n");
             dump_code_window(m, UINT32_C(0x8008DA60), 16u, 16u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase M: coordinator prologue"
+                " 0x8008D800..0x8008D900:\n");
+            dump_code_window(m, UINT32_C(0x8008D860), 24u, 24u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase M: query/verify 0x80098180"
+                " (a2=0x1000 entry gating teardown flag):\n");
+            dump_code_window(m, UINT32_C(0x80098180), 0u, 32u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase M: sibling MM primitive"
+                " 0x80097844:\n");
+            dump_code_window(m, UINT32_C(0x80097844), 0u, 24u);
         }
         if (n >= 25u && n <= 40u) {
             struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
