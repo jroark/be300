@@ -3046,76 +3046,130 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
     }
 
     case 0x80097000u:
-        if (!m->wince.teardown_trace_dumped) {
-            m->wince.teardown_trace_dumped = true;
-            fprintf(stderr,
-                "[WINCE_CB_PC] label=l2_teardown_entry pc=0x%08X"
-                " ra=0x%08X sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
-                " a3=0x%08X s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X\n",
-                pc32,
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
-                sp,
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
-                s2,
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3]);
-            dump_code_window(m, pc32, 4u, 12u);
-            {
-                uint32_t a0v = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
-                unsigned w;
-                for (w = 0; w < 16u; w++) {
-                    uint32_t pw = 0;
-                    uint32_t va = a0v + (uint32_t)(w * 4u);
-                    bool ok = load_va_word(m, va, &pw);
-                    fprintf(stderr,
-                        "[WINCE_L2_TEARDOWN] va=0x%08X w=0x%08X%s\n",
-                        va, pw, ok ? "" : " (unmapped)");
-                }
-            }
-            if (ret_count > 0) {
-                fprintf(stderr,
-                    "[WINCE_CB_RET] label=l2_teardown_entry");
-                for (i = 0; i < ret_count; i++) {
-                    fprintf(stderr,
-                        " ret%zu=%#010x@+0x%02X callsite=0x%08X",
-                        i, ret_addrs[i], ret_offs[i],
-                        ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
-                }
-                fputc('\n', stderr);
-            }
-            m->wince.callback_slot_diag_count++;
+    {
+        uint32_t a0v = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        bool is_hot_l2 = (a0v == UINT32_C(0x80FFC1C8));
+        bool in_l2_family =
+            (a0v >= UINT32_C(0x80FF0000) && a0v < UINT32_C(0x81000000));
+        bool should_log = is_hot_l2 ||
+            (in_l2_family && m->wince.teardown_trace_count < 8u);
+
+        if (!should_log)
+            return;
+        if (is_hot_l2) {
+            if (m->wince.teardown_hot_logged)
+                return;
+            m->wince.teardown_hot_logged = true;
+        } else {
+            m->wince.teardown_trace_count++;
         }
+
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+            " a0=0x%08X a1=0x%08X s0=0x%08X s1=0x%08X"
+            " s2=0x%08X s3=0x%08X\n",
+            is_hot_l2 ? "l2_teardown_hot" : "l2_teardown_entry",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            a0v,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+            s2,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3]);
+        {
+            unsigned w;
+            for (w = 0; w < 16u; w++) {
+                uint32_t pw = 0;
+                uint32_t va = a0v + (uint32_t)(w * 4u);
+                bool ok = load_va_word(m, va, &pw);
+                fprintf(stderr,
+                    "[WINCE_L2_TEARDOWN] tag=%s va=0x%08X w=0x%08X%s\n",
+                    is_hot_l2 ? "hot_page" : "pre_zero",
+                    va, pw, ok ? "" : " (unmapped)");
+            }
+        }
+        if (ret_count > 0) {
+            fprintf(stderr,
+                "[WINCE_CB_RET] label=%s",
+                is_hot_l2 ? "l2_teardown_hot" : "l2_teardown_entry");
+            for (i = 0; i < ret_count; i++) {
+                fprintf(stderr,
+                    " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                    i, ret_addrs[i], ret_offs[i],
+                    ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
+            }
+            fputc('\n', stderr);
+        }
+        m->wince.callback_slot_diag_count++;
         return;
+    }
 
     case 0x800971C0u:
-        if (!m->wince.teardown_caller_dumped) {
-            m->wince.teardown_caller_dumped = true;
+    {
+        uint32_t s1_v = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1];
+        uint32_t s3_v = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3];
+        bool slot_aware =
+            (s2 >= UINT32_C(0x01FE0000) && s2 < UINT32_C(0x04000000)) ||
+            (s3_v >= UINT32_C(0x01FE0000) && s3_v < UINT32_C(0x04000000));
+        if (s1_v == 0u || !slot_aware
+            || m->wince.teardown_caller_count >= 8u)
+            return;
+        m->wince.teardown_caller_count++;
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=l2_teardown_caller_loop pc=0x%08X"
+            " ra=0x%08X sp=0x%08X s0=0x%08X s1=0x%08X s2=0x%08X"
+            " s3=0x%08X s4=0x%08X s5=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+            s1_v,
+            s2,
+            s3_v,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S5]);
+        dump_code_window(m, pc32, 10u, 4u);
+        if (ret_count > 0) {
             fprintf(stderr,
-                "[WINCE_CB_PC] label=l2_teardown_caller pc=0x%08X"
-                " ra=0x%08X sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
-                " a3=0x%08X s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X"
-                " s4=0x%08X s5=0x%08X\n",
+                "[WINCE_CB_RET] label=l2_teardown_caller_loop");
+            for (i = 0; i < ret_count; i++) {
+                fprintf(stderr,
+                    " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                    i, ret_addrs[i], ret_offs[i],
+                    ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
+            }
+            fputc('\n', stderr);
+        }
+        m->wince.callback_slot_diag_count++;
+        return;
+    }
+
+    case 0x80098144u:
+        if (!m->wince.teardown_tail_dumped) {
+            m->wince.teardown_tail_dumped = true;
+            fprintf(stderr,
+                "[WINCE_CB_PC] label=l2_teardown_tail pc=0x%08X"
+                " ra=0x%08X sp=0x%08X v0=0x%08X"
+                " s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X"
+                " s4=0x%08X s5=0x%08X s6=0x%08X s7=0x%08X\n",
                 pc32,
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
                 sp,
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
                 s2,
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4],
-                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S5]);
-            dump_code_window(m, pc32, 6u, 8u);
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S5],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S6],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S7]);
+            dump_code_window(m, pc32, 16u, 8u);
             if (ret_count > 0) {
                 fprintf(stderr,
-                    "[WINCE_CB_RET] label=l2_teardown_caller");
+                    "[WINCE_CB_RET] label=l2_teardown_tail");
                 for (i = 0; i < ret_count; i++) {
                     fprintf(stderr,
                         " ret%zu=%#010x@+0x%02X callsite=0x%08X",
