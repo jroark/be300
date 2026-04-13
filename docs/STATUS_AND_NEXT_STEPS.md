@@ -1,5 +1,10 @@
 # BE-300 Emulator Boot Status and Next Steps
 
+This file is historical Linux-kernel status. For the current WinCE 3.0
+cold-boot work, start with
+`docs/WINCE_COLD_BOOT_SESSION_2026-04-12.md` and then
+`docs/WINCE_COLD_BOOT_SESSION_2026-04-08.md`.
+
 ## Current Status (2026-02-26)
 
 The emulator now boots far beyond inet initcalls and reaches root mount
