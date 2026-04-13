@@ -263,6 +263,7 @@ typedef struct {
     bool     teardown_section_entry_dumped;
     uint8_t  verify_helper_entry_count;
     uint8_t  verify_helper_ret_count;
+    uint8_t  walker_entry_count;
     uint16_t hot_l2p_write_count;
     uint8_t  l1_slot_write_count;
     uint8_t  teardown_trace_count;

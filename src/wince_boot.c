@@ -3264,6 +3264,44 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
         }
         return;
 
+    case 0x800970A8u:
+        if (m->wince.walker_entry_count < 8u) {
+            uint32_t stk20 = 0, stk28 = 0, stk30 = 0, stk48 = 0;
+            uint32_t stk50 = 0, stk54 = 0, stk58 = 0, stk94 = 0;
+            m->wince.walker_entry_count++;
+            (void)load_va_word(m, sp + 0x20u, &stk20);
+            (void)load_va_word(m, sp + 0x28u, &stk28);
+            (void)load_va_word(m, sp + 0x30u, &stk30);
+            (void)load_va_word(m, sp + 0x48u, &stk48);
+            (void)load_va_word(m, sp + 0x50u, &stk50);
+            (void)load_va_word(m, sp + 0x54u, &stk54);
+            (void)load_va_word(m, sp + 0x58u, &stk58);
+            (void)load_va_word(m, sp + 0x94u, &stk94);
+            fprintf(stderr,
+                "[WINCE_WALKER_ENTRY] #%u pc=0x%08X ra=0x%08X"
+                " sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
+                " a3=0x%08X v0=0x%08X v1=0x%08X\n",
+                (unsigned)m->wince.walker_entry_count,
+                pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                sp,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1]);
+            fprintf(stderr,
+                "[WINCE_WALKER_STK] #%u sp+0x20=0x%08X sp+0x28=0x%08X"
+                " sp+0x30=0x%08X sp+0x48=0x%08X sp+0x50=0x%08X"
+                " sp+0x54=0x%08X sp+0x58=0x%08X sp+0x94=0x%08X\n",
+                (unsigned)m->wince.walker_entry_count,
+                stk20, stk28, stk30, stk48, stk50, stk54,
+                stk58, stk94);
+            m->wince.callback_slot_diag_count++;
+        }
+        return;
+
     case 0x80098108u:
         if (m->wince.verify_helper_ret_count < 8u) {
             uint32_t stk20 = 0;
