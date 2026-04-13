@@ -3231,6 +3231,51 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
         return;
     }
 
+    case 0x80097FC4u:
+        if (!m->wince.teardown_section_entry_dumped) {
+            m->wince.teardown_section_entry_dumped = true;
+            fprintf(stderr,
+                "[WINCE_SECTION_TEARDOWN] entry pc=0x%08X ra=0x%08X"
+                " sp=0x%08X v0=0x%08X v1=0x%08X a0=0x%08X a1=0x%08X"
+                " a2=0x%08X a3=0x%08X s0=0x%08X s1=0x%08X\n",
+                pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                sp,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1]);
+            /* Walk the stack for return addresses at depth 0x80,
+             * wider than the default 0x40, to find the outer
+             * caller that asked to tear down this section range. */
+            {
+                uint32_t ret_offs2[6] = {0};
+                uint32_t ret_addrs2[6] = {0};
+                size_t rc2 = collect_stack_return_sites(m, sp,
+                    ret_offs2, ret_addrs2,
+                    sizeof(ret_addrs2) / sizeof(ret_addrs2[0]),
+                    0x80u);
+                size_t k;
+                if (rc2 > 0) {
+                    fprintf(stderr,
+                        "[WINCE_CB_RET] label=section_teardown_entry");
+                    for (k = 0; k < rc2; k++) {
+                        fprintf(stderr,
+                            " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                            k, ret_addrs2[k], ret_offs2[k],
+                            ret_addrs2[k] >= 8u ? ret_addrs2[k] - 8u : 0u);
+                    }
+                    fputc('\n', stderr);
+                }
+            }
+            m->wince.callback_slot_diag_count++;
+        }
+        return;
+
     case 0x800971B4u:
         if (m->wince.loop_prejal_count < 16u) {
             uint32_t s0v = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0];
@@ -6493,6 +6538,10 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 "[WINCE_L2W_PROBE] Phase I: helper 0x80096E88 (v0"
                 " gates second walker):\n");
             dump_code_window(m, UINT32_C(0x80096E88), 0u, 24u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase J: real function entry"
+                " 0x80097F80..0x80097FC4:\n");
+            dump_code_window(m, UINT32_C(0x80097FA0), 8u, 8u);
         }
         if (n >= 25u && n <= 40u) {
             struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
