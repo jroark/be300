@@ -38,6 +38,15 @@ static void dump_section3_context_head(machine_t *m, const char *tag,
     uint32_t pc32);
 
 #define WINCE_COLD_LATE_PROBE_LOGGED UINT32_C(0x00200000)
+#define WINCE_CALLBACK_SLOT_BASE_VA  UINT32_C(0x01FE6544)
+#define WINCE_CALLBACK_SLOT_CANDIDATE_PA UINT32_C(0x00FFB544)
+#define WINCE_CALLBACK_SLOT_TRACE_BYTES 0x40u
+#define WINCE_CALLBACK_OBJ_CANDIDATE_VA UINT32_C(0x80FFFEA8)
+#define WINCE_CALLBACK_OBJ_CANDIDATE_PA UINT32_C(0x00FFFEA8)
+#define WINCE_CALLBACK_OBJ_TRACE_BYTES 0x100u
+#define WINCE_HOT_USER_L2_TABLE_VA UINT32_C(0x80FFC1C8)
+#define WINCE_HOT_USER_L2_TABLE_PA UINT32_C(0x00FFC1C8)
+#define WINCE_HOT_USER_L2_TRACE_BYTES 0x40u
 #define WINCE_PATH_PROBE_77820      UINT64_C(0x0000000000000001)
 #define WINCE_PATH_PROBE_79488      UINT64_C(0x0000000000000002)
 #define WINCE_PATH_PROBE_794C8      UINT64_C(0x0000000000000004)
@@ -136,11 +145,22 @@ static void maybe_log_serial_exception_correlation(machine_t *m,
 static void maybe_log_systempatch_context(machine_t *m, const char *reason);
 static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
     uint32_t raw_pc32);
+static void maybe_note_hot_l2_alloc_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32);
+static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
+    uint32_t pc32);
 static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
     uint32_t probe_va, uint32_t fault_vaddr, uint32_t exccode,
     const char *tag);
 static void log_l2_table_state(machine_t *m, const char *tag,
     uint32_t table_va, uint32_t focus_vaddr);
+static void log_hot_user_l2_state(machine_t *m, const char *tag);
+static void log_alloc_leaf_summary(machine_t *m, const char *label,
+    uint32_t leaf_va);
+static void log_alloc_scan_state(machine_t *m, struct cpu *cpu,
+    const char *label, uint32_t base_va, uint32_t type_tag,
+    uint32_t start_idx, uint32_t start_slot, uint32_t request_count,
+    bool processed_ok, uint32_t processed, bool result_ok, uint32_t result);
 static void log_section0_focus_window(machine_t *m, const char *tag,
     uint32_t table_va);
 static void maybe_note_section3_queue_pc(machine_t *m, struct cpu *cpu,
@@ -189,6 +209,24 @@ static uint32_t canonicalize_nk_pc(uint32_t pc32)
         return (pc32 & 0x1FFFFFFFu) | 0x80000000u;
     }
     return pc32;
+}
+
+static bool same_4k_page(uint32_t a, uint32_t b)
+{
+    return (a & ~UINT32_C(0xFFF)) == (b & ~UINT32_C(0xFFF));
+}
+
+static unsigned hot_page_verdict_severity(const wince_hot_page_verdict_t *v)
+{
+    if (!v || !v->seen)
+        return 0u;
+    if (v->section_val == 0u || v->l2_val == 0u)
+        return 4u;
+    if (!v->selected_valid)
+        return 3u;
+    if (v->fault_va == v->probe_va)
+        return 2u;
+    return 1u;
 }
 
 static void note_type4_order_event(machine_t *m, struct cpu *cpu,
@@ -502,6 +540,376 @@ static uint32_t load_table_word(machine_t *m, uint32_t table_va,
     if (table_va == 0)
         return 0;
     return load_pa_word(m, table_va_to_pa(table_va) + offset);
+}
+
+static bool entrylo_to_pa_4k(uint32_t entrylo, uint32_t va, uint32_t *out_pa)
+{
+    uint32_t pfn;
+
+    if (!out_pa || !(entrylo & ENTRYLO_V))
+        return false;
+
+    pfn = (entrylo & ENTRYLO_PFN_MASK) >> ENTRYLO_PFN_SHIFT;
+    *out_pa = ((pfn << 10) & ~UINT32_C(0x0FFF)) | (va & UINT32_C(0x0FFF));
+    return true;
+}
+
+static bool callback_obj_offset_is_interesting(uint64_t off, size_t len)
+{
+    static const struct {
+        uint32_t off;
+        uint32_t len;
+    } ranges[] = {
+        { 0x08u, 0x0Cu },
+        { 0x24u, 0x04u },
+        { 0x54u, 0x10u },
+        { 0x80u, 0x0Cu },
+        { 0xBCu, 0x10u },
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(ranges) / sizeof(ranges[0]); i++) {
+        if (range_overlaps(off, (uint64_t)len, ranges[i].off, ranges[i].len))
+            return true;
+    }
+
+    return false;
+}
+
+static void maybe_log_callback_slot_state(machine_t *m, struct cpu *cpu,
+    const char *reason, uint32_t entrylo)
+{
+    uint32_t base_pa;
+    uint32_t flag;
+    uint32_t ptr;
+    uint32_t aux;
+    uint32_t arg;
+    uint32_t cb260 = 0;
+    bool cb260_ok = false;
+
+    if (!m || !cpu)
+        return;
+    if (!entrylo_to_pa_4k(entrylo, WINCE_CALLBACK_SLOT_BASE_VA, &base_pa))
+        return;
+    if (m->wince.callback_slot_diag_count >= 24u
+        && m->wince.callback_slot_watch_pa == base_pa) {
+        return;
+    }
+
+    flag = load_pa_word(m, base_pa + 0x00u);
+    ptr = load_pa_word(m, base_pa + 0x04u);
+    aux = load_pa_word(m, base_pa + 0x08u);
+    arg = load_pa_word(m, base_pa + 0x0Cu);
+    if (ptr != 0)
+        cb260_ok = load_va_word(m, ptr + 0x260u, &cb260);
+
+    m->wince.callback_slot_watch_armed = true;
+    m->wince.callback_slot_watch_pa = base_pa;
+    m->wince.callback_slot_diag_count++;
+
+    fprintf(stderr,
+        "[WINCE_CB_SLOT] reason=%s base_va=0x%08X base_pa=0x%08X"
+        " entrylo=0x%08X flag=0x%08X ptr=0x%08X aux=0x%08X arg=0x%08X"
+        " ptr260=%s0x%08X pc=0x%08X ra=0x%08X\n",
+        reason ? reason : "?",
+        WINCE_CALLBACK_SLOT_BASE_VA,
+        base_pa,
+        entrylo,
+        flag,
+        ptr,
+        aux,
+        arg,
+        cb260_ok ? "" : "?",
+        cb260,
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+}
+
+static void log_callback_slot_write(machine_t *m, struct cpu *cpu,
+    uint32_t base_pa, uint64_t paddr, size_t len, uint64_t val,
+    const char *source)
+{
+    if (!m || !cpu || !source)
+        return;
+
+    m->wince.callback_slot_write_count++;
+    if (m->wince.callback_slot_write_count > 32u)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_CB_WRITE] #%u source=%s base_pa=0x%08X off=0x%02" PRIx64
+        " len=%zu val=0x%08llX flag=0x%08X ptr=0x%08X aux=0x%08X"
+        " arg=0x%08X pc=0x%08" PRIx64 " ra=0x%08X\n",
+        (unsigned)m->wince.callback_slot_write_count,
+        source,
+        base_pa,
+        paddr - base_pa,
+        len,
+        (unsigned long long)val,
+        load_pa_word(m, base_pa + 0x00u),
+        load_pa_word(m, base_pa + 0x04u),
+        load_pa_word(m, base_pa + 0x08u),
+        load_pa_word(m, base_pa + 0x0Cu),
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+}
+
+static void maybe_log_callback_object_state(machine_t *m, struct cpu *cpu,
+    const char *reason, uint32_t obj_va)
+{
+    uint32_t self = 0;
+    uint32_t link = 0;
+    uint32_t slot = 0;
+    uint32_t state = 0;
+    uint32_t flags = 0;
+    uint32_t buf54 = 0;
+    uint32_t buf58 = 0;
+    uint32_t buf5c = 0;
+    uint32_t cb = 0;
+    uint32_t gate80 = 0;
+    uint32_t gate84 = 0;
+    uint32_t gate88 = 0;
+    uint32_t listbc = 0;
+    uint32_t modec8 = 0;
+    bool self_ok;
+    bool link_ok;
+    bool slot_ok;
+    bool state_ok;
+    bool flags_ok;
+    bool buf54_ok;
+    bool buf58_ok;
+    bool buf5c_ok;
+    bool cb_ok;
+    bool gate80_ok;
+    bool gate84_ok;
+    bool gate88_ok;
+    bool listbc_ok;
+    bool modec8_ok;
+    char self_buf[16];
+    char link_buf[16];
+    char slot_buf[16];
+    char state_buf[16];
+    char flags_buf[16];
+    char buf54_buf[16];
+    char buf58_buf[16];
+    char buf5c_buf[16];
+    char cb_buf[16];
+    char gate80_buf[16];
+    char gate84_buf[16];
+    char gate88_buf[16];
+    char listbc_buf[16];
+    char modec8_buf[16];
+
+    if (!m || !cpu || obj_va == 0)
+        return;
+    if (m->wince.callback_obj_diag_count >= 48u)
+        return;
+
+    self_ok = load_va_word(m, obj_va + 0x00u, &self);
+    link_ok = load_va_word(m, obj_va + 0x04u, &link);
+    slot_ok = load_va_word(m, obj_va + 0x08u, &slot);
+    state_ok = load_va_word(m, obj_va + 0x0Cu, &state);
+    flags_ok = load_va_word(m, obj_va + 0x10u, &flags);
+    buf54_ok = load_va_word(m, obj_va + 0x54u, &buf54);
+    buf58_ok = load_va_word(m, obj_va + 0x58u, &buf58);
+    buf5c_ok = load_va_word(m, obj_va + 0x5Cu, &buf5c);
+    cb_ok = load_va_word(m, obj_va + 0x60u, &cb);
+    gate80_ok = load_va_word(m, obj_va + 0x80u, &gate80);
+    gate84_ok = load_va_word(m, obj_va + 0x84u, &gate84);
+    gate88_ok = load_va_word(m, obj_va + 0x88u, &gate88);
+    listbc_ok = load_va_word(m, obj_va + 0xBCu, &listbc);
+    modec8_ok = load_va_word(m, obj_va + 0xC8u, &modec8);
+
+    fprintf(stderr,
+        "[WINCE_CB_OBJ] reason=%s obj=0x%08X self=%s slot=%s state=%s"
+        " flags=%s link=%s buf54=%s buf58=%s buf5c=%s cb=%s"
+        " gate80=%s gate84=%s gate88=%s listbc=%s modec8=%s"
+        " pc=0x%08X ra=0x%08X\n",
+        reason ? reason : "?",
+        obj_va,
+        format_word_or_unknown(self_buf, sizeof(self_buf), self_ok, self),
+        format_word_or_unknown(slot_buf, sizeof(slot_buf), slot_ok, slot),
+        format_word_or_unknown(state_buf, sizeof(state_buf), state_ok, state),
+        format_word_or_unknown(flags_buf, sizeof(flags_buf), flags_ok, flags),
+        format_word_or_unknown(link_buf, sizeof(link_buf), link_ok, link),
+        format_word_or_unknown(buf54_buf, sizeof(buf54_buf), buf54_ok, buf54),
+        format_word_or_unknown(buf58_buf, sizeof(buf58_buf), buf58_ok, buf58),
+        format_word_or_unknown(buf5c_buf, sizeof(buf5c_buf), buf5c_ok, buf5c),
+        format_word_or_unknown(cb_buf, sizeof(cb_buf), cb_ok, cb),
+        format_word_or_unknown(gate80_buf, sizeof(gate80_buf), gate80_ok, gate80),
+        format_word_or_unknown(gate84_buf, sizeof(gate84_buf), gate84_ok, gate84),
+        format_word_or_unknown(gate88_buf, sizeof(gate88_buf), gate88_ok, gate88),
+        format_word_or_unknown(listbc_buf, sizeof(listbc_buf), listbc_ok, listbc),
+        format_word_or_unknown(modec8_buf, sizeof(modec8_buf), modec8_ok, modec8),
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    m->wince.callback_obj_diag_count++;
+}
+
+static void log_callback_object_write(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val)
+{
+    uint64_t off;
+
+    if (!m || !cpu || paddr < WINCE_CALLBACK_OBJ_CANDIDATE_PA)
+        return;
+
+    off = paddr - WINCE_CALLBACK_OBJ_CANDIDATE_PA;
+    if (!callback_obj_offset_is_interesting(off, len))
+        return;
+
+    m->wince.callback_obj_write_count++;
+    if (m->wince.callback_obj_write_count > 48u)
+        return;
+
+    fprintf(stderr,
+        "[WINCE_CB_OBJW] #%u off=0x%02" PRIx64 " len=%zu val=0x%08llX"
+        " slot=0x%08X state=0x%08X flags=0x%08X cb=0x%08X"
+        " gate84=0x%08X gate88=0x%08X modec8=0x%08X"
+        " pc=0x%08" PRIx64 " ra=0x%08X\n",
+        (unsigned)m->wince.callback_obj_write_count,
+        off,
+        len,
+        (unsigned long long)val,
+        load_pa_word(m, WINCE_CALLBACK_OBJ_CANDIDATE_PA + 0x08u),
+        load_pa_word(m, WINCE_CALLBACK_OBJ_CANDIDATE_PA + 0x0Cu),
+        load_pa_word(m, WINCE_CALLBACK_OBJ_CANDIDATE_PA + 0x10u),
+        load_pa_word(m, WINCE_CALLBACK_OBJ_CANDIDATE_PA + 0x60u),
+        load_pa_word(m, WINCE_CALLBACK_OBJ_CANDIDATE_PA + 0x84u),
+        load_pa_word(m, WINCE_CALLBACK_OBJ_CANDIDATE_PA + 0x88u),
+        load_pa_word(m, WINCE_CALLBACK_OBJ_CANDIDATE_PA + 0xC8u),
+        (uint64_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+}
+
+static void log_hot_user_l2_state(machine_t *m, const char *tag)
+{
+    static const uint32_t hot_vas[] = {
+        UINT32_C(0x03FE7884),
+        UINT32_C(0x03FE924C),
+        UINT32_C(0x03FEB4AC),
+    };
+    size_t i;
+
+    if (!m)
+        return;
+
+    for (i = 0; i < sizeof(hot_vas) / sizeof(hot_vas[0]); i++) {
+        uint32_t va = hot_vas[i];
+        uint32_t pte_off = (va >> 10) & 0x38u;
+        uint32_t lo0 = load_table_word(m, WINCE_HOT_USER_L2_TABLE_VA,
+            pte_off + 12u);
+        uint32_t lo1 = load_table_word(m, WINCE_HOT_USER_L2_TABLE_VA,
+            pte_off + 16u);
+
+        fprintf(stderr,
+            "[WINCE_HOT_L2] tag=%s va=0x%08X pte_off=0x%02X"
+            " lo0=0x%08X lo1=0x%08X v0=%u v1=%u\n",
+            tag ? tag : "-",
+            va,
+            pte_off,
+            lo0,
+            lo1,
+            (lo0 & ENTRYLO_V) ? 1u : 0u,
+            (lo1 & ENTRYLO_V) ? 1u : 0u);
+    }
+}
+
+static void log_alloc_leaf_summary(machine_t *m, const char *label,
+    uint32_t leaf_va)
+{
+    char slots[17];
+    uint16_t tag = 0;
+    uint16_t active = 0;
+    uint16_t empty = 0;
+    uint16_t sentinels = 0;
+    bool tag_ok;
+    size_t i;
+
+    if (!m || leaf_va < UINT32_C(0x80000000) || leaf_va >= UINT32_C(0x81000000))
+        return;
+
+    memset(slots, 0, sizeof(slots));
+    tag_ok = load_va_half(m, leaf_va + 0x06u, &tag);
+    for (i = 0; i < 16u; i++) {
+        uint32_t slot = 0;
+        bool slot_ok = load_va_word(m, leaf_va + 0x0Cu + (uint32_t)(i * 4u),
+            &slot);
+
+        if (!slot_ok) {
+            slots[i] = '?';
+            continue;
+        }
+        if (slot == 0u) {
+            slots[i] = '.';
+            empty++;
+        } else if (slot == UINT32_C(0xFFFFFFC0)) {
+            slots[i] = 'S';
+            sentinels++;
+        } else {
+            slots[i] = 'X';
+            active++;
+        }
+    }
+    slots[16] = '\0';
+
+    fprintf(stderr,
+        "[WINCE_L2_LEAF] label=%s leaf=0x%08X key=%s%d slots=%s"
+        " active=%u empty=%u sentinels=%u\n",
+        label ? label : "-",
+        leaf_va,
+        tag_ok ? "" : "?",
+        tag_ok ? (int)tag : 0,
+        slots,
+        (unsigned)active,
+        (unsigned)empty,
+        (unsigned)sentinels);
+}
+
+static void log_alloc_scan_state(machine_t *m, struct cpu *cpu,
+    const char *label, uint32_t base_va, uint32_t type_tag,
+    uint32_t start_idx, uint32_t start_slot, uint32_t request_count,
+    bool processed_ok, uint32_t processed, bool result_ok, uint32_t result)
+{
+    uint32_t entry0 = 0;
+    uint32_t entry1 = 0;
+    bool entry0_ok;
+    bool entry1_ok;
+    char entry0_buf[16];
+    char entry1_buf[16];
+    char processed_buf[16];
+    char result_buf[16];
+
+    if (!m || !cpu)
+        return;
+
+    entry0_ok = load_va_word(m, base_va + start_idx * 4u, &entry0);
+    entry1_ok = load_va_word(m, base_va + (start_idx + 1u) * 4u, &entry1);
+
+    fprintf(stderr,
+        "[WINCE_L2_ALLOC] label=%s pc=0x%08X ra=0x%08X sp=0x%08X"
+        " base=0x%08X type=%u start_idx=%u start_slot=%u count=%u"
+        " processed=%s result=%s entry0=%s entry1=%s\n",
+        label ? label : "-",
+        canonicalize_nk_pc((uint32_t)cpu->pc),
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+        base_va,
+        type_tag,
+        start_idx,
+        start_slot,
+        request_count,
+        format_word_or_unknown(processed_buf, sizeof(processed_buf),
+            processed_ok, processed),
+        format_word_or_unknown(result_buf, sizeof(result_buf),
+            result_ok, result),
+        format_word_or_unknown(entry0_buf, sizeof(entry0_buf), entry0_ok, entry0),
+        format_word_or_unknown(entry1_buf, sizeof(entry1_buf), entry1_ok, entry1));
+
+    if (entry0_ok && entry0 > 1u)
+        log_alloc_leaf_summary(m, "entry0", entry0);
+    if (entry1_ok && entry1 > 1u)
+        log_alloc_leaf_summary(m, "entry1", entry1);
 }
 
 static bool load_va_bytes(machine_t *m, uint32_t va, unsigned char *buf,
@@ -1723,6 +2131,7 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
 {
     struct mips_coproc *cp0;
     wince_hot_page_verdict_t *verdict;
+    wince_hot_page_verdict_t candidate;
     uint32_t section_idx;
     uint32_t section_val;
     uint32_t l2_off;
@@ -1732,20 +2141,21 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
     uint32_t lo1 = 0;
     uint32_t selected_lo;
     bool odd_page;
+    unsigned prev_severity;
+    unsigned new_severity;
 
     if (!m || !cpu)
         return;
 
-    if (probe_va == UINT32_C(0x01F94B50)) {
+    if (probe_va == UINT32_C(0x01F8F8F8)) {
+        verdict = &m->wince.hot_page_01f8f8f8;
+    } else if (probe_va == UINT32_C(0x01F94B50)) {
         verdict = &m->wince.hot_page_01f94b50;
     } else if (probe_va == UINT32_C(0x02041FA8)) {
         verdict = &m->wince.hot_page_02041fa8;
     } else {
         return;
     }
-
-    if (verdict->logged)
-        return;
 
     cp0 = cpu->cd.mips.coproc[0];
     if (!cp0)
@@ -1764,23 +2174,35 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
     odd_page = ((probe_va >> 12) & 1u) != 0;
     selected_lo = odd_page ? lo1 : lo0;
 
-    memset(verdict, 0, sizeof(*verdict));
-    verdict->seen = true;
-    verdict->logged = true;
-    verdict->probe_va = probe_va;
-    verdict->fault_va = fault_vaddr;
-    verdict->section_idx = section_idx;
-    verdict->section_val = section_val;
-    verdict->l2_off = l2_off;
-    verdict->l2_val = l2_val;
-    verdict->pte_off = pte_off;
-    verdict->lo0 = lo0;
-    verdict->lo1 = lo1;
-    verdict->selected_lo = selected_lo;
-    verdict->entryhi = (uint32_t)cp0->reg[COP0_ENTRYHI];
-    verdict->asid = verdict->entryhi & 0xFFu;
-    verdict->odd_page = odd_page;
-    verdict->selected_valid = (selected_lo & ENTRYLO_V) != 0;
+    memset(&candidate, 0, sizeof(candidate));
+    candidate.seen = true;
+    candidate.logged = true;
+    candidate.probe_va = probe_va;
+    candidate.fault_va = fault_vaddr;
+    candidate.section_idx = section_idx;
+    candidate.section_val = section_val;
+    candidate.l2_off = l2_off;
+    candidate.l2_val = l2_val;
+    candidate.pte_off = pte_off;
+    candidate.lo0 = lo0;
+    candidate.lo1 = lo1;
+    candidate.selected_lo = selected_lo;
+    candidate.entryhi = (uint32_t)cp0->reg[COP0_ENTRYHI];
+    candidate.asid = candidate.entryhi & 0xFFu;
+    candidate.odd_page = odd_page;
+    candidate.selected_valid = (selected_lo & ENTRYLO_V) != 0;
+
+    prev_severity = hot_page_verdict_severity(verdict);
+    new_severity = hot_page_verdict_severity(&candidate);
+    if (verdict->seen && new_severity < prev_severity)
+        return;
+    if (verdict->seen && new_severity == prev_severity
+        && candidate.fault_va != candidate.probe_va
+        && verdict->fault_va == verdict->probe_va) {
+        return;
+    }
+
+    *verdict = candidate;
 
     fprintf(stderr,
         "[WINCE_PAGE_VERDICT] tag=%s exc=%u probe=0x%08X fault=0x%08X"
@@ -1800,9 +2222,9 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
         lo1,
         odd_page ? "lo1" : "lo0",
         selected_lo,
-        verdict->selected_valid ? 1 : 0,
-        verdict->entryhi,
-        verdict->asid);
+        candidate.selected_valid ? 1 : 0,
+        candidate.entryhi,
+        candidate.asid);
 }
 
 static void maybe_note_section0_source_pc(machine_t *m, struct cpu *cpu,
@@ -1900,6 +2322,15 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
     uint32_t a0_d0 = 0;
     uint32_t a0_e8 = 0;
     uint32_t a0_ec = 0;
+    uint32_t a0_plus_0 = 0;
+    uint32_t a0_plus_4 = 0;
+    uint32_t a0_plus_8 = 0;
+    uint32_t a0_plus_c = 0;
+    uint32_t a0_plus_10 = 0;
+    uint32_t sp_48 = 0;
+    uint32_t sp_50 = 0;
+    uint32_t sp_54 = 0;
+    uint32_t sp_60 = 0;
     uint32_t sp_34 = 0;
     uint32_t sp_38 = 0;
     uint32_t s1;
@@ -1910,6 +2341,15 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
     bool a0_d0_ok = false;
     bool a0_e8_ok = false;
     bool a0_ec_ok = false;
+    bool a0_plus_0_ok = false;
+    bool a0_plus_4_ok = false;
+    bool a0_plus_8_ok = false;
+    bool a0_plus_c_ok = false;
+    bool a0_plus_10_ok = false;
+    bool sp_48_ok = false;
+    bool sp_50_ok = false;
+    bool sp_54_ok = false;
+    bool sp_60_ok = false;
     bool sp_34_ok = false;
     bool sp_38_ok = false;
     bool v104_ok = false;
@@ -1926,6 +2366,15 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
     char a0_d0_buf[16];
     char a0_e8_buf[16];
     char a0_ec_buf[16];
+    char a0_plus_0_buf[16];
+    char a0_plus_4_buf[16];
+    char a0_plus_8_buf[16];
+    char a0_plus_c_buf[16];
+    char a0_plus_10_buf[16];
+    char sp_48_buf[16];
+    char sp_50_buf[16];
+    char sp_54_buf[16];
+    char sp_60_buf[16];
     char sp_34_buf[16];
     char sp_38_buf[16];
     char v104_buf[16];
@@ -2049,6 +2498,71 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
         m->wince.hot_fault_probe_count++;
         return;
 
+    case 0x800A43E4u:
+        sp_48_ok = load_va_word(m,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x48u, &sp_48);
+        sp_50_ok = load_va_word(m,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x50u, &sp_50);
+        sp_54_ok = load_va_word(m,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x54u, &sp_54);
+        sp_60_ok = load_va_word(m,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP] + 0x60u, &sp_60);
+        fprintf(stderr,
+            "[WINCE_HOT_PC] label=systempatch_lookup_begin pc=0x%08X"
+            " ra=0x%08X sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
+            " s0=0x%08X s1=0x%08X stack48=%s stack50=%s stack54=%s"
+            " stack60=%s\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            a0,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+            s1,
+            format_word_or_unknown(sp_48_buf, sizeof(sp_48_buf), sp_48_ok, sp_48),
+            format_word_or_unknown(sp_50_buf, sizeof(sp_50_buf), sp_50_ok, sp_50),
+            format_word_or_unknown(sp_54_buf, sizeof(sp_54_buf), sp_54_ok, sp_54),
+            format_word_or_unknown(sp_60_buf, sizeof(sp_60_buf), sp_60_ok, sp_60));
+        dump_pointer_bytes(m, "lookup_base_a0", a0);
+        dump_code_window(m, pc32, 6u, 8u);
+        m->wince.hot_fault_probe_count++;
+        return;
+
+    case 0x800A4428u:
+        a0_plus_0_ok = load_va_word(m, a0 + 0x0u, &a0_plus_0);
+        a0_plus_4_ok = load_va_word(m, a0 + 0x4u, &a0_plus_4);
+        a0_plus_8_ok = load_va_word(m, a0 + 0x8u, &a0_plus_8);
+        a0_plus_c_ok = load_va_word(m, a0 + 0xCu, &a0_plus_c);
+        a0_plus_10_ok = load_va_word(m, a0 + 0x10u, &a0_plus_10);
+        fprintf(stderr,
+            "[WINCE_HOT_PC] label=systempatch_lookup_probe pc=0x%08X"
+            " ra=0x%08X sp=0x%08X v0=0x%08X v1=0x%08X a0=0x%08X"
+            " s0=0x%08X rec0=%s rec4=%s rec8=%s recC=%s rec10=%s\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
+            a0,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+            format_word_or_unknown(a0_plus_0_buf, sizeof(a0_plus_0_buf),
+                a0_plus_0_ok, a0_plus_0),
+            format_word_or_unknown(a0_plus_4_buf, sizeof(a0_plus_4_buf),
+                a0_plus_4_ok, a0_plus_4),
+            format_word_or_unknown(a0_plus_8_buf, sizeof(a0_plus_8_buf),
+                a0_plus_8_ok, a0_plus_8),
+            format_word_or_unknown(a0_plus_c_buf, sizeof(a0_plus_c_buf),
+                a0_plus_c_ok, a0_plus_c),
+            format_word_or_unknown(a0_plus_10_buf, sizeof(a0_plus_10_buf),
+                a0_plus_10_ok, a0_plus_10));
+        dump_pointer_bytes(m, "lookup_candidate_a0", a0);
+        dump_pointer_bytes(m, "lookup_table_v0",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0]);
+        dump_code_window(m, pc32, 4u, 8u);
+        m->wince.hot_fault_probe_count++;
+        return;
+
     case 0x80094FD4u:
         v104_ok = load_va_word(m, a0 + 0x104u, &v104);
         v11c_ok = load_va_word(m, a0 + 0x11Cu, &v11c);
@@ -2080,6 +2594,471 @@ static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
         maybe_log_systempatch_context(m, "hot_pc_94fd4");
         m->wince.hot_fault_probe_count++;
         m->wince.section3_head_probe_count++;
+        return;
+
+    default:
+        return;
+    }
+}
+
+static void maybe_note_hot_l2_alloc_pc(machine_t *m, struct cpu *cpu,
+    uint32_t raw_pc32)
+{
+    uint32_t pc32;
+    uint32_t sp;
+    uint32_t count = 0;
+    uint32_t out_ptr = 0;
+    uint32_t processed = 0;
+    uint32_t arg16 = 0;
+    uint32_t arg20 = 0;
+    bool count_ok = false;
+    bool processed_ok = false;
+    bool arg16_ok = false;
+    bool arg20_ok = false;
+    char arg16_buf[16];
+    char arg20_buf[16];
+
+    if (!m || !cpu)
+        return;
+
+    pc32 = canonicalize_nk_pc(raw_pc32);
+    switch (pc32) {
+    case 0x80098054u:
+    case 0x8009805Cu:
+    case 0x80098090u:
+    case 0x800982A0u:
+    case 0x800982A8u:
+    case 0x8009837Cu:
+    case 0x80098384u:
+        break;
+    default:
+        return;
+    }
+
+    if (m->wince.hot_l2_alloc_probe_count >= 32u)
+        return;
+
+    sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+    switch (pc32) {
+    case 0x80098054u:
+        count_ok = load_va_word(m, sp + 0x10u, &count);
+        (void)load_va_word(m, sp + 0x14u, &out_ptr);
+        log_alloc_scan_state(m, cpu, "release_scan_call",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+            count_ok ? count : 0u,
+            false, 0u, false, 0u);
+        fprintf(stderr,
+            "[WINCE_L2_ALLOC] label=release_scan_meta out_ptr=0x%08X\n",
+            out_ptr);
+        m->wince.hot_l2_alloc_probe_count++;
+        return;
+
+    case 0x8009805Cu:
+        count_ok = load_va_word(m, sp + 0x10u, &count);
+        processed_ok = load_va_word(m, sp + 0x30u, &processed);
+        log_alloc_scan_state(m, cpu, "release_scan_ret",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+            count_ok ? count : 0u,
+            processed_ok, processed, true,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0]);
+        m->wince.hot_l2_alloc_probe_count++;
+        return;
+
+    case 0x80098090u:
+        arg16_ok = load_va_word(m, sp + 0x10u, &arg16);
+        arg20_ok = load_va_word(m, sp + 0x14u, &arg20);
+        fprintf(stderr,
+            "[WINCE_L2_CLEANUP] label=release_cleanup_call pc=0x%08X"
+            " ra=0x%08X sp=0x%08X base=0x%08X type=0x%08X"
+            " start_idx=%u count=%u arg16=%s arg20=%s\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+            format_word_or_unknown(arg16_buf, sizeof(arg16_buf), arg16_ok, arg16),
+            format_word_or_unknown(arg20_buf, sizeof(arg20_buf), arg20_ok, arg20));
+        log_alloc_scan_state(m, cpu, "release_cleanup_state",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            0u,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+            false, 0u, false, 0u);
+        m->wince.hot_l2_alloc_probe_count++;
+        return;
+
+    case 0x800982A0u:
+        count_ok = load_va_word(m, sp + 0x10u, &count);
+        log_alloc_scan_state(m, cpu, "publish_scan_call",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+            count_ok ? count : 0u,
+            false, 0u, false, 0u);
+        m->wince.hot_l2_alloc_probe_count++;
+        return;
+
+    case 0x800982A8u:
+        count_ok = load_va_word(m, sp + 0x10u, &count);
+        log_alloc_scan_state(m, cpu, "publish_scan_ret",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+            count_ok ? count : 0u,
+            false, 0u, true, (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0]);
+        m->wince.hot_l2_alloc_probe_count++;
+        return;
+
+    case 0x8009837Cu:
+        count_ok = load_va_word(m, sp + 0x10u, &count);
+        (void)load_va_word(m, sp + 0x14u, &out_ptr);
+        log_alloc_scan_state(m, cpu, "validate_scan_call",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+            count_ok ? count : 0u,
+            false, 0u, false, 0u);
+        fprintf(stderr,
+            "[WINCE_L2_ALLOC] label=validate_scan_meta out_ptr=0x%08X\n",
+            out_ptr);
+        m->wince.hot_l2_alloc_probe_count++;
+        return;
+
+    case 0x80098384u:
+        count_ok = load_va_word(m, sp + 0x10u, &count);
+        processed_ok = load_va_word(m, sp + 0x64u, &processed);
+        log_alloc_scan_state(m, cpu, "validate_scan_ret",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+            count_ok ? count : 0u,
+            processed_ok, processed, true,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0]);
+        m->wince.hot_l2_alloc_probe_count++;
+        return;
+
+    default:
+        return;
+    }
+}
+
+static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
+    uint32_t pc32)
+{
+    uint32_t base_pa = m->wince.callback_slot_watch_pa;
+    uint32_t s2 = 0;
+    uint32_t s2_slot = 0;
+    uint32_t t7 = 0;
+    uint32_t t8 = 0;
+    uint32_t flag = 0;
+    uint32_t ptr = 0;
+    uint32_t aux = 0;
+    uint32_t arg = 0;
+    uint32_t sp;
+    uint32_t stk0 = 0;
+    uint32_t stk1 = 0;
+    uint32_t stk2 = 0;
+    uint32_t stk3 = 0;
+    uint32_t ret_offs[4] = {0};
+    uint32_t ret_addrs[4] = {0};
+    size_t ret_count = 0;
+    size_t i;
+
+    if (!m || !cpu)
+        return;
+    if (m->wince.callback_slot_diag_count >= 40u)
+        return;
+
+    if (m->wince.callback_slot_watch_armed) {
+        flag = load_pa_word(m, base_pa + 0x00u);
+        ptr = load_pa_word(m, base_pa + 0x04u);
+        aux = load_pa_word(m, base_pa + 0x08u);
+        arg = load_pa_word(m, base_pa + 0x0Cu);
+    }
+
+    sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+    s2 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2];
+    t7 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T7];
+    t8 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T8];
+    (void)load_va_word(m, s2 + 0x08u, &s2_slot);
+    (void)load_va_word(m, sp + 0x00u, &stk0);
+    (void)load_va_word(m, sp + 0x04u, &stk1);
+    (void)load_va_word(m, sp + 0x08u, &stk2);
+    (void)load_va_word(m, sp + 0x0Cu, &stk3);
+    ret_count = collect_stack_return_sites(m, sp, ret_offs, ret_addrs,
+        sizeof(ret_addrs) / sizeof(ret_addrs[0]), 0x40u);
+
+    switch (pc32) {
+    case 0x01F84A5Cu:
+    case 0x800BFA5Cu:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_wrapper_entry pc=0x%08X"
+            " ra=0x%08X sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
+            " t6=0x%08X armed=%u slot_pa=0x%08X flag=0x%08X ptr=0x%08X"
+            " aux=0x%08X arg=0x%08X stack=%08X/%08X/%08X/%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T6],
+            m->wince.callback_slot_watch_armed ? 1u : 0u,
+            base_pa,
+            flag,
+            ptr,
+            aux,
+            arg,
+            stk0, stk1, stk2, stk3);
+        if (ret_count > 0) {
+            fprintf(stderr,
+                "[WINCE_CB_RET] label=callback_wrapper_entry");
+            for (i = 0; i < ret_count; i++) {
+                fprintf(stderr, " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                    i, ret_addrs[i], ret_offs[i],
+                    ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
+            }
+            fputc('\n', stderr);
+        }
+        dump_code_window(m, pc32, 4u, 12u);
+        maybe_log_callback_object_state(m, cpu, "wrapper_entry",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0]);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x01F84A7Cu:
+    case 0x800BFA7Cu:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_init_call pc=0x%08X"
+            " ra=0x%08X sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
+            " t6=0x%08X armed=%u slot_pa=0x%08X flag=0x%08X ptr=0x%08X"
+            " aux=0x%08X arg=0x%08X stack=%08X/%08X/%08X/%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T6],
+            m->wince.callback_slot_watch_armed ? 1u : 0u,
+            base_pa,
+            flag,
+            ptr,
+            aux,
+            arg,
+            stk0, stk1, stk2, stk3);
+        if (ret_count > 0) {
+            fprintf(stderr,
+                "[WINCE_CB_RET] label=callback_init_call");
+            for (i = 0; i < ret_count; i++) {
+                fprintf(stderr, " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                    i, ret_addrs[i], ret_offs[i],
+                    ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
+            }
+            fputc('\n', stderr);
+        }
+        dump_code_window(m, pc32, 6u, 12u);
+        maybe_log_callback_object_state(m, cpu, "wrapper_init_call",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0]);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x01F84AA8u:
+    case 0x800BFAA8u:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_publish_call pc=0x%08X"
+            " ra=0x%08X sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
+            " slot_pa=0x%08X flag=0x%08X ptr=0x%08X aux=0x%08X arg=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            base_pa,
+            flag,
+            ptr,
+            aux,
+            arg);
+        dump_code_window(m, pc32, 6u, 12u);
+        dump_pointer_bytes(m, "callback_slot_base", UINT32_C(0x01FE6544));
+        maybe_log_callback_object_state(m, cpu, "publish_call", arg);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x8008FF00u:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_dispatch_entry pc=0x%08X"
+            " ra=0x%08X sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
+            " slot_pa=0x%08X flag=0x%08X ptr=0x%08X aux=0x%08X arg=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            base_pa,
+            flag,
+            ptr,
+            aux,
+            arg);
+        maybe_log_callback_object_state(m, cpu, "dispatch_entry",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0]);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x80090024u:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_dispatch_jalr pc=0x%08X"
+            " ra=0x%08X a0=0x%08X t7=0x%08X slot_pa=0x%08X"
+            " flag=0x%08X ptr=0x%08X aux=0x%08X arg=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            t7,
+            base_pa,
+            flag,
+            ptr,
+            aux,
+            arg);
+        maybe_log_callback_object_state(m, cpu, "dispatch_jalr",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0]);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x80090044u:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_dispatch_ret pc=0x%08X"
+            " ra=0x%08X v0=0x%08X a0=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0]);
+        maybe_log_callback_object_state(m, cpu, "dispatch_ret",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0]);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x80092488u:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_table_store pc=0x%08X"
+            " ra=0x%08X sp=0x%08X s2=0x%08X s2+8=0x%08X"
+            " v0=0x%08X v1=0x%08X t7=0x%08X t8=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            s2,
+            s2_slot,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
+            t7,
+            t8);
+        maybe_log_callback_object_state(m, cpu, "table_store", s2);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x80092798u:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_gate_enter pc=0x%08X"
+            " ra=0x%08X sp=0x%08X s2=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            s2);
+        maybe_log_callback_object_state(m, cpu, "gate_enter", s2);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x01F8F4D4u:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_consumer_entry pc=0x%08X"
+            " ra=0x%08X sp=0x%08X slot_pa=0x%08X"
+            " flag=0x%08X ptr=0x%08X aux=0x%08X arg=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            base_pa,
+            flag,
+            ptr,
+            aux,
+            arg);
+        dump_code_window(m, pc32, 6u, 12u);
+        dump_pointer_bytes(m, "callback_slot_base", UINT32_C(0x01FE6544));
+        maybe_log_callback_object_state(m, cpu, "consumer_entry", arg);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x01F8F4FCu:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_consumer_jalr pc=0x%08X"
+            " ra=0x%08X sp=0x%08X v0=0x%08X t7=0x%08X"
+            " slot_pa=0x%08X flag=0x%08X ptr=0x%08X aux=0x%08X"
+            " arg=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            t7,
+            base_pa,
+            flag,
+            ptr,
+            aux,
+            arg);
+        dump_code_window(m, pc32, 6u, 12u);
+        dump_pointer_bytes(m, "callback_slot_base", UINT32_C(0x01FE6544));
+        maybe_log_callback_object_state(m, cpu, "consumer_jalr", arg);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x01FFA93Cu:
+    case 0x8013593Cu:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_flag_store pc=0x%08X"
+            " ra=0x%08X v0=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
+            " armed=%u slot_pa=0x%08X flag=0x%08X ptr=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            m->wince.callback_slot_watch_armed ? 1u : 0u,
+            base_pa,
+            flag,
+            ptr);
+        m->wince.callback_slot_diag_count++;
+        return;
+
+    case 0x02070418u:
+    case 0x801AB218u:
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_ptr_store_half pc=0x%08X"
+            " ra=0x%08X v0=0x%08X a0=0x%08X armed=%u slot_pa=0x%08X"
+            " flag=0x%08X ptr=0x%08X aux=0x%08X arg=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            m->wince.callback_slot_watch_armed ? 1u : 0u,
+            base_pa,
+            flag,
+            ptr,
+            aux,
+            arg);
+        m->wince.callback_slot_diag_count++;
         return;
 
     default:
@@ -5082,6 +6061,23 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
             m->wince.l2_write_diag_count++;
         }
     }
+
+    if (range_overlaps(paddr, len, WINCE_HOT_USER_L2_TABLE_PA,
+            WINCE_HOT_USER_L2_TRACE_BYTES)) {
+        m->wince.hot_user_l2_write_count++;
+        if (m->wince.hot_user_l2_write_count <= 96u) {
+            fprintf(stderr,
+                "[WINCE_HOT_L2W] #%u off=0x%02" PRIx64 " len=%" PRIu64
+                " val=0x%08X pc=0x%08X ra=0x%08X\n",
+                (unsigned)m->wince.hot_user_l2_write_count,
+                paddr - WINCE_HOT_USER_L2_TABLE_PA,
+                len,
+                value,
+                (uint32_t)cpu->pc,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            log_hot_user_l2_state(m, "write");
+        }
+    }
 }
 
 static void maybe_log_systempatch_thread_write(machine_t *m, struct cpu *cpu,
@@ -5246,6 +6242,10 @@ static void maybe_log_section0_hot_slot_access(machine_t *m, struct cpu *cpu,
     const uint32_t table_pa = UINT32_C(0x00FE5000);
     const uint32_t table_va = UINT32_C(0x80FE5000);
     const char *tag = NULL;
+    uint32_t sec0;
+    uint32_t sec3;
+    uint16_t *count;
+    uint16_t limit;
 
     if (!m || !cpu)
         return;
@@ -5271,7 +6271,28 @@ static void maybe_log_section0_hot_slot_access(machine_t *m, struct cpu *cpu,
     if (tag == NULL)
         return;
 
-    if (m->wince.section0_hot_slot_diag_count >= 96)
+    sec0 = load_pa_word(m, 0x18C0u);
+    sec3 = load_pa_word(m, 0x18CCu);
+    if (!m->wince.section3_page_watch_armed
+        && sec0 != UINT32_C(0x80FE5000)
+        && sec3 != UINT32_C(0x80FE5000)) {
+        return;
+    }
+
+    /*
+     * Keep the post-arm budget focused on the hot `0x01F94B50` slot.  Reads
+     * for neighboring slots add little signal once the fault storm starts, but
+     * writes to any nearby entry are still useful for spotting a misindexed
+     * publish.
+     */
+    if (!is_write && strcmp(tag, "slot7e0") != 0
+        && strcmp(tag, "slot7e4") != 0)
+        return;
+
+    count = is_write ? &m->wince.section0_focus_slot_write_count
+        : &m->wince.section0_focus_slot_read_count;
+    limit = is_write ? 64u : 24u;
+    if (*count >= limit)
         return;
 
     fprintf(stderr,
@@ -5282,14 +6303,14 @@ static void maybe_log_section0_hot_slot_access(machine_t *m, struct cpu *cpu,
         paddr - table_pa,
         len,
         (unsigned long long)val,
-        load_pa_word(m, 0x18C0u),
-        load_pa_word(m, 0x18CCu),
+        sec0,
+        sec3,
         (uint64_t)cpu->pc,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
     log_l2_table_state(m, tag, table_va, UINT32_C(0x01F94B50));
     log_section0_focus_window(m, tag, table_va);
 
-    m->wince.section0_hot_slot_diag_count++;
+    (*count)++;
 }
 
 static void maybe_log_section3_raw_write(machine_t *m, struct cpu *cpu,
@@ -6989,6 +8010,7 @@ void wince_boot_init(machine_t *m)
     memset(&m->wince, 0, sizeof(m->wince));
     m->wince.active = (m->cfg.nand_path != NULL);
     m->wince.vector_owner = WINCE_VECTOR_NONE;
+    m->wince.callback_slot_watch_pa = WINCE_CALLBACK_SLOT_CANDIDATE_PA;
 }
 
 void wince_boot_note_spl_handoff(machine_t *m)
@@ -7556,6 +8578,16 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
 
     dump_live_tlb(m);
+    dump_tlb_match_for_va(m, vaddr, "fault_va");
+    if (same_4k_page(vaddr, UINT32_C(0x01F8F8F8)))
+        maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x01F8F8F8), vaddr,
+            exccode, "first_exception");
+    if (same_4k_page(vaddr, UINT32_C(0x01F94B50)))
+        maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x01F94B50), vaddr,
+            exccode, "first_exception");
+    if (same_4k_page(vaddr, UINT32_C(0x02041FA8)))
+        maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x02041FA8), vaddr,
+            exccode, "first_exception");
     dump_tlb_match_for_va(m, UINT32_C(0xFFFFD000), "helper_high");
     dump_tlb_match_for_va(m, UINT32_C(0xFFFFDAC0), "ctx_ptr");
     dump_tlb_match_for_va(m, UINT32_C(0xFFFFDAB0), "ctx_link");
@@ -7604,6 +8636,7 @@ void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
     uint32_t pte_off;
     uint32_t lo0 = 0;
     uint32_t lo1 = 0;
+    uint32_t selected_lo = 0;
     uint32_t repeat;
 
     if (!cpu)
@@ -7642,6 +8675,9 @@ void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
     if ((int32_t)l2_val < 0) {
         lo0 = load_table_word(m, l2_val, pte_off + 12u);
         lo1 = load_table_word(m, l2_val, pte_off + 16u);
+        selected_lo = ((vaddr >> 12) & 1u) != 0 ? lo1 : lo0;
+        if (!(selected_lo & ENTRYLO_V))
+            selected_lo = (lo0 & ENTRYLO_V) ? lo0 : lo1;
     }
 
     fprintf(stderr,
@@ -7673,18 +8709,35 @@ void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
 
     maybe_log_serial_exception_correlation(m, cpu, exccode, vaddr, "post");
-    if (vaddr == UINT32_C(0x01F94B50))
+    if (same_4k_page(vaddr, UINT32_C(0x01F8F8F8))
+        || (m->wince.serial_exc_last.bva_valid
+            && same_4k_page(m->wince.serial_exc_last.bva,
+                UINT32_C(0x01F8F8F8)))) {
+        maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x01F8F8F8), vaddr,
+            exccode, "post_fault");
+    }
+    if (same_4k_page(vaddr, UINT32_C(0x01F94B50))
+        || (m->wince.serial_exc_last.bva_valid
+            && same_4k_page(m->wince.serial_exc_last.bva,
+                UINT32_C(0x01F94B50)))) {
         maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x01F94B50), vaddr,
             exccode, "post_fault");
-    if ((vaddr & ~UINT32_C(0xFFF)) == (UINT32_C(0x02041FA8) & ~UINT32_C(0xFFF))
+    }
+    if (same_4k_page(vaddr, UINT32_C(0x02041FA8))
         || (m->wince.serial_exc_last.bva_valid
-            && m->wince.serial_exc_last.bva == UINT32_C(0x02041FA8))) {
+            && same_4k_page(m->wince.serial_exc_last.bva,
+                UINT32_C(0x02041FA8)))) {
         maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x02041FA8), vaddr,
             exccode, "post_fault");
     }
 
     if (section_val != 0 && m->wince.tlb_post_diag_count < 32)
         log_l2_table_state(m, "post_fault", section_val, vaddr);
+    if (same_4k_page(vaddr, UINT32_C(0x01FE6550))
+        && selected_lo != 0) {
+        maybe_log_callback_slot_state(m, cpu, "tlb_post_01fe6550",
+            selected_lo);
+    }
 
     m->wince.tlb_post_diag_count++;
 }
@@ -7850,6 +8903,8 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_log_boot_path_probe(m, pc32);
     maybe_note_ppsh_exact_pc(m, cpu, pc32);
     maybe_note_exception_hot_pc(m, cpu, pc32);
+    maybe_note_hot_l2_alloc_pc(m, cpu, pc32);
+    maybe_note_callback_slot_pc(m, cpu, pc32);
     maybe_note_section3_install_pc(m, cpu, pc32);
     maybe_note_section3_callback_pc(m, cpu, pc32);
     maybe_note_section3_order_pc(m, cpu, pc32);
@@ -8083,9 +9138,20 @@ void wince_boot_log_summary(machine_t *m)
     if (m->wince.ppsh_poll_active && m->cpu)
         ppsh_close_poll_episode(m, m->cpu, (uint32_t)m->cpu->pc, "shutdown");
     maybe_flush_ppsh_serial_line(m);
+    if (m->cpu && !m->wince.hot_page_01f8f8f8.logged
+        && m->wince.serial_exc_last.bva_valid
+        && same_4k_page(m->wince.serial_exc_last.bva,
+            UINT32_C(0x01F8F8F8))) {
+        maybe_log_hot_page_verdict(m, m->cpu, UINT32_C(0x01F8F8F8),
+            m->wince.serial_exc_last.bva,
+            m->wince.serial_exc_last.code_valid
+                ? m->wince.serial_exc_last.code : 0u,
+            "shutdown");
+    }
     if (m->cpu && !m->wince.hot_page_01f94b50.logged
         && m->wince.serial_exc_last.bva_valid
-        && m->wince.serial_exc_last.bva == UINT32_C(0x01F94B50)) {
+        && same_4k_page(m->wince.serial_exc_last.bva,
+            UINT32_C(0x01F94B50))) {
         maybe_log_hot_page_verdict(m, m->cpu, UINT32_C(0x01F94B50),
             m->wince.serial_exc_last.bva,
             m->wince.serial_exc_last.code_valid
@@ -8094,7 +9160,8 @@ void wince_boot_log_summary(machine_t *m)
     }
     if (m->cpu && !m->wince.hot_page_02041fa8.logged
         && m->wince.serial_exc_last.bva_valid
-        && m->wince.serial_exc_last.bva == UINT32_C(0x02041FA8)) {
+        && same_4k_page(m->wince.serial_exc_last.bva,
+            UINT32_C(0x02041FA8))) {
         maybe_log_hot_page_verdict(m, m->cpu, UINT32_C(0x02041FA8),
             m->wince.serial_exc_last.bva,
             m->wince.serial_exc_last.code_valid
@@ -8168,7 +9235,12 @@ void wince_boot_log_summary(machine_t *m)
         m->wince.type4_handle_watch_va,
         m->wince.type4_payload_watch_va);
 
-    if (m->wince.hot_page_01f94b50.seen
+    if (m->wince.hot_page_01f8f8f8.seen
+        && m->wince.hot_page_01f8f8f8.section_val != 0
+        && m->wince.hot_page_01f8f8f8.l2_val == 0) {
+        exc_class = "missing_or_stale_page_tables";
+        exc_reason = "01f8f8f8_l2_zero";
+    } else if (m->wince.hot_page_01f94b50.seen
         && m->wince.hot_page_01f94b50.section_val != 0
         && m->wince.hot_page_01f94b50.l2_val == 0) {
         exc_class = "missing_or_stale_page_tables";
@@ -8179,7 +9251,9 @@ void wince_boot_log_summary(machine_t *m)
             || !m->wince.hot_page_02041fa8.selected_valid)) {
         exc_class = "missing_or_stale_page_tables";
         exc_reason = "02041fa8_page_invalid";
-    } else if ((m->wince.hot_page_01f94b50.seen
+    } else if ((m->wince.hot_page_01f8f8f8.seen
+            && m->wince.hot_page_01f8f8f8.selected_valid)
+        || (m->wince.hot_page_01f94b50.seen
             && m->wince.hot_page_01f94b50.selected_valid)
         || (m->wince.hot_page_02041fa8.seen
             && m->wince.hot_page_02041fa8.selected_valid)) {
@@ -8198,7 +9272,8 @@ void wince_boot_log_summary(machine_t *m)
             "[WINCE_EXC_SUMMARY] class=%s reason=%s serial_code=0x%03X"
             " serial_pc=0x%08X serial_ra=%s0x%08X serial_bva=0x%08X"
             " process=\"%s\" corr=%u hot_pc=%u sec0=0x%08X sec1=0x%08X"
-            " verdict01_l2=0x%08X verdict20_l2=0x%08X\n",
+            " verdict01f8_l2=0x%08X verdict01f9_l2=0x%08X"
+            " verdict20_l2=0x%08X\n",
             exc_class,
             exc_reason,
             m->wince.serial_exc_last.code,
@@ -8212,6 +9287,7 @@ void wince_boot_log_summary(machine_t *m)
             (unsigned)m->wince.hot_fault_probe_count,
             load_pa_word(m, 0x18C0u),
             load_pa_word(m, 0x18C4u),
+            m->wince.hot_page_01f8f8f8.l2_val,
             m->wince.hot_page_01f94b50.l2_val,
             m->wince.hot_page_02041fa8.l2_val);
     } else {
@@ -8292,6 +9368,27 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
                 (uint32_t)cpu->pc,
                 (unsigned long long)cpu->ninstrs);
         }
+    }
+    if (is_write
+        && range_overlaps(paddr, (uint64_t)len,
+            WINCE_CALLBACK_SLOT_CANDIDATE_PA,
+            WINCE_CALLBACK_SLOT_TRACE_BYTES)) {
+        log_callback_slot_write(m, cpu, WINCE_CALLBACK_SLOT_CANDIDATE_PA,
+            paddr, len, val, "candidate");
+    }
+    if (is_write
+        && range_overlaps(paddr, (uint64_t)len,
+            WINCE_CALLBACK_OBJ_CANDIDATE_PA,
+            WINCE_CALLBACK_OBJ_TRACE_BYTES)) {
+        log_callback_object_write(m, cpu, paddr, len, val);
+    }
+    if (is_write && m->wince.callback_slot_watch_armed
+        && m->wince.callback_slot_watch_pa != WINCE_CALLBACK_SLOT_CANDIDATE_PA
+        && range_overlaps(paddr, (uint64_t)len,
+            m->wince.callback_slot_watch_pa,
+            WINCE_CALLBACK_SLOT_TRACE_BYTES)) {
+        log_callback_slot_write(m, cpu, m->wince.callback_slot_watch_pa,
+            paddr, len, val, "resolved");
     }
     if (is_write
         && (range_overlaps(paddr, (uint64_t)len, 0x006697A0u, 0x20u)

@@ -187,6 +187,12 @@ typedef struct {
     uint16_t systempatch_context_diag_count;
     uint16_t systempatch_thread_ctx_diag_count;
     uint16_t systempatch_thread_write_count;
+    uint16_t callback_slot_diag_count;
+    uint16_t callback_slot_write_count;
+    uint16_t callback_obj_diag_count;
+    uint16_t callback_obj_write_count;
+    uint16_t hot_user_l2_write_count;
+    uint16_t hot_l2_alloc_probe_count;
     uint16_t hot_fault_probe_count;
     uint16_t section0_focus_diag_count;
     uint16_t section0_hot_slot_diag_count;
@@ -215,6 +221,8 @@ typedef struct {
     uint16_t type4_gate_probe_count;
     uint16_t type4_state_probe_count;
     uint16_t section3_retobj_write_count;
+    uint16_t section0_focus_slot_read_count;
+    uint16_t section0_focus_slot_write_count;
     bool     section3_page_watch_armed;
     bool     section3_retobj_watch_armed;
     bool     section3_step_trace_pending;
@@ -243,7 +251,9 @@ typedef struct {
     bool     systempatch_first_exception_logged;
     bool     systempatch_process_logged;
     bool     systempatch_thread_ctx_valid;
+    bool     callback_slot_watch_armed;
     bool     hot_fault_code_dumped;
+    uint32_t callback_slot_watch_pa;
     uint32_t systempatch_last_cur_thrd;
     uint32_t systempatch_last_obj00;
     uint32_t systempatch_last_obj04;
@@ -259,6 +269,7 @@ typedef struct {
     uint32_t systempatch_last_sec3;
     wince_serial_exception_record_t serial_exc_pending;
     wince_serial_exception_record_t serial_exc_last;
+    wince_hot_page_verdict_t hot_page_01f8f8f8;
     wince_hot_page_verdict_t hot_page_01f94b50;
     wince_hot_page_verdict_t hot_page_02041fa8;
 
