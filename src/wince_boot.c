@@ -3353,6 +3353,34 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
                         ok ? "" : " (unmapped)");
                 }
             }
+            /* Phase U: dump the L1 section-table region
+             * around the worker's critical check word at
+             * 0x806694A0 (= L1_base + 504*4). */
+            if (m->wince.walker_entry_count == 1u) {
+                uint32_t critical = 0;
+                unsigned j;
+                (void)load_va_word(m, UINT32_C(0x806694A0),
+                    &critical);
+                fprintf(stderr,
+                    "[WINCE_L1_CRITICAL] va=0x806694A0"
+                    " val=0x%08X (worker checks ==1)\n",
+                    critical);
+                /* Dump 32 words centred on 0x806694A0 to
+                 * see neighbouring L1 entries and their
+                 * current state. */
+                for (j = 0; j < 32u; j++) {
+                    uint32_t v = 0;
+                    uint32_t va = UINT32_C(0x80669480)
+                                  + (uint32_t)(j * 4u);
+                    (void)load_va_word(m, va, &v);
+                    fprintf(stderr,
+                        "[WINCE_L1_REGION] va=0x%08X val=0x%08X%s\n",
+                        va, v,
+                        va == UINT32_C(0x806694A0) ? " <-- check" :
+                        (va == UINT32_C(0x806694B8) ? " <-- hot L2" :
+                         ""));
+                }
+            }
             /* Phase T (late): dump pool descriptor table at
              * teardown time. The early one-shot probe fires
              * during cold-boot kseg1 zero-fill before NK has
