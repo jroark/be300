@@ -3264,6 +3264,28 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
         }
         return;
 
+    case 0x80098108u:
+        if (m->wince.verify_helper_ret_count < 8u) {
+            uint32_t stk20 = 0;
+            uint32_t stk30 = 0;
+            uint32_t stk50 = 0;
+            m->wince.verify_helper_ret_count++;
+            (void)load_va_word(m, sp + 0x20u, &stk20);
+            (void)load_va_word(m, sp + 0x30u, &stk30);
+            (void)load_va_word(m, sp + 0x50u, &stk50);
+            fprintf(stderr,
+                "[WINCE_VERIFY_RET] #%u pc=0x%08X v0=0x%08X"
+                " v1=0x%08X sp=0x%08X sp+0x20=0x%08X"
+                " sp+0x30=0x%08X sp+0x50=0x%08X\n",
+                (unsigned)m->wince.verify_helper_ret_count,
+                pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
+                sp, stk20, stk30, stk50);
+            m->wince.callback_slot_diag_count++;
+        }
+        return;
+
     case 0x80097FC4u:
         if (!m->wince.teardown_section_entry_dumped) {
             m->wince.teardown_section_entry_dumped = true;
@@ -6619,6 +6641,10 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 "[WINCE_L2W_PROBE] Phase N: shared address resolver"
                 " 0x80096CC8:\n");
             dump_code_window(m, UINT32_C(0x80096CC8), 0u, 28u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase P: real opcode handlers"
+                " 0x80096D40..0x80096D80:\n");
+            dump_code_window(m, UINT32_C(0x80096D60), 8u, 8u);
             fprintf(stderr,
                 "[WINCE_L2W_PROBE] Phase O: opcode jump table"
                 " 0x80075714..0x80075794 (32 entries):\n");
