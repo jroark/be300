@@ -260,6 +260,7 @@ typedef struct {
     bool     free_helper_entry_dumped;
     uint8_t  free_helper_call_count;
     uint8_t  loop_prejal_count;
+    bool     teardown_section_entry_dumped;
     uint16_t hot_l2p_write_count;
     uint8_t  l1_slot_write_count;
     uint8_t  teardown_trace_count;
