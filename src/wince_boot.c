@@ -3073,6 +3073,47 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
         dump_code_window(m, pc32, 6u, 12u);
         dump_pointer_bytes(m, "callback_slot_base", UINT32_C(0x01FE6544));
         maybe_log_callback_object_state(m, cpu, "consumer_entry", arg);
+        if (!m->wince.cb_rearm_logged && cpu->translate_v2p != NULL) {
+            uint64_t pa64 = 0;
+            int ok = cpu->translate_v2p(cpu,
+                (uint64_t)UINT32_C(0x01FE6544), &pa64,
+                FLAG_NOEXCEPTIONS);
+            m->wince.cb_rearm_logged = true;
+            if (!ok) {
+                fprintf(stderr,
+                    "[WINCE_CB_REARM] result=unmapped va=0x01FE6544"
+                    " pc=0x%08X\n", pc32);
+            } else {
+                uint32_t new_pa = (uint32_t)pa64 & ~UINT32_C(0xFFF);
+                new_pa |= UINT32_C(0x01FE6544) & UINT32_C(0xFFF);
+                if (new_pa != m->wince.callback_slot_watch_pa) {
+                    fprintf(stderr,
+                        "[WINCE_CB_REARM] old=0x%08X new=0x%08X"
+                        " pc=0x%08X\n",
+                        m->wince.callback_slot_watch_pa, new_pa, pc32);
+                    m->wince.callback_slot_watch_pa = new_pa;
+                    m->wince.callback_slot_watch_armed = true;
+                    m->wince.cb_slot_first_seen = 0;
+                    m->wince.cb_slot_zero_seen = 0;
+                    memset(m->wince.cb_slot_first_pc, 0,
+                        sizeof(m->wince.cb_slot_first_pc));
+                    memset(m->wince.cb_slot_first_ra, 0,
+                        sizeof(m->wince.cb_slot_first_ra));
+                    memset(m->wince.cb_slot_first_val, 0,
+                        sizeof(m->wince.cb_slot_first_val));
+                    memset(m->wince.cb_slot_zero_pc, 0,
+                        sizeof(m->wince.cb_slot_zero_pc));
+                    memset(m->wince.cb_slot_zero_ra, 0,
+                        sizeof(m->wince.cb_slot_zero_ra));
+                    memset(m->wince.cb_slot_first_instr, 0,
+                        sizeof(m->wince.cb_slot_first_instr));
+                } else {
+                    fprintf(stderr,
+                        "[WINCE_CB_REARM] unchanged pa=0x%08X pc=0x%08X\n",
+                        new_pa, pc32);
+                }
+            }
+        }
         m->wince.callback_slot_diag_count++;
         return;
 
@@ -8812,6 +8853,38 @@ void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
         && selected_lo != 0) {
         maybe_log_callback_slot_state(m, cpu, "tlb_post_01fe6550",
             selected_lo);
+    }
+
+    if (!m->wince.exc_slot1_dumped
+        && ((vaddr >= UINT32_C(0x03FE6540) && vaddr < UINT32_C(0x03FE6580))
+            || vaddr == UINT32_C(0x01FE6558))) {
+        uint32_t epc_v = (uint32_t)cp0->reg[COP0_EPC];
+        m->wince.exc_slot1_dumped = true;
+        fprintf(stderr,
+            "[WINCE_CB_FAULT] exc=%u vaddr=0x%08X epc=0x%08X pc=0x%08X"
+            " sp=0x%08X ra=0x%08X cause=0x%08X\n",
+            exccode, vaddr, epc_v, (uint32_t)cpu->pc,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            (uint32_t)cp0->reg[COP0_CAUSE]);
+        dump_code_window(m, epc_v, 2u, 2u);
+        dump_gpr_window(m);
+        {
+            uint32_t sp_v = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+            unsigned k;
+            for (k = 0; k < 12u; k++) {
+                uint32_t w = 0;
+                uint32_t sva = sp_v + (uint32_t)(k * 4u);
+                bool ok = load_va_word(m, sva, &w);
+                fprintf(stderr,
+                    "[WINCE_CB_FAULT_STK] sp+0x%02X=0x%08X %s\n",
+                    k * 4u, sva, ok ? "" : "(unmapped)");
+                (void)w;
+                if (ok)
+                    fprintf(stderr,
+                        "[WINCE_CB_FAULT_STK] val=0x%08X\n", w);
+            }
+        }
     }
 
     m->wince.tlb_post_diag_count++;

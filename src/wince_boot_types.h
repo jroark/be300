@@ -254,6 +254,8 @@ typedef struct {
     bool     callback_slot_watch_armed;
     bool     hot_fault_code_dumped;
     uint32_t callback_slot_watch_pa;
+    bool     exc_slot1_dumped;
+    bool     cb_rearm_logged;
     uint8_t  cb_slot_first_seen;
     uint8_t  cb_slot_zero_seen;
     uint32_t cb_slot_first_pc[4];
