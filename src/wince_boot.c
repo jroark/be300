@@ -47,6 +47,8 @@ static void dump_section3_context_head(machine_t *m, const char *tag,
 #define WINCE_HOT_USER_L2_TABLE_VA UINT32_C(0x80FFC1C8)
 #define WINCE_HOT_USER_L2_TABLE_PA UINT32_C(0x00FFC1C8)
 #define WINCE_HOT_USER_L2_TRACE_BYTES 0x40u
+#define WINCE_HOT_USER_L2_PAGE_PA UINT32_C(0x00FFC000)
+#define WINCE_HOT_USER_L2_PAGE_BYTES 0x1000u
 #define WINCE_PATH_PROBE_77820      UINT64_C(0x0000000000000001)
 #define WINCE_PATH_PROBE_79488      UINT64_C(0x0000000000000002)
 #define WINCE_PATH_PROBE_794C8      UINT64_C(0x0000000000000004)
@@ -6397,6 +6399,15 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
             log_hot_user_l2_state(m, "write");
         }
+        if (!m->wince.hot_l2w_probe_dumped) {
+            m->wince.hot_l2w_probe_dumped = true;
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] candidate store sites"
+                " (dyntrans-stale pc=0x80097000, epc=0x8009004C BD=1):\n");
+            dump_code_window(m, UINT32_C(0x8009004C), 2u, 4u);
+            dump_code_window(m, UINT32_C(0x80097000), 4u, 8u);
+            dump_code_window(m, UINT32_C(0x800971C0), 6u, 4u);
+        }
         if (n >= 25u && n <= 40u) {
             struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
             uint32_t pc32 = (uint32_t)cpu->pc;
@@ -6462,6 +6473,30 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 }
                 fputc('\n', stderr);
             }
+        }
+    }
+
+    /* Phase F: light-touch watch on the FULL 4KB L2 page, but only
+     * for writes that fall OUTSIDE the hot 0x40 window already
+     * covered above. Catches adjacent memsets / neighbour writers
+     * that might be zero-bombing our PTE entries via a wider
+     * sweep. One-liner per write, cap 256. */
+    if (range_overlaps(paddr, len, WINCE_HOT_USER_L2_PAGE_PA,
+            WINCE_HOT_USER_L2_PAGE_BYTES)
+        && !range_overlaps(paddr, len, WINCE_HOT_USER_L2_TABLE_PA,
+            WINCE_HOT_USER_L2_TRACE_BYTES)) {
+        m->wince.hot_l2p_write_count++;
+        if (m->wince.hot_l2p_write_count <= 256u) {
+            fprintf(stderr,
+                "[WINCE_HOT_L2P] #%u off=0x%03" PRIx64 " len=%" PRIu64
+                " val=0x%08X pc=0x%08X ra=0x%08X hot_cnt=%u\n",
+                (unsigned)m->wince.hot_l2p_write_count,
+                paddr - WINCE_HOT_USER_L2_PAGE_PA,
+                len,
+                value,
+                (uint32_t)cpu->pc,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (unsigned)m->wince.hot_user_l2_write_count);
         }
     }
 

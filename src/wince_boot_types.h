@@ -256,6 +256,8 @@ typedef struct {
     uint32_t callback_slot_watch_pa;
     bool     exc_slot1_dumped;
     bool     cb_rearm_logged;
+    bool     hot_l2w_probe_dumped;
+    uint16_t hot_l2p_write_count;
     uint8_t  l1_slot_write_count;
     uint8_t  teardown_trace_count;
     uint8_t  teardown_caller_count;
