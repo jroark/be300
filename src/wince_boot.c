@@ -6464,6 +6464,71 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
             }
         }
     }
+
+    /* Phase E: watch the L1 section-table slot whose L2 pointer
+     * equals 0x80FFC1C8 (PA 0x006694B8 / kseg0 VA 0x806694B8). The
+     * teardown loop at pc=0x80097000 ra=0x800971C0 operates with
+     * s5=0x806694B8. If anything clears or rewrites this slot
+     * between publish #29 and teardown #30, that caller is the
+     * actor that decided the L2 page was free. */
+    if (range_overlaps(paddr, len, UINT32_C(0x006694B8), 4u)) {
+        m->wince.l1_slot_write_count++;
+        if (m->wince.l1_slot_write_count <= 32u) {
+            struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
+            uint32_t pc32 = (uint32_t)cpu->pc;
+            uint32_t spv = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+            uint32_t ret_offs[4] = {0};
+            uint32_t ret_addrs[4] = {0};
+            size_t rc = collect_stack_return_sites(m, spv,
+                ret_offs, ret_addrs,
+                sizeof(ret_addrs) / sizeof(ret_addrs[0]), 0x40u);
+            size_t k;
+            uint32_t prev = load_pa_word(m, UINT32_C(0x006694B8));
+
+            fprintf(stderr,
+                "[WINCE_L1_SLOT_W] #%u prev=0x%08X new=0x%08X"
+                " pc=0x%08X epc=0x%08X status=0x%08X cause=0x%08X"
+                " sp=0x%08X ra=0x%08X a0=0x%08X a1=0x%08X"
+                " hot_l2w_cnt=%u\n",
+                (unsigned)m->wince.l1_slot_write_count,
+                prev, (uint32_t)value,
+                pc32,
+                (uint32_t)cp0->reg[COP0_EPC],
+                (uint32_t)cp0->reg[COP0_STATUS],
+                (uint32_t)cp0->reg[COP0_CAUSE],
+                spv,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (unsigned)m->wince.hot_user_l2_write_count);
+            fprintf(stderr,
+                "[WINCE_L1_SLOT_W] #%u s0=0x%08X s1=0x%08X"
+                " s2=0x%08X s3=0x%08X s4=0x%08X s5=0x%08X"
+                " s6=0x%08X s7=0x%08X\n",
+                (unsigned)m->wince.l1_slot_write_count,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S5],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S6],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S7]);
+            dump_code_window(m, pc32, 4u, 4u);
+            if (rc > 0) {
+                fprintf(stderr,
+                    "[WINCE_CB_RET] label=l1_slot_w_#%u",
+                    (unsigned)m->wince.l1_slot_write_count);
+                for (k = 0; k < rc; k++) {
+                    fprintf(stderr,
+                        " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                        k, ret_addrs[k], ret_offs[k],
+                        ret_addrs[k] >= 8u ? ret_addrs[k] - 8u : 0u);
+                }
+                fputc('\n', stderr);
+            }
+        }
+    }
 }
 
 static void maybe_log_systempatch_thread_write(machine_t *m, struct cpu *cpu,
