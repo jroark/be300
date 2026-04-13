@@ -3264,6 +3264,42 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
         }
         return;
 
+    case 0x800A1134u:
+        if (m->wince.alloc_helper_count < 8u) {
+            m->wince.alloc_helper_count++;
+            fprintf(stderr,
+                "[WINCE_ALLOC_HELPER] #%u pc=0x%08X ra=0x%08X"
+                " sp=0x%08X a0=0x%08X a1=0x%08X a2=0x%08X"
+                " a3=0x%08X v0=0x%08X s0=0x%08X s1=0x%08X"
+                " s2=0x%08X\n",
+                (unsigned)m->wince.alloc_helper_count,
+                pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                sp,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+                s2);
+            if (ret_count > 0) {
+                fprintf(stderr,
+                    "[WINCE_CB_RET] label=alloc_helper_#%u",
+                    (unsigned)m->wince.alloc_helper_count);
+                for (i = 0; i < ret_count; i++) {
+                    fprintf(stderr,
+                        " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                        i, ret_addrs[i], ret_offs[i],
+                        ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
+                }
+                fputc('\n', stderr);
+            }
+            m->wince.callback_slot_diag_count++;
+        }
+        return;
+
     case 0x800970A8u:
         if (m->wince.walker_entry_count < 8u) {
             uint32_t stk20 = 0, stk28 = 0, stk30 = 0, stk48 = 0;
@@ -6706,6 +6742,10 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 "[WINCE_L2W_PROBE] Phase R: verify helper body"
                 " 0x80096E88..0x80096FE0:\n");
             dump_code_window(m, UINT32_C(0x80096F30), 42u, 42u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase S: allocator 0x800A1134"
+                " body (first 32 words):\n");
+            dump_code_window(m, UINT32_C(0x800A1134), 0u, 32u);
             fprintf(stderr,
                 "[WINCE_L2W_PROBE] Phase O: opcode jump table"
                 " 0x80075714..0x80075794 (32 entries):\n");
