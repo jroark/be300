@@ -6382,18 +6382,86 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
 
     if (range_overlaps(paddr, len, WINCE_HOT_USER_L2_TABLE_PA,
             WINCE_HOT_USER_L2_TRACE_BYTES)) {
+        unsigned n;
         m->wince.hot_user_l2_write_count++;
-        if (m->wince.hot_user_l2_write_count <= 96u) {
+        n = (unsigned)m->wince.hot_user_l2_write_count;
+        if (n <= 96u) {
             fprintf(stderr,
                 "[WINCE_HOT_L2W] #%u off=0x%02" PRIx64 " len=%" PRIu64
                 " val=0x%08X pc=0x%08X ra=0x%08X\n",
-                (unsigned)m->wince.hot_user_l2_write_count,
+                n,
                 paddr - WINCE_HOT_USER_L2_TABLE_PA,
                 len,
                 value,
                 (uint32_t)cpu->pc,
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
             log_hot_user_l2_state(m, "write");
+        }
+        if (n >= 25u && n <= 40u) {
+            struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
+            uint32_t pc32 = (uint32_t)cpu->pc;
+            uint32_t spv = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+            uint32_t ret_offs[4] = {0};
+            uint32_t ret_addrs[4] = {0};
+            size_t rc = collect_stack_return_sites(m, spv,
+                ret_offs, ret_addrs,
+                sizeof(ret_addrs) / sizeof(ret_addrs[0]), 0x40u);
+            size_t k;
+
+            fprintf(stderr,
+                "[WINCE_HOT_L2W_REGS] #%u pc=0x%08X epc=0x%08X"
+                " status=0x%08X cause=0x%08X sp=0x%08X ra=0x%08X"
+                " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X\n",
+                n, pc32,
+                (uint32_t)cp0->reg[COP0_EPC],
+                (uint32_t)cp0->reg[COP0_STATUS],
+                (uint32_t)cp0->reg[COP0_CAUSE],
+                spv,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3]);
+            fprintf(stderr,
+                "[WINCE_HOT_L2W_REGS] #%u s0=0x%08X s1=0x%08X"
+                " s2=0x%08X s3=0x%08X s4=0x%08X s5=0x%08X"
+                " s6=0x%08X s7=0x%08X\n",
+                n,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S4],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S5],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S6],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S7]);
+            fprintf(stderr,
+                "[WINCE_HOT_L2W_REGS] #%u t0=0x%08X t1=0x%08X"
+                " t2=0x%08X t3=0x%08X t4=0x%08X t5=0x%08X"
+                " t6=0x%08X t7=0x%08X t8=0x%08X t9=0x%08X\n",
+                n,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T3],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T4],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T5],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T6],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T7],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T8],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T9]);
+            dump_code_window(m, pc32, 5u, 2u);
+            if (rc > 0) {
+                fprintf(stderr,
+                    "[WINCE_CB_RET] label=hot_l2w_#%u", n);
+                for (k = 0; k < rc; k++) {
+                    fprintf(stderr,
+                        " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                        k, ret_addrs[k], ret_offs[k],
+                        ret_addrs[k] >= 8u ? ret_addrs[k] - 8u : 0u);
+                }
+                fputc('\n', stderr);
+            }
         }
     }
 }
