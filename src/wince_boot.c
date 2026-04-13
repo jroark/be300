@@ -6542,6 +6542,22 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 "[WINCE_L2W_PROBE] Phase J: real function entry"
                 " 0x80097F80..0x80097FC4:\n");
             dump_code_window(m, UINT32_C(0x80097FA0), 8u, 8u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase K: caller frame A"
+                " 0x8008DA00..0x8008DA24:\n");
+            dump_code_window(m, UINT32_C(0x8008DA10), 4u, 4u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase K: caller frame B1"
+                " 0x8008DEA0..0x8008DEB8:\n");
+            dump_code_window(m, UINT32_C(0x8008DEA8), 2u, 4u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase K: caller frame B2"
+                " 0x8008DE30..0x8008DE48:\n");
+            dump_code_window(m, UINT32_C(0x8008DE3C), 3u, 3u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase K: va-to-section helper"
+                " 0x800998C0:\n");
+            dump_code_window(m, UINT32_C(0x800998C0), 0u, 16u);
         }
         if (n >= 25u && n <= 40u) {
             struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
