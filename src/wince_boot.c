@@ -3353,6 +3353,30 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
                         ok ? "" : " (unmapped)");
                 }
             }
+            /* Phase T (late): dump pool descriptor table at
+             * teardown time. The early one-shot probe fires
+             * during cold-boot kseg1 zero-fill before NK has
+             * initialised anything. Walker entry fires deep
+             * into the guest boot, so its snapshot reflects
+             * the real state at the allocation-failure moment. */
+            if (m->wince.walker_entry_count == 1u) {
+                unsigned p;
+                for (p = 0; p < 20u; p++) {
+                    uint32_t base = UINT32_C(0x806600B8)
+                                    + (uint32_t)(p * 20u);
+                    uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0, w4 = 0;
+                    (void)load_va_word(m, base + 0x00u, &w0);
+                    (void)load_va_word(m, base + 0x04u, &w1);
+                    (void)load_va_word(m, base + 0x08u, &w2);
+                    (void)load_va_word(m, base + 0x0Cu, &w3);
+                    (void)load_va_word(m, base + 0x10u, &w4);
+                    fprintf(stderr,
+                        "[WINCE_POOL_LATE] pool=%u base=0x%08X"
+                        " +0=0x%08X +4=0x%08X +8=0x%08X"
+                        " +C=0x%08X +10=0x%08X\n",
+                        p, base, w0, w1, w2, w3, w4);
+                }
+            }
             m->wince.callback_slot_diag_count++;
         }
         return;
@@ -6746,6 +6770,27 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 "[WINCE_L2W_PROBE] Phase S: allocator 0x800A1134"
                 " body (first 32 words):\n");
             dump_code_window(m, UINT32_C(0x800A1134), 0u, 32u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase T: pool descriptor table"
+                " 0x806600B8..0x80660200 (20 descriptors):\n");
+            {
+                unsigned p;
+                for (p = 0; p < 20u; p++) {
+                    uint32_t base = UINT32_C(0x806600B8)
+                                    + (uint32_t)(p * 20u);
+                    uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0, w4 = 0;
+                    (void)load_va_word(m, base + 0x00u, &w0);
+                    (void)load_va_word(m, base + 0x04u, &w1);
+                    (void)load_va_word(m, base + 0x08u, &w2);
+                    (void)load_va_word(m, base + 0x0Cu, &w3);
+                    (void)load_va_word(m, base + 0x10u, &w4);
+                    fprintf(stderr,
+                        "[WINCE_POOL] pool=%u base=0x%08X"
+                        " +0=0x%08X +4=0x%08X +8=0x%08X"
+                        " +C=0x%08X +10=0x%08X\n",
+                        p, base, w0, w1, w2, w3, w4);
+                }
+            }
             fprintf(stderr,
                 "[WINCE_L2W_PROBE] Phase O: opcode jump table"
                 " 0x80075714..0x80075794 (32 entries):\n");
