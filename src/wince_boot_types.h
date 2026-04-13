@@ -257,6 +257,9 @@ typedef struct {
     bool     exc_slot1_dumped;
     bool     cb_rearm_logged;
     bool     hot_l2w_probe_dumped;
+    bool     free_helper_entry_dumped;
+    uint8_t  free_helper_call_count;
+    uint8_t  loop_prejal_count;
     uint16_t hot_l2p_write_count;
     uint8_t  l1_slot_write_count;
     uint8_t  teardown_trace_count;

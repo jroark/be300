@@ -3184,6 +3184,76 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
         }
         return;
 
+    case 0x800A3244u:
+    {
+        uint32_t a0v = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        uint32_t pfn_pa = (a0v & UINT32_C(0x3FFFFFC0)) << 6;
+
+        if (!m->wince.free_helper_entry_dumped) {
+            m->wince.free_helper_entry_dumped = true;
+            fprintf(stderr,
+                "[WINCE_FREE_HELPER] entry pc=0x%08X ra=0x%08X"
+                " sp=0x%08X a0=0x%08X masked_pfn=0x%08X"
+                " a1=0x%08X a2=0x%08X a3=0x%08X"
+                " s0=0x%08X s1=0x%08X s2=0x%08X\n",
+                pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                sp, a0v, pfn_pa,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+                s2);
+            dump_code_window(m, pc32, 2u, 24u);
+            if (ret_count > 0) {
+                fprintf(stderr,
+                    "[WINCE_CB_RET] label=free_helper_entry");
+                for (i = 0; i < ret_count; i++) {
+                    fprintf(stderr,
+                        " ret%zu=%#010x@+0x%02X callsite=0x%08X",
+                        i, ret_addrs[i], ret_offs[i],
+                        ret_addrs[i] >= 8u ? ret_addrs[i] - 8u : 0u);
+                }
+                fputc('\n', stderr);
+            }
+        }
+        if (m->wince.free_helper_call_count < 16u) {
+            m->wince.free_helper_call_count++;
+            fprintf(stderr,
+                "[WINCE_FREE_CALL] #%u a0=0x%08X masked_pfn=0x%08X"
+                " ra=0x%08X\n",
+                (unsigned)m->wince.free_helper_call_count,
+                a0v, pfn_pa,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+        }
+        m->wince.callback_slot_diag_count++;
+        return;
+    }
+
+    case 0x800971B4u:
+        if (m->wince.loop_prejal_count < 16u) {
+            uint32_t s0v = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0];
+            uint32_t a0v = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+            uint32_t pte = 0;
+            (void)load_va_word(m, s0v + 0x0Cu, &pte);
+            m->wince.loop_prejal_count++;
+            fprintf(stderr,
+                "[WINCE_FREE_LOOP] #%u s0=0x%08X s1=0x%08X"
+                " s2=0x%08X s5=0x%08X pte_at_0x0C=0x%08X"
+                " a0=0x%08X masked_pfn=0x%08X ra=0x%08X\n",
+                (unsigned)m->wince.loop_prejal_count,
+                s0v,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+                s2,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S5],
+                pte, a0v,
+                (a0v & UINT32_C(0x3FFFFFC0)) << 6,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+            m->wince.callback_slot_diag_count++;
+        }
+        return;
+
     case 0x800984CCu:
         if (!m->wince.publish_scan_call_dumped) {
             m->wince.publish_scan_call_dumped = true;
@@ -6462,6 +6532,16 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T8],
                 (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_T9]);
             dump_code_window(m, pc32, 5u, 2u);
+            {
+                uint64_t off = paddr - WINCE_HOT_USER_L2_TABLE_PA;
+                uint32_t pte_slot = (uint32_t)(off / 8u);
+                uint32_t va_lo = UINT32_C(0x01FE0000) + pte_slot * 0x2000u;
+                uint32_t va_hi = va_lo + 0x1000u;
+                fprintf(stderr,
+                    "[WINCE_HOT_L2W_VA] #%u off=0x%02" PRIx64
+                    " pte_slot=%u va_lo=0x%08X va_hi=0x%08X\n",
+                    n, off, pte_slot, va_lo, va_hi);
+            }
             if (rc > 0) {
                 fprintf(stderr,
                     "[WINCE_CB_RET] label=hot_l2w_#%u", n);
