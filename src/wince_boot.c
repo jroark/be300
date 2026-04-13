@@ -6477,6 +6477,14 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
             dump_code_window(m, UINT32_C(0x8009004C), 2u, 4u);
             dump_code_window(m, UINT32_C(0x80097000), 4u, 8u);
             dump_code_window(m, UINT32_C(0x800971C0), 6u, 4u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] outer caller around 0x8009813C"
+                " (Phase H target predicate):\n");
+            dump_code_window(m, UINT32_C(0x80098140), 20u, 16u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] outer caller prologue 0x800980C0"
+                " (entry of function containing 0x8009813C):\n");
+            dump_code_window(m, UINT32_C(0x80098000), 0u, 48u);
         }
         if (n >= 25u && n <= 40u) {
             struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
