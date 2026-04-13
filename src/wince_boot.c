@@ -652,6 +652,49 @@ static void log_callback_slot_write(machine_t *m, struct cpu *cpu,
         load_pa_word(m, base_pa + 0x0Cu),
         (uint64_t)cpu->pc,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+
+    {
+        static const char * const word_name[4] = { "flag", "ptr", "aux", "arg" };
+        uint64_t start = paddr - base_pa;
+        uint64_t end = start + (uint64_t)len;
+        for (unsigned w = 0; w < 4u; w++) {
+            uint64_t ws = (uint64_t)(w * 4u);
+            uint64_t we = ws + 4u;
+            if (start >= we || end <= ws)
+                continue;
+            uint32_t cur = load_pa_word(m, base_pa + (uint32_t)ws);
+            uint8_t bit = (uint8_t)(1u << w);
+            if (cur != 0 && !(m->wince.cb_slot_first_seen & bit)) {
+                m->wince.cb_slot_first_seen |= bit;
+                m->wince.cb_slot_first_pc[w] = (uint32_t)cpu->pc;
+                m->wince.cb_slot_first_ra[w] = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+                m->wince.cb_slot_first_val[w] = cur;
+                m->wince.cb_slot_first_instr[w] = (uint64_t)cpu->ninstrs;
+                fprintf(stderr,
+                    "[WINCE_CB_FIRST] word=%s pc=0x%08X ra=0x%08X val=0x%08X"
+                    " base_pa=0x%08X instr=%llu\n",
+                    word_name[w],
+                    (uint32_t)cpu->pc,
+                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    cur,
+                    base_pa,
+                    (unsigned long long)cpu->ninstrs);
+            } else if (cur == 0 && (m->wince.cb_slot_first_seen & bit)
+                       && !(m->wince.cb_slot_zero_seen & bit)) {
+                m->wince.cb_slot_zero_seen |= bit;
+                m->wince.cb_slot_zero_pc[w] = (uint32_t)cpu->pc;
+                m->wince.cb_slot_zero_ra[w] = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+                fprintf(stderr,
+                    "[WINCE_CB_ZERO] word=%s pc=0x%08X ra=0x%08X"
+                    " base_pa=0x%08X instr=%llu\n",
+                    word_name[w],
+                    (uint32_t)cpu->pc,
+                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    base_pa,
+                    (unsigned long long)cpu->ninstrs);
+            }
+        }
+    }
 }
 
 static void maybe_log_callback_object_state(machine_t *m, struct cpu *cpu,
@@ -2953,22 +2996,54 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
         return;
 
     case 0x80092488u:
+    {
+        uint32_t s2_08 = 0, s2_0c = 0, s2_10 = 0;
+        (void)load_va_word(m, s2 + 0x08u, &s2_08);
+        (void)load_va_word(m, s2 + 0x0Cu, &s2_0c);
+        (void)load_va_word(m, s2 + 0x10u, &s2_10);
         fprintf(stderr,
             "[WINCE_CB_PC] label=callback_table_store pc=0x%08X"
-            " ra=0x%08X sp=0x%08X s2=0x%08X s2+8=0x%08X"
-            " v0=0x%08X v1=0x%08X t7=0x%08X t8=0x%08X\n",
+            " ra=0x%08X sp=0x%08X s2=0x%08X s2+8=0x%08X s2+C=0x%08X"
+            " s2+10=0x%08X v0=0x%08X v1=0x%08X t7=0x%08X t8=0x%08X\n",
             pc32,
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
             sp,
             s2,
-            s2_slot,
+            s2_08,
+            s2_0c,
+            s2_10,
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
             t7,
             t8);
+        dump_code_window(m, pc32, 6u, 12u);
+        dump_pointer_bytes(m, "callback_table_store_slot",
+            UINT32_C(0x01FE6544));
         maybe_log_callback_object_state(m, cpu, "table_store", s2);
         m->wince.callback_slot_diag_count++;
         return;
+    }
+
+    case 0x8009248Cu:
+    {
+        uint32_t s2_08 = 0;
+        (void)load_va_word(m, s2 + 0x08u, &s2_08);
+        fprintf(stderr,
+            "[WINCE_CB_PC] label=callback_table_store_post pc=0x%08X"
+            " ra=0x%08X sp=0x%08X s2=0x%08X s2+8=0x%08X"
+            " v0=0x%08X v1=0x%08X\n",
+            pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+            sp,
+            s2,
+            s2_08,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1]);
+        dump_pointer_bytes(m, "callback_table_store_post_slot",
+            UINT32_C(0x01FE6544));
+        m->wince.callback_slot_diag_count++;
+        return;
+    }
 
     case 0x80092798u:
         fprintf(stderr,
