@@ -3298,6 +3298,25 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
                 (unsigned)m->wince.walker_entry_count,
                 stk20, stk28, stk30, stk48, stk50, stk54,
                 stk58, stk94);
+            {
+                unsigned w;
+                for (w = 0; w < 16u; w++) {
+                    uint32_t pte = 0;
+                    uint32_t va = UINT32_C(0x80FFC1C8)
+                                  + (uint32_t)(w * 4u);
+                    bool ok = load_va_word(m, va, &pte);
+                    fprintf(stderr,
+                        "[WINCE_WALKER_PTE] #%u va=0x%08X"
+                        " pte=0x%08X bit30=%u V=%u D=%u C=%u%s\n",
+                        (unsigned)m->wince.walker_entry_count,
+                        va, pte,
+                        (pte >> 30) & 1u,
+                        (pte >> 1) & 1u,
+                        (pte >> 2) & 1u,
+                        (pte >> 3) & 7u,
+                        ok ? "" : " (unmapped)");
+                }
+            }
             m->wince.callback_slot_diag_count++;
         }
         return;
@@ -6683,6 +6702,10 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 "[WINCE_L2W_PROBE] Phase P: real opcode handlers"
                 " 0x80096D40..0x80096D80:\n");
             dump_code_window(m, UINT32_C(0x80096D60), 8u, 8u);
+            fprintf(stderr,
+                "[WINCE_L2W_PROBE] Phase R: verify helper body"
+                " 0x80096E88..0x80096FE0:\n");
+            dump_code_window(m, UINT32_C(0x80096F30), 42u, 42u);
             fprintf(stderr,
                 "[WINCE_L2W_PROBE] Phase O: opcode jump table"
                 " 0x80075714..0x80075794 (32 entries):\n");
