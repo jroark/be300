@@ -11093,7 +11093,12 @@ static void maybe_note_dllmain_dispatch_pc(machine_t *m, struct cpu *cpu, uint32
         hit_ff00++;
         uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
         uint32_t dllmain_va = 0;
+        uint32_t f84 = 0, f88 = 0, f10 = 0, fc8 = 0;
         bool dm_ok = load_va_word(m, a0 + 0x60u, &dllmain_va);
+        (void)load_va_word(m, a0 + 0x84u, &f84);
+        (void)load_va_word(m, a0 + 0x88u, &f88);
+        (void)load_va_word(m, a0 + 0x10u, &f10);
+        (void)load_va_word(m, a0 + 0xC8u, &fc8);
         fprintf(stderr,
             "[WINCE_DLLMAIN_ENTRY] #%u pc=0x%08X"
             " desc=0x%08X reason=0x%08X reserved=0x%08X"
@@ -11105,6 +11110,12 @@ static void maybe_note_dllmain_dispatch_pc(machine_t *m, struct cpu *cpu, uint32
             dllmain_va, dm_ok ? "ok" : "BAD",
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+        fprintf(stderr,
+            "[WINCE_DLLMAIN_ENTRY] #%u desc_fields:"
+            " +0x10=0x%08X(loaded_mask)"
+            " +0x84=0x%08X(dispatch_flag)"
+            " +0x88=0x%08X +0xC8=0x%08X\n",
+            hit_ff00, f10, f84, f88, fc8);
     } else if (pc32 == UINT32_C(0x80090050) && hit_ret < cap) {
         hit_ret++;
         /* This BB is reached after either jalr returns OR when
