@@ -7029,6 +7029,56 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                             " +0x28=0x%08X +0x44=0x%08X +0x60=0x%08X\n",
                             cur_proc_ptr, cur_proc_slot,
                             cand[0], cand[1], cand[2]);
+                        /* Phase AK: read _DAT_FFFFDB24 (module list
+                         * head) and walk up to 16 entries to dump
+                         * the names of currently-loaded modules.
+                         * If the list is empty or missing what
+                         * coredll imports from, the loader rollback
+                         * we've been chasing is confirmed as
+                         * candidate #1 (FUN_800907C8 import fail). */
+                        {
+                            uint32_t mod_head = 0;
+                            (void)load_va_word(m,
+                                UINT32_C(0xFFFFDB24), &mod_head);
+                            fprintf(stderr,
+                                "[WINCE_MODLIST] head=0x%08X\n",
+                                mod_head);
+                            uint32_t mod = mod_head;
+                            unsigned mi;
+                            for (mi = 0; mi < 16u && mod != 0; mi++) {
+                                uint32_t name_ptr = 0;
+                                uint32_t next = 0;
+                                uint32_t inUse = 0;
+                                uint32_t base = 0;
+                                (void)load_va_word(m, mod + 0x04u,
+                                    &next);
+                                (void)load_va_word(m, mod + 0x08u,
+                                    &name_ptr);
+                                (void)load_va_word(m, mod + 0x0Cu,
+                                    &inUse);
+                                (void)load_va_word(m, mod + 0x54u,
+                                    &base);
+                                char nb[64] = {0};
+                                if (name_ptr != 0) {
+                                    unsigned ck;
+                                    for (ck = 0; ck < 63u; ck++) {
+                                        uint32_t w = 0;
+                                        if (!load_va_word(m,
+                                            name_ptr + ck, &w)) {
+                                            break;
+                                        }
+                                        nb[ck] = (char)(w & 0xFF);
+                                        if (nb[ck] == 0) break;
+                                    }
+                                }
+                                fprintf(stderr,
+                                    "[WINCE_MODLIST] [%2u] mod=0x%08X"
+                                    " next=0x%08X inUse=0x%08X"
+                                    " base=0x%08X name='%s'\n",
+                                    mi, mod, next, inUse, base, nb);
+                                mod = next;
+                            }
+                        }
                         /* For each candidate that looks like a kseg0
                          * pointer, try reading a string from it. */
                         for (ci = 0; ci < 3u; ci++) {
