@@ -7028,6 +7028,61 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                             fprintf(stderr,
                                 "[WINCE_MODULE] DllMain entry"
                                 " 0x%08X\n", dll_main);
+                            /* Phase AC: read the TOC entry at
+                             * +0x64 to extract the DLL name.
+                             * Try both 24-byte and 32-byte layouts:
+                             * lpszFileName is typically at offset
+                             * 0x0C (24-byte form) or 0x10 (32-byte
+                             * form). Dump 8 words and we can pick
+                             * the right one. */
+                            uint32_t toc_va = 0;
+                            (void)load_va_word(m, mod_desc_ptr + 0x64u,
+                                &toc_va);
+                            if (toc_va >= UINT32_C(0x80060000)
+                                && toc_va < UINT32_C(0x80700000)) {
+                                unsigned tk;
+                                fprintf(stderr,
+                                    "[WINCE_TOC] entry_va=0x%08X\n",
+                                    toc_va);
+                                for (tk = 0; tk < 8u; tk++) {
+                                    uint32_t v = 0;
+                                    (void)load_va_word(m,
+                                        toc_va + (uint32_t)(tk * 4u),
+                                        &v);
+                                    fprintf(stderr,
+                                        "[WINCE_TOC] +0x%02X=0x%08X\n",
+                                        tk * 4u, v);
+                                }
+                                /* Try lpszFileName at offsets 0x0C
+                                 * and 0x10 - whichever is a kseg0
+                                 * string pointer wins. */
+                                uint32_t name_ptrs[2] = {0};
+                                (void)load_va_word(m, toc_va + 0x0Cu,
+                                    &name_ptrs[0]);
+                                (void)load_va_word(m, toc_va + 0x10u,
+                                    &name_ptrs[1]);
+                                int j;
+                                for (j = 0; j < 2; j++) {
+                                    uint32_t np = name_ptrs[j];
+                                    if (np >= UINT32_C(0x80060000)
+                                        && np < UINT32_C(0x80700000)) {
+                                        char nb[64] = {0};
+                                        unsigned ci;
+                                        for (ci = 0; ci < 63u; ci++) {
+                                            uint32_t w = 0;
+                                            if (!load_va_word(m,
+                                                np + ci, &w)) break;
+                                            nb[ci] = (char)(w & 0xFF);
+                                            if (nb[ci] == 0) break;
+                                        }
+                                        fprintf(stderr,
+                                            "[WINCE_TOC] name_at_+0x%X"
+                                            " ptr=0x%08X str='%s'\n",
+                                            (j == 0 ? 0x0C : 0x10),
+                                            np, nb);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
