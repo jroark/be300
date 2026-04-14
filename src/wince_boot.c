@@ -6994,6 +6994,64 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                             " err@+0x38=0x%08X (%s)\n",
                             ctx_ptr, err_code, err_name);
                     }
+                    /* Phase AG: read the current process descriptor
+                     * via _DAT_FFFFDAC4 (which is *not* the same as
+                     * _DAT_FFFFDAC0 - per FUN_80090084 it holds a
+                     * per-process slot ID, indexed by 1<<slot). */
+                    {
+                        uint32_t cur_proc_ptr = 0;
+                        uint32_t cur_proc_slot = 0;
+                        uint32_t proc_name_va = 0;
+                        (void)load_va_word(m, UINT32_C(0xFFFFDAC4),
+                            &cur_proc_ptr);
+                        if (cur_proc_ptr != 0) {
+                            /* The first word is the slot id per
+                             * FUN_80090084's `(uint)*_DAT_FFFFDAC4`
+                             * read. */
+                            (void)load_va_word(m, cur_proc_ptr,
+                                &cur_proc_slot);
+                        }
+                        /* Try to find a process name field. The WinCE
+                         * process descriptor has lpszProcName at
+                         * various offsets depending on version; try
+                         * +0x28, +0x44, +0x60. */
+                        uint32_t cand[3] = {0};
+                        const uint32_t cand_off[3] = {0x28, 0x44, 0x60};
+                        unsigned ci;
+                        for (ci = 0; ci < 3u; ci++) {
+                            (void)load_va_word(m,
+                                cur_proc_ptr + cand_off[ci],
+                                &cand[ci]);
+                        }
+                        fprintf(stderr,
+                            "[WINCE_PROC] cur_proc_ptr=0x%08X"
+                            " slot_or_first=0x%08X"
+                            " +0x28=0x%08X +0x44=0x%08X +0x60=0x%08X\n",
+                            cur_proc_ptr, cur_proc_slot,
+                            cand[0], cand[1], cand[2]);
+                        /* For each candidate that looks like a kseg0
+                         * pointer, try reading a string from it. */
+                        for (ci = 0; ci < 3u; ci++) {
+                            uint32_t p = cand[ci];
+                            if (p < UINT32_C(0x80000000)
+                                || p >= UINT32_C(0x80800000))
+                                continue;
+                            char nb[64] = {0};
+                            unsigned k;
+                            for (k = 0; k < 63u; k++) {
+                                uint32_t w = 0;
+                                if (!load_va_word(m, p + k, &w)) break;
+                                nb[k] = (char)(w & 0xFF);
+                                if (nb[k] == 0) break;
+                            }
+                            if (nb[0] != 0) {
+                                fprintf(stderr,
+                                    "[WINCE_PROC] name_at_+0x%X"
+                                    " ptr=0x%08X str='%s'\n",
+                                    cand_off[ci], p, nb);
+                            }
+                        }
+                    }
                     if (mod_desc_ptr != 0
                         && (mod_desc_ptr & 3u) == 0) {
                         uint32_t md0 = 0, md4 = 0, md8 = 0, mdC = 0;
