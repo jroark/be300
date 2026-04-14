@@ -6921,6 +6921,95 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 " s6=0x%08X s7=0x%08X s8=0x%08X\n",
                 saved_s0, saved_s1, saved_s2, saved_s3,
                 saved_s4, saved_s5, saved_s6, saved_s7, saved_s8);
+
+            /* Phase Z: walk one frame up to find FUN_80097F44's
+             * caller. Walker's sp = walker frame top, FUN_80097F44's
+             * sp during body = walker_sp + 0x40 (walker frame size),
+             * its saved ra is at sp+0x1C per its epilogue. The
+             * caller of FUN_80097F44 then enters at saved_ra-8. */
+            {
+                uint32_t f44_sp = spv + 0x40u;
+                uint32_t f44_ra = 0;
+                uint32_t f44_s0 = 0, f44_s1 = 0;
+                (void)load_va_word(m, f44_sp + 0x1Cu, &f44_ra);
+                (void)load_va_word(m, f44_sp + 0x18u, &f44_s0);
+                /* Try to peek the caller's saved frame too. */
+                uint32_t caller_sp = f44_sp + 0x50u;
+                uint32_t caller_ra_guess[4] = {0};
+                unsigned k;
+                for (k = 0; k < 4u; k++) {
+                    (void)load_va_word(m,
+                        caller_sp + 0x10u + (uint32_t)(k * 4u),
+                        &caller_ra_guess[k]);
+                }
+                fprintf(stderr,
+                    "[WINCE_F44_FRAME] f44_sp=0x%08X saved_ra=0x%08X"
+                    " (real F44 caller PC) callsite=0x%08X"
+                    " saved_s0=0x%08X\n",
+                    f44_sp, f44_ra,
+                    f44_ra >= 8u ? f44_ra - 8u : 0u,
+                    f44_s0);
+                fprintf(stderr,
+                    "[WINCE_F44_FRAME] caller_sp=0x%08X"
+                    " caller_stk[0x10]=0x%08X [0x14]=0x%08X"
+                    " [0x18]=0x%08X [0x1C]=0x%08X\n",
+                    caller_sp,
+                    caller_ra_guess[0], caller_ra_guess[1],
+                    caller_ra_guess[2], caller_ra_guess[3]);
+
+                /* Phase Z+: FUN_8008FE8C stores the module
+                 * descriptor pointer at its sp+0x20, which is at
+                 * caller_sp+0x20 = 0x0201FD50 in our case. Read
+                 * the module descriptor and key fields. */
+                {
+                    uint32_t mod_desc_ptr = 0;
+                    (void)load_va_word(m, caller_sp + 0x20u,
+                        &mod_desc_ptr);
+                    fprintf(stderr,
+                        "[WINCE_MODULE] descriptor_ptr=0x%08X\n",
+                        mod_desc_ptr);
+                    if (mod_desc_ptr != 0
+                        && (mod_desc_ptr & 3u) == 0) {
+                        uint32_t md0 = 0, md4 = 0, md8 = 0, mdC = 0;
+                        uint32_t md54 = 0, md80 = 0, mdC0 = 0, mdCC = 0;
+                        (void)load_va_word(m, mod_desc_ptr + 0x00u, &md0);
+                        (void)load_va_word(m, mod_desc_ptr + 0x04u, &md4);
+                        (void)load_va_word(m, mod_desc_ptr + 0x08u, &md8);
+                        (void)load_va_word(m, mod_desc_ptr + 0x0Cu, &mdC);
+                        (void)load_va_word(m, mod_desc_ptr + 0x54u, &md54);
+                        (void)load_va_word(m, mod_desc_ptr + 0x80u, &md80);
+                        (void)load_va_word(m, mod_desc_ptr + 0xC0u, &mdC0);
+                        (void)load_va_word(m, mod_desc_ptr + 0xCCu, &mdCC);
+                        fprintf(stderr,
+                            "[WINCE_MODULE] +0=0x%08X +4=0x%08X +8=0x%08X"
+                            " +C=0x%08X (lpName?)\n",
+                            md0, md4, md8, mdC);
+                        fprintf(stderr,
+                            "[WINCE_MODULE] +54=0x%08X (base_va)"
+                            " +80=0x%08X +C0=0x%08X (depmask)"
+                            " +CC=0x%08X (chain)\n",
+                            md54, md80, mdC0, mdCC);
+                        /* If md+0xC looks like a kseg0 string ptr,
+                         * dump the first 32 bytes as ASCII. */
+                        if (mdC >= 0x80000000u && mdC < 0x80800000u) {
+                            unsigned k;
+                            char nbuf[33] = {0};
+                            for (k = 0; k < 32u; k++) {
+                                uint32_t w = 0;
+                                if (load_va_word(m, mdC + k, &w)) {
+                                    nbuf[k] = (char)(w & 0xFF);
+                                } else {
+                                    nbuf[k] = '?';
+                                }
+                                if (nbuf[k] == 0) break;
+                            }
+                            fprintf(stderr,
+                                "[WINCE_MODULE] name@0x%08X='%.32s'\n",
+                                mdC, nbuf);
+                        }
+                    }
+                }
+            }
         }
         if (n >= 25u && n <= 40u) {
             struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
