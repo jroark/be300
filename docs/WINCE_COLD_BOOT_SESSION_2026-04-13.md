@@ -1105,3 +1105,220 @@ The top 5 are confirmed by Phase AV disassembly. The bottom 5 are
 inherited from the pre-Phase-AS handoff and should be re-verified
 now that we know the prior chain attribution was made with the
 wrong coredll base.
+
+## Phase AW Addendum (2026-04-13, commit b2359eb8)
+
+Re-verified the walker caller chain against the existing run log
+(`build-host/repro_phase_at.stderr`). The `WINCE_WALKER_FRAME` and
+`WINCE_F44_FRAME` probes capture saved-register frames and stack
+values at `n==30`:
+
+```text
+WINCE_WALKER_FRAME sp=0x0201FCA0 saved_ra=0x80098144 callsite=0x8009813C
+  saved s0=0xFFFFD800 s1=0x80FFFEA8 s2=0x80FFFEA8 s3=0xFFFFD800
+  saved s4=s5=s6=s7=s8=0xBDBDBDBD
+WINCE_F44_FRAME f44_sp=0x0201FCE0 saved_ra=0x8008FECC callsite=0x8008FEC4
+  saved_s0=0x0000098E
+  caller_sp=0x0201FD30 caller_stk[0x10]=0x80668CC0 [0x14]=0x80090240
+                       caller_stk[0x18]=0x03FE6570 [0x1C]=0x00000000
+```
+
+Decoded:
+
+- Walker (`FUN_800970A8`) was called from inside `FUN_80097F44` at
+  `0x8009813C`, and received `s1 = 0x80FFFEA8` = **coredll's
+  module descriptor pointer** (confirmed by Phase AC TOC name
+  lookup).
+- Walker's `s4..s8 = 0xBDBDBDBD` is the standard debug fill
+  pattern - those regs were never written by the walker's
+  prologue. The walker's effective inputs reduce to
+  `s0 = 0xFFFFD800`, `s1 = coredll_desc`, `s3 = 0xFFFFD800`.
+  The `0xFFFFD800` value encodes some walker parameter (PFN
+  range, L2 slot mask, or negative index) - its exact meaning
+  is the next decode target.
+- `FUN_80097F44` was called from inside `FUN_8008FE8C` at
+  `0x8008FEC4`. Its caller stack contains `0x03FE6570` at
+  `caller_stk+0x18`, which is coredll slot-1 VA for rva
+  `0x66570` - **inside coredll's `.data` page**.
+- `caller_stk+0x10 = 0x80668CC0` is the L1 page table base
+  (standard NK kernel data).
+- `caller_stk+0x14 = 0x80090240` is another NK kseg0 code
+  pointer whose role is not yet decoded.
+
+**Important:** the `FUN_800903BC -> FUN_80090144 -> FUN_8008FE8C`
+upper chain from the pre-Phase-AS handoff could NOT be verified
+from the existing log - only the walker and F44 frames are
+captured. To confirm or refute the loader-rollback attribution,
+the next session needs either a `FUN_8008FE8C` frame probe OR a
+manual stack walk from `caller_sp = 0x0201FD30` upward.
+
+## Phase AX Addendum (2026-04-13, commit 94a4e36f)
+
+**This is the session's decisive finding and flips the hypothesis
+one final time. Read this before anything else.**
+
+Read coredll's `.data` bytes at rva `0x66544..0x665AC` directly
+from `build-host/nk_decompressed.bin` at file offset `0x58198`
+(computed as coredll section 1 realaddr `0x800B7C54` - NK base
+`0x80060000` + section offset `0x544`).
+
+The bytes are not a "discard directive" or a "callback header".
+They are a **table of NK kernel function pointers** baked into
+coredll's `.data` at link time:
+
+```text
+rva 0x6654C = 0x80078DF0
+rva 0x66550 = 0x80078E10   <-- CLAUDE.md OAL display function
+rva 0x66554 = 0x80078EDC
+rva 0x66560 = 0x80078E1C
+rva 0x66564 = 0x80078F38
+rva 0x66568 = 0x800790DC
+rva 0x66574 = 0x80078F58
+rva 0x66578 = 0x800790DC
+rva 0x6657C = 0x80079268
+rva 0x66588 = 0x800790F0
+rva 0x6658C = 0x8007A180
+rva 0x66590 = 0x8007A204
+rva 0x6659C = 0x8007A194
+rva 0x665A0 = 0x8007A204
+rva 0x665A4 = 0x8007A234
+```
+
+Every entry is an NK text address in the `0x80078xxx..0x8007Axxx`
+range (NK base `0x80060000` + `~0x18xxx..0x1Axxx`). Including the
+OAL display function at `0x80078E10` that CLAUDE.md explicitly
+documents as the blit dispatcher with `a0 = 10 / 0 / 6` handling.
+
+Verified `0x80078E10`'s bytes from the NK dump (file offset
+`0x18E10`):
+
+```text
+0x80078E10: 0x27BDFFE0  addiu sp, sp, -32
+0x80078E14: 0xAFBF001C  sw ra, 0x1C(sp)
+0x80078E18: 0x2402000A  li v0, 10
+0x80078E1C: 0x10820005  beq a0, v0, +5
+0x80078E20: 0x00000000  nop
+0x80078E24: 0x0C01E3CE  jal 0x80078F38
+0x80078E28: 0xAFA40020  sw a0, 0x20(sp)
+0x80078E2C: 0x2402000A  li v0, 10
+```
+
+Classic MIPS prologue of an OAL dispatcher branching on `a0 == 10`.
+Matches CLAUDE.md's description exactly. This is unambiguously the
+OAL display function.
+
+### What this overturns
+
+The Phase AT-AW "data-directed discard" hypothesis was wrong. The
+correct interpretation is:
+
+- Coredll's `.data` contains an **OAL/NK callback table** populated
+  at link time with direct NK kernel function pointers.
+- Coredll dispatches to NK services via this table. A typical
+  call site is roughly `lw tN, 0x66550(gp_or_base); jalr tN` -
+  invoking `0x80078E10` to do blits.
+- The 2026-04-12 / Phase A "stale callback consumer at
+  `0x01F8F4D4`" is **not stale**. It is a legitimate coredll
+  function that dispatches through the OAL callback table at rva
+  `0x66544..0x665AC`. The "consumer reads zero" fault is
+  happening because the walker **destroyed the live OAL callback
+  table out from under it** - not because the consumer cached a
+  stale pointer.
+
+The walker unmapping coredll's tail (Phase AU's 14-page range
+rva `0x62000..0x6F000`) includes the `.data` page at rva `0x66000`
+that contains this OAL callback table. Zeroing it breaks every
+subsequent coredll->NK dispatch, and the first such dispatch
+after the unmap faults with Exception 004.
+
+### Final trigger hypothesis
+
+The cold-boot bug is squarely in `FUN_80097F44` (or whatever feeds
+it arguments). Something in the emulator is causing NK to decide
+that coredll's tail pages - including the live OAL callback table -
+are discardable, and to call the map-then-unmap routine on them.
+On real hardware these pages must stay mapped permanently.
+
+The walker's effective inputs are:
+
+- `s0 = s3 = 0xFFFFD800` (a walker parameter - PFN range or L2
+  slot mask encoding, meaning not yet decoded)
+- `s1 = 0x80FFFEA8` (coredll module descriptor)
+
+The bug must be in ONE of these places, in rough order of
+likelihood:
+
+1. **`0xFFFFD800` is the wrong input.** It encodes "which L2 slots
+   to unmap", and on real hardware it should encode a different
+   range or be a no-op. Decode what this value means inside
+   `FUN_80097F44`'s body to find out what it is pointing at and
+   why.
+2. **`FUN_8008FE8C` is computing the wrong target.** It passes
+   `0x03FE6570` (coredll .data VA) on its stack, which may be
+   leading `FUN_80097F44` to misidentify coredll's tail as
+   discardable. Check how FUN_8008FE8C derives this VA.
+3. **The module descriptor at `0x80FFFEA8`** has a field that
+   flags coredll's tail as reclaimable, and that field is emulator-
+   initialized incorrectly. Compare descriptor `+0x60..+0xC0`
+   against known-good hardware state.
+4. **An NK kernel data structure** (heap, reclaim pool, working-set
+   trimmer) has an incorrectly-populated entry that points to
+   coredll's tail on emulator but not on hardware. Trace what
+   WRITES the `0xFFFFD800` value into the register the walker
+   reads.
+
+### Recommended next steps (supersedes all prior lists)
+
+1. **Disassemble `FUN_80097F44` end-to-end** in the NK dump. Start
+   at `0x80097F44` (confirmed entry) and follow the publish loop
+   at `0x80098484`, the call to `FUN_80096E88` at `0x8009837C`,
+   and the call to the walker `FUN_800970A8` at `0x8009813C`.
+   Decode the argument usage to determine what `s0 = 0xFFFFD800`
+   encodes. This is pure static analysis - no runtime probes.
+2. **Find the writer of `s0 = 0xFFFFD800`.** Once you know the
+   register's meaning inside F44, grep NK for stores/li of
+   `0xFFFFD800` (or sign-extended equivalents like `0x-2800`).
+   The writer is the actual root-cause site.
+3. **Search coredll's `.text` for OAL dispatch call sites.** Grep
+   the NK dump slice at file offset `0x5C000..0xC0F3E` (coredll
+   section 0 at realaddr `0x800BC000`, 0x64F3E bytes) for `lw`
+   instructions with immediate `0x6544`, `0x6550`, `0x6554`, etc.
+   (the table entry offsets). Each match is a call site into NK
+   via the OAL table.
+4. **Confirm or refute the pre-Phase-AS upper chain.** Add ONE
+   probe that reads `FUN_8008FE8C`'s saved-frame registers at
+   the same n==30 gate, exposing its `saved_ra` and its caller's
+   stack frame. This is the only runtime probe that is still
+   justified - everything else is static analysis.
+5. **Do NOT try to "fix" the walker by short-circuiting it.**
+   The walker itself is correct NK code. The fix must be either
+   in whoever feeds it coredll's tail as a target, or in an
+   earlier step of boot that initializes a data structure whose
+   downstream effect is the wrong walker input.
+
+### Executive summary for the next session
+
+- Cold-boot Exception 004 is caused by NK `FUN_80097F44`
+  incorrectly unmapping coredll's `.data` page, which contains
+  the OAL callback table at rva `0x66544..0x665AC` (verified
+  static bytes, including CLAUDE.md's OAL display function
+  `0x80078E10`).
+- After the unmap, coredll's first dispatch through the callback
+  table reads zero and raises Exception 004.
+- DllMain at rva `0x4A5C` is unrelated and fine. The 50-phase
+  "DllMain is mid-function" investigation was based on
+  disassembling the wrong coredll base.
+- The next decode target is the walker's `s0 = 0xFFFFD800` input,
+  which is what designates coredll's tail as unmappable.
+
+### Session commits (Phases AS-AX)
+
+| Commit      | Phase | Artifact                                       |
+|-------------|-------|------------------------------------------------|
+| `99061abb`  | AS    | Proved coredll DllMain rva 0x4A5C is a valid 3-arg prologue; `.text` realaddr is `0x800BC000`, not NK_base+rva |
+| `186d27dd`  | -     | Handoff addendum with authoritative module base table |
+| `7824503c`  | AT    | Probe at n==1 fires in ROM/SPL early boot, confirming DllMain page is stable across walker window |
+| `6a55d275`  | AU    | Classified walker zero targets: coredll rva `0x62000..0x6F000` (text tail + data + pdata, 14 pages, 56 KB) |
+| `b3db0794`  | AV    | Disasm confirms publisher (`0x80098484`) and walker (`0x800970A8`) live inside the same NK function `FUN_80097F44` |
+| `b2359eb8`  | AW    | Caller chain re-verified from existing log; `FUN_8008FE8C` stack holds coredll `.data` VA `0x03FE6570` |
+| `94a4e36f`  | AX    | Static analysis: coredll `.data` at rva `0x66544..0x665AC` is the OAL callback table (NK kernel pointers, CLAUDE.md-verified) |
