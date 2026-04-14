@@ -7196,6 +7196,77 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                                     "[WINCE_SECTAB] mismatch_count=%d\n",
                                     diff_count);
                             }
+                            /* Phase AM: read the L1 table at
+                             * 0x80668CC0 to find the L2 group
+                             * pointers for slot-0 (0x01FE6570) and
+                             * slot-1 (0x03FE6570). The L1 index is
+                             * (va >> 14) & 0x7FC -> slot for VA
+                             * 0x01FE6570 = (0x01FE6570>>14)&0x7FC
+                             * = 0x07F8, and for 0x03FE6570 it's
+                             * also 0x07F8 since the >>14 takes
+                             * away the slot bit. So both should
+                             * resolve to the SAME L1 entry... but
+                             * if the slot bit is preserved
+                             * elsewhere, they differ. */
+                            {
+                                uint32_t s0_va = UINT32_C(0x01FE6570);
+                                uint32_t s1_va = UINT32_C(0x03FE6570);
+                                uint32_t l1_off_s0 = (s0_va >> 14) & 0x7FCu;
+                                uint32_t l1_off_s1 = (s1_va >> 14) & 0x7FCu;
+                                uint32_t l2_ptr_s0 = 0;
+                                uint32_t l2_ptr_s1 = 0;
+                                (void)load_va_word(m,
+                                    UINT32_C(0x80668CC0) + l1_off_s0,
+                                    &l2_ptr_s0);
+                                (void)load_va_word(m,
+                                    UINT32_C(0x80668CC0) + l1_off_s1,
+                                    &l2_ptr_s1);
+                                fprintf(stderr,
+                                    "[WINCE_L1_LOOKUP] s0_va=0x%08X"
+                                    " l1_off=0x%03X l2_ptr=0x%08X\n",
+                                    s0_va, l1_off_s0, l2_ptr_s0);
+                                fprintf(stderr,
+                                    "[WINCE_L1_LOOKUP] s1_va=0x%08X"
+                                    " l1_off=0x%03X l2_ptr=0x%08X%s\n",
+                                    s1_va, l1_off_s1, l2_ptr_s1,
+                                    (l2_ptr_s0 == l2_ptr_s1)
+                                        ? " == slot0" : " (DIFFERENT)");
+                                /* For each L2 group, read the PTE
+                                 * for the actual VA and decode. */
+                                if (l2_ptr_s0 != 0
+                                    && (l2_ptr_s0 & 1) == 0) {
+                                    uint32_t pte_off = (s0_va >> 10) & 0x38u;
+                                    uint32_t lo0 = 0, lo1 = 0;
+                                    (void)load_va_word(m,
+                                        l2_ptr_s0 + pte_off + 0x0Cu,
+                                        &lo0);
+                                    (void)load_va_word(m,
+                                        l2_ptr_s0 + pte_off + 0x10u,
+                                        &lo1);
+                                    fprintf(stderr,
+                                        "[WINCE_L1_LOOKUP] s0_pte:"
+                                        " l2=0x%08X off=0x%02X"
+                                        " lo0=0x%08X lo1=0x%08X\n",
+                                        l2_ptr_s0, pte_off, lo0, lo1);
+                                }
+                                if (l2_ptr_s1 != 0
+                                    && (l2_ptr_s1 & 1) == 0
+                                    && l2_ptr_s1 != l2_ptr_s0) {
+                                    uint32_t pte_off = (s1_va >> 10) & 0x38u;
+                                    uint32_t lo0 = 0, lo1 = 0;
+                                    (void)load_va_word(m,
+                                        l2_ptr_s1 + pte_off + 0x0Cu,
+                                        &lo0);
+                                    (void)load_va_word(m,
+                                        l2_ptr_s1 + pte_off + 0x10u,
+                                        &lo1);
+                                    fprintf(stderr,
+                                        "[WINCE_L1_LOOKUP] s1_pte:"
+                                        " l2=0x%08X off=0x%02X"
+                                        " lo0=0x%08X lo1=0x%08X\n",
+                                        l2_ptr_s1, pte_off, lo0, lo1);
+                                }
+                            }
                             /* Phase AC: read the TOC entry at
                              * +0x64 to extract the DLL name.
                              * Try both 24-byte and 32-byte layouts:
