@@ -7162,6 +7162,57 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                             fprintf(stderr,
                                 "[WINCE_MODULE] DllMain entry"
                                 " 0x%08X\n", dll_main);
+                            /* Phase AO: read coredll's e32_lite
+                             * structure at kseg0 0x80452F34 (the
+                             * TOC entry's ulE32Offset). The e32
+                             * has e32_entryrva at offset +0x06 as
+                             * a WORD. Compare against the
+                             * descriptor's stored DllMain VA. */
+                            {
+                                uint32_t e32_va = UINT32_C(0x80452F34);
+                                uint32_t w0 = 0, w4 = 0, w8 = 0, wC = 0;
+                                uint32_t w10 = 0, w14 = 0, w18 = 0, w1C = 0;
+                                (void)load_va_word(m, e32_va + 0x00u, &w0);
+                                (void)load_va_word(m, e32_va + 0x04u, &w4);
+                                (void)load_va_word(m, e32_va + 0x08u, &w8);
+                                (void)load_va_word(m, e32_va + 0x0Cu, &wC);
+                                (void)load_va_word(m, e32_va + 0x10u, &w10);
+                                (void)load_va_word(m, e32_va + 0x14u, &w14);
+                                (void)load_va_word(m, e32_va + 0x18u, &w18);
+                                (void)load_va_word(m, e32_va + 0x1Cu, &w1C);
+                                fprintf(stderr,
+                                    "[WINCE_E32] coredll e32_lite at"
+                                    " 0x%08X:\n", e32_va);
+                                fprintf(stderr,
+                                    "[WINCE_E32]   +0x00 objcnt=0x%08X"
+                                    " +0x04 flags+entryrva=0x%08X\n",
+                                    w0, w4);
+                                fprintf(stderr,
+                                    "[WINCE_E32]   +0x08 vbase=0x%08X"
+                                    " +0x0C subsys=0x%08X\n",
+                                    w8, wC);
+                                fprintf(stderr,
+                                    "[WINCE_E32]   +0x10 stackmax=0x%08X"
+                                    " +0x14 vsize=0x%08X\n",
+                                    w10, w14);
+                                fprintf(stderr,
+                                    "[WINCE_E32]   +0x18 sect14rva=0x%08X"
+                                    " +0x1C sect14size=0x%08X\n",
+                                    w18, w1C);
+                                /* e32_entryrva is the high WORD of
+                                 * the +0x04 dword (the +0x06 field). */
+                                uint32_t entry_rva = (w4 >> 16) & 0xFFFFu;
+                                uint32_t expected_entry_va_slot0 =
+                                    UINT32_C(0x01F80000) + entry_rva;
+                                fprintf(stderr,
+                                    "[WINCE_E32] decoded entryrva=0x%04X"
+                                    " expected_slot0_va=0x%08X"
+                                    " descriptor_+0x60=0x%08X %s\n",
+                                    entry_rva, expected_entry_va_slot0,
+                                    dll_main,
+                                    (expected_entry_va_slot0 == dll_main)
+                                        ? "MATCH" : "MISMATCH");
+                            }
                             /* Phase AN: read the kernel hook
                              * trampoline at kseg3 0xFFFF9BF6.
                              * The address is referenced as
