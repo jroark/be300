@@ -6968,6 +6968,32 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                     fprintf(stderr,
                         "[WINCE_MODULE] descriptor_ptr=0x%08X\n",
                         mod_desc_ptr);
+                    /* Phase AE: read the kernel error code field
+                     * at *(_DAT_FFFFDAC0 + 0x38). _DAT_FFFFDAC0 is
+                     * loaded from VA 0xFFFFDAC0 (per FUN_800927CC).
+                     * That VA is the ctx_ptr at PA 0x000018C0 per
+                     * CLAUDE.md MM notes. */
+                    {
+                        uint32_t ctx_ptr = 0;
+                        uint32_t err_code = 0;
+                        (void)load_va_word(m, UINT32_C(0xFFFFDAC0),
+                            &ctx_ptr);
+                        if (ctx_ptr != 0) {
+                            (void)load_va_word(m, ctx_ptr + 0x38u,
+                                &err_code);
+                        }
+                        const char *err_name = "?";
+                        if (err_code == 0x45A) err_name = "DLL_INIT_FAILED";
+                        else if (err_code == 0x0E) err_name = "NOT_ENOUGH_MEMORY";
+                        else if (err_code == 0x57) err_name = "'W' MM dispatcher";
+                        else if (err_code == 0x32) err_name = "'2' opcode-disabled";
+                        else if (err_code == 0x08) err_name = "alloc-pool-fail";
+                        else if (err_code == 0) err_name = "(clean / no error)";
+                        fprintf(stderr,
+                            "[WINCE_KERNEL_ERR] ctx_ptr=0x%08X"
+                            " err@+0x38=0x%08X (%s)\n",
+                            ctx_ptr, err_code, err_name);
+                    }
                     if (mod_desc_ptr != 0
                         && (mod_desc_ptr & 3u) == 0) {
                         uint32_t md0 = 0, md4 = 0, md8 = 0, mdC = 0;
