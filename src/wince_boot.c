@@ -7009,6 +7009,31 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                         }
                     }
                 }
+                /* Phase AA: dump 48 words of stack from
+                 * caller_sp upward to find FUN_80090144's
+                 * saved ra and its caller's saved ra etc.
+                 * Look for words in [0x80060000, 0x80700000)
+                 * that look like return addresses. */
+                {
+                    unsigned k;
+                    fprintf(stderr,
+                        "[WINCE_STACK_WALK] base=0x%08X (FUN_8008FE8C body sp)\n",
+                        caller_sp);
+                    for (k = 0; k < 48u; k++) {
+                        uint32_t v = 0;
+                        uint32_t va = caller_sp + (uint32_t)(k * 4u);
+                        bool ok = load_va_word(m, va, &v);
+                        const char *tag = "";
+                        if (ok && v >= UINT32_C(0x80060000)
+                            && v < UINT32_C(0x80700000)) {
+                            tag = " <- ra-shape";
+                        }
+                        fprintf(stderr,
+                            "[WINCE_STACK_WALK] sp+0x%02X va=0x%08X"
+                            " val=0x%08X%s\n",
+                            k * 4u, va, v, tag);
+                    }
+                }
             }
         }
         if (n >= 25u && n <= 40u) {
