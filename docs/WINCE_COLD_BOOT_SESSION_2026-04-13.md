@@ -900,3 +900,208 @@ section table `realaddr` as the authoritative source, not the TOC/
 descriptor `load` field.** The descriptor `load` points at the
 module's header area (for inspection), while `realaddr` per section
 points at the actual runtime bytes.
+
+## Phase AT/AU/AV Addendum (2026-04-13, commits 7824503c, 6a55d275)
+
+Extending Phase AS, three more phases re-framed the trigger question
+from "what makes the loader roll back coredll" to "why is there a
+map-then-unmap sequence on coredll's tail at all". **Read this
+section before starting any new probe work.**
+
+### Phase AT - the "first hot user L2 write" is early boot, not the walker
+
+A probe gated on `hot_user_l2_write_count == 1` fires in ROM / SPL
+early-init code, not inside the walker:
+- `sp = 0xA0003800` (kseg1 early stack, not NK kernel stack)
+- `coredll_desc +0x60 = 0x00000000` (not yet populated)
+- slot-0 VA `0x01F84A5C` and slot-1 VA `0x03F84A5C` are **both
+  unmapped** - only kseg0 `0x800BFA5C` reads the valid prologue
+- walker saved_ra at `sp+0x3C = 0` (not a real walker frame)
+
+This confirms coredll's raw `.text` is loaded by SPL into kseg0
+(`0x800BC000` region) very early, before user paging exists.
+
+The Phase AS reads at `n==30` (deep inside the walker) showed
+`coredll_desc +0x60 = 0x01F84A5C` AND slot-0 `0x01F84A5C` still
+mapped to the valid prologue. **Combined with Phase AT, this proves
+the walker is NOT unmapping coredll's DllMain page.**
+
+### Phase AU - the walker targets coredll's tail (.text tail + .data + .pdata)
+
+Classified the walker's zero targets by decoding existing
+`WINCE_HOT_L2W_VA` entries (no new probe needed). The walker at
+`pc=0x80097000` (FUN_800970A8) zeros pte_slots 1..7 of the L2 group
+at `0x80FFC1C8`, which are paired 4K PTE entries mapping slot-0 VAs:
+
+```text
+0x01FE2000 .. 0x01FEF000   (= coredll rva 0x62000 .. 0x6F000, 14 pages, 56 KB)
+```
+
+Page-by-page section mapping:
+
+| rva range        | pages | section                                    |
+|------------------|-------|--------------------------------------------|
+| 0x62000-0x64000  | 3     | last 3 pages of .text (ends at rva 0x64F3E) |
+| 0x65000          | 1     | hole between .text and .data               |
+| 0x66000          | 1     | .data (rva 0x66000-0x66558)                |
+| 0x67000-0x6F000  | 9     | all of .pdata (EXCEPTION, 0x67000-0x6F96C) |
+
+The DllMain page at rva `0x4000` is NOT touched. `.rsrc` at rva
+`0x70000+` is NOT touched. The walker zeros only the **tail** of
+coredll from end-of-text through end-of-pdata.
+
+**Immediately before the walker (stores #25..#29 in
+`WINCE_HOT_L2W`), a DIFFERENT pc (`0x800984B4`) PUBLISHES valid PTEs
+into the same L2 group** - specifically pte_slots 4..7 (VAs
+`0x01FE8000..0x01FEF000` = coredll rva `0x68000..0x6F000` = the
+`.pdata` core). PFNs written are `0xFF8..0xFFD`.
+
+So the sequence is:
+
+1. Some NK routine maps `.pdata` pages (4..7) into the L2 group
+2. Immediately after, FUN_800970A8 zeros slots 1..7 of that group
+3. The `.data` page at slot 3 (rva 0x66000) and `.text` tail pages
+   at slots 1..2 (rva 0x62000-0x64000) get zeroed even though the
+   publisher did not touch them - they were already mapped from
+   earlier setup
+
+This is a paired **map-then-unmap** operation on coredll's tail,
+not a module rollback. The 2026-04-12 "callback consumer at
+`0x01FE6544` reads zero" fault is a **stale reference**: some
+earlier code captured a pointer into rva `0x66544` (in the .data
+page), and after this routine ran the .data page was legitimately
+zeroed, so the consumer reads zero.
+
+### Phase AV - publisher and walker live in the same NK function
+
+Disassembled the publisher's region. The inner PTE-publish loop at
+`0x80098484..0x800984D8` is:
+
+```text
+80098484: (loop top - reached via bnez from 800984d8)
+80098490: sw   t0, 12(s1)       ; store PTE (skip path)
+80098494: b    0x800984c0
+80098498:   addiu s3, s3, 256   ; (delay) PFN += 0x100
+8009849c: lw   v0, 12(t1)        ; read old PTE
+800984a0: sw   v1, 148(sp)
+800984a4: and  s0, v0, s8        ; mask
+800984a8: move s3, s0
+800984ac: jal  0x800a31bc        ; per-entry helper
+800984b0:   move a0, s0
+800984b4: lw   v1, 148(sp)       ; <-- dyntrans reports pc here
+800984b8: or   t3, s0, s7        ; or PTE flags (s7)
+800984bc: sw   t3, 12(s1)        ; publish PTE|flags
+800984c0: addiu s5, s5, -1       ; count--
+800984c8: addiu s2, s2, 4
+800984d0: addiu s1, s1, 4        ; advance L2 entry ptr
+800984d4: slti  at, s4, 16       ; i < 16
+800984d8: bnez  at, 0x80098484   ; loop
+```
+
+The outer scope at `0x80098300..0x800983a4` performs:
+- a table lookup `lw a0, -10048(t4)` with `t4 = (v0 & 0x3F) << 2`
+  (module-by-index lookup, 64-entry table)
+- a call to `FUN_80096E50` at `0x80098348`
+- a call to **`FUN_80096E88`** at `0x8009837C`
+
+`FUN_80096E88` is the same range walker the handoff doc attributes
+to `FUN_80097F44`. So **the containing function for the publisher
+IS `FUN_80097F44` (or its outer wrapper)**. This is not a separate
+"publisher" function - it's the same `FUN_80097F44` that the
+handoff doc already identified as the caller of the unmap walker.
+
+**Conclusion: a single NK function, under the MM lock, does both
+the publish and the unmap.** It is one atomic map-then-unmap
+sequence, not a map by one code path followed by an unmap by
+another. The handoff doc's attribution of FUN_80097F44 as the
+caller of FUN_800970A8 is correct; what the handoff missed is that
+FUN_80097F44 ALSO publishes PTEs just before it unmaps them, and
+the publish+unmap are in the SAME function invocation.
+
+### Revised trigger hypothesis
+
+This is the current best understanding, superseding all prior
+"DllMain failed" / "loader rollback" theories:
+
+1. Something triggers `FUN_80097F44` to run on coredll's tail L2
+   group `0x80FFC1C8`.
+2. `FUN_80097F44` acquires the MM lock, does section-table sanity
+   checks, publishes new PTEs for pte_slots 4..7 via the inner loop
+   at `0x80098484`, then unmaps pte_slots 1..7 via
+   `FUN_800970A8` (the walker), then releases the MM lock.
+3. The zeroed range `0x01FE2000..0x01FEF000` = coredll rva
+   `0x62000..0x6F000` covers text tail + data + pdata.
+4. AFTER the unmap, a stale consumer holding a pointer into rva
+   `0x66544` (the .data page) reads zero and faults with
+   Exception 004.
+
+The open questions are now:
+
+1. **Who calls FUN_80097F44?** The handoff doc traced
+   `FUN_800903BC -> FUN_80090144 -> FUN_8008FE8C -> FUN_80097F44`.
+   If that chain is correct, then some code in the FreeLibrary
+   core is calling FUN_80097F44 with coredll's tail L2 group, but
+   WHY this happens on cold boot when coredll should not be freed
+   is unknown. Re-verify by reading `WINCE_WALKER_FRAME` and
+   `WINCE_F44_FRAME` saved_ra values from the current run.
+2. **Why does the publisher publish pte_slots 4..7 just before the
+   walker unmaps 1..7?** A map-then-immediately-unmap pattern only
+   makes sense if the publisher and walker are doing different
+   operations that happen to touch the same L2 group - e.g.
+   publisher sets up a shared page aliased to something, walker
+   detaches a different alias. The map+unmap being in the same
+   function under the MM lock suggests this is an atomic
+   re-mapping of coredll's tail (probably moving it from one slot
+   to another, or copying to a reclaim pool).
+3. **Who is the stale consumer at rva 0x66544?** Probably a slot-0
+   function that cached a pointer into coredll's .data section
+   during an earlier call. To find it, search coredll's .text
+   (at `--adjust-vma=0x800BB000`) for any `lw`/`sw` loading from
+   rva 0x66544 or a nearby value.
+
+### Recommended next steps (supersedes earlier lists)
+
+1. **Re-verify the `FUN_80097F44` caller chain.** The current run
+   still has `WINCE_WALKER_FRAME` and `WINCE_F44_FRAME` probes
+   firing at `n==30`. Extract the saved_ra values and confirm
+   whether they point at `FUN_800903BC` (loader rollback) or
+   somewhere else entirely. The handoff doc's attribution was made
+   when the investigation believed in the DllMain-failure chain;
+   it may still be right, or it may be another artifact of the
+   wrong coredll base.
+2. **Disassemble FUN_80097F44 end-to-end** with the correct NK
+   base (`--adjust-vma=0x80060000`) to understand what the
+   publish-then-unmap sequence is actually doing. The
+   publisher loop at `0x80098484` is inside a larger structure -
+   decode the outer control flow around `0x80098300..0x800984E0`.
+3. **Find the consumer of rva 0x66544** by searching
+   `coredll_decompressed` bytes (at section 0 realaddr
+   `0x800BC000`) for any instruction that references offset
+   `0x65544` (= `0x66544 - 0x1000`). Search the whole `.text`
+   (rva `0x1000..0x64F3E`). Use `--adjust-vma=0x800BB000` so file
+   offset 0x1000 lands at VA 0x800BC000.
+4. **Do NOT add more runtime probes until the caller chain is
+   re-verified from the existing run log.** The current
+   instrumentation is saturated - more probes without more
+   understanding will not narrow the trigger further.
+
+### Current authoritative function identifications (from NK at base 0x80060000)
+
+| Symbol          | VA          | Role                                             |
+|-----------------|-------------|--------------------------------------------------|
+| FUN_80096E50    | 0x80096E50  | helper called by FUN_80097F44 inner              |
+| FUN_80096E88    | 0x80096E88  | range walker (called twice by FUN_80097F44)      |
+| FUN_80097F44    | 0x80097F44  | MM-locked map-then-unmap function on L2 groups   |
+| FUN_800970A8    | 0x800970A8  | L2 PTE zero walker (called by FUN_80097F44)      |
+| FUN_800A31BC    | 0x800A31BC  | per-entry publisher helper (purpose unknown)     |
+| publisher loop  | 0x80098484  | inner body of FUN_80097F44, PTE build loop       |
+| FUN_8008FE8C    | 0x8008FE8C  | calls FUN_80097F44 (FreeLibrary core? re-verify) |
+| FUN_80090144    | 0x80090144  | calls FUN_8008FE8C (re-verify)                   |
+| FUN_800903BC    | 0x800903BC  | calls FUN_80090144 (re-verify)                   |
+| FUN_800927CC    | 0x800927CC  | WinCE DLL loader (supposedly calls 800903BC)     |
+| FUN_8008FF00    | 0x8008FF00  | calls (*coredll+0x60)(coredll,1,0)               |
+
+The top 5 are confirmed by Phase AV disassembly. The bottom 5 are
+inherited from the pre-Phase-AS handoff and should be re-verified
+now that we know the prior chain attribution was made with the
+wrong coredll base.
