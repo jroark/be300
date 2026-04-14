@@ -7212,6 +7212,114 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                                     dll_main,
                                     (expected_entry_va_slot0 == dll_main)
                                         ? "MATCH" : "MISMATCH");
+                                /* Phase AQ: dump the e32 unit table
+                                 * at +0x20. The 6 info entries are
+                                 * (rva, size) pairs for directories:
+                                 *   [0] EXPORT
+                                 *   [1] IMPORT
+                                 *   [2] RESOURCE
+                                 *   [3] EXCEPTION
+                                 *   [4] SECURITY
+                                 *   [5] BASERELOC
+                                 * If coredll has an export named
+                                 * DllMain, EXPORT.rva points to its
+                                 * IMAGE_EXPORT_DIRECTORY. */
+                                {
+                                    const char *unit_name[6] = {
+                                        "EXPORT", "IMPORT", "RESOURCE",
+                                        "EXCEPTION", "SECURITY", "BASERELOC"
+                                    };
+                                    unsigned ui;
+                                    for (ui = 0; ui < 6u; ui++) {
+                                        uint32_t rva_v = 0, size_v = 0;
+                                        (void)load_va_word(m,
+                                            e32_va + 0x20u
+                                            + (uint32_t)(ui * 8u),
+                                            &rva_v);
+                                        (void)load_va_word(m,
+                                            e32_va + 0x24u
+                                            + (uint32_t)(ui * 8u),
+                                            &size_v);
+                                        fprintf(stderr,
+                                            "[WINCE_E32_UNIT] %-9s"
+                                            " rva=0x%08X size=0x%08X\n",
+                                            unit_name[ui], rva_v, size_v);
+                                    }
+                                }
+                                /* Phase AR: walk coredll's PE32
+                                 * EXCEPTION directory looking for
+                                 * the RUNTIME_FUNCTION that covers
+                                 * RVA 0x4A5C. MIPS RUNTIME_FUNCTION
+                                 * is 20 bytes:
+                                 *   +0x00 BeginAddress
+                                 *   +0x04 EndAddress
+                                 *   +0x08 ExceptionHandler
+                                 *   +0x0C HandlerData
+                                 *   +0x10 PrologEndAddress
+                                 * (or 8 bytes if just begin+end).
+                                 * Try both layouts. */
+                                {
+                                    /* EXCEPTION directory at NK
+                                     * kseg0 = 0x8033B000 + 0x67000
+                                     * = 0x803A2000 */
+                                    uint32_t exc_va = UINT32_C(0x803A2000);
+                                    uint32_t target_rva = UINT32_C(0x4A5C);
+                                    bool found = false;
+                                    unsigned i;
+                                    /* Try 20-byte entries first */
+                                    for (i = 0; i < 256u && !found; i++) {
+                                        uint32_t begin = 0, end = 0;
+                                        uint32_t handler = 0, hdata = 0;
+                                        uint32_t prolog_end = 0;
+                                        (void)load_va_word(m,
+                                            exc_va + (uint32_t)(i * 20u) + 0x00u,
+                                            &begin);
+                                        (void)load_va_word(m,
+                                            exc_va + (uint32_t)(i * 20u) + 0x04u,
+                                            &end);
+                                        (void)load_va_word(m,
+                                            exc_va + (uint32_t)(i * 20u) + 0x08u,
+                                            &handler);
+                                        (void)load_va_word(m,
+                                            exc_va + (uint32_t)(i * 20u) + 0x0Cu,
+                                            &hdata);
+                                        (void)load_va_word(m,
+                                            exc_va + (uint32_t)(i * 20u) + 0x10u,
+                                            &prolog_end);
+                                        /* Stop if we walked past
+                                         * coredll's image. */
+                                        if (begin == 0
+                                            || begin > UINT32_C(0x80000)) break;
+                                        if (begin <= target_rva
+                                            && target_rva < end) {
+                                            fprintf(stderr,
+                                                "[WINCE_RTFUNC] FOUND"
+                                                " entry %u: begin=0x%08X"
+                                                " end=0x%08X"
+                                                " handler=0x%08X hdata=0x%08X"
+                                                " prolog_end=0x%08X\n",
+                                                i, begin, end, handler,
+                                                hdata, prolog_end);
+                                            fprintf(stderr,
+                                                "[WINCE_RTFUNC] target_rva"
+                                                "=0x%04X is %s function"
+                                                " (begin=0x%04X)\n",
+                                                target_rva,
+                                                (begin == target_rva)
+                                                    ? "AT START of"
+                                                    : "MID-function in",
+                                                begin);
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!found) {
+                                        fprintf(stderr,
+                                            "[WINCE_RTFUNC] no matching"
+                                            " 20-byte entry found"
+                                            " (try other layout)\n");
+                                    }
+                                }
                             }
                             /* Phase AP: read nk.exe's TOC entry and
                              * its e32_lite to compare layouts. nk.exe
