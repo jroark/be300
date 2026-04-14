@@ -7320,6 +7320,408 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                                             " (try other layout)\n");
                                     }
                                 }
+                                /* Phase AS: read the o32_lite section
+                                 * table that immediately follows the
+                                 * 6-entry e32_unit directory table, at
+                                 * e32_va + 0x50. Find the section whose
+                                 * [rva, rva+vsize) covers EXCEPTION rva
+                                 * 0x67000, compute the real kseg0 VA,
+                                 * and walk RUNTIME_FUNCTION entries to
+                                 * classify rva 0x4A5C as AT-START or
+                                 * MID-function. The prior "section
+                                 * table at slot-1 VA 0x03FE6570" claim
+                                 * in the 2026-04-13 handoff doc was a
+                                 * misread - that VA is in coredll's
+                                 * data section, not the o32_lite
+                                 * array. */
+                                {
+                                    /* The e32_unit directory table
+                                     * has 9 entries (not 6) for WinCE
+                                     * 3.0 coredll: beyond the first 6
+                                     * documented slots there is a DEBUG
+                                     * entry at +0x50, then 2 more
+                                     * zero-filled slots, then a 4-byte
+                                     * trailer (timestamp-like) at +0x68.
+                                     * Section table begins at +0x6C
+                                     * with 24-byte o32_lite entries.
+                                     * This was verified empirically by
+                                     * dumping +0x50..+0x80 raw in the
+                                     * Phase AS v1 log and matching
+                                     * entry 2 to the known EXCEPTION
+                                     * directory (rva=0x67000,
+                                     * size=0x896C). */
+                                    const uint32_t sectab_va =
+                                        e32_va + 0x6Cu;
+                                    const uint32_t target_rva =
+                                        UINT32_C(0x4A5C);
+                                    const uint32_t exc_rva =
+                                        UINT32_C(0x67000);
+                                    const uint32_t exc_size =
+                                        UINT32_C(0x896C);
+                                    uint32_t sec_realaddr[4] = {0};
+                                    uint32_t sec_rva[4] = {0};
+                                    uint32_t sec_vsize[4] = {0};
+                                    bool sec_ok[4] = {false};
+                                    unsigned si;
+                                    /* First dump 32 raw words starting
+                                     * at sectab_va so the layout is
+                                     * decodable offline even if our
+                                     * stride/field guesses are wrong.
+                                     * 32 words = 128 bytes covers both
+                                     * 4*24=96 and 4*28=112 and 4*32
+                                     * layouts. */
+                                    {
+                                        unsigned rw;
+                                        for (rw = 0; rw < 32u; rw++) {
+                                            uint32_t wv = 0;
+                                            bool wok = load_va_word(m,
+                                                sectab_va
+                                                + (uint32_t)(rw * 4u),
+                                                &wv);
+                                            fprintf(stderr,
+                                                "[WINCE_SECTAB_RAW]"
+                                                " +0x%02X [0x%08X]"
+                                                " =0x%08X%s\n",
+                                                rw * 4u,
+                                                sectab_va
+                                                + (uint32_t)(rw * 4u),
+                                                wv,
+                                                wok ? "" : " (unmapped)");
+                                        }
+                                    }
+                                    /* WinCE 3.0 o32_lite layout (24
+                                     * bytes per entry):
+                                     *   +0x00 vsize
+                                     *   +0x04 rva
+                                     *   +0x08 psize
+                                     *   +0x0C realaddr
+                                     *   +0x10 access
+                                     *   +0x14 flags
+                                     * Also decode under the 28-byte
+                                     * variant in case coredll uses the
+                                     * o32_rom layout with an extra
+                                     * dataptr slot. */
+                                    for (si = 0; si < 4u; si++) {
+                                        uint32_t base = sectab_va
+                                            + (uint32_t)(si * 24u);
+                                        uint32_t vsize_v = 0, rva_v = 0;
+                                        uint32_t psize_v = 0, real_v = 0;
+                                        uint32_t access_v = 0;
+                                        uint32_t flags_v = 0;
+                                        bool ok = true;
+                                        if (!load_va_word(m, base + 0x00u,
+                                            &vsize_v)) ok = false;
+                                        if (!load_va_word(m, base + 0x04u,
+                                            &rva_v)) ok = false;
+                                        if (!load_va_word(m, base + 0x08u,
+                                            &psize_v)) ok = false;
+                                        if (!load_va_word(m, base + 0x0Cu,
+                                            &real_v)) ok = false;
+                                        if (!load_va_word(m, base + 0x10u,
+                                            &access_v)) ok = false;
+                                        if (!load_va_word(m, base + 0x14u,
+                                            &flags_v)) ok = false;
+                                        sec_realaddr[si] = real_v;
+                                        sec_rva[si] = rva_v;
+                                        sec_vsize[si] = vsize_v;
+                                        sec_ok[si] = ok;
+                                        fprintf(stderr,
+                                            "[WINCE_SECTAB_AS] stride=24"
+                                            " idx=%u base=0x%08X"
+                                            " vsize=0x%08X rva=0x%08X"
+                                            " psize=0x%08X"
+                                            " realaddr=0x%08X"
+                                            " access=0x%08X flags=0x%08X"
+                                            " ok=%d\n",
+                                            si, base, vsize_v, rva_v,
+                                            psize_v, real_v, access_v,
+                                            flags_v, (int)ok);
+                                    }
+                                    for (si = 0; si < 4u; si++) {
+                                        uint32_t base = sectab_va
+                                            + (uint32_t)(si * 28u);
+                                        uint32_t vsize_v = 0, rva_v = 0;
+                                        uint32_t psize_v = 0, real_v = 0;
+                                        uint32_t access_v = 0;
+                                        uint32_t flags_v = 0;
+                                        uint32_t dataptr_v = 0;
+                                        (void)load_va_word(m, base + 0x00u,
+                                            &vsize_v);
+                                        (void)load_va_word(m, base + 0x04u,
+                                            &rva_v);
+                                        (void)load_va_word(m, base + 0x08u,
+                                            &psize_v);
+                                        (void)load_va_word(m, base + 0x0Cu,
+                                            &dataptr_v);
+                                        (void)load_va_word(m, base + 0x10u,
+                                            &real_v);
+                                        (void)load_va_word(m, base + 0x14u,
+                                            &access_v);
+                                        (void)load_va_word(m, base + 0x18u,
+                                            &flags_v);
+                                        fprintf(stderr,
+                                            "[WINCE_SECTAB_AS] stride=28"
+                                            " idx=%u base=0x%08X"
+                                            " vsize=0x%08X rva=0x%08X"
+                                            " psize=0x%08X"
+                                            " dataptr=0x%08X"
+                                            " realaddr=0x%08X"
+                                            " access=0x%08X flags=0x%08X\n",
+                                            si, base, vsize_v, rva_v,
+                                            psize_v, dataptr_v, real_v,
+                                            access_v, flags_v);
+                                    }
+                                    /* Locate the section that contains
+                                     * the EXCEPTION directory rva. */
+                                    unsigned hit = 4u;
+                                    for (si = 0; si < 4u; si++) {
+                                        if (!sec_ok[si]) continue;
+                                        if (sec_rva[si] <= exc_rva
+                                            && exc_rva
+                                                < sec_rva[si]
+                                                    + sec_vsize[si]) {
+                                            hit = si;
+                                            break;
+                                        }
+                                    }
+                                    if (hit >= 4u) {
+                                        fprintf(stderr,
+                                            "[WINCE_EXC_VA] no section"
+                                            " contains EXCEPTION rva"
+                                            " 0x%08X (walker skipped)\n",
+                                            exc_rva);
+                                    } else {
+                                        uint32_t exc_kseg0 =
+                                            sec_realaddr[hit]
+                                            + (exc_rva - sec_rva[hit]);
+                                        fprintf(stderr,
+                                            "[WINCE_EXC_VA] hit_sec=%u"
+                                            " sec_rva=0x%08X"
+                                            " sec_realaddr=0x%08X"
+                                            " exc_rva=0x%08X"
+                                            " exc_kseg0=0x%08X"
+                                            " exc_size=0x%08X\n",
+                                            hit, sec_rva[hit],
+                                            sec_realaddr[hit], exc_rva,
+                                            exc_kseg0, exc_size);
+                                        /* Dump first 32 words at
+                                         * exc_kseg0 so the layout is
+                                         * verifiable offline. */
+                                        {
+                                            unsigned dw;
+                                            for (dw = 0; dw < 32u; dw++) {
+                                                uint32_t wv = 0;
+                                                bool wok = load_va_word(m,
+                                                    exc_kseg0
+                                                    + (uint32_t)(dw * 4u),
+                                                    &wv);
+                                                fprintf(stderr,
+                                                    "[WINCE_EXC_RAW]"
+                                                    " +0x%02X=0x%08X%s\n",
+                                                    dw * 4u, wv,
+                                                    wok ? ""
+                                                        : " (unmapped)");
+                                            }
+                                        }
+                                        /* Dump 16 instructions (8
+                                         * before + 8 at/after) around
+                                         * rva 0x4A5C, using each of
+                                         * three candidate base VAs:
+                                         *   A) section0 realaddr-based:
+                                         *      0x800BC000 + (0x4A5C
+                                         *      - 0x1000) = 0x800BFA5C
+                                         *   B) NK kseg0 base + rva:
+                                         *      0x8033B000 + 0x4A5C
+                                         *      = 0x8033FA5C
+                                         *   C) slot-0 user VA:
+                                         *      0x01F80000 + 0x4A5C
+                                         *      = 0x01F84A5C
+                                         * If they all contain the same
+                                         * bytes, the mapping is
+                                         * consistent. If any differs,
+                                         * we have the wrong source of
+                                         * truth for coredll's .text. */
+                                        {
+                                            uint32_t text_real = 0;
+                                            uint32_t text_rva = 0;
+                                            /* Use section table
+                                             * entry 0 (.text). */
+                                            if (sec_ok[0]) {
+                                                text_real =
+                                                    sec_realaddr[0];
+                                                text_rva = sec_rva[0];
+                                            }
+                                            uint32_t va_a = text_real
+                                                + (UINT32_C(0x4A5C)
+                                                    - text_rva);
+                                            uint32_t va_b =
+                                                UINT32_C(0x8033B000)
+                                                + UINT32_C(0x4A5C);
+                                            uint32_t va_c =
+                                                UINT32_C(0x01F84A5C);
+                                            const char *labels[3] = {
+                                                "A_realaddr",
+                                                "B_nk_kseg0",
+                                                "C_slot0_user"};
+                                            uint32_t bases[3] = {
+                                                va_a, va_b, va_c};
+                                            unsigned vi;
+                                            for (vi = 0; vi < 3u; vi++) {
+                                                unsigned iw;
+                                                /* Start 8 instructions
+                                                 * (32 bytes) before the
+                                                 * target so a prologue
+                                                 * in the neighborhood
+                                                 * is visible. */
+                                                uint32_t base =
+                                                    bases[vi]
+                                                    - UINT32_C(0x20);
+                                                for (iw = 0;
+                                                    iw < 16u; iw++) {
+                                                    uint32_t insn = 0;
+                                                    uint32_t iva = base
+                                                        + (uint32_t)(iw * 4u);
+                                                    bool iok =
+                                                        load_va_word(m,
+                                                            iva, &insn);
+                                                    const char *mark =
+                                                        (iva
+                                                            == bases[vi])
+                                                        ? " <-TARGET"
+                                                        : "";
+                                                    fprintf(stderr,
+                                                        "[WINCE_DLLMAIN_"
+                                                        "INSN] %s"
+                                                        " va=0x%08X"
+                                                        " insn=0x%08X%s%s"
+                                                        "\n",
+                                                        labels[vi],
+                                                        iva, insn, mark,
+                                                        iok ? ""
+                                                            : " (unm)");
+                                                }
+                                            }
+                                        }
+                                        /* Walk the RUNTIME_FUNCTION
+                                         * table. True capacity is
+                                         * exc_size/20 = 1766 entries
+                                         * for the 20-byte MIPS layout.
+                                         * Do not truncate earlier. */
+                                        const unsigned max_entries =
+                                            (unsigned)(exc_size / 20u);
+                                        bool found_as = false;
+                                        unsigned i;
+                                        for (i = 0;
+                                            i < max_entries && !found_as;
+                                            i++) {
+                                            uint32_t begin = 0, end = 0;
+                                            uint32_t handler = 0;
+                                            uint32_t hdata = 0;
+                                            uint32_t prolog_end = 0;
+                                            uint32_t eoff =
+                                                exc_kseg0
+                                                + (uint32_t)(i * 20u);
+                                            if (!load_va_word(m,
+                                                eoff + 0x00u, &begin))
+                                                break;
+                                            if (!load_va_word(m,
+                                                eoff + 0x04u, &end))
+                                                break;
+                                            (void)load_va_word(m,
+                                                eoff + 0x08u, &handler);
+                                            (void)load_va_word(m,
+                                                eoff + 0x0Cu, &hdata);
+                                            (void)load_va_word(m,
+                                                eoff + 0x10u, &prolog_end);
+                                            if (begin == 0
+                                                && end == 0) break;
+                                            if (begin > UINT32_C(0x80000))
+                                                break;
+                                            if (begin <= target_rva
+                                                && target_rva < end) {
+                                                fprintf(stderr,
+                                                    "[WINCE_RTFUNC_AS]"
+                                                    " FOUND entry=%u"
+                                                    " begin=0x%08X"
+                                                    " end=0x%08X"
+                                                    " handler=0x%08X"
+                                                    " hdata=0x%08X"
+                                                    " prolog_end=0x%08X\n",
+                                                    i, begin, end,
+                                                    handler, hdata,
+                                                    prolog_end);
+                                                fprintf(stderr,
+                                                    "[WINCE_RTFUNC_AS]"
+                                                    " target_rva=0x%04X"
+                                                    " is %s (begin="
+                                                    "0x%04X)\n",
+                                                    target_rva,
+                                                    (begin == target_rva)
+                                                        ? "AT START of"
+                                                          " function"
+                                                        : "MID-function",
+                                                    begin);
+                                                found_as = true;
+                                            }
+                                        }
+                                        if (!found_as) {
+                                            fprintf(stderr,
+                                                "[WINCE_RTFUNC_AS] no"
+                                                " match after full walk"
+                                                " of %u 20-byte entries"
+                                                " (try 8-byte layout)\n",
+                                                max_entries);
+                                            const unsigned max8 =
+                                                (unsigned)(exc_size / 8u);
+                                            for (i = 0;
+                                                i < max8 && !found_as;
+                                                i++) {
+                                                uint32_t begin = 0;
+                                                uint32_t end = 0;
+                                                uint32_t eoff =
+                                                    exc_kseg0
+                                                    + (uint32_t)(i * 8u);
+                                                if (!load_va_word(m,
+                                                    eoff + 0x00u,
+                                                    &begin)) break;
+                                                if (!load_va_word(m,
+                                                    eoff + 0x04u,
+                                                    &end)) break;
+                                                if (begin == 0
+                                                    && end == 0) break;
+                                                if (begin
+                                                    > UINT32_C(0x80000))
+                                                    break;
+                                                if (begin <= target_rva
+                                                    && target_rva
+                                                        < end) {
+                                                    fprintf(stderr,
+                                                        "[WINCE_RTFUNC_AS]"
+                                                        " 8B FOUND"
+                                                        " entry=%u"
+                                                        " begin=0x%08X"
+                                                        " end=0x%08X"
+                                                        " target_rva"
+                                                        "=0x%04X is"
+                                                        " %s\n",
+                                                        i, begin, end,
+                                                        target_rva,
+                                                        (begin
+                                                            == target_rva)
+                                                        ? "AT START"
+                                                        : "MID-function");
+                                                    found_as = true;
+                                                }
+                                            }
+                                            if (!found_as) {
+                                                fprintf(stderr,
+                                                    "[WINCE_RTFUNC_AS]"
+                                                    " no match in 8B"
+                                                    " layout either\n");
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             /* Phase AP: read nk.exe's TOC entry and
                              * its e32_lite to compare layouts. nk.exe
