@@ -11116,6 +11116,66 @@ static void maybe_note_dllmain_dispatch_pc(machine_t *m, struct cpu *cpu, uint32
             " +0x84=0x%08X(dispatch_flag)"
             " +0x88=0x%08X +0xC8=0x%08X\n",
             hit_ff00, f10, f84, f88, fc8);
+        /* Phase BC: dump the GE exception vector at 0x80000180 to
+         * see what handler NK installed there. Also dump the OAL
+         * table sentinel words at slot-0 0x01FE6544/6548 and the
+         * coredll .data view at kseg0 0x800B819C/0x800B81A0. */
+        {
+            uint32_t v[16] = {0};
+            unsigned i;
+            /* Dump 4 vectors: TLB miss kuseg (0x000), TLB miss kseg
+             * (0x080), general exception (0x180), and IV-based GE
+             * (0x200). */
+            uint32_t vec_bases[4] = {
+                UINT32_C(0x80000000),
+                UINT32_C(0x80000080),
+                UINT32_C(0x80000180),
+                UINT32_C(0x80000200)
+            };
+            for (i = 0; i < 4; i++) {
+                uint32_t w[6] = {0};
+                unsigned k;
+                for (k = 0; k < 6; k++)
+                    (void)load_va_word(m, vec_bases[i] + k*4u, &w[k]);
+                fprintf(stderr,
+                    "[WINCE_GE_VEC] 0x%08X:"
+                    " %08X %08X %08X %08X %08X %08X\n",
+                    vec_bases[i],
+                    w[0],w[1],w[2],w[3],w[4],w[5]);
+            }
+            (void)v;
+            uint32_t s_user[4] = {0}, s_kseg[4] = {0};
+            bool ok_user[4], ok_kseg[4];
+            ok_user[0] = load_va_word(m, UINT32_C(0x01FE6544), &s_user[0]);
+            ok_user[1] = load_va_word(m, UINT32_C(0x01FE6548), &s_user[1]);
+            ok_user[2] = load_va_word(m, UINT32_C(0x01FE654C), &s_user[2]);
+            ok_user[3] = load_va_word(m, UINT32_C(0x01FE6550), &s_user[3]);
+            ok_kseg[0] = load_va_word(m, UINT32_C(0x800B8198), &s_kseg[0]);
+            ok_kseg[1] = load_va_word(m, UINT32_C(0x800B819C), &s_kseg[1]);
+            ok_kseg[2] = load_va_word(m, UINT32_C(0x800B81A0), &s_kseg[2]);
+            ok_kseg[3] = load_va_word(m, UINT32_C(0x800B81A4), &s_kseg[3]);
+            fprintf(stderr,
+                "[WINCE_OAL_TABLE] slot0(0x01FE6544..50):"
+                " %s%08X %s%08X %s%08X %s%08X\n",
+                ok_user[0]?"":"X", s_user[0],
+                ok_user[1]?"":"X", s_user[1],
+                ok_user[2]?"":"X", s_user[2],
+                ok_user[3]?"":"X", s_user[3]);
+            fprintf(stderr,
+                "[WINCE_OAL_TABLE] kseg0(0x800B8198..A4):"
+                " %s%08X %s%08X %s%08X %s%08X\n",
+                ok_kseg[0]?"":"X", s_kseg[0],
+                ok_kseg[1]?"":"X", s_kseg[1],
+                ok_kseg[2]?"":"X", s_kseg[2],
+                ok_kseg[3]?"":"X", s_kseg[3]);
+            /* Probe coredll DllMain entry too - if slot-0 0x01F84A5C
+             * is mapped, the read will succeed. */
+            uint32_t entry_word = 0;
+            bool ok_entry = load_va_word(m, UINT32_C(0x01F84A5C), &entry_word);
+            fprintf(stderr,
+                "[WINCE_OAL_TABLE] slot0_entry(0x01F84A5C)=%s%08X\n",
+                ok_entry?"":"X", entry_word);
+        }
     } else if (pc32 == UINT32_C(0x80090050) && hit_ret < cap) {
         hit_ret++;
         /* This BB is reached after either jalr returns OR when
