@@ -42,6 +42,9 @@ __pycache__/
 # Testing artifacts
 Testing/
 
+# Local disasm cache
+.tmp_spl/
+
 # Android build files (gradle wrapper)
 android/gradle/
 android/gradlew
