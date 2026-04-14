@@ -7007,6 +7007,28 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                                 "[WINCE_MODULE] name@0x%08X='%.32s'\n",
                                 mdC, nbuf);
                         }
+                        /* Phase AB: dump descriptor fields and
+                         * try to identify the failing DLL via
+                         * +0x60 (DllMain entry per FUN_800927CC). */
+                        {
+                            unsigned k;
+                            uint32_t dll_main = 0;
+                            for (k = 0; k < 64u; k++) {
+                                uint32_t v = 0;
+                                uint32_t va = mod_desc_ptr
+                                              + (uint32_t)(k * 4u);
+                                bool ok2 = load_va_word(m, va, &v);
+                                fprintf(stderr,
+                                    "[WINCE_MODULE_FIELD] +0x%02X=0x%08X%s\n",
+                                    k * 4u, v,
+                                    ok2 ? "" : " (unmapped)");
+                            }
+                            (void)load_va_word(m, mod_desc_ptr + 0x60u,
+                                &dll_main);
+                            fprintf(stderr,
+                                "[WINCE_MODULE] DllMain entry"
+                                " 0x%08X\n", dll_main);
+                        }
                     }
                 }
                 /* Phase AA: dump 48 words of stack from
