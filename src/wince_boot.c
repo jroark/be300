@@ -6877,6 +6877,51 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 }
             }
         }
+        if (n == 30u) {
+            /* Phase Y: at the first walker zero-store (#30 = first
+             * PTE zeroed by FUN_800970A8), read the saved register
+             * frame from the walker's stack. The walker's prologue
+             * at 0x800970A8..0x800970E0 stores:
+             *   sp+0x18: s0
+             *   sp+0x1C: s1
+             *   sp+0x20: s2
+             *   sp+0x24: s3
+             *   sp+0x28: s4
+             *   sp+0x2C: s5
+             *   sp+0x30: s6
+             *   sp+0x34: s7
+             *   sp+0x38: s8
+             *   sp+0x3C: ra  ← THE REAL CALLER PC
+             * before any callee work happens. By #30 the walker is
+             * deep in its loop and ra has been clobbered by jal
+             * 0x8007EA74, but the saved frame is intact. */
+            uint32_t spv = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+            uint32_t saved_s0 = 0, saved_s1 = 0, saved_s2 = 0;
+            uint32_t saved_s3 = 0, saved_s4 = 0, saved_s5 = 0;
+            uint32_t saved_s6 = 0, saved_s7 = 0, saved_s8 = 0;
+            uint32_t saved_ra = 0;
+            (void)load_va_word(m, spv + 0x18u, &saved_s0);
+            (void)load_va_word(m, spv + 0x1Cu, &saved_s1);
+            (void)load_va_word(m, spv + 0x20u, &saved_s2);
+            (void)load_va_word(m, spv + 0x24u, &saved_s3);
+            (void)load_va_word(m, spv + 0x28u, &saved_s4);
+            (void)load_va_word(m, spv + 0x2Cu, &saved_s5);
+            (void)load_va_word(m, spv + 0x30u, &saved_s6);
+            (void)load_va_word(m, spv + 0x34u, &saved_s7);
+            (void)load_va_word(m, spv + 0x38u, &saved_s8);
+            (void)load_va_word(m, spv + 0x3Cu, &saved_ra);
+            fprintf(stderr,
+                "[WINCE_WALKER_FRAME] sp=0x%08X saved_ra=0x%08X"
+                " (real caller PC) callsite=0x%08X\n",
+                spv, saved_ra,
+                saved_ra >= 8u ? saved_ra - 8u : 0u);
+            fprintf(stderr,
+                "[WINCE_WALKER_FRAME] saved s0=0x%08X s1=0x%08X"
+                " s2=0x%08X s3=0x%08X s4=0x%08X s5=0x%08X"
+                " s6=0x%08X s7=0x%08X s8=0x%08X\n",
+                saved_s0, saved_s1, saved_s2, saved_s3,
+                saved_s4, saved_s5, saved_s6, saved_s7, saved_s8);
+        }
         if (n >= 25u && n <= 40u) {
             struct mips_coproc *cp0 = cpu->cd.mips.coproc[0];
             uint32_t pc32 = (uint32_t)cpu->pc;
