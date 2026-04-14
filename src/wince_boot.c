@@ -7162,6 +7162,44 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                             fprintf(stderr,
                                 "[WINCE_MODULE] DllMain entry"
                                 " 0x%08X\n", dll_main);
+                            /* Phase AN: read the kernel hook
+                             * trampoline at kseg3 0xFFFF9BF6.
+                             * The address is referenced as
+                             * &SUB_ffff9bf6 in FUN_800927CC's
+                             * decomp - a callback hook called
+                             * with (parent_thread_ctx, module,
+                             * stack_arg). If the hook is null,
+                             * a return-zero stub, or unmapped,
+                             * candidate #2 is the trigger. */
+                            {
+                                uint32_t hook_words[8] = {0};
+                                uint32_t hook_global = 0;
+                                bool ok_hook;
+                                /* The check `if (_DAT_80668c80 != 0)
+                                 * before the call uses a global at
+                                 * 0x80668C80. If that's 0, the
+                                 * hook is never even tried, so
+                                 * the call doesn't fire. */
+                                (void)load_va_word(m,
+                                    UINT32_C(0x80668C80), &hook_global);
+                                fprintf(stderr,
+                                    "[WINCE_HOOK] _DAT_80668C80=0x%08X"
+                                    " (must be non-zero for hook to fire)\n",
+                                    hook_global);
+                                /* Read the hook trampoline area. */
+                                unsigned hk;
+                                for (hk = 0; hk < 8u; hk++) {
+                                    uint32_t va = UINT32_C(0xFFFF9BF0)
+                                                  + (uint32_t)(hk * 4u);
+                                    ok_hook = load_va_word(m, va,
+                                        &hook_words[hk]);
+                                    fprintf(stderr,
+                                        "[WINCE_HOOK] va=0x%08X"
+                                        " word=0x%08X%s\n",
+                                        va, hook_words[hk],
+                                        ok_hook ? "" : " (unmapped)");
+                                }
+                            }
                             /* Phase AL: read the section table
                              * from BOTH slot-0 (0x01FE6570) and
                              * slot-1 mirror (0x03FE6570) views.
