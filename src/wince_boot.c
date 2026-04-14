@@ -6877,6 +6877,54 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 }
             }
         }
+        if (n == 1u) {
+            /* Phase AT: at the walker's FIRST PTE zero-store, re-read
+             * coredll's DllMain dispatch state so we can compare to
+             * the Phase AS reads at n==30. If the bytes at slot-0 VA
+             * 0x01F84A5C (the resolved DllMain entry per Phase AS)
+             * are valid at n==1, the walker has not yet torn down
+             * coredll's text page. If they're also valid at n==30,
+             * the walker is zeroing some OTHER L2 group and coredll
+             * text is not actually being unmapped. Either outcome
+             * reshapes the trigger question. */
+            uint32_t mod_plus_60 = 0;
+            (void)load_va_word(m, UINT32_C(0x80FFFEA8) + 0x60u,
+                &mod_plus_60);
+            fprintf(stderr,
+                "[WINCE_AT_N1] coredll_desc_+0x60=0x%08X\n",
+                mod_plus_60);
+            {
+                const uint32_t va0 = UINT32_C(0x01F84A5C);
+                const uint32_t va1 = UINT32_C(0x03F84A5C);
+                const uint32_t varaw = UINT32_C(0x800BFA5C);
+                unsigned i;
+                for (i = 0; i < 6u; i++) {
+                    uint32_t w0 = 0, w1 = 0, wr = 0;
+                    uint32_t off = (uint32_t)(i * 4u);
+                    bool o0 = load_va_word(m, va0 + off, &w0);
+                    bool o1 = load_va_word(m, va1 + off, &w1);
+                    bool or_ = load_va_word(m, varaw + off, &wr);
+                    fprintf(stderr,
+                        "[WINCE_AT_N1] +0x%02X slot0[0x%08X]=0x%08X%s"
+                        " slot1[0x%08X]=0x%08X%s"
+                        " real[0x%08X]=0x%08X%s\n",
+                        off, va0 + off, w0, o0 ? "" : "(unm)",
+                        va1 + off, w1, o1 ? "" : "(unm)",
+                        varaw + off, wr, or_ ? "" : "(unm)");
+                }
+            }
+            /* Also record the walker's saved_ra at n==1 so we can
+             * compare caller attribution to n==30. */
+            {
+                uint32_t spv = (uint32_t)
+                    cpu->cd.mips.gpr[MIPS_GPR_SP];
+                uint32_t saved_ra = 0;
+                (void)load_va_word(m, spv + 0x3Cu, &saved_ra);
+                fprintf(stderr,
+                    "[WINCE_AT_N1] sp=0x%08X walker_saved_ra"
+                    "=0x%08X\n", spv, saved_ra);
+            }
+        }
         if (n == 30u) {
             /* Phase Y: at the first walker zero-store (#30 = first
              * PTE zeroed by FUN_800970A8), read the saved register
