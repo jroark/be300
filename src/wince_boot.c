@@ -7213,6 +7213,62 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                                     (expected_entry_va_slot0 == dll_main)
                                         ? "MATCH" : "MISMATCH");
                             }
+                            /* Phase AP: read nk.exe's TOC entry and
+                             * its e32_lite to compare layouts. nk.exe
+                             * is mod[0]; if TOC entries are 32 bytes
+                             * each, its TOC entry is at coredll's
+                             * TOC entry - 32 = 0x80655CA8. */
+                            {
+                                uint32_t nk_toc = UINT32_C(0x80655CA8);
+                                uint32_t nk_attr = 0, nk_e32off = 0;
+                                uint32_t nk_load = 0, nk_name_ptr = 0;
+                                (void)load_va_word(m, nk_toc + 0x00u,
+                                    &nk_attr);
+                                (void)load_va_word(m, nk_toc + 0x10u,
+                                    &nk_name_ptr);
+                                (void)load_va_word(m, nk_toc + 0x14u,
+                                    &nk_e32off);
+                                (void)load_va_word(m, nk_toc + 0x1Cu,
+                                    &nk_load);
+                                fprintf(stderr,
+                                    "[WINCE_NK_TOC] entry=0x%08X"
+                                    " attr=0x%08X name_ptr=0x%08X"
+                                    " e32_off=0x%08X load_off=0x%08X\n",
+                                    nk_toc, nk_attr, nk_name_ptr,
+                                    nk_e32off, nk_load);
+                                /* Verify name */
+                                if (nk_name_ptr >= UINT32_C(0x80060000)
+                                    && nk_name_ptr < UINT32_C(0x80700000)) {
+                                    char nb[32] = {0};
+                                    unsigned ck;
+                                    for (ck = 0; ck < 31u; ck++) {
+                                        uint32_t w = 0;
+                                        if (!load_va_word(m,
+                                            nk_name_ptr + ck, &w)) break;
+                                        nb[ck] = (char)(w & 0xFF);
+                                        if (nb[ck] == 0) break;
+                                    }
+                                    fprintf(stderr,
+                                        "[WINCE_NK_TOC] name='%s'\n", nb);
+                                }
+                                /* Read nk.exe's e32_lite */
+                                if (nk_e32off >= UINT32_C(0x80060000)
+                                    && nk_e32off < UINT32_C(0x80700000)) {
+                                    unsigned ek;
+                                    fprintf(stderr,
+                                        "[WINCE_NK_E32] at 0x%08X:\n",
+                                        nk_e32off);
+                                    for (ek = 0; ek < 8u; ek++) {
+                                        uint32_t v = 0;
+                                        (void)load_va_word(m,
+                                            nk_e32off + (uint32_t)(ek*4u),
+                                            &v);
+                                        fprintf(stderr,
+                                            "[WINCE_NK_E32] +0x%02X=0x%08X\n",
+                                            ek * 4u, v);
+                                    }
+                                }
+                            }
                             /* Phase AN: read the kernel hook
                              * trampoline at kseg3 0xFFFF9BF6.
                              * The address is referenced as
