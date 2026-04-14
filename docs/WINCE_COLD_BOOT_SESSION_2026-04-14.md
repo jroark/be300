@@ -1,4 +1,4 @@
-# WinCE NAND Cold-Boot Session Report — Phases AY and AZ
+# WinCE NAND Cold-Boot Session Report — Phases AY, AZ, and BA
 
 Date: 2026-04-14
 
@@ -370,6 +370,316 @@ reconcile this:
    - the EXCEPTION directory walk (dead since Phase AS),
    - more kernel-error reads (the error is set after rollback).
 
+## Phase BA Addendum: Direct DllMain Probes and dyntrans note_pc Limitation
+
+### What was added
+
+Phase BA extended the Phase AZ probes with three more PC hooks:
+
+- `0x01F84A5C` — coredll DllMain entry (already in dyntrans
+  allowlist) → `WINCE_DLLMAIN_REAL_ENTRY`
+- `0x01F84C04` — `li v0, 1` instruction inside DllMain epilogue
+  → `WINCE_DLLMAIN_LI1`
+- `0x01F84C0C` — `jr ra` of DllMain (the function epilogue)
+  → `WINCE_DLLMAIN_EXIT`
+- `0x80090030` / `0x80090048` — PCs immediately after the two
+  jalr dispatch sites in FUN_8008FF00
+  → `WINCE_DLLMAIN_POST_JALR1` / `WINCE_DLLMAIN_POST_JALR2`
+- `0x8009004C` — the supposedly-dead `sw zero, 44(sp)`
+  → `WINCE_DLLMAIN_DEAD_ZERO`
+
+All hooks were added to the explicit `wince_boot_note_pc` switch in
+`gxemul/src/cpus/cpu_mips_instr.c:4357` (worktree-only, NOT
+committed; same caveat as Phase AZ).
+
+### What the probes captured
+
+```text
+[WINCE_LOADER_ENTRY]    #1 pc=0x800927CC a0=0x00000000 a1=0x80070000
+                           sp=0x0201FD90 ra=0x00001000
+
+[WINCE_DLLMAIN_ENTRY]   #1 pc=0x8008FF00 desc=0x80FFFEA8
+                           reason=0x00000001 reserved=0x00000000
+                           desc[+0x60]=0x01F84A5C(ok)
+                           sp=0x0201FD90 ra=0x800929D0
+
+[WINCE_DLLMAIN_REAL_ENTRY] #1 pc=0x01F84A5C
+                              a0=0x80FFFEA8 a1=0x00000001
+                              a2=0x00000000 sp=0x0201FD60
+                              ra=0x80090044 (DllMain DID run)
+
+[WINCE_DLLMAIN_LI1]     #1 pc=0x01F84C04 v0_before=0x00000000
+                           (li v0,1 about to execute)
+
+[WINCE_DLLMAIN_EXIT]    #1 pc=0x01F84C0C v0=0x00000000 v1=0x00000000
+                           sp=0x0201FD60 ra=0x80090044
+
+[WINCE_DLLMAIN_POST_JALR2] #1 pc=0x80090048 v0=0x00000000
+                              sp=0x0201FD60 (2nd jalr returned)
+
+[WINCE_DLLMAIN_DEAD_ZERO] #1 pc=0x8009004C sp=0x0201FD60
+                             (UNEXPECTED HIT)
+[WINCE_DLLMAIN_DEAD_ZERO] #2 pc=0x8009004C sp=0x0201FD60
+                             (UNEXPECTED HIT)
+
+[WINCE_LOADER_POST_FF00]    #1 pc=0x800929D0 v0=0x03F84A5C
+                               (==0 -> rollback) sp=0x0201FD90
+[WINCE_LOADER_ROLLBACK_DONE] #1 pc=0x800929E4 v0=0x03F84A5C
+                                sp=0x0201FD90
+```
+
+### What is now firmly established
+
+- **DllMain at slot-0 `0x01F84A5C` IS executed** with the correct
+  arguments (a0 = coredll desc, a1 = 1 = ATTACH, a2 = 0,
+  ra = `0x80090044`). The dispatch flows from FUN_8008FF00 via the
+  second jalr at `0x8009003C` (DISPATCH 2), which is the
+  `desc[+0x84] == 0` path of the BEQL at `0x8008FFE8`.
+- **The loader rollback IS taken**. `WINCE_LOADER_ROLLBACK_DONE` at
+  `0x800929E4` only fires if the `jal 0x800903bc` at `0x800929DC`
+  actually executed.
+- **Coredll DllMain reaches its epilogue**. The `WINCE_DLLMAIN_LI1`
+  probe at `0x01F84C04` and the `WINCE_DLLMAIN_EXIT` probe at
+  `0x01F84C0C` both fire, so the cpu's IC translation for these PCs
+  is being touched on this run.
+- **`WINCE_DLLMAIN_DEAD_ZERO` fires twice** at `0x8009004C`
+  (`sw zero, 44(sp)`). This instruction sits between the
+  unconditional `b 0x80090050` at `0x80090044` and its target. In
+  normal control flow it should never be executed. The fact that
+  the probe fires confirms that `wince_boot_note_pc` is being
+  invoked on IC slots that are NOT actually being executed —
+  see "Why the probes are unreliable" below.
+
+### What the probes CANNOT tell us reliably
+
+- **Whether coredll DllMain actually returns 0 or 1.** Every v0
+  reading in the captured output is consistent with `v0 = 0`, but
+  the static disasm of DllMain shows every reachable return path
+  setting `v0 = 1` (either via `li v0, 1` at `0x800bfc04` or via
+  the BEQL delay slot `li v0, 1` at `0x800bfa88`). One of two
+  things is happening:
+  1. DllMain IS returning 0 via a code path that is not covered
+     by the partial disasm we have, or via an exception/longjmp
+     that bypasses the normal epilogue, or via a syscall
+     trampoline (`jalr 0xFFFFBB76` at `0x800bfb34` is an
+     in-DllMain syscall — it could be the failure point).
+  2. The probe's `cpu->cd.mips.gpr[V0]` reads are not architecturally
+     meaningful at note_pc fire time, and v0 is actually 1.
+
+### Why the probes are unreliable
+
+The `wince_boot_note_pc` callback is invoked from inside
+`X(to_be_translated)` in
+`gxemul/src/cpus/cpu_mips_instr.c:4293` (and again from
+`cpu_dyntrans.c:2249`). Both call sites fire **only when an IC
+slot is being translated for the first time**, BEFORE the decoded
+instruction is actually executed.
+
+Three concrete consequences:
+
+1. **note_pc fires before the IC handler runs.** At
+   `note_pc(pc=0x01F84C04)`, the `li v0, 1` instruction has NOT
+   executed yet. `v0_before` correctly shows the pre-instruction
+   value (whatever the previous helper jal returned).
+2. **Translation can pre-fetch nearby IC slots.** The
+   `WINCE_DLLMAIN_DEAD_ZERO` firing at `0x8009004C` proves that
+   note_pc is being invoked for IC slots that are NOT being
+   executed on the actual control flow path — they are merely in
+   the same IC page as PCs that ARE being executed. Pre-translation
+   pollution explains both the dead_zero hits and the `v0 = 0`
+   readings at PCs that should logically have `v0 = 1`.
+3. **gpr state at note_pc time may not reflect the architectural
+   state at pc32.** The PCs that note_pc has touched include slots
+   that are pre-translated as part of an IC page sweep, so the
+   `cpu->gpr` array at those times is whatever the cpu had when it
+   first needed any IC slot in that page — not necessarily what
+   the cpu had immediately before pc32.
+
+This means the entire Phase AZ + Phase BA register-based reasoning
+about "v0 is 0 → DllMain returns 0" is at best circumstantial.
+What IS definitive is the loader's *behavior*: the rollback
+`jal 0x800903bc` at `0x800929DC` IS being taken, and the only way
+it gets taken is if `v0 == 0` at the bnez at `0x800929D0`. So
+either FUN_8008FF00 returns 0 (because DllMain returned 0, or
+because of an early-skip path), or the bnez itself is being
+mispredicted by the emulator.
+
+### Fully decoded FUN_8008FF00 body
+
+```text
+8008ff00  addiu sp,sp,-48        ; prologue
+8008ff04  sw    ra,28(sp)
+8008ff08  sw    a2,56(sp)         ; spill caller's a2 slot
+8008ff0c  li    a3,-10240          ; a3 = NK kernel globals base 0xFFFFD800
+8008ff10  li    t6,1
+8008ff14  sw    t6,44(sp)          ; sp+0x2C = 1 (initial return value)
+8008ff18  lw    v1,704(a3)         ; v1 = *(0xFFFFDAC0) = ctx_ptr
+8008ff1c  lw    t7,56(v1)          ; t7 = ctx[+0x38] = old kernel error
+8008ff20  sw    t7,40(sp)          ; save old error
+8008ff24  lw    t8,96(a0)          ; t8 = desc[+0x60] = DllMain ptr
+8008ff28  beql  t8,zero,0x80090074 ; if DllMain ptr == 0, skip dispatch
+8008ff2c  lw    t1,40(sp)          ; (delay slot, taken-only)
+8008ff30  lhu   t9,200(a0)         ; t9 = (uint16_t)desc[+0xC8]
+8008ff34  andi  t0,t9,1
+8008ff38  bnel  t0,zero,0x80090070 ; if (desc[+0xC8] & 1) != 0, skip
+8008ff3c  lw    t1,40(sp)          ; (delay slot, taken-only)
+8008ff40  lhu   t1,0(v1)
+8008ff44  li    at,1
+8008ff48  sra   t2,t1,0x6
+8008ff4c  andi  t3,t2,1
+8008ff50  bne   t3,at,0x8008ff70   ; if bit-6 of *(ctx_ptr) != 1, skip helper
+8008ff54  sw    t3,36(sp)
+8008ff58  sw    a0,48(sp)
+8008ff5c  jal   0x800896cc          ; helper
+8008ff60  sw    a1,52(sp)
+8008ff64  lw    a0,48(sp)
+8008ff68  lw    a1,52(sp)
+8008ff6c  li    a3,-10240
+8008ff70  li    at,1
+8008ff74  bne   a1,at,0x8008ffa4    ; if reason != 1 (not ATTACH), branch
+8008ff78  nop
+;== ATTACH path (a1==1) ==
+8008ff7c  lw    t4,708(a3)          ; t4 = *(0xFFFFDAC4) = curproc
+8008ff80  lw    v0,16(a0)           ; v0 = desc[+0x10] (per-slot loaded mask)
+8008ff84  lbu   t5,0(t4)            ; t5 = curproc.slot_idx
+8008ff88  li    t6,1
+8008ff8c  sllv  v1,t6,t5            ; v1 = 1 << slot_idx
+8008ff90  and   t7,v0,v1
+8008ff94  bnez  t7,0x80090050       ; if already loaded for this slot, SKIP
+                                     ; (returns sp+0x2C = 1 = success)
+8008ff98  or    t8,v0,v1            ; (delay slot)
+8008ff9c  b     0x8008ffd4
+8008ffa0  sw    t8,16(a0)            ; (delay slot) mark loaded
+;== DETACH path (a1!=1) ==
+8008ffa4  bnel  a1,zero,0x8008ffdc  ; if a1 != 0 (THREAD detach etc.), skip cleanup
+8008ffa8  sw    a0,48(sp)
+8008ffac  lw    t9,708(a3)
+8008ffb0  lw    v0,16(a0)
+8008ffb4  lbu   t0,0(t9)
+8008ffb8  li    t1,1
+8008ffbc  sllv  v1,t1,t0
+8008ffc0  and   t2,v0,v1
+8008ffc4  beqz  t2,0x80090050        ; if NOT loaded, SKIP (returns 1)
+8008ffc8  nor   t3,v1,zero
+8008ffcc  and   t4,v0,t3
+8008ffd0  sw    t4,16(a0)             ; mark unloaded
+;== Common dispatch setup ==
+8008ffd4  sw    a0,48(sp)
+8008ffd8  sw    a1,52(sp)
+8008ffdc  lw    a0,48(sp)
+8008ffe0  lw    a1,52(sp)
+8008ffe4  lw    v1,132(a0)            ; v1 = desc[+0x84]
+8008ffe8  beql  v1,zero,0x80090038    ; if desc[+0x84] == 0, take DISPATCH 2
+8008ffec  lw    t8,96(a0)             ; (delay slot, taken-only) t8 = DllMain
+8008fff0  lw    v0,84(a0)             ; v0 = desc[+0x54] = slot base
+8008fff4  lui   at,0x1ff
+8008fff8  sll   t6,v0,0
+8008fffc  bgez  t6,0x8009000c
+80090000  ori   at,at,0xffff           ; (delay) at = 0x01FFFFFF
+80090004  b     0x80090010
+80090008  move  a3,v0                  ; (delay) a3 = slot base
+8009000c  and   a3,v0,at                ; a3 = slot offset
+80090010  sw    v1,16(sp)
+80090014  lw    t5,136(a0)              ; t5 = desc[+0x88]
+80090018  lw    a2,56(sp)               ; restore lpvReserved
+8009001c  sw    t5,20(sp)
+80090020  lw    t7,96(a0)               ; t7 = DllMain
+80090024  jalr  t7                       ; *** DISPATCH 1 (ATTACH path) ***
+80090028  nop
+8009002c  b     0x80090050
+80090030  sw    v0,44(sp)                ; (delay) save return value
+;== DISPATCH 2 (entered via beql at 8008ffe8 if desc[+0x84]==0) ==
+80090034  lw    t8,96(a0)
+80090038  lw    a2,56(sp)
+8009003c  jalr  t8                       ; *** DISPATCH 2 (DETACH path) ***
+80090040  nop
+80090044  b     0x80090050
+80090048  sw    v0,44(sp)                ; (delay) save return value
+8009004c  sw    zero,44(sp)              ; "dead code" - apparently reached on some path
+80090050  lw    t9,36(sp)                ; cleanup label
+80090054  li    at,1
+80090058  bnel  t9,at,0x80090070
+8009005c  lw    v1,-9536(zero)           ; (delay, taken-only)
+80090060  jal   0x800896cc                ; helper
+80090064  nop
+80090068  lw    v1,-9536(zero)
+8009006c  lw    t1,40(sp)
+80090070  sw    t1,56(v1)                  ; restore old kernel error
+80090074  lw    ra,28(sp)
+80090078  lw    v0,44(sp)                  ; v0 = saved return value
+8009007c  jr    ra
+80090080  addiu sp,sp,48
+```
+
+The crucial observation: **the ATTACH path takes DISPATCH 1
+(`jalr t7` at `0x80090024`), not DISPATCH 2 (`jalr t8` at
+`0x8009003C`)**. DISPATCH 2 is only reached when `desc[+0x84] == 0`
+via the BEQL at `0x8008FFE8`.
+
+But our `WINCE_DLLMAIN_REAL_ENTRY` probe captured `ra = 0x80090044`
+at DllMain entry. `ra = 0x80090044` is the post-`jalr t8` PC, which
+means the dispatch came via DISPATCH 2 — i.e., `desc[+0x84] == 0`.
+
+So **coredll's `desc[+0x84]` is zero**, which forces FUN_8008FF00
+to take DISPATCH 2. This may itself be the bug. The descriptor's
+`+0x84` is module-flag-related; if it should be nonzero on real
+hardware (set by the loader during `FUN_800927CC`'s setup), then
+the loader is initializing this field incorrectly.
+
+The Phase BA probe data is consistent with this: only DISPATCH 2
+ever fires, only one DllMain entry was captured, and the dispatch
+itself appears to reach DllMain's epilogue on at least the
+`note_pc` path.
+
+## Recommended Next Steps (Phase BB)
+
+The Phase BA experience exposes a real instrumentation limitation:
+PC-based note_pc probes cannot reliably read register state because
+they fire from within `X(to_be_translated)` (translation time), not
+from inside the executing IC handler. Some next-step options that
+work around this:
+
+1. **Read coredll's `desc[+0x84]` at runtime** via a probe at
+   FUN_800927CC's setup of the descriptor, or via a stack walk
+   from FUN_8008FF00's frame just after `lw v1, 132(a0)`. The
+   value of `desc[+0x84]` is the determining factor for which
+   dispatch path FUN_8008FF00 takes. If it differs between
+   emulator and real hardware, that may be the true root cause.
+
+2. **Add a memory write trap on coredll's `desc[+0x84]`**. The
+   field lives at `0x80FFFEA8 + 0x84 = 0x80FFFF2C`. A targeted
+   memory-write watchpoint (similar to the existing
+   `WINCE_HOT_L2W` trap) would fire at every store to that VA
+   and capture pc/sp/ra at each one. This lets us trace exactly
+   when and how `desc[+0x84]` is set.
+
+3. **Run a parallel boot with the existing `--ppsh` flag** to
+   compare descriptor state between the GUI-boot path (where the
+   dispatch presumably succeeds on real hardware) and the
+   emulator's failing path. If the descriptor's
+   `+0x84` differs, that's a direct comparison point.
+
+4. **Static analysis of the next portion of FUN_800927CC**, focusing
+   on every store to `desc[+0x84]` (offset 132 from descriptor
+   pointer). The setup happens between FUN_800927CC entry
+   (`0x800927CC`) and the dispatch site (`0x800929C8`). Search
+   for `sw rN, 132(...)` instructions in that range.
+
+5. **Add an instruction-handler-level probe** that bypasses the
+   translation-time note_pc. The cleanest place is to instrument
+   one of the existing X() handler families (e.g., X(jalr) and
+   X(jr)) to capture pc/v0 at execution time. This is more
+   invasive but provides architecturally accurate state.
+
+Do NOT pursue:
+
+- More note_pc-based register reads. They are fundamentally
+  unreliable for pre-instruction state.
+- The "decode why DllMain returns 0" angle until we know whether
+  DllMain is even being dispatched correctly. The DISPATCH 1 vs
+  DISPATCH 2 finding suggests the loader is calling DllMain via
+  the wrong path, not that DllMain itself is failing.
+
 ## Files Changed
 
 Committed in this session:
@@ -383,9 +693,11 @@ Worktree-only (NOT committed; intentionally left as worktree change
 to avoid touching the unrelated pre-existing `gxemul/` modifications
 inherited from earlier sessions):
 
-- `gxemul/src/cpus/cpu_mips_instr.c` — added 5 PCs
-  (`0x800927CC`, `0x800929D0`, `0x800929E4`, `0x8008FF00`,
-  `0x80090050`) to the explicit `note_pc` switch around line 4472.
+- `gxemul/src/cpus/cpu_mips_instr.c` — added 11 PCs total across
+  Phase AZ + Phase BA: `0x800927CC`, `0x800929D0`, `0x800929E4`,
+  `0x8008FF00`, `0x80090050`, `0x80090030`, `0x80090048`,
+  `0x8009004C`, `0x01F84C0C`, `0x01F84C04` to the explicit
+  `note_pc` switch around line 4472.
   Required for the probes added in `src/wince_boot.c` to actually
   fire. Without this gxemul change, the probes are dead code.
 

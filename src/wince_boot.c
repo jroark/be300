@@ -11144,6 +11144,73 @@ static void maybe_note_dllmain_dispatch_pc(machine_t *m, struct cpu *cpu, uint32
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
             (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP]);
     }
+    /* Phase BA: direct probes that authoritatively distinguish
+     * early-skip from dispatch-and-return-zero. */
+    {
+        static unsigned hit_dm_entry = 0;  /* coredll DllMain entry */
+        static unsigned hit_post_jalr1 = 0; /* PC after 1st jalr */
+        static unsigned hit_post_jalr2 = 0; /* PC after 2nd jalr */
+        static unsigned hit_dead_zero = 0;  /* 0x8009004c sw zero */
+
+        static unsigned hit_dm_exit = 0;  /* coredll DllMain jr ra */
+        static unsigned hit_dm_li1 = 0;   /* DllMain `li v0,1` */
+        if (pc32 == UINT32_C(0x01F84C04) && hit_dm_li1 < cap) {
+            hit_dm_li1++;
+            fprintf(stderr,
+                "[WINCE_DLLMAIN_LI1] #%u pc=0x%08X"
+                " v0_before=0x%08X (li v0,1 about to execute)\n",
+                hit_dm_li1, pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0]);
+        } else if (pc32 == UINT32_C(0x01F84C0C) && hit_dm_exit < cap) {
+            hit_dm_exit++;
+            fprintf(stderr,
+                "[WINCE_DLLMAIN_EXIT] #%u pc=0x%08X"
+                " v0=0x%08X v1=0x%08X sp=0x%08X ra=0x%08X\n",
+                hit_dm_exit, pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+        } else if (pc32 == UINT32_C(0x01F84A5C) && hit_dm_entry < cap) {
+            hit_dm_entry++;
+            fprintf(stderr,
+                "[WINCE_DLLMAIN_REAL_ENTRY] #%u pc=0x%08X"
+                " a0=0x%08X a1=0x%08X a2=0x%08X"
+                " sp=0x%08X ra=0x%08X (DllMain DID run)\n",
+                hit_dm_entry, pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+        } else if (pc32 == UINT32_C(0x80090030) && hit_post_jalr1 < cap) {
+            hit_post_jalr1++;
+            fprintf(stderr,
+                "[WINCE_DLLMAIN_POST_JALR1] #%u pc=0x%08X"
+                " v0=0x%08X sp=0x%08X (1st jalr returned)\n",
+                hit_post_jalr1, pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP]);
+        } else if (pc32 == UINT32_C(0x80090048) && hit_post_jalr2 < cap) {
+            hit_post_jalr2++;
+            fprintf(stderr,
+                "[WINCE_DLLMAIN_POST_JALR2] #%u pc=0x%08X"
+                " v0=0x%08X sp=0x%08X (2nd jalr returned)\n",
+                hit_post_jalr2, pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP]);
+        } else if (pc32 == UINT32_C(0x8009004C) && hit_dead_zero < cap) {
+            /* Should be unreachable - sw zero, 44(sp) lives between
+             * a delay slot and the cleanup label. If this fires,
+             * something abnormal is happening. */
+            hit_dead_zero++;
+            fprintf(stderr,
+                "[WINCE_DLLMAIN_DEAD_ZERO] #%u pc=0x%08X"
+                " sp=0x%08X (UNEXPECTED HIT)\n",
+                hit_dead_zero, pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP]);
+        }
+    }
 }
 
 void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
