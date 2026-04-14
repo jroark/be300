@@ -749,3 +749,154 @@ calling-convention problem (fix is in WinCE loader emulation) or a
 known PE32 layout misread (fix is in our static analysis tooling). Both
 outcomes are concrete and recognizable - the investigation is no longer
 groping in the dark.
+
+## Phase AS Addendum (2026-04-13, commit 99061abb)
+
+Phase AS answered the open question and the answer overturns the
+"mid-function" hypothesis from Phases AQ-AR. **Read this section
+before acting on anything above.**
+
+### Smoking gun
+
+Phase AS added three probes to `src/wince_boot.c`:
+
+1. `WINCE_SECTAB_AS` - read the `o32_lite` section table from `e32_va
+   + 0x6C` (not from slot-1 VA `0x03FE6570`, which was a misread - that
+   VA is in coredll's data section, not the section table). WinCE 3.0
+   `o32_lite` is 24 bytes per entry. Decoded 4 entries:
+
+   ```text
+   idx=0 .text   vsize=0x64F3E  rva=0x1000   realaddr=0x800BC000
+   idx=1 .data   vsize=0x558    rva=0x66000  realaddr=0x800B7C54
+   idx=2 .pdata  vsize=0x896C   rva=0x67000  realaddr=0x805A7000
+   idx=3 .rsrc   vsize=0x6000   rva=0x70000  realaddr=0x80121000
+   ```
+
+   Note that the e32_unit directory table at `e32_va + 0x20` has
+   **9 entries** (EXPORT, IMPORT, RESOURCE, EXCEPTION, SECURITY,
+   BASERELOC, DEBUG, COPYRIGHT, GLOBALPTR), not 6. The prior
+   `WINCE_E32_UNIT` probe only read the first 6, but the section
+   table offset depends on reading all 9 (72 bytes) plus one 4-byte
+   trailer, so section table starts at `e32_va + 0x6C`.
+
+2. `WINCE_EXC_VA` - located EXCEPTION directory at kseg0 `0x805A7000`
+   (section 2's realaddr, since `exc_rva == sec_rva[2]`). The prior
+   Phase AR guess `0x803A2000 = 0x8033B000 + 0x67000` was wrong by
+   the .text/kseg0 mismatch described below.
+
+3. `WINCE_DLLMAIN_INSN` - the definitive test. Dumped 16 instructions
+   around rva `0x4A5C` via three candidate source VAs:
+
+   - **A)** section 0 realaddr-based: `0x800BC000 + (0x4A5C - 0x1000)
+     = 0x800BFA5C`
+   - **B)** NK kseg0 base + rva: `0x8033B000 + 0x4A5C = 0x8033FA5C`
+     (the Phase AR / Ghidra disasm address)
+   - **C)** slot-0 user VA: `0x01F80000 + 0x4A5C = 0x01F84A5C`
+
+   Result: **A and C are byte-identical, B is completely different.**
+   At the real `.text` VA (A/C), the target instruction is
+   `0x27BDFFB8 = addiu sp, sp, -72` - a clean MIPS function prologue.
+   The next four instructions are:
+
+   ```text
+   0x800BFA60  AFBF0014  sw ra, 0x14(sp)
+   0x800BFA64  AFA40048  sw a0, 0x48(sp)
+   0x800BFA68  AFA5004C  sw a1, 0x4C(sp)
+   0x800BFA6C  AFA60050  sw a2, 0x50(sp)
+   ```
+
+   That is exactly a 3-arg DllMain prologue (`hinstDLL, fdwReason,
+   lpvReserved`).
+
+### What this overturns
+
+- **coredll's `.text` does NOT live at `NK_kseg0_base + section_rva`.**
+  The `0x8033B000` "coredll load address" reported by `WINCE_TOC` and
+  `WINCE_MODLIST` is the address of coredll's **descriptor/header area**
+  in the NK image, not the runtime base of its `.text`. The `.text`
+  section lives at `section0.realaddr = 0x800BC000`, which is a
+  separate region of the NK-loaded RAM entirely.
+- **Ghidra's `FUN_8033F968` and its "mid-function" boundary have
+  nothing to do with coredll's DllMain.** They describe bytes at
+  `0x8033FA5C`, which is **not** coredll code in the runtime image.
+  Whatever function Ghidra identified there is some other module's
+  text or unused header space.
+- **Phase AR's entire RUNTIME_FUNCTION walk was doomed** because its
+  `exc_va = 0x803A2000` was derived from the same wrong base. The
+  real EXCEPTION directory is at `0x805A7000`, and its contents do
+  NOT decode as standard 8- or 20-byte RUNTIME_FUNCTION entries
+  (likely WinCE-specific packed or lazy-decompressed format). The
+  EXCEPTION walk is therefore a dead end; do not chase it further.
+- **The "DllMain returned 0" failure candidate is no longer the
+  obvious trigger.** If the bytes at `0x01F84A5C` are a clean
+  prologue, dispatch via `(*coredll->+0x60)(coredll, 1, 0)` should
+  enter DllMain normally. Either DllMain legitimately returns 0
+  for some reason, or `FUN_8008FF00` has a pre-dispatch gate we did
+  not read, or the loader rollback is triggered by a 4th path we
+  have not enumerated, or the walker is firing from an entirely
+  different call chain than Phase Y attributed.
+
+### What still holds
+
+- The walker (`FUN_800970A8`) IS running and IS zeroing PTEs. Phase
+  AS's probes fired inside its window, confirming the trigger is
+  still active.
+- The descriptor at `0x80FFFEA8` really is coredll's (confirmed via
+  TOC name lookup in Phase AC).
+- The WalkerFrame / F44Frame saved-ra chain pointing to
+  `FUN_800903BC` in NK kernel code is still valid, because NK's
+  `.text` really is at kseg0 base `0x80060000` (verified against
+  NK entry `0x80076B50`). Only **coredll's** `.text` was at a
+  different base than assumed.
+- The 2026-04-12 report's "Exception 004 callback-consumer fault"
+  and "callback header at `0x01FE6544` reads zero" observations
+  are still accurate, but their cause is still the loader-rollback
+  unmap we have been chasing - just triggered by something other
+  than bad DllMain bytes.
+
+### Recommended next steps (supersedes the list above)
+
+1. **Stop pursuing the EXCEPTION directory walk.** The bytes at
+   `0x805A7000` don't parse as RUNTIME_FUNCTION entries, and even if
+   they did, we now have direct byte-level proof that `0x4A5C` is a
+   function entry. No further static validation needed.
+2. **Trace `FUN_8008FF00`'s return value and entry state.** Add a
+   probe that reads the CPU state right before and right after the
+   `jalr` that calls `(*coredll->+0x60)`. Check:
+   - Does execution actually reach the dispatch?
+   - What `v0` (return value) comes back?
+   - Does DllMain enter and run normally, or fault immediately?
+3. **Enumerate ALL paths from `FUN_800927CC` to `FUN_800903BC`.**
+   The handoff doc listed 3, but the assumption that those are
+   exhaustive was based on static analysis done with the wrong
+   coredll `.text` base. Re-disassemble `FUN_800927CC` (which IS
+   in NK, so base `0x80060000` is correct) and re-enumerate every
+   call to `FUN_800903BC` and every conditional that leads to one.
+4. **Suspect TLB/PTE timing, not bytes.** The walker unmaps coredll
+   PTEs. If kernel dispatch `jalr` to `0x01F84A5C` runs AFTER the
+   PTEs have been zeroed, the CPU takes a TLB miss / bus error on
+   the first instruction fetch and DllMain "returns" to garbage.
+   But a probe via `load_va_word` moments later could still succeed
+   if the host-memory fast path bypasses the guest TLB. Verify by
+   triggering the probe BEFORE the walker starts (earlier hot count,
+   or a different gate like "first write to coredll descriptor
+   +0x60") instead of inside the walker's execution window.
+5. **Do NOT trust any Ghidra address in the `0x8033xxxx` range as
+   coredll code.** Re-run coredll disassembly in the Docker container
+   against kseg0 starting at `0x800BC000` (section 0 realaddr), NOT
+   `0x8033B000`. The `--adjust-vma` value for coredll objdump is
+   `0x800BB000` (so that file offset 0x1000 lands at VA 0x800BC000).
+
+### Module base mapping (authoritative, as of Phase AS)
+
+| Module     | Descriptor VA  | .text realaddr | slot-0 VA base | slot-1 VA base |
+|------------|----------------|----------------|----------------|----------------|
+| nk.exe     | 0x80060000     | 0x80076B50 (entry) | n/a (kernel) | n/a (kernel) |
+| coredll    | 0x8033B000     | 0x800BC000     | 0x01F80000     | 0x03F80000     |
+| filesys    | 0x800D2000     | tbd            | tbd            | tbd            |
+
+For any future module-relative address computation: **use o32_lite
+section table `realaddr` as the authoritative source, not the TOC/
+descriptor `load` field.** The descriptor `load` points at the
+module's header area (for inspection), while `realaddr` per section
+points at the actual runtime bytes.
