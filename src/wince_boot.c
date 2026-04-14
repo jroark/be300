@@ -2827,6 +2827,51 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
     if (m->wince.callback_slot_diag_count >= 40u)
         return;
 
+    /*
+     * Phase BD: early-out for PCs that are not in the switch below.
+     * Without this, every NK instruction in the 0x00060000..0x00100000
+     * PA range (the broad wince_boot_note_pc filter in cpu_dyntrans.c)
+     * paid the cost of 6 guest-memory loads plus a stack-return walk.
+     * After the Phase BC AdEL fix unblocked cold-boot, that cost became
+     * a recursive stack-overflow through mips_memory_rw ->
+     * wince_boot_note_ram_access. Skipping PCs that no case handles
+     * drops the per-instruction cost to near zero without losing any
+     * probe coverage for the tracked PCs.
+     */
+    switch (pc32) {
+    case 0x01F84A5Cu: case 0x800BFA5Cu:
+    case 0x01F84A7Cu: case 0x800BFA7Cu:
+    case 0x01F84AA8u: case 0x800BFAA8u:
+    case 0x8008FF00u:
+    case 0x80090024u:
+    case 0x80090044u:
+    case 0x80092488u:
+    case 0x8009248Cu:
+    case 0x80097000u:
+    case 0x800971C0u:
+    case 0x80098144u:
+    case 0x800A3244u:
+    case 0x80096E88u:
+    case 0x800A1134u:
+    case 0x800970A8u:
+    case 0x80098108u:
+    case 0x80097FC4u:
+    case 0x800971B4u:
+    case 0x800984CCu:
+    case 0x800984B4u:
+    case 0x80096F40u:
+    case 0x80092798u:
+    case 0x01F8F4D4u:
+    case 0x01F8F4FCu:
+    case 0x01FFA93Cu:
+    case 0x8013593Cu:
+    case 0x02070418u:
+    case 0x801AB218u:
+        break;
+    default:
+        return;
+    }
+
     if (m->wince.callback_slot_watch_armed) {
         flag = load_pa_word(m, base_pa + 0x00u);
         ptr = load_pa_word(m, base_pa + 0x04u);
