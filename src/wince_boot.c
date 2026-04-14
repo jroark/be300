@@ -3353,6 +3353,47 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
                         ok ? "" : " (unmapped)");
                 }
             }
+            /* Phase V: dump the pool-5 object array at
+             * 0x80FFC000..0x80FFC1D0 (7 consecutive 76-byte
+             * objects) and the full L1 tail region. */
+            if (m->wince.walker_entry_count == 1u) {
+                unsigned o;
+                for (o = 0; o < 8u; o++) {
+                    uint32_t base = UINT32_C(0x80FFC000)
+                                    + (uint32_t)(o * 0x4Cu);
+                    uint32_t w0 = 0, w4 = 0, w8 = 0, wC = 0;
+                    uint32_t w10 = 0, w14 = 0, w18 = 0, w1C = 0;
+                    (void)load_va_word(m, base + 0x00u, &w0);
+                    (void)load_va_word(m, base + 0x04u, &w4);
+                    (void)load_va_word(m, base + 0x08u, &w8);
+                    (void)load_va_word(m, base + 0x0Cu, &wC);
+                    (void)load_va_word(m, base + 0x10u, &w10);
+                    (void)load_va_word(m, base + 0x14u, &w14);
+                    (void)load_va_word(m, base + 0x18u, &w18);
+                    (void)load_va_word(m, base + 0x1Cu, &w1C);
+                    fprintf(stderr,
+                        "[WINCE_POOL5_OBJ] #%u base=0x%08X"
+                        " +0=0x%08X +4=0x%08X +8=0x%08X +C=0x%08X"
+                        " +10=0x%08X +14=0x%08X +18=0x%08X"
+                        " +1C=0x%08X\n",
+                        o, base, w0, w4, w8, wC, w10, w14,
+                        w18, w1C);
+                }
+                /* Full L1 tail region: dump 0x80668CC0..0x80669500
+                 * to see the handle table shape. */
+                {
+                    unsigned k;
+                    for (k = 0; k < 64u; k++) {
+                        uint32_t v = 0;
+                        uint32_t va = UINT32_C(0x80669400)
+                                      + (uint32_t)(k * 4u);
+                        (void)load_va_word(m, va, &v);
+                        fprintf(stderr,
+                            "[WINCE_L1_TAIL] va=0x%08X val=0x%08X\n",
+                            va, v);
+                    }
+                }
+            }
             /* Phase U: dump the L1 section-table region
              * around the worker's critical check word at
              * 0x806694A0 (= L1_base + 504*4). */
