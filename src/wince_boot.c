@@ -11064,6 +11064,88 @@ void wince_boot_crash_pc_dump(struct machine *gxm)
         wince_boot_pc_ring_dump(m);
 }
 
+/* Phase AZ: capture coredll DllMain dispatch from FUN_8008FF00 and
+ * the rollback path in FUN_800927CC. dyntrans only invokes
+ * wince_boot_note_pc at basic-block leaders, so probes are placed at
+ * BB-leader PCs (function entries, post-jal continuation PCs, branch
+ * targets), NOT at inner jalrs. */
+static void maybe_note_dllmain_dispatch_pc(machine_t *m, struct cpu *cpu, uint32_t pc32)
+{
+    static unsigned hit_ff00 = 0;     /* FUN_8008FF00 entry */
+    static unsigned hit_ret = 0;      /* FUN_8008FF00 cleanup BB at 0x80090050 */
+    static unsigned hit_post927 = 0;  /* FUN_800927CC PC just after jal 0x8008ff00 */
+    static unsigned hit_loader = 0;   /* FUN_800927CC entry */
+    static unsigned hit_rb = 0;       /* FUN_800927CC return PC after rollback jal */
+    const unsigned cap = 16u;
+
+    (void)m;
+    if (pc32 == UINT32_C(0x800927CC) && hit_loader < cap) {
+        hit_loader++;
+        fprintf(stderr,
+            "[WINCE_LOADER_ENTRY] #%u pc=0x%08X"
+            " a0=0x%08X a1=0x%08X sp=0x%08X ra=0x%08X\n",
+            hit_loader, pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    } else if (pc32 == UINT32_C(0x8008FF00) && hit_ff00 < cap) {
+        hit_ff00++;
+        uint32_t a0 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0];
+        uint32_t dllmain_va = 0;
+        bool dm_ok = load_va_word(m, a0 + 0x60u, &dllmain_va);
+        fprintf(stderr,
+            "[WINCE_DLLMAIN_ENTRY] #%u pc=0x%08X"
+            " desc=0x%08X reason=0x%08X reserved=0x%08X"
+            " desc[+0x60]=0x%08X(%s) sp=0x%08X ra=0x%08X\n",
+            hit_ff00, pc32,
+            a0,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+            dllmain_va, dm_ok ? "ok" : "BAD",
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    } else if (pc32 == UINT32_C(0x80090050) && hit_ret < cap) {
+        hit_ret++;
+        /* This BB is reached after either jalr returns OR when
+         * DllMain ptr is zero and the function falls through. v0
+         * may not yet hold the final return value (see sw v0,44(sp)
+         * just before this label) - read sp+44 directly. */
+        uint32_t sp = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+        uint32_t saved_v0 = 0;
+        (void)load_va_word(m, sp + 0x2Cu, &saved_v0);
+        fprintf(stderr,
+            "[WINCE_DLLMAIN_RET] #%u pc=0x%08X"
+            " v0_live=0x%08X v0_saved@sp+2C=0x%08X sp=0x%08X ra=0x%08X\n",
+            hit_ret, pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            saved_v0,
+            sp,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
+    } else if (pc32 == UINT32_C(0x800929D0) && hit_post927 < cap) {
+        /* This is the bnez v0, +N right after jal 0x8008ff00. v0 here
+         * is the dispatch's return value as visible to the loader. */
+        hit_post927++;
+        fprintf(stderr,
+            "[WINCE_LOADER_POST_FF00] #%u pc=0x%08X"
+            " v0=0x%08X (==0 -> rollback) sp=0x%08X\n",
+            hit_post927, pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP]);
+    } else if (pc32 == UINT32_C(0x800929E4) && hit_rb < cap) {
+        /* Return PC immediately after `jal 0x800903bc` rollback at
+         * 0x800929DC. If this fires, the loader DEFINITELY took the
+         * rollback path. */
+        hit_rb++;
+        fprintf(stderr,
+            "[WINCE_LOADER_ROLLBACK_DONE] #%u pc=0x%08X"
+            " v0=0x%08X sp=0x%08X\n",
+            hit_rb, pc32,
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_V0],
+            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP]);
+    }
+}
+
 void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
 {
     machine_t *m;
@@ -11080,6 +11162,7 @@ void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32)
     maybe_note_exception_hot_pc(m, cpu, pc32);
     maybe_note_hot_l2_alloc_pc(m, cpu, pc32);
     maybe_note_callback_slot_pc(m, cpu, pc32);
+    maybe_note_dllmain_dispatch_pc(m, cpu, pc32);
     maybe_note_section3_install_pc(m, cpu, pc32);
     maybe_note_section3_callback_pc(m, cpu, pc32);
     maybe_note_section3_order_pc(m, cpu, pc32);
