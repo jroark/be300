@@ -7162,6 +7162,40 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                             fprintf(stderr,
                                 "[WINCE_MODULE] DllMain entry"
                                 " 0x%08X\n", dll_main);
+                            /* Phase AL: read the section table
+                             * from BOTH slot-0 (0x01FE6570) and
+                             * slot-1 mirror (0x03FE6570) views.
+                             * If our refill installed correct
+                             * mirror PTEs, both reads return the
+                             * same bytes. If they differ, we have
+                             * the TLB/PTE encoding bug. */
+                            {
+                                uint32_t s0_va = UINT32_C(0x01FE6570);
+                                uint32_t s1_va = UINT32_C(0x03FE6570);
+                                unsigned k;
+                                int diff_count = 0;
+                                for (k = 0; k < 16u; k++) {
+                                    uint32_t a = 0, b = 0;
+                                    bool oa = load_va_word(m,
+                                        s0_va + (uint32_t)(k * 4u), &a);
+                                    bool ob = load_va_word(m,
+                                        s1_va + (uint32_t)(k * 4u), &b);
+                                    fprintf(stderr,
+                                        "[WINCE_SECTAB] +0x%02X"
+                                        " slot0[0x%08X]=0x%08X%s"
+                                        " slot1[0x%08X]=0x%08X%s%s\n",
+                                        k * 4u,
+                                        s0_va + (uint32_t)(k * 4u), a,
+                                        oa ? "" : "(unmapped)",
+                                        s1_va + (uint32_t)(k * 4u), b,
+                                        ob ? "" : "(unmapped)",
+                                        (oa && ob && a != b) ? " *DIFF*" : "");
+                                    if (oa && ob && a != b) diff_count++;
+                                }
+                                fprintf(stderr,
+                                    "[WINCE_SECTAB] mismatch_count=%d\n",
+                                    diff_count);
+                            }
                             /* Phase AC: read the TOC entry at
                              * +0x64 to extract the DLL name.
                              * Try both 24-byte and 32-byte layouts:
