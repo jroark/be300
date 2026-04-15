@@ -2400,10 +2400,10 @@ static void maybe_note_section0_source_pc(machine_t *m, struct cpu *cpu,
     char ctx08_buf[16];
     char ctx0c_buf[16];
     char src_slot_buf[16];
+    bool capture_first_bad;
+    bool allow_log;
 
     if (!m || !cpu)
-        return;
-    if (m->wince.section0_source_probe_count >= 12)
         return;
 
     obj = pc32 == UINT32_C(0x8008B594)
@@ -2424,6 +2424,26 @@ static void maybe_note_section0_source_pc(machine_t *m, struct cpu *cpu,
             src_slot_ok = load_va_word(m, src_slot_va, &src_slot_val);
         }
     }
+
+    capture_first_bad = m->wince.sec0_first_bad_transition_logged
+        && !m->wince.sec0_first_bad_source_recorded
+        && pc32 == m->wince.sec0_first_bad_pc;
+    if (capture_first_bad) {
+        m->wince.sec0_first_bad_source_recorded = true;
+        m->wince.sec0_first_bad_source_obj = obj;
+        m->wince.sec0_first_bad_source_obj0c = obj0c_ok ? obj0c : 0u;
+        m->wince.sec0_first_bad_source_obj14 = obj14_ok ? obj14 : 0u;
+        m->wince.sec0_first_bad_source_obj24 = obj24_ok ? obj24 : 0u;
+        m->wince.sec0_first_bad_source_ctx08 = ctx08_ok ? ctx08 : 0u;
+        m->wince.sec0_first_bad_source_ctx0c = ctx0c_ok ? ctx0c : 0u;
+        m->wince.sec0_first_bad_source_src_off = src_off;
+        m->wince.sec0_first_bad_source_src_idx = src_idx;
+        m->wince.sec0_first_bad_source_src_slot = src_slot_ok ? src_slot_val : 0u;
+    }
+
+    allow_log = m->wince.section0_source_probe_count < 12 || capture_first_bad;
+    if (!allow_log)
+        return;
 
     fprintf(stderr,
         "[WINCE_SEC0_SRC] label=%s pc=0x%08X ra=0x%08X sp=0x%08X"
@@ -2455,7 +2475,8 @@ static void maybe_note_section0_source_pc(machine_t *m, struct cpu *cpu,
         log_section0_focus_window(m, "sec0_src_slot", src_slot_val);
     }
 
-    m->wince.section0_source_probe_count++;
+    if (m->wince.section0_source_probe_count < 12)
+        m->wince.section0_source_probe_count++;
 }
 
 static void maybe_note_exception_hot_pc(machine_t *m, struct cpu *cpu,
@@ -6886,6 +6907,63 @@ static void maybe_record_sec0_bad_transition(machine_t *m, struct cpu *cpu,
         m->wince.sec0_first_bad_pc,
         m->wince.sec0_first_bad_ra,
         m->wince.sec0_first_bad_asid);
+    maybe_note_section0_source_pc(m, cpu, m->wince.sec0_first_bad_pc);
+}
+
+static void maybe_record_first_bad_sec0_writer(machine_t *m, struct cpu *cpu,
+    uint32_t table_va, bool is_pte_write, uint32_t new_l2,
+    uint32_t new_lo0, uint32_t new_lo1)
+{
+    bool already_recorded;
+
+    if (!m || !cpu || !m->wince.sec0_first_bad_transition_logged)
+        return;
+    if (table_va != m->wince.sec0_first_bad_new_table)
+        return;
+
+    already_recorded = is_pte_write
+        ? m->wince.sec0_first_bad_pte_write_recorded
+        : m->wince.sec0_first_bad_l1_write_recorded;
+    if (already_recorded)
+        return;
+
+    if (is_pte_write) {
+        m->wince.sec0_first_bad_pte_write_recorded = true;
+        m->wince.sec0_first_bad_pte_pc = (uint32_t)cpu->pc;
+        m->wince.sec0_first_bad_pte_ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+        m->wince.sec0_first_bad_pte_asid =
+            (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI] & ENTRYHI_ASID;
+        m->wince.sec0_first_bad_pte_new_lo0 = new_lo0;
+        m->wince.sec0_first_bad_pte_new_lo1 = new_lo1;
+    } else {
+        m->wince.sec0_first_bad_l1_write_recorded = true;
+        m->wince.sec0_first_bad_l1_pc = (uint32_t)cpu->pc;
+        m->wince.sec0_first_bad_l1_ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+        m->wince.sec0_first_bad_l1_asid =
+            (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI] & ENTRYHI_ASID;
+        m->wince.sec0_first_bad_l1_new_l2 = new_l2;
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC0_CORR] kind=%s table=0x%08X"
+        " switch_pc=0x%08X switch_ra=0x%08X switch_asid=%u"
+        " src_idx=%u src_slot=0x%08X"
+        " producer_pc=0x%08X producer_ra=0x%08X producer_asid=%u"
+        " new_l2=0x%08X new_lo0=0x%08X new_lo1=0x%08X\n",
+        is_pte_write ? "first_post_switch_pte_write"
+                     : "first_post_switch_l1_write",
+        table_va,
+        m->wince.sec0_first_bad_pc,
+        m->wince.sec0_first_bad_ra,
+        m->wince.sec0_first_bad_asid,
+        m->wince.sec0_first_bad_source_src_idx,
+        m->wince.sec0_first_bad_source_src_slot,
+        (uint32_t)cpu->pc,
+        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+        (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI] & ENTRYHI_ASID,
+        new_l2,
+        new_lo0,
+        new_lo1);
 }
 
 static void maybe_log_tracked_sec0_hot_mapping_access(machine_t *m,
@@ -6915,11 +6993,13 @@ static void maybe_log_tracked_sec0_hot_mapping_access(machine_t *m,
         old_lo1 = m->wince.sec0_track_lo1[i];
 
         if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7F8u, 4u)) {
+            update_tracked_sec0_table_state(m, (int)i);
+            new_l2 = m->wince.sec0_track_l2[i];
+            new_lo0 = m->wince.sec0_track_lo0[i];
+            new_lo1 = m->wince.sec0_track_lo1[i];
+            maybe_record_first_bad_sec0_writer(m, cpu, table_va, false,
+                new_l2, new_lo0, new_lo1);
             if (m->wince.sec0_derived_l1_write_diag_count < 64u) {
-                update_tracked_sec0_table_state(m, (int)i);
-                new_l2 = m->wince.sec0_track_l2[i];
-                new_lo0 = m->wince.sec0_track_lo0[i];
-                new_lo1 = m->wince.sec0_track_lo1[i];
                 fprintf(stderr,
                     "[WINCE_SEC0_L1W] #%u table=0x%08X off=0x7F8"
                     " val=0x%08llX old_l2=0x%08X new_l2=0x%08X"
@@ -6941,8 +7021,6 @@ static void maybe_log_tracked_sec0_hot_mapping_access(machine_t *m,
                         & ENTRYHI_ASID);
                 log_sec0_hot_mapping_state(m, "l1_write", table_va, cpu);
                 m->wince.sec0_derived_l1_write_diag_count++;
-            } else {
-                update_tracked_sec0_table_state(m, (int)i);
             }
         }
 
@@ -6952,10 +7030,12 @@ static void maybe_log_tracked_sec0_hot_mapping_access(machine_t *m,
 
         if (range_overlaps(paddr, (uint64_t)len, table_va_to_pa(new_l2) + 0x18u,
                 8u)) {
+            update_tracked_sec0_table_state(m, (int)i);
+            new_lo0 = m->wince.sec0_track_lo0[i];
+            new_lo1 = m->wince.sec0_track_lo1[i];
+            maybe_record_first_bad_sec0_writer(m, cpu, table_va, true,
+                new_l2, new_lo0, new_lo1);
             if (m->wince.sec0_derived_pte_write_diag_count < 96u) {
-                update_tracked_sec0_table_state(m, (int)i);
-                new_lo0 = m->wince.sec0_track_lo0[i];
-                new_lo1 = m->wince.sec0_track_lo1[i];
                 fprintf(stderr,
                     "[WINCE_SEC0_PTEW] #%u table=0x%08X l2=0x%08X"
                     " off=0x%02llX len=%zu val=0x%08llX"
@@ -6978,8 +7058,6 @@ static void maybe_log_tracked_sec0_hot_mapping_access(machine_t *m,
                         & ENTRYHI_ASID);
                 log_sec0_hot_mapping_state(m, "pte_write", table_va, cpu);
                 m->wince.sec0_derived_pte_write_diag_count++;
-            } else {
-                update_tracked_sec0_table_state(m, (int)i);
             }
         }
     }
@@ -12172,6 +12250,28 @@ void wince_boot_log_summary(machine_t *m)
         const char *sec0_reason = m->wince.sec0_first_bad_new_l2 == 0u
             ? "sec0_switch_missing_dll7f8"
             : "sec0_switch_missing_01fe6550_pte";
+        uint32_t final_l2 = 0;
+        uint32_t final_lo0 = 0;
+        uint32_t final_lo1 = 0;
+        const char *corr_verdict = "no_late_fill_observed";
+
+        read_sec0_hot_mapping(m, m->wince.sec0_first_bad_new_table,
+            &final_l2, &final_lo0, &final_lo1);
+        if ((final_lo0 & ENTRYLO_V) != 0) {
+            if (m->wince.sec0_first_bad_pte_write_recorded) {
+                corr_verdict = "post_switch_pte_write_observed";
+            } else if (m->wince.sec0_first_bad_l1_write_recorded) {
+                corr_verdict = "late_fill_visible_after_l1_only";
+            } else {
+                corr_verdict = "late_fill_visible_without_observed_writes";
+            }
+        } else if (final_l2 != 0u) {
+            if (m->wince.sec0_first_bad_l1_write_recorded) {
+                corr_verdict = "post_switch_l1_write_observed_pte_still_missing";
+            } else {
+                corr_verdict = "late_l2_visible_without_observed_writes";
+            }
+        }
 
         fprintf(stderr,
             "[WINCE_SEC0_SUMMARY] class=%s reason=%s old_table=0x%08X"
@@ -12192,6 +12292,45 @@ void wince_boot_log_summary(machine_t *m)
             m->wince.sec0_first_bad_pc,
             m->wince.sec0_first_bad_ra,
             m->wince.sec0_first_bad_asid);
+        fprintf(stderr,
+            "[WINCE_SEC0_CORR_SUMMARY] verdict=%s"
+            " switch_pc=0x%08X switch_ra=0x%08X switch_asid=%u"
+            " src_obj=0x%08X src_obj0c=0x%08X src_obj14=0x%08X"
+            " src_obj24=0x%08X src_ctx08=0x%08X src_ctx0c=0x%08X"
+            " src_off=0x%03X src_idx=%u src_slot=0x%08X"
+            " l1_pc=%s0x%08X l1_ra=%s0x%08X l1_asid=%u l1_l2=0x%08X"
+            " pte_pc=%s0x%08X pte_ra=%s0x%08X pte_asid=%u"
+            " pte_lo0=0x%08X pte_lo1=0x%08X"
+            " final_l2=0x%08X final_lo0=0x%08X final_lo1=0x%08X\n",
+            corr_verdict,
+            m->wince.sec0_first_bad_pc,
+            m->wince.sec0_first_bad_ra,
+            m->wince.sec0_first_bad_asid,
+            m->wince.sec0_first_bad_source_obj,
+            m->wince.sec0_first_bad_source_obj0c,
+            m->wince.sec0_first_bad_source_obj14,
+            m->wince.sec0_first_bad_source_obj24,
+            m->wince.sec0_first_bad_source_ctx08,
+            m->wince.sec0_first_bad_source_ctx0c,
+            m->wince.sec0_first_bad_source_src_off,
+            m->wince.sec0_first_bad_source_src_idx,
+            m->wince.sec0_first_bad_source_src_slot,
+            m->wince.sec0_first_bad_l1_write_recorded ? "" : "?",
+            m->wince.sec0_first_bad_l1_pc,
+            m->wince.sec0_first_bad_l1_write_recorded ? "" : "?",
+            m->wince.sec0_first_bad_l1_ra,
+            m->wince.sec0_first_bad_l1_asid,
+            m->wince.sec0_first_bad_l1_new_l2,
+            m->wince.sec0_first_bad_pte_write_recorded ? "" : "?",
+            m->wince.sec0_first_bad_pte_pc,
+            m->wince.sec0_first_bad_pte_write_recorded ? "" : "?",
+            m->wince.sec0_first_bad_pte_ra,
+            m->wince.sec0_first_bad_pte_asid,
+            m->wince.sec0_first_bad_pte_new_lo0,
+            m->wince.sec0_first_bad_pte_new_lo1,
+            final_l2,
+            final_lo0,
+            final_lo1);
         exc_class = sec0_class;
         exc_reason = sec0_reason;
     }

@@ -108,3 +108,69 @@ Interpretation:
 - because the original `0xBFC00380` region overlaps normal ROM continuation,
   patching it was riskier than it looked; the project now relies on the
   captured ROM image verbatim and uses early-BEV logging only for diagnosis
+
+## Sec0 Correlation Rerun
+
+After adding focused sec0 producer/consumer correlation state to
+`wince_boot.c`, the current tree was rebuilt and rerun from `build-host/`:
+
+```bash
+make -j4
+gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
+  > cold_stdout.log 2> cold_stderr.log
+docker compose run --rm mips-dev /bin/bash -lc \
+  'cd /work/build-host && mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL \
+   --adjust-vma=0x80060000 --start-address=0x8008B520 --stop-address=0x8008B5A8 \
+   nk_decompressed.bin'
+```
+
+Result: `EXIT:124`
+
+Fresh runtime evidence:
+
+- first bad switch is unchanged:
+  - `[WINCE_SEC0_TRANSITION] kind=l2_pointer_missing_after_switch old_table=0x80668CC0 new_table=0x80FF8000 ... pc=0x8008B594 ra=0x8008B52C asid=1`
+- the consumer is reading that child table directly from the context-selected
+  section slot:
+  - `[WINCE_SEC0_SRC] label=scheduler_switch ... src_off=0x008 src_idx=2 src_slot=80FF8000`
+- the new correlation summary shows that the same child table is fully valid by
+  shutdown, but no post-switch `L1` or `PTE` writer was observed after the
+  table was first tracked:
+  - `[WINCE_SEC0_CORR_SUMMARY] verdict=late_fill_visible_without_observed_writes ... final_l2=0x80FF7654 final_lo0=0x40011E1A final_lo1=0x40011F1A`
+
+Current disassembly around the failing scheduler switch:
+
+```text
+8008b574: 8d0a000c  lw   t2,12(t0)
+8008b57c: 000a55c2  srl  t2,t2,0x17
+8008b584: 8d4ad8c0  lw   t2,-10048(t2)
+8008b590: 40885000  mtc0 t0,c0_entryhi
+8008b594: ac0ad8c0  sw   t2,-10048(zero)
+```
+
+That is, the failing path:
+
+1. reads the child context pointer from `s0 + 0x0c`
+2. derives `src_idx` from `ctx->0x0c >> 23`
+3. loads the selected child sec0 table from `0xFFFFD8C0 + src_off`
+4. publishes it to `PA 0x18C0`
+
+The same section-table publish helper also exists in the smaller `0x8008B0AC`
+path used by later good switches, where the write occurs in the delay slot at
+`0x8008B0DC`.
+
+Interpretation:
+
+- the first bad event is still the switch into child sec0 table `0x80FF8000`
+- that table later becomes fully valid for the callback page
+- the current tree did not observe a post-switch `0x80FF8000 + 0x7F8` write or
+  `0x80FF7654 + 0x18/+0x1c` PTE write after the table was first selected
+
+This narrows the next investigation target:
+
+- trace the producer side before the first bad switch, not after it
+- determine where `0x80FF8000` acquires `dll7f8 = 0x80FF7654`
+- determine where `0x80FF7654 + 0x18/+0x1c` becomes
+  `0x40011E1A/0x40011F1A`
+- explain whether that publication happens before the consumer switch, or via a
+  copy/update path that bypasses the current RAM write observer
