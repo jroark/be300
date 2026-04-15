@@ -322,6 +322,10 @@ typedef struct {
     bool     sec0_first_bad_source_recorded;
     bool     sec0_first_bad_l1_write_recorded;
     bool     sec0_first_bad_pte_write_recorded;
+    uint8_t  sec0_first_bad_publish_source_mask;
+    uint8_t  sec0_first_bad_write_source_mask;
+    uint8_t  sec0_first_bad_l1_source;
+    uint8_t  sec0_first_bad_pte_source;
     uint32_t sec0_first_bad_source_obj;
     uint32_t sec0_first_bad_source_obj0c;
     uint32_t sec0_first_bad_source_obj14;
