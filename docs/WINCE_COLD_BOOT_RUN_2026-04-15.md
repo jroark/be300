@@ -47,3 +47,27 @@ Additional fresh trace points visible in `cold_stderr.log`:
 ## Interpretation
 
 This run confirms that the current MIPS16 audit fixes and ROM BEV-vector patching do not regress the active WinCE cold-boot path. They also do not yet move the emulator past the existing slot-0 callback page miss during the process-switch path, so the next root-cause target remains the kernel-side TLB/process-switch failure rather than early ROM/SPL/MIPS16 decode behavior.
+
+## Post-Decoder Rerun
+
+After the decoder-closure pass that:
+
+- kept the gas-verified RRIA extended-immediate mapping
+- tightened extended I8 branches to use only base-word `imm[4:0]`
+- expanded the MIPS16 regression suite to cover RRIA width/sign edges and poisoned I8 branch bits
+
+the same command was rerun from `build-host/` on 2026-04-15.
+
+Result: `EXIT:124`
+
+The late-kernel stop signature remained unchanged:
+
+- `[PPSH_SUMMARY] class=poll_loop_with_boot_progress ... last_exit=0x80078600`
+- `[WINCE_SEC0_SUMMARY] class=slot0_callback_page_missing_at_process_switch ... pc=0x8008B594 ra=0x8008B52C asid=1`
+- `[WINCE_EXC_SUMMARY] class=slot0_callback_page_missing_at_process_switch ...`
+
+The instruction count changed slightly to:
+
+- `[BE300] Emulation stopped after 341502892 instructions`
+
+This keeps the same kernel-side process-switch fault as the current baseline and confirms that the decoder-closure pass did not introduce a new WinCE regression.
