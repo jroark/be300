@@ -155,6 +155,116 @@ static bool be300_nand_image_looks_bootable(const machine_t *m)
     return memcmp(m->nand_data + 0x4000u, spl_sig, sizeof(spl_sig)) == 0;
 }
 
+/*
+ *  The masked ROM does not provide usable BEV exception handlers at +0x200
+ *  and +0x380 for the cold-boot path we emulate. Install MIPS32 stubs there
+ *  so early ROM TLB faults can refill and return cleanly while the original
+ *  boot flow continues through relocated instructions.
+ */
+static void be300_patch_boot_rom_vectors(machine_t *m)
+{
+    static const uint32_t tlb_refill[] = {
+        0x401B5000, /* mfc0 $k1, EntryHi    */
+        0x001BD1C2, /* srl  $k0, $k1, 7     */
+        0x3C1B0003, /* lui  $k1, 0x0003     */
+        0x377BFFFF, /* ori  $k1, 0xFFFF     */
+        0x035BD024, /* and  $k0, $k0, $k1   */
+        0x375A003F, /* ori  $k0, $k0, 0x3F  */
+        0x409A1000, /* mtc0 $k0, EntryLo0   */
+        0x275B0100, /* addiu $k1,$k0, 0x100 */
+        0x409B1800, /* mtc0 $k1, EntryLo1   */
+        0x3C1B0000, /* lui  $k1, 0x0000     */
+        0x377B1800, /* ori  $k1, 0x1800     */
+        0x409B2800, /* mtc0 $k1, PageMask   */
+        0x42000006, /* tlbwr                */
+        0x42000018, /* eret                 */
+    };
+    static const uint32_t gen_handler[] = {
+        0x401A6800, /* mfc0 $k0, Cause        */
+        0x335A007C, /* andi $k0, $k0, 0x7C    */
+        0x13400006, /* beqz $k0, handle_irq   */
+        0x00000000, /* nop                    */
+        0x235BFFF8, /* addi $k1, $k0, -8      */
+        0x2F7B0008, /* sltiu $k1, $k1, 8      */
+        0x17600005, /* bne $k1, $zero, tlb    */
+        0x00000000, /* nop                    */
+        0x42000018, /* eret                   */
+        0x00000000, /* nop                    */
+        0x42000018, /* eret                   */
+        0x00000000, /* nop                    */
+        0x401B5000, /* mfc0 $k1, EntryHi      */
+        0x001BD1C2, /* srl  $k0, $k1, 7       */
+        0x3C1B1FFF, /* lui  $k1, 0x1FFF       */
+        0x377BFFFF, /* ori  $k1, 0xFFFF       */
+        0x035BD024, /* and  $k0, $k0, $k1     */
+        0x375A003F, /* ori  $k0, $k0, 0x3F    */
+        0x409A1000, /* mtc0 $k0, EntryLo0     */
+        0x275B0100, /* addiu $k1, $k0, 0x100  */
+        0x409B1800, /* mtc0 $k1, EntryLo1     */
+        0x3C1B0000, /* lui  $k1, 0x0000       */
+        0x377B1800, /* ori  $k1, 0x1800       */
+        0x409B2800, /* mtc0 $k1, PageMask     */
+        0x42000006, /* tlbwr                  */
+        0x42000018, /* eret                   */
+    };
+    uint64_t rom_va;
+    size_t j;
+
+    if (!m || !m->cpu)
+        return;
+
+    rom_va = 0xffffffffBFC00000ULL;
+
+    for (j = 0; j < sizeof(tlb_refill) / sizeof(tlb_refill[0]); j++) {
+        store_32bit_word(m->cpu, rom_va + 0x200 + j * 4, tlb_refill[j]);
+    }
+
+    for (j = 0; j < sizeof(gen_handler) / sizeof(gen_handler[0]); j++) {
+        store_32bit_word(m->cpu, rom_va + 0x2300 + j * 4, gen_handler[j]);
+    }
+
+    store_32bit_word(m->cpu, rom_va + 0x280, 0x0BF008C0); /* j 0xBFC02300 */
+    store_32bit_word(m->cpu, rom_va + 0x284, 0x00000000); /* nop */
+
+    store_32bit_word(m->cpu, rom_va + 0x380, 0x00000000); /* nop */
+    store_32bit_word(m->cpu, rom_va + 0x384, 0x401A6000); /* mfc0 $k0, Status */
+    store_32bit_word(m->cpu, rom_va + 0x388, 0x335A0002); /* andi $k0, $k0, 2 */
+    store_32bit_word(m->cpu, rom_va + 0x38C, 0x1740FFBC); /* bne $k0,$zero,+0x280 */
+    store_32bit_word(m->cpu, rom_va + 0x390, 0x00000000); /* nop */
+
+    store_32bit_word(m->cpu, rom_va + 0x394, 0x3C058001);
+    store_32bit_word(m->cpu, rom_va + 0x398, 0x24A50034);
+    store_32bit_word(m->cpu, rom_va + 0x39C, 0x80A00000);
+    store_32bit_word(m->cpu, rom_va + 0x3A0, 0x3C089FC0);
+    store_32bit_word(m->cpu, rom_va + 0x3A4, 0x25080C85);
+    store_32bit_word(m->cpu, rom_va + 0x3A8, 0x0100F809);
+    store_32bit_word(m->cpu, rom_va + 0x3AC, 0x00000000);
+    store_32bit_word(m->cpu, rom_va + 0x3B0, 0x3C059FC0);
+    store_32bit_word(m->cpu, rom_va + 0x3B4, 0x24A50C21);
+    store_32bit_word(m->cpu, rom_va + 0x3B8, 0x00A0F809);
+    store_32bit_word(m->cpu, rom_va + 0x3BC, 0x00000000);
+    store_32bit_word(m->cpu, rom_va + 0x3C0, 0x0FF0013A);
+    store_32bit_word(m->cpu, rom_va + 0x3C4, 0x00000000);
+    store_32bit_word(m->cpu, rom_va + 0x3C8, 0x0FF00122);
+    store_32bit_word(m->cpu, rom_va + 0x3CC, 0x00000000);
+    store_32bit_word(m->cpu, rom_va + 0x3D0, 0x1040FFF7);
+    store_32bit_word(m->cpu, rom_va + 0x3D4, 0x8D080000);
+    store_32bit_word(m->cpu, rom_va + 0x3D8, 0x01000008);
+    store_32bit_word(m->cpu, rom_va + 0x3DC, 0x00000000);
+    store_32bit_word(m->cpu, rom_va + 0x3E4, 0x0BF000EC);
+    store_32bit_word(m->cpu, rom_va + 0x2360, 0x3C08A006);
+    store_32bit_word(m->cpu, rom_va + 0x2364, 0x25080004);
+    store_32bit_word(m->cpu, rom_va + 0x2368, 0x01000008);
+    store_32bit_word(m->cpu, rom_va + 0x236C, 0x00000000);
+    store_32bit_word(m->cpu, rom_va + 0x3EC, 0x0FF00126);
+    store_32bit_word(m->cpu, rom_va + 0x3F0, 0x24040004);
+    store_32bit_word(m->cpu, rom_va + 0x3F4, 0x0BF000E8);
+    store_32bit_word(m->cpu, rom_va + 0x3F8, 0x00000000);
+
+    fprintf(stderr,
+        "[BE300] Patched boot ROM BEV vectors (+0x200 refill, +0x2300 general, +0x380 redirect)\n");
+}
+
 static bool be300_read_guest_cstring(machine_t *m, uint32_t va,
                                      char *out, size_t out_sz)
 {
@@ -595,7 +705,7 @@ machine_t *be300_create(const machine_config_t *cfg)
                     fprintf(stderr, "[BE300] Loaded embedded boot ROM"
                         " (%u bytes) at PA 0x1FC00000\n", be300_boot_rom_len);
 
-                    fprintf(stderr, "[BE300] Boot ROM left unpatched\n");
+                    be300_patch_boot_rom_vectors(m);
                 }
         }
 
