@@ -237,14 +237,6 @@ typedef struct {
     uint16_t section0_focus_slot_write_count;
     bool     section3_page_watch_armed;
     bool     section3_retobj_watch_armed;
-    bool     section3_step_trace_pending;
-    bool     section3_step_trace_active;
-    bool     section3_step_trace_done;
-    uint16_t section3_step_trace_remaining;
-    bool     type4_step_trace_pending;
-    bool     type4_step_trace_active;
-    bool     type4_step_trace_done;
-    uint16_t type4_step_trace_remaining;
     uint16_t type4_order_next;
     uint16_t type4_order_ctor_seq;
     uint16_t type4_order_link_seq;
@@ -334,10 +326,5 @@ typedef struct {
     wince_hot_page_verdict_t hot_page_01f94b50;
     wince_hot_page_verdict_t hot_page_0204fe48;
     wince_hot_page_verdict_t hot_page_02041fa8;
-
-    /* Temporary instruction-by-instruction trace window around NK pre-init */
-    bool     nk_step_trace_active;
-    bool     nk_step_trace_done;
-    uint16_t nk_step_trace_remaining;
 
 } wince_boot_state_t;

@@ -34,7 +34,6 @@ void wince_boot_pc_ring_activate(machine_t *m);
 void wince_boot_pc_ring_dump(machine_t *m);
 void wince_boot_crash_pc_dump(struct machine *gxm);
 void wince_boot_note_pc(struct cpu *cpu, uint32_t pc32);
-bool wince_boot_arm_step_trace(struct cpu *cpu, uint32_t pc32);
 void wince_boot_note_ppsh_command(struct cpu *cpu, uint16_t cmd);
 void wince_boot_note_ppsh_status_read(struct cpu *cpu, uint16_t status);
 void wince_boot_note_ppsh_data_read(struct cpu *cpu, uint16_t word);

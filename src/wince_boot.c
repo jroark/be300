@@ -21,8 +21,6 @@
 #include "memory.h"
 #include "mips_cpu_types.h"
 
-extern bool single_step;
-
 static machine_t *g_active_wince_machine = NULL;
 static const char *wince_gpr_names[] = MIPS_REGISTER_NAMES;
 static const char *format_word_or_unknown(char *buf, size_t buf_size, bool ok,
@@ -7096,35 +7094,11 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                 m->wince.section3_retobj_write_count = 0;
                 m->wince.section3_callback_probe_count = 0;
                 m->wince.section3_callback_pc_mask = 0;
-                if (!m->wince.section3_step_trace_done
-                    && !m->wince.section3_step_trace_active) {
-                    m->wince.section3_step_trace_pending = false;
-                    m->wince.section3_step_trace_active = true;
-                    m->wince.section3_step_trace_remaining = 96;
-                    single_step = true;
-                }
-                fprintf(stderr,
-                    "[WINCE_SEC3_ARM] state=armed old=0x%08X new=0x%08X"
-                    " PC=0x%08X RA=0x%08X trace=%s rem=%u\n",
-                    old,
-                    value,
-                    (uint32_t)cpu->pc,
-                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
-                    m->wince.section3_step_trace_active ? "active" : "pending",
-                    (unsigned)m->wince.section3_step_trace_remaining);
             } else if (old == UINT32_C(0x80FE5000) && value != old) {
                 m->wince.section3_page_watch_armed = false;
                 m->wince.section3_retobj_watch_armed = false;
                 m->wince.section3_retobj_watch_va = 0;
                 m->wince.section3_pool_write_count = 0;
-                m->wince.section3_step_trace_pending = false;
-                fprintf(stderr,
-                    "[WINCE_SEC3_ARM] state=disarmed old=0x%08X new=0x%08X"
-                    " PC=0x%08X RA=0x%08X\n",
-                    old,
-                    value,
-                    (uint32_t)cpu->pc,
-                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
             }
             fprintf(stderr,
                 "[WINCE_SECTION3_TABLE] old=0x%08X new=0x%08X"
@@ -9218,30 +9192,14 @@ static void maybe_log_section3_ctor_field_write(machine_t *m, struct cpu *cpu,
         && saved_arg0 == UINT32_C(0x80074C68)
         && saved_arg1_ok
         && saved_arg1 == UINT32_C(0x80FE9DA4)
-        && !m->wince.type4_step_trace_active
-        && !m->wince.type4_step_trace_done) {
+        && m->wince.type4_wrap_watch_va == 0u
+        && m->wince.type4_payload_watch_va == 0u) {
         m->wince.type4_wrap_watch_va = wrap_va;
         m->wince.type4_payload_watch_va = payload_va;
         m->wince.type4_handle_watch_va = load_pa_word(m, wrap_pa + 0x08u);
         m->wince.type4_ready_write_count = 0;
         note_type4_order_event(m, cpu,
             &m->wince.type4_order_ctor_seq, "wrap_ctor");
-        m->wince.type4_step_trace_pending = false;
-        m->wince.type4_step_trace_active = true;
-        m->wince.type4_step_trace_remaining = 192u;
-        single_step = true;
-        fprintf(stderr,
-            "[WINCE_TYPE4_STEP] armed pc=0x%08X saved_ra=0x%08X"
-            " wrap=0x%08X handle=0x%08X payload=0x%08X rem=%u trace=active"
-            " sp=0x%08X ra=0x%08X\n",
-            canonicalize_nk_pc((uint32_t)cpu->pc),
-            saved_ra,
-            wrap_va,
-            m->wince.type4_handle_watch_va,
-            payload_va,
-            (unsigned)m->wince.type4_step_trace_remaining,
-            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
-            (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
     }
     m->wince.section3_ctor_probe_count++;
 }
@@ -12283,40 +12241,6 @@ void wince_boot_log_summary(machine_t *m)
             m->wince.hot_page_0204fe48.l2_val,
             m->wince.hot_page_02041fa8.l2_val);
     }
-}
-
-bool wince_boot_arm_step_trace(struct cpu *cpu, uint32_t pc32)
-{
-    machine_t *m;
-    uint32_t canon_pc = pc32;
-
-    if (!cpu)
-        return false;
-
-    m = wince_boot_from_gx(cpu->machine);
-    if (!m || !m->wince.active || !m->wince.cold_boot_copy_done)
-        return false;
-
-    if ((canon_pc & 0xE0000000u) == 0x80000000u
-        || (canon_pc & 0xE0000000u) == 0xA0000000u)
-        canon_pc = (canon_pc & 0x1FFFFFFFu) | 0x80000000u;
-
-    if (m->wince.nk_step_trace_done || m->wince.nk_step_trace_active)
-        return false;
-    if (canon_pc < 0x80079400u || canon_pc >= 0x80079800u)
-        return false;
-
-    m->wince.nk_step_trace_active = true;
-    m->wince.nk_step_trace_remaining = 256;
-    fprintf(stderr,
-        "[WINCE_STEP] armed PC=0x%08X Canon=0x%08X"
-        " RA=0x%08X SP=0x%08X Status=0x%08X\n",
-        pc32,
-        canon_pc,
-        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
-        (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
-        (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS]);
-    return true;
 }
 
 void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
