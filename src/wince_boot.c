@@ -6707,6 +6707,286 @@ static void log_section0_focus_window(machine_t *m, const char *tag,
         load_table_word(m, table_va, 0x7E8u));
 }
 
+static bool likely_wince_table_va(uint32_t table_va)
+{
+    return table_va >= UINT32_C(0x80000000)
+        && table_va < UINT32_C(0x81000000)
+        && (table_va & 3u) == 0;
+}
+
+static void read_sec0_hot_mapping(machine_t *m, uint32_t table_va,
+    uint32_t *l2_out, uint32_t *lo0_out, uint32_t *lo1_out)
+{
+    uint32_t l2 = 0;
+    uint32_t lo0 = 0;
+    uint32_t lo1 = 0;
+
+    if (m && likely_wince_table_va(table_va)) {
+        l2 = load_table_word(m, table_va, 0x7F8u);
+        if (likely_wince_table_va(l2)) {
+            (void)load_va_word(m, l2 + 0x18u, &lo0);
+            (void)load_va_word(m, l2 + 0x1Cu, &lo1);
+        }
+    }
+
+    if (l2_out)
+        *l2_out = l2;
+    if (lo0_out)
+        *lo0_out = lo0;
+    if (lo1_out)
+        *lo1_out = lo1;
+}
+
+static int find_tracked_sec0_table(machine_t *m, uint32_t table_va)
+{
+    unsigned i;
+
+    if (!m || !likely_wince_table_va(table_va))
+        return -1;
+
+    for (i = 0; i < m->wince.sec0_track_count; i++) {
+        if (m->wince.sec0_track_tables[i] == table_va)
+            return (int)i;
+    }
+
+    return -1;
+}
+
+static void update_tracked_sec0_table_state(machine_t *m, int idx)
+{
+    uint32_t l2 = 0;
+    uint32_t lo0 = 0;
+    uint32_t lo1 = 0;
+
+    if (!m || idx < 0 || idx >= (int)m->wince.sec0_track_count)
+        return;
+
+    read_sec0_hot_mapping(m, m->wince.sec0_track_tables[idx], &l2, &lo0, &lo1);
+    m->wince.sec0_track_l2[idx] = l2;
+    m->wince.sec0_track_lo0[idx] = lo0;
+    m->wince.sec0_track_lo1[idx] = lo1;
+}
+
+static int ensure_tracked_sec0_table(machine_t *m, uint32_t table_va)
+{
+    unsigned idx;
+
+    if (!m || !likely_wince_table_va(table_va))
+        return -1;
+
+    idx = (unsigned)find_tracked_sec0_table(m, table_va);
+    if ((int)idx >= 0)
+        return (int)idx;
+
+    if (m->wince.sec0_track_count
+        >= sizeof(m->wince.sec0_track_tables)
+            / sizeof(m->wince.sec0_track_tables[0])) {
+        return -1;
+    }
+
+    idx = m->wince.sec0_track_count++;
+    m->wince.sec0_track_tables[idx] = table_va;
+    m->wince.sec0_track_l2[idx] = 0;
+    m->wince.sec0_track_lo0[idx] = 0;
+    m->wince.sec0_track_lo1[idx] = 0;
+    update_tracked_sec0_table_state(m, (int)idx);
+    return (int)idx;
+}
+
+static void log_sec0_hot_mapping_state(machine_t *m, const char *tag,
+    uint32_t table_va, struct cpu *cpu)
+{
+    uint32_t l2 = 0;
+    uint32_t lo0 = 0;
+    uint32_t lo1 = 0;
+    uint32_t pc32 = 0;
+    uint32_t ra32 = 0;
+    uint32_t asid = 0;
+
+    if (!m || !likely_wince_table_va(table_va))
+        return;
+
+    read_sec0_hot_mapping(m, table_va, &l2, &lo0, &lo1);
+    if (cpu) {
+        pc32 = (uint32_t)cpu->pc;
+        ra32 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+        asid = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI]
+            & ENTRYHI_ASID;
+    }
+
+    fprintf(stderr,
+        "[WINCE_SEC0_HOT] tag=%s table=0x%08X pa=0x%08X l2=0x%08X"
+        " lo0=0x%08X lo1=0x%08X lo0_valid=%u lo1_valid=%u"
+        " pc=0x%08X ra=0x%08X asid=%u\n",
+        tag ? tag : "-",
+        table_va,
+        table_va_to_pa(table_va),
+        l2,
+        lo0,
+        lo1,
+        (lo0 & ENTRYLO_V) ? 1u : 0u,
+        (lo1 & ENTRYLO_V) ? 1u : 0u,
+        pc32,
+        ra32,
+        asid);
+}
+
+static void maybe_record_sec0_bad_transition(machine_t *m, struct cpu *cpu,
+    uint32_t old_table, uint32_t new_table)
+{
+    uint32_t old_l2 = 0;
+    uint32_t old_lo0 = 0;
+    uint32_t old_lo1 = 0;
+    uint32_t new_l2 = 0;
+    uint32_t new_lo0 = 0;
+    uint32_t new_lo1 = 0;
+    const char *kind;
+
+    if (!m || !cpu || m->wince.sec0_first_bad_transition_logged)
+        return;
+    if (!likely_wince_table_va(old_table) || !likely_wince_table_va(new_table)
+        || old_table == new_table) {
+        return;
+    }
+
+    read_sec0_hot_mapping(m, old_table, &old_l2, &old_lo0, &old_lo1);
+    read_sec0_hot_mapping(m, new_table, &new_l2, &new_lo0, &new_lo1);
+    if (!(old_lo0 & ENTRYLO_V) || (new_lo0 & ENTRYLO_V))
+        return;
+
+    m->wince.sec0_first_bad_transition_logged = true;
+    m->wince.sec0_first_bad_old_table = old_table;
+    m->wince.sec0_first_bad_new_table = new_table;
+    m->wince.sec0_first_bad_old_l2 = old_l2;
+    m->wince.sec0_first_bad_new_l2 = new_l2;
+    m->wince.sec0_first_bad_old_lo0 = old_lo0;
+    m->wince.sec0_first_bad_old_lo1 = old_lo1;
+    m->wince.sec0_first_bad_new_lo0 = new_lo0;
+    m->wince.sec0_first_bad_new_lo1 = new_lo1;
+    m->wince.sec0_first_bad_pc = (uint32_t)cpu->pc;
+    m->wince.sec0_first_bad_ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+    m->wince.sec0_first_bad_asid =
+        (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI] & ENTRYHI_ASID;
+
+    kind = new_l2 == 0 ? "l2_pointer_missing_after_switch"
+        : "pte_missing_after_switch";
+    fprintf(stderr,
+        "[WINCE_SEC0_TRANSITION] kind=%s old_table=0x%08X new_table=0x%08X"
+        " old_l2=0x%08X new_l2=0x%08X"
+        " old_lo0=0x%08X old_lo1=0x%08X"
+        " new_lo0=0x%08X new_lo1=0x%08X"
+        " pc=0x%08X ra=0x%08X asid=%u\n",
+        kind,
+        old_table,
+        new_table,
+        old_l2,
+        new_l2,
+        old_lo0,
+        old_lo1,
+        new_lo0,
+        new_lo1,
+        m->wince.sec0_first_bad_pc,
+        m->wince.sec0_first_bad_ra,
+        m->wince.sec0_first_bad_asid);
+}
+
+static void maybe_log_tracked_sec0_hot_mapping_access(machine_t *m,
+    struct cpu *cpu, uint64_t paddr, size_t len, uint64_t val)
+{
+    unsigned i;
+
+    if (!m || !cpu || len == 0)
+        return;
+
+    for (i = 0; i < m->wince.sec0_track_count; i++) {
+        uint32_t table_va = m->wince.sec0_track_tables[i];
+        uint32_t table_pa;
+        uint32_t old_l2;
+        uint32_t old_lo0;
+        uint32_t old_lo1;
+        uint32_t new_l2;
+        uint32_t new_lo0;
+        uint32_t new_lo1;
+
+        if (!likely_wince_table_va(table_va) || table_va == UINT32_C(0x8008BC18))
+            continue;
+
+        table_pa = table_va_to_pa(table_va);
+        old_l2 = m->wince.sec0_track_l2[i];
+        old_lo0 = m->wince.sec0_track_lo0[i];
+        old_lo1 = m->wince.sec0_track_lo1[i];
+
+        if (range_overlaps(paddr, (uint64_t)len, table_pa + 0x7F8u, 4u)) {
+            if (m->wince.sec0_derived_l1_write_diag_count < 64u) {
+                update_tracked_sec0_table_state(m, (int)i);
+                new_l2 = m->wince.sec0_track_l2[i];
+                new_lo0 = m->wince.sec0_track_lo0[i];
+                new_lo1 = m->wince.sec0_track_lo1[i];
+                fprintf(stderr,
+                    "[WINCE_SEC0_L1W] #%u table=0x%08X off=0x7F8"
+                    " val=0x%08llX old_l2=0x%08X new_l2=0x%08X"
+                    " old_lo0=0x%08X old_lo1=0x%08X"
+                    " new_lo0=0x%08X new_lo1=0x%08X"
+                    " pc=0x%08X ra=0x%08X asid=%u\n",
+                    (unsigned)(m->wince.sec0_derived_l1_write_diag_count + 1u),
+                    table_va,
+                    (unsigned long long)val,
+                    old_l2,
+                    new_l2,
+                    old_lo0,
+                    old_lo1,
+                    new_lo0,
+                    new_lo1,
+                    (uint32_t)cpu->pc,
+                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI]
+                        & ENTRYHI_ASID);
+                log_sec0_hot_mapping_state(m, "l1_write", table_va, cpu);
+                m->wince.sec0_derived_l1_write_diag_count++;
+            } else {
+                update_tracked_sec0_table_state(m, (int)i);
+            }
+        }
+
+        new_l2 = m->wince.sec0_track_l2[i];
+        if (!likely_wince_table_va(new_l2))
+            continue;
+
+        if (range_overlaps(paddr, (uint64_t)len, table_va_to_pa(new_l2) + 0x18u,
+                8u)) {
+            if (m->wince.sec0_derived_pte_write_diag_count < 96u) {
+                update_tracked_sec0_table_state(m, (int)i);
+                new_lo0 = m->wince.sec0_track_lo0[i];
+                new_lo1 = m->wince.sec0_track_lo1[i];
+                fprintf(stderr,
+                    "[WINCE_SEC0_PTEW] #%u table=0x%08X l2=0x%08X"
+                    " off=0x%02llX len=%zu val=0x%08llX"
+                    " old_lo0=0x%08X old_lo1=0x%08X"
+                    " new_lo0=0x%08X new_lo1=0x%08X"
+                    " pc=0x%08X ra=0x%08X asid=%u\n",
+                    (unsigned)(m->wince.sec0_derived_pte_write_diag_count + 1u),
+                    table_va,
+                    new_l2,
+                    (unsigned long long)(paddr - table_va_to_pa(new_l2)),
+                    len,
+                    (unsigned long long)val,
+                    old_lo0,
+                    old_lo1,
+                    new_lo0,
+                    new_lo1,
+                    (uint32_t)cpu->pc,
+                    (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                    (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI]
+                        & ENTRYHI_ASID);
+                log_sec0_hot_mapping_state(m, "pte_write", table_va, cpu);
+                m->wince.sec0_derived_pte_write_diag_count++;
+            } else {
+                update_tracked_sec0_table_state(m, (int)i);
+            }
+        }
+    }
+}
+
 static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
     uint64_t paddr, uint64_t len, uint64_t val)
 {
@@ -6735,6 +7015,16 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
         m->wince.section_table_shadow[idx] = value;
 
         if (value != 0 && value != 0x8008BC18u && idx < 2) {
+            if (idx == 0) {
+                if (likely_wince_table_va(old) && old != UINT32_C(0x8008BC18))
+                    ensure_tracked_sec0_table(m, old);
+                if (likely_wince_table_va(value))
+                    ensure_tracked_sec0_table(m, value);
+                maybe_record_sec0_bad_transition(m, cpu, old, value);
+                if (likely_wince_table_va(old) && old != UINT32_C(0x8008BC18))
+                    log_sec0_hot_mapping_state(m, "section0_old_hot", old, cpu);
+                log_sec0_hot_mapping_state(m, "section0_new_hot", value, cpu);
+            }
             uint32_t marker = load_table_word(m, value, 0x694u);
             const char *kind = marker == 1u ? "shared" : "process";
             if (marker == 1u) {
@@ -6781,7 +7071,8 @@ static void maybe_log_tlb_table_write(machine_t *m, struct cpu *cpu,
                     log_section0_focus_window(m, "section0_new", value);
                 }
                 if (pc32 == UINT32_C(0x8008B594)
-                    || pc32 == UINT32_C(0x8008B0DC)) {
+                    || pc32 == UINT32_C(0x8008B0DC)
+                    || pc32 == UINT32_C(0x8008B0D4)) {
                     maybe_note_section0_source_pc(m, cpu, pc32);
                 }
                 m->wince.section0_focus_diag_count++;
@@ -11918,6 +12209,35 @@ void wince_boot_log_summary(machine_t *m)
         exc_reason = "hot_pc_probe_without_mapping_failure";
     }
 
+    if (m->wince.sec0_first_bad_transition_logged) {
+        const char *sec0_class = "slot0_callback_page_missing_at_process_switch";
+        const char *sec0_reason = m->wince.sec0_first_bad_new_l2 == 0u
+            ? "sec0_switch_missing_dll7f8"
+            : "sec0_switch_missing_01fe6550_pte";
+
+        fprintf(stderr,
+            "[WINCE_SEC0_SUMMARY] class=%s reason=%s old_table=0x%08X"
+            " new_table=0x%08X old_l2=0x%08X new_l2=0x%08X"
+            " old_lo0=0x%08X old_lo1=0x%08X"
+            " new_lo0=0x%08X new_lo1=0x%08X"
+            " pc=0x%08X ra=0x%08X asid=%u\n",
+            sec0_class,
+            sec0_reason,
+            m->wince.sec0_first_bad_old_table,
+            m->wince.sec0_first_bad_new_table,
+            m->wince.sec0_first_bad_old_l2,
+            m->wince.sec0_first_bad_new_l2,
+            m->wince.sec0_first_bad_old_lo0,
+            m->wince.sec0_first_bad_old_lo1,
+            m->wince.sec0_first_bad_new_lo0,
+            m->wince.sec0_first_bad_new_lo1,
+            m->wince.sec0_first_bad_pc,
+            m->wince.sec0_first_bad_ra,
+            m->wince.sec0_first_bad_asid);
+        exc_class = sec0_class;
+        exc_reason = sec0_reason;
+    }
+
     if (m->wince.serial_exc_last.valid) {
         fprintf(stderr,
             "[WINCE_EXC_SUMMARY] class=%s reason=%s serial_code=0x%03X"
@@ -12100,6 +12420,8 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
     if (is_write)
         maybe_log_systempatch_thread_write(m, cpu, paddr, len, val);
     maybe_log_section0_hot_slot_access(m, cpu, paddr, len, val, is_write);
+    if (is_write)
+        maybe_log_tracked_sec0_hot_mapping_access(m, cpu, paddr, len, val);
 
     if (is_write)
         maybe_log_tlb_table_write(m, cpu, paddr, (uint64_t)len, val);
