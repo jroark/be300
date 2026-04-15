@@ -482,20 +482,32 @@ DEVICE_ACCESS(be300_wince_aux)
         return 0;
 
     /*
-     * When PPSH is disabled, model an absent controller by returning zeros
-     * from the probe registers rather than injecting a DBE. NK probes this
-     * path during normal GUI boot and expects a clean "not present" status.
+     * When PPSH is disabled, offsets 0x000 (data) and 0x400 (status/cmd)
+     * of this window must bus-error on real BE-300 hardware. NK.exe's
+     * Level-2 PPSH probe at 0x8007858x wraps its 0x3330 controller-ID
+     * poll in an SEH __try block specifically to catch the DBE that the
+     * absent parallel companion raises on those two offsets, and uses
+     * the caught exception as the fast-path "no PPFS" signal. Offset
+     * 0x004 (Level-1 hw test) is NOT wrapped in __try and must still
+     * return a clean non-0x2320 value so the Level-1 check fails
+     * without taking an exception.
+     *
+     * Returning 0 from a GXemul DEVICE_ACCESS handler causes
+     * memory_rw.c to inject EXCEPTION_DBE for MIPS, which is exactly
+     * what we want here. Previous attempts modelled these offsets as
+     * read-zero / stateful-status and caused NK to spin on the 0xFFFF
+     * inner watchdog of every poll loop for the entire boot.
      */
-    if (!d->ppsh_enabled && writeflag == MEM_READ
-        && (off == 0x000 || off == 0x400)) {
-        memset(data, 0, len);
+    if (!d->ppsh_enabled && (off == 0x000 || off == 0x400)) {
         if (d->log_mmio) {
             fprintf(stderr,
-                "[WINCE_AUX] R PA=0x%08X size=%zu val=0x0 PC=0x%08X\n",
+                "[WINCE_AUX] %c PA=0x%08X size=%zu DBE (ppsh absent)"
+                " PC=0x%08X\n",
+                writeflag == MEM_WRITE ? 'W' : 'R',
                 (uint32_t)(WINCE_AUX_BASE + off), len,
                 (uint32_t)cpu->pc);
         }
-        return 1;
+        return 0;
     }
 
     if (writeflag == MEM_WRITE) {

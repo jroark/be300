@@ -6,6 +6,17 @@
 #define WINCE_VECTOR_WORDS 8u
 #define WINCE_PC_RING_SIZE 512u
 #define WINCE_SEC0_L1_SLOT_RING_SIZE 32u
+#define WINCE_SEC0_TLB_RING_SIZE 16u
+
+typedef struct {
+    uint64_t instrs;
+    uint32_t pc;
+    uint32_t epc;
+    uint32_t vaddr;
+    uint32_t asid;
+    uint32_t exccode;
+} wince_sec0_tlb_entry_t;
+
 
 typedef struct {
     uint64_t paddr;
@@ -362,6 +373,8 @@ typedef struct {
     uint8_t  sec0_l1_slot_ring_head;
     uint8_t  sec0_l1_slot_ring_filled;
     wince_sec0_l1_slot_entry_t sec0_l1_slot_ring[WINCE_SEC0_L1_SLOT_RING_SIZE];
+    uint8_t  sec0_tlb_ring_filled;
+    wince_sec0_tlb_entry_t sec0_tlb_ring[WINCE_SEC0_TLB_RING_SIZE];
     wince_serial_exception_record_t serial_exc_pending;
     wince_serial_exception_record_t serial_exc_last;
     wince_hot_page_verdict_t hot_page_01fe6550;

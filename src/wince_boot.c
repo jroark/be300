@@ -11174,6 +11174,22 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
 
     status = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_STATUS];
 
+    if (m->wince.sec0_first_bad_transition_logged
+        && m->wince.sec0_tlb_ring_filled < WINCE_SEC0_TLB_RING_SIZE) {
+        uint32_t asid = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI]
+            & ENTRYHI_ASID;
+        if (asid == m->wince.sec0_first_bad_asid) {
+            wince_sec0_tlb_entry_t *e =
+                &m->wince.sec0_tlb_ring[m->wince.sec0_tlb_ring_filled++];
+            e->instrs = cpu->ninstrs;
+            e->pc = (uint32_t)cpu->pc;
+            e->epc = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_EPC];
+            e->vaddr = vaddr;
+            e->asid = asid;
+            e->exccode = exccode;
+        }
+    }
+
     /* Log TLB exceptions for DLL VA range (0x01800000-0x02000000) */
     if (vaddr >= 0x01800000u && vaddr < 0x02000000u) {
         static int dll_tlb_count = 0;
@@ -12478,6 +12494,27 @@ void wince_boot_log_summary(machine_t *m)
             final_lo0,
             final_lo1);
         sec0_l1_slot_ring_dump(m);
+        {
+            unsigned i;
+            fprintf(stderr,
+                "[WINCE_SEC0_TLB_RING] filled=%u first_bad_instrs=%llu"
+                " target_asid=%u\n",
+                (unsigned)m->wince.sec0_tlb_ring_filled,
+                (unsigned long long)m->wince.sec0_first_bad_ninstrs,
+                m->wince.sec0_first_bad_asid);
+            for (i = 0; i < m->wince.sec0_tlb_ring_filled; i++) {
+                const wince_sec0_tlb_entry_t *e = &m->wince.sec0_tlb_ring[i];
+                int64_t delta = (int64_t)e->instrs
+                    - (int64_t)m->wince.sec0_first_bad_ninstrs;
+                fprintf(stderr,
+                    "[WINCE_SEC0_TLB_RING] #%u delta=%lld exc=%u"
+                    " vaddr=0x%08X pc=0x%08X epc=0x%08X asid=%u"
+                    " instrs=%llu\n",
+                    i, (long long)delta, e->exccode, e->vaddr,
+                    e->pc, e->epc, e->asid,
+                    (unsigned long long)e->instrs);
+            }
+        }
         exc_class = sec0_class;
         exc_reason = sec0_reason;
     }
