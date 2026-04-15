@@ -218,15 +218,122 @@ static bool same_4k_page(uint32_t a, uint32_t b)
     return (a & ~UINT32_C(0xFFF)) == (b & ~UINT32_C(0xFFF));
 }
 
+typedef struct {
+    bool found;
+    bool active_match;
+    bool asid_match;
+    bool global_match;
+    bool valid;
+    uint32_t current_asid;
+    uint32_t entryhi;
+    uint32_t lo;
+    uint32_t page_vbase;
+    uint32_t page_size;
+    uint32_t paddr;
+    int idx;
+    int page;
+} wince_tlb_match_info_t;
+
+static bool lookup_tlb_match_for_va(machine_t *m, uint32_t va,
+    wince_tlb_match_info_t *out)
+{
+    struct mips_coproc *cp;
+    bool is_vr41;
+    int ntlb;
+    int i;
+    wince_tlb_match_info_t fallback;
+    bool have_fallback = false;
+
+    if (out)
+        memset(out, 0, sizeof(*out));
+    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0] || !out)
+        return false;
+
+    cp = m->cpu->cd.mips.coproc[0];
+    is_vr41 = m->cpu->cd.mips.cpu_type.rev == MIPS_R4100;
+    ntlb = m->cpu->cd.mips.cpu_type.nr_of_tlb_entries;
+    memset(&fallback, 0, sizeof(fallback));
+    fallback.idx = -1;
+    fallback.page = -1;
+
+    for (i = 0; i < ntlb; i++) {
+        uint64_t hi = cp->tlbs[i].hi;
+        uint64_t lo[2] = { cp->tlbs[i].lo0, cp->tlbs[i].lo1 };
+        uint64_t mask = cp->tlbs[i].mask;
+        uint64_t match_mask = mask | (uint64_t)(is_vr41 ? 0x07ffu : 0x1fffu);
+        uint64_t page_size = (match_mask + 1u) >> 1;
+        uint32_t vbase = (uint32_t)hi & (uint32_t)ENTRYHI_VPN2_MASK;
+        bool global_match = is_vr41
+            ? (((lo[0] & ENTRYLO_G) != 0) && ((lo[1] & ENTRYLO_G) != 0))
+            : (((uint32_t)hi & TLB_G) != 0);
+        int page;
+
+        vbase &= ~(uint32_t)match_mask;
+
+        for (page = 0; page < 2; page++) {
+            uint32_t page_vbase = vbase + (uint32_t)((uint64_t)page * page_size);
+            uint64_t page_lo = lo[page];
+            wince_tlb_match_info_t candidate;
+
+            if (va < page_vbase
+                || (uint64_t)va >= (uint64_t)page_vbase + page_size) {
+                continue;
+            }
+
+            memset(&candidate, 0, sizeof(candidate));
+            candidate.found = true;
+            candidate.current_asid = (uint32_t)cp->reg[COP0_ENTRYHI] & 0xFFu;
+            candidate.entryhi = (uint32_t)hi;
+            candidate.lo = (uint32_t)page_lo;
+            candidate.page_vbase = page_vbase;
+            candidate.page_size = (uint32_t)page_size;
+            candidate.idx = i;
+            candidate.page = page;
+            candidate.asid_match = (((uint32_t)hi & ENTRYHI_ASID)
+                == candidate.current_asid);
+            candidate.global_match = global_match;
+            candidate.active_match = candidate.asid_match || candidate.global_match;
+            candidate.valid = (page_lo & ENTRYLO_V) != 0;
+            if (candidate.valid) {
+                uint64_t pbase = (page_lo & ENTRYLO_PFN_MASK)
+                    >> ENTRYLO_PFN_SHIFT;
+                uint64_t paddr = (pbase << (is_vr41 ? 10 : 12))
+                    & ~(match_mask >> 1);
+                paddr += (uint64_t)(va - page_vbase);
+                candidate.paddr = (uint32_t)paddr;
+            }
+
+            if (candidate.active_match) {
+                *out = candidate;
+                return true;
+            }
+            if (!have_fallback) {
+                fallback = candidate;
+                have_fallback = true;
+            }
+        }
+    }
+
+    if (!have_fallback)
+        return false;
+
+    *out = fallback;
+    return true;
+}
+
 static unsigned hot_page_verdict_severity(const wince_hot_page_verdict_t *v)
 {
     if (!v || !v->seen)
         return 0u;
     if (v->section_val == 0u || v->l2_val == 0u)
-        return 4u;
+        return 6u;
     if (!v->selected_valid)
-        return 3u;
+        return 5u;
+    if (v->tlb_match_found && !v->tlb_match_active)
+        return 4u;
     if (v->fault_va == v->probe_va)
+        return 3u;
+    if (v->tlb_match_found && v->tlb_match_active && !v->tlb_match_valid)
         return 2u;
     return 1u;
 }
@@ -396,85 +503,43 @@ static void dump_live_tlb(machine_t *m)
 static void dump_tlb_match_for_va(machine_t *m, uint32_t va,
     const char *label)
 {
-    struct mips_coproc *cp;
-    int pageshift;
-    int ntlb;
-    int i;
+    wince_tlb_match_info_t match;
 
-    if (!m || !m->cpu || !m->cpu->cd.mips.coproc[0])
+    if (!lookup_tlb_match_for_va(m, va, &match)) {
+        fprintf(stderr,
+            "[WINCE_TLB] match %-14s va=0x%08X status=NO_MATCH"
+            " current_asid=0x%02X\n",
+            label ? label : "-",
+            va,
+            (m && m->cpu && m->cpu->cd.mips.coproc[0])
+                ? (unsigned)((uint32_t)m->cpu->cd.mips.coproc[0]
+                    ->reg[COP0_ENTRYHI] & 0xFFu)
+                : 0u);
         return;
-
-    cp = m->cpu->cd.mips.coproc[0];
-    ntlb = m->cpu->cd.mips.cpu_type.nr_of_tlb_entries;
-    pageshift = (m->cpu->cd.mips.cpu_type.rev == MIPS_R4100) ? 10 : 12;
-
-    for (i = 0; i < ntlb; i++) {
-        uint64_t hi = cp->tlbs[i].hi;
-        uint64_t lo[2] = { cp->tlbs[i].lo0, cp->tlbs[i].lo1 };
-        uint64_t mask = cp->tlbs[i].mask;
-        uint64_t match_mask = mask
-            | (uint64_t)((m->cpu->cd.mips.cpu_type.rev == MIPS_R4100)
-                ? 0x07ffu : 0x1fffu);
-        uint64_t page_size = (match_mask + 1u) >> 1;
-        uint32_t vbase = ((uint32_t)hi & (uint32_t)ENTRYHI_VPN2_MASK);
-        int page;
-
-        vbase &= ~(uint32_t)match_mask;
-
-        for (page = 0; page < 2; page++) {
-            uint32_t page_vbase = vbase + (uint32_t)((uint64_t)page
-                * page_size);
-            uint64_t page_lo = lo[page];
-
-            if (va < page_vbase
-                || (uint64_t)va >= (uint64_t)page_vbase + page_size) {
-                continue;
-            }
-
-            if (!(page_lo & ENTRYLO_V)) {
-                fprintf(stderr,
-                    "[WINCE_TLB] match %-14s va=0x%08X idx=%d page=%d"
-                    " vbase=0x%08X psize=0x%08X valid=0 global=%d"
-                    " asid=0x%02X lo=0x%08X\n",
-                    label ? label : "-",
-                    va, i, page,
-                    page_vbase,
-                    (uint32_t)page_size,
-                    (int)(((uint32_t)hi & TLB_G) ? 1 : 0),
-                    (unsigned)((uint32_t)hi & ENTRYHI_ASID),
-                    (uint32_t)page_lo);
-                return;
-            }
-
-            {
-                uint64_t pbase = (page_lo & ENTRYLO_PFN_MASK)
-                    >> ENTRYLO_PFN_SHIFT;
-                uint64_t paddr = (pbase << pageshift)
-                    & ~(match_mask >> 1);
-
-                paddr += (uint64_t)(va - page_vbase);
-                fprintf(stderr,
-                    "[WINCE_TLB] match %-14s va=0x%08X idx=%d page=%d"
-                    " vbase=0x%08X pbase=0x%08X paddr=0x%08X"
-                    " psize=0x%08X valid=1 global=%d asid=0x%02X"
-                    " lo=0x%08X\n",
-                    label ? label : "-",
-                    va, i, page,
-                    page_vbase,
-                    (uint32_t)(paddr - (va - page_vbase)),
-                    (uint32_t)paddr,
-                    (uint32_t)page_size,
-                    (int)(((uint32_t)hi & TLB_G) ? 1 : 0),
-                    (unsigned)((uint32_t)hi & ENTRYHI_ASID),
-                    (uint32_t)page_lo);
-            }
-            return;
-        }
     }
 
     fprintf(stderr,
-        "[WINCE_TLB] match %-14s va=0x%08X status=NO_MATCH\n",
-        label ? label : "-", va);
+        "[WINCE_TLB] match %-14s va=0x%08X status=%s idx=%d page=%d"
+        " vbase=0x%08X psize=0x%08X current_asid=0x%02X match_asid=0x%02X"
+        " asid_match=%d global=%d active=%d valid=%d hi=0x%08X lo=0x%08X"
+        " paddr=0x%08X\n",
+        label ? label : "-",
+        va,
+        !match.active_match ? "VA_MATCH_INACTIVE" :
+            (!match.valid ? "ACTIVE_MATCH_INVALID" : "ACTIVE_MATCH"),
+        match.idx,
+        match.page,
+        match.page_vbase,
+        match.page_size,
+        match.current_asid,
+        (unsigned)(match.entryhi & ENTRYHI_ASID),
+        match.asid_match ? 1 : 0,
+        match.global_match ? 1 : 0,
+        match.active_match ? 1 : 0,
+        match.valid ? 1 : 0,
+        match.entryhi,
+        match.lo,
+        match.paddr);
 }
 
 static void dump_va_peek(machine_t *m, const char *label, uint32_t va)
@@ -2175,6 +2240,7 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
     const char *tag)
 {
     struct mips_coproc *cp0;
+    wince_tlb_match_info_t tlb_match;
     wince_hot_page_verdict_t *verdict;
     wince_hot_page_verdict_t candidate;
     uint32_t section_idx;
@@ -2192,10 +2258,14 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
     if (!m || !cpu)
         return;
 
-    if (probe_va == UINT32_C(0x01F8F8F8)) {
+    if (probe_va == UINT32_C(0x01FE6550)) {
+        verdict = &m->wince.hot_page_01fe6550;
+    } else if (probe_va == UINT32_C(0x01F8F8F8)) {
         verdict = &m->wince.hot_page_01f8f8f8;
     } else if (probe_va == UINT32_C(0x01F94B50)) {
         verdict = &m->wince.hot_page_01f94b50;
+    } else if (probe_va == UINT32_C(0x0204FE48)) {
+        verdict = &m->wince.hot_page_0204fe48;
     } else if (probe_va == UINT32_C(0x02041FA8)) {
         verdict = &m->wince.hot_page_02041fa8;
     } else {
@@ -2220,6 +2290,8 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
     selected_lo = odd_page ? lo1 : lo0;
 
     memset(&candidate, 0, sizeof(candidate));
+    candidate.tlb_match_idx = -1;
+    candidate.tlb_match_page = -1;
     candidate.seen = true;
     candidate.logged = true;
     candidate.probe_va = probe_va;
@@ -2236,6 +2308,20 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
     candidate.asid = candidate.entryhi & 0xFFu;
     candidate.odd_page = odd_page;
     candidate.selected_valid = (selected_lo & ENTRYLO_V) != 0;
+    if (lookup_tlb_match_for_va(m, probe_va, &tlb_match)) {
+        candidate.tlb_match_found = tlb_match.found;
+        candidate.tlb_match_active = tlb_match.active_match;
+        candidate.tlb_match_asid_match = tlb_match.asid_match;
+        candidate.tlb_match_global = tlb_match.global_match;
+        candidate.tlb_match_valid = tlb_match.valid;
+        candidate.tlb_match_entryhi = tlb_match.entryhi;
+        candidate.tlb_match_lo = tlb_match.lo;
+        candidate.tlb_match_page_vbase = tlb_match.page_vbase;
+        candidate.tlb_match_paddr = tlb_match.paddr;
+        candidate.tlb_match_page_size = tlb_match.page_size;
+        candidate.tlb_match_idx = (int16_t)tlb_match.idx;
+        candidate.tlb_match_page = (int8_t)tlb_match.page;
+    }
 
     prev_severity = hot_page_verdict_severity(verdict);
     new_severity = hot_page_verdict_severity(&candidate);
@@ -2253,7 +2339,11 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
         "[WINCE_PAGE_VERDICT] tag=%s exc=%u probe=0x%08X fault=0x%08X"
         " sec[%u]=0x%08X l2_off=0x%03X l2=0x%08X pte_off=0x%02X"
         " lo0=0x%08X lo1=0x%08X selected=%s:0x%08X valid=%d"
-        " entryhi=0x%08X asid=%u\n",
+        " entryhi=0x%08X asid=%u"
+        " tlb_found=%d tlb_active=%d tlb_asid=%d tlb_global=%d"
+        " tlb_valid=%d tlb_idx=%d tlb_page=%d tlb_hi=0x%08X"
+        " tlb_lo=0x%08X tlb_vbase=0x%08X tlb_psize=0x%08X"
+        " tlb_paddr=0x%08X\n",
         tag ? tag : "?",
         exccode,
         probe_va,
@@ -2269,7 +2359,19 @@ static void maybe_log_hot_page_verdict(machine_t *m, struct cpu *cpu,
         selected_lo,
         candidate.selected_valid ? 1 : 0,
         candidate.entryhi,
-        candidate.asid);
+        candidate.asid,
+        candidate.tlb_match_found ? 1 : 0,
+        candidate.tlb_match_active ? 1 : 0,
+        candidate.tlb_match_asid_match ? 1 : 0,
+        candidate.tlb_match_global ? 1 : 0,
+        candidate.tlb_match_valid ? 1 : 0,
+        (int)candidate.tlb_match_idx,
+        (int)candidate.tlb_match_page,
+        candidate.tlb_match_entryhi,
+        candidate.tlb_match_lo,
+        candidate.tlb_match_page_vbase,
+        candidate.tlb_match_page_size,
+        candidate.tlb_match_paddr);
 }
 
 static void maybe_note_section0_source_pc(machine_t *m, struct cpu *cpu,
@@ -10767,11 +10869,17 @@ void wince_boot_note_tlb_exception(struct cpu *cpu, uint32_t exccode,
 
     dump_live_tlb(m);
     dump_tlb_match_for_va(m, vaddr, "fault_va");
+    if (same_4k_page(vaddr, UINT32_C(0x01FE6550)))
+        maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x01FE6550), vaddr,
+            exccode, "first_exception");
     if (same_4k_page(vaddr, UINT32_C(0x01F8F8F8)))
         maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x01F8F8F8), vaddr,
             exccode, "first_exception");
     if (same_4k_page(vaddr, UINT32_C(0x01F94B50)))
         maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x01F94B50), vaddr,
+            exccode, "first_exception");
+    if (same_4k_page(vaddr, UINT32_C(0x0204FE48)))
+        maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x0204FE48), vaddr,
             exccode, "first_exception");
     if (same_4k_page(vaddr, UINT32_C(0x02041FA8)))
         maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x02041FA8), vaddr,
@@ -10817,6 +10925,7 @@ void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
 {
     machine_t *m;
     struct mips_coproc *cp0;
+    wince_tlb_match_info_t tlb_match;
     uint32_t section_idx;
     uint32_t section_val;
     uint32_t l2_off;
@@ -10867,6 +10976,10 @@ void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
         if (!(selected_lo & ENTRYLO_V))
             selected_lo = (lo0 & ENTRYLO_V) ? lo0 : lo1;
     }
+    memset(&tlb_match, 0, sizeof(tlb_match));
+    tlb_match.idx = -1;
+    tlb_match.page = -1;
+    (void)lookup_tlb_match_for_va(m, vaddr, &tlb_match);
 
     fprintf(stderr,
         "[WINCE_TLB_POST] exc=%u fault=0x%08X vector_pc=0x%08X"
@@ -10874,6 +10987,9 @@ void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
         " context=0x%08X status=0x%08X cause=0x%08X asid=%u"
         " sec[%u]=0x%08X l2_off=0x%03X l2=0x%08X"
         " pte_off=0x%02X lo0=0x%08X lo1=0x%08X repeat=%u"
+        " tlb_found=%d tlb_active=%d tlb_asid=%d tlb_global=%d"
+        " tlb_valid=%d tlb_idx=%d tlb_page=%d tlb_hi=0x%08X"
+        " tlb_lo=0x%08X"
         " sp=0x%08X ra=0x%08X\n",
         exccode,
         vaddr,
@@ -10893,10 +11009,26 @@ void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
         lo0,
         lo1,
         repeat,
+        tlb_match.found ? 1 : 0,
+        tlb_match.active_match ? 1 : 0,
+        tlb_match.asid_match ? 1 : 0,
+        tlb_match.global_match ? 1 : 0,
+        tlb_match.valid ? 1 : 0,
+        tlb_match.idx,
+        tlb_match.page,
+        tlb_match.entryhi,
+        tlb_match.lo,
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP],
         (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA]);
 
     maybe_log_serial_exception_correlation(m, cpu, exccode, vaddr, "post");
+    if (same_4k_page(vaddr, UINT32_C(0x01FE6550))
+        || (m->wince.serial_exc_last.bva_valid
+            && same_4k_page(m->wince.serial_exc_last.bva,
+                UINT32_C(0x01FE6550)))) {
+        maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x01FE6550), vaddr,
+            exccode, "post_fault");
+    }
     if (same_4k_page(vaddr, UINT32_C(0x01F8F8F8))
         || (m->wince.serial_exc_last.bva_valid
             && same_4k_page(m->wince.serial_exc_last.bva,
@@ -10909,6 +11041,13 @@ void wince_boot_note_tlb_exception_post(struct cpu *cpu, uint32_t exccode,
             && same_4k_page(m->wince.serial_exc_last.bva,
                 UINT32_C(0x01F94B50)))) {
         maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x01F94B50), vaddr,
+            exccode, "post_fault");
+    }
+    if (same_4k_page(vaddr, UINT32_C(0x0204FE48))
+        || (m->wince.serial_exc_last.bva_valid
+            && same_4k_page(m->wince.serial_exc_last.bva,
+                UINT32_C(0x0204FE48)))) {
+        maybe_log_hot_page_verdict(m, cpu, UINT32_C(0x0204FE48), vaddr,
             exccode, "post_fault");
     }
     if (same_4k_page(vaddr, UINT32_C(0x02041FA8))
@@ -11568,17 +11707,43 @@ void wince_boot_log_summary(machine_t *m)
     const char *exc_class = "unresolved";
     const char *exc_reason = "no_hot_fault_data";
     const char *type4_order = "incomplete";
+    const wince_hot_page_verdict_t *hot_pages[5];
+    const char *hot_labels[5];
+    char exc_reason_buf[64];
     uint32_t active_sections;
     uint32_t fb_events;
+    size_t i;
+    bool exc_classified = false;
 
     if (!m || !m->wince.active)
         return;
+
+    hot_pages[0] = &m->wince.hot_page_01fe6550;
+    hot_pages[1] = &m->wince.hot_page_01f8f8f8;
+    hot_pages[2] = &m->wince.hot_page_01f94b50;
+    hot_pages[3] = &m->wince.hot_page_0204fe48;
+    hot_pages[4] = &m->wince.hot_page_02041fa8;
+    hot_labels[0] = "01fe6550";
+    hot_labels[1] = "01f8f8f8";
+    hot_labels[2] = "01f94b50";
+    hot_labels[3] = "0204fe48";
+    hot_labels[4] = "02041fa8";
 
     if (m->wince.ppsh_seq_active)
         ppsh_finish_sequence(m, "shutdown");
     if (m->wince.ppsh_poll_active && m->cpu)
         ppsh_close_poll_episode(m, m->cpu, (uint32_t)m->cpu->pc, "shutdown");
     maybe_flush_ppsh_serial_line(m);
+    if (m->cpu && !m->wince.hot_page_01fe6550.logged
+        && m->wince.serial_exc_last.bva_valid
+        && same_4k_page(m->wince.serial_exc_last.bva,
+            UINT32_C(0x01FE6550))) {
+        maybe_log_hot_page_verdict(m, m->cpu, UINT32_C(0x01FE6550),
+            m->wince.serial_exc_last.bva,
+            m->wince.serial_exc_last.code_valid
+                ? m->wince.serial_exc_last.code : 0u,
+            "shutdown");
+    }
     if (m->cpu && !m->wince.hot_page_01f8f8f8.logged
         && m->wince.serial_exc_last.bva_valid
         && same_4k_page(m->wince.serial_exc_last.bva,
@@ -11594,6 +11759,16 @@ void wince_boot_log_summary(machine_t *m)
         && same_4k_page(m->wince.serial_exc_last.bva,
             UINT32_C(0x01F94B50))) {
         maybe_log_hot_page_verdict(m, m->cpu, UINT32_C(0x01F94B50),
+            m->wince.serial_exc_last.bva,
+            m->wince.serial_exc_last.code_valid
+                ? m->wince.serial_exc_last.code : 0u,
+            "shutdown");
+    }
+    if (m->cpu && !m->wince.hot_page_0204fe48.logged
+        && m->wince.serial_exc_last.bva_valid
+        && same_4k_page(m->wince.serial_exc_last.bva,
+            UINT32_C(0x0204FE48))) {
+        maybe_log_hot_page_verdict(m, m->cpu, UINT32_C(0x0204FE48),
             m->wince.serial_exc_last.bva,
             m->wince.serial_exc_last.code_valid
                 ? m->wince.serial_exc_last.code : 0u,
@@ -11676,34 +11851,69 @@ void wince_boot_log_summary(machine_t *m)
         m->wince.type4_handle_watch_va,
         m->wince.type4_payload_watch_va);
 
-    if (m->wince.hot_page_01f8f8f8.seen
-        && m->wince.hot_page_01f8f8f8.section_val != 0
-        && m->wince.hot_page_01f8f8f8.l2_val == 0) {
-        exc_class = "missing_or_stale_page_tables";
-        exc_reason = "01f8f8f8_l2_zero";
-    } else if (m->wince.hot_page_01f94b50.seen
-        && m->wince.hot_page_01f94b50.section_val != 0
-        && m->wince.hot_page_01f94b50.l2_val == 0) {
-        exc_class = "missing_or_stale_page_tables";
-        exc_reason = "01f94b50_l2_zero";
-    } else if (m->wince.hot_page_02041fa8.seen
-        && m->wince.hot_page_02041fa8.section_val != 0
-        && (m->wince.hot_page_02041fa8.l2_val == 0
-            || !m->wince.hot_page_02041fa8.selected_valid)) {
-        exc_class = "missing_or_stale_page_tables";
-        exc_reason = "02041fa8_page_invalid";
-    } else if ((m->wince.hot_page_01f8f8f8.seen
-            && m->wince.hot_page_01f8f8f8.selected_valid)
-        || (m->wince.hot_page_01f94b50.seen
-            && m->wince.hot_page_01f94b50.selected_valid)
-        || (m->wince.hot_page_02041fa8.seen
-            && m->wince.hot_page_02041fa8.selected_valid)) {
-        exc_class = "refill_or_tlb_install_semantics";
-        exc_reason = "page_present_but_faulting";
-    } else if (m->wince.systempatch_seen && active_sections <= 1) {
+    for (i = 0; i < sizeof(hot_pages) / sizeof(hot_pages[0]); i++) {
+        const wince_hot_page_verdict_t *v = hot_pages[i];
+        if (!v->seen || v->section_val == 0u)
+            continue;
+        if (v->l2_val == 0u) {
+            exc_class = "missing_or_stale_page_tables";
+            snprintf(exc_reason_buf, sizeof(exc_reason_buf), "%s_l2_zero",
+                hot_labels[i]);
+            exc_reason = exc_reason_buf;
+            exc_classified = true;
+            break;
+        }
+        if (!v->selected_valid) {
+            exc_class = "missing_or_stale_page_tables";
+            snprintf(exc_reason_buf, sizeof(exc_reason_buf), "%s_page_invalid",
+                hot_labels[i]);
+            exc_reason = exc_reason_buf;
+            exc_classified = true;
+            break;
+        }
+    }
+    if (!exc_classified) {
+        for (i = 0; i < sizeof(hot_pages) / sizeof(hot_pages[0]); i++) {
+            const wince_hot_page_verdict_t *v = hot_pages[i];
+            if (!v->seen || !v->selected_valid || !v->tlb_match_found)
+                continue;
+            if (!v->tlb_match_active) {
+                exc_class = "wrong_asid_or_process_context";
+                snprintf(exc_reason_buf, sizeof(exc_reason_buf),
+                    "%s_va_match_asid_mismatch", hot_labels[i]);
+                exc_reason = exc_reason_buf;
+                exc_classified = true;
+                break;
+            }
+        }
+    }
+    if (!exc_classified) {
+        for (i = 0; i < sizeof(hot_pages) / sizeof(hot_pages[0]); i++) {
+            const wince_hot_page_verdict_t *v = hot_pages[i];
+            if (!v->seen || !v->selected_valid || !v->tlb_match_found
+                || !v->tlb_match_active) {
+                continue;
+            }
+            if (!v->tlb_match_valid) {
+                exc_class = "refill_or_tlb_install_semantics";
+                snprintf(exc_reason_buf, sizeof(exc_reason_buf),
+                    "%s_installed_invalid_tlb_entry", hot_labels[i]);
+                exc_reason = exc_reason_buf;
+                exc_classified = true;
+                break;
+            }
+            exc_class = "refill_or_tlb_install_semantics";
+            snprintf(exc_reason_buf, sizeof(exc_reason_buf),
+                "%s_page_present_but_faulting", hot_labels[i]);
+            exc_reason = exc_reason_buf;
+            exc_classified = true;
+            break;
+        }
+    }
+    if (!exc_classified && m->wince.systempatch_seen && active_sections <= 1) {
         exc_class = "wrong_process_section_context";
         exc_reason = "systempatch_with_single_active_section";
-    } else if (m->wince.hot_fault_probe_count > 0) {
+    } else if (!exc_classified && m->wince.hot_fault_probe_count > 0) {
         exc_class = "guest_pointer_or_object_corruption";
         exc_reason = "hot_pc_probe_without_mapping_failure";
     }
@@ -11713,8 +11923,9 @@ void wince_boot_log_summary(machine_t *m)
             "[WINCE_EXC_SUMMARY] class=%s reason=%s serial_code=0x%03X"
             " serial_pc=0x%08X serial_ra=%s0x%08X serial_bva=0x%08X"
             " process=\"%s\" corr=%u hot_pc=%u sec0=0x%08X sec1=0x%08X"
-            " verdict01f8_l2=0x%08X verdict01f9_l2=0x%08X"
-            " verdict20_l2=0x%08X\n",
+            " verdict01fe_l2=0x%08X verdict01f8_l2=0x%08X"
+            " verdict01f9_l2=0x%08X verdict0204fe_l2=0x%08X"
+            " verdict02041_l2=0x%08X\n",
             exc_class,
             exc_reason,
             m->wince.serial_exc_last.code,
@@ -11728,19 +11939,29 @@ void wince_boot_log_summary(machine_t *m)
             (unsigned)m->wince.hot_fault_probe_count,
             load_pa_word(m, 0x18C0u),
             load_pa_word(m, 0x18C4u),
+            m->wince.hot_page_01fe6550.l2_val,
             m->wince.hot_page_01f8f8f8.l2_val,
             m->wince.hot_page_01f94b50.l2_val,
+            m->wince.hot_page_0204fe48.l2_val,
             m->wince.hot_page_02041fa8.l2_val);
     } else {
         fprintf(stderr,
             "[WINCE_EXC_SUMMARY] class=%s reason=%s serial_code=none"
-            " corr=%u hot_pc=%u sec0=0x%08X sec1=0x%08X\n",
+            " corr=%u hot_pc=%u sec0=0x%08X sec1=0x%08X"
+            " verdict01fe_l2=0x%08X verdict01f8_l2=0x%08X"
+            " verdict01f9_l2=0x%08X verdict0204fe_l2=0x%08X"
+            " verdict02041_l2=0x%08X\n",
             exc_class,
             exc_reason,
             (unsigned)m->wince.serial_exception_corr_count,
             (unsigned)m->wince.hot_fault_probe_count,
             load_pa_word(m, 0x18C0u),
-            load_pa_word(m, 0x18C4u));
+            load_pa_word(m, 0x18C4u),
+            m->wince.hot_page_01fe6550.l2_val,
+            m->wince.hot_page_01f8f8f8.l2_val,
+            m->wince.hot_page_01f94b50.l2_val,
+            m->wince.hot_page_0204fe48.l2_val,
+            m->wince.hot_page_02041fa8.l2_val);
     }
 }
 
