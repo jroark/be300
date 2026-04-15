@@ -5,6 +5,19 @@
 
 #define WINCE_VECTOR_WORDS 8u
 #define WINCE_PC_RING_SIZE 512u
+#define WINCE_SEC0_L1_SLOT_RING_SIZE 32u
+
+typedef struct {
+    uint64_t paddr;
+    uint64_t instrs;
+    uint32_t val;
+    uint32_t pc;
+    uint32_t ra;
+    uint32_t asid;
+    uint8_t  source;
+    uint8_t  len;
+} wince_sec0_l1_slot_entry_t;
+
 #define WINCE_FB_SAMPLE_CHUNKS 8u
 #define WINCE_FB_SAMPLE_CHUNK_BYTES 16u
 #define WINCE_FB_SAMPLE_BYTES \
@@ -344,6 +357,11 @@ typedef struct {
     uint32_t sec0_first_bad_pte_asid;
     uint32_t sec0_first_bad_pte_new_lo0;
     uint32_t sec0_first_bad_pte_new_lo1;
+    uint64_t sec0_first_bad_ninstrs;
+    uint32_t sec0_l1_slot_ring_total;
+    uint8_t  sec0_l1_slot_ring_head;
+    uint8_t  sec0_l1_slot_ring_filled;
+    wince_sec0_l1_slot_entry_t sec0_l1_slot_ring[WINCE_SEC0_L1_SLOT_RING_SIZE];
     wince_serial_exception_record_t serial_exc_pending;
     wince_serial_exception_record_t serial_exc_last;
     wince_hot_page_verdict_t hot_page_01fe6550;

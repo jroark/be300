@@ -6733,6 +6733,8 @@ static bool likely_wince_table_va(uint32_t table_va)
         && (table_va & 3u) == 0;
 }
 
+static void sec0_l1_slot_ring_dump(machine_t *m);
+
 static void read_sec0_hot_mapping(machine_t *m, uint32_t table_va,
     uint32_t *l2_out, uint32_t *lo0_out, uint32_t *lo1_out)
 {
@@ -7005,6 +7007,7 @@ static void maybe_record_sec0_bad_transition(machine_t *m, struct cpu *cpu,
     m->wince.sec0_first_bad_ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
     m->wince.sec0_first_bad_asid =
         (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI] & ENTRYHI_ASID;
+    m->wince.sec0_first_bad_ninstrs = cpu->ninstrs;
 
     kind = new_l2 == 0 ? "l2_pointer_missing_after_switch"
         : "pte_missing_after_switch";
@@ -12474,6 +12477,7 @@ void wince_boot_log_summary(machine_t *m)
             final_l2,
             final_lo0,
             final_lo1);
+        sec0_l1_slot_ring_dump(m);
         exc_class = sec0_class;
         exc_reason = sec0_reason;
     }
@@ -12522,6 +12526,113 @@ void wince_boot_log_summary(machine_t *m)
             m->wince.hot_page_01f94b50.l2_val,
             m->wince.hot_page_0204fe48.l2_val,
             m->wince.hot_page_02041fa8.l2_val);
+    }
+}
+
+static bool sec0_l1_slot_candidate_pa(uint64_t paddr, size_t len)
+{
+    /* WinCE sec0 L1 parent entry sits at offset 0x7F8 inside a
+     * 0x800-aligned page-table page. Capture any aligned 4-byte store
+     * whose byte offset within its 0x800 bucket is 0x7F8, within SDRAM. */
+    if (len != 4)
+        return false;
+    if (paddr >= UINT64_C(0x02000000))
+        return false;
+    if ((paddr & UINT64_C(0x7FF)) != UINT64_C(0x7F8))
+        return false;
+    return true;
+}
+
+static void sec0_l1_slot_ring_record(machine_t *m, struct cpu *cpu,
+    uint64_t paddr, size_t len, uint64_t val,
+    wince_boot_ram_source_t source)
+{
+    wince_sec0_l1_slot_entry_t *e;
+    unsigned idx;
+
+    if (!m || !cpu || !sec0_l1_slot_candidate_pa(paddr, len))
+        return;
+
+    idx = m->wince.sec0_l1_slot_ring_head;
+    e = &m->wince.sec0_l1_slot_ring[idx];
+    e->paddr = paddr;
+    e->instrs = cpu->ninstrs;
+    e->val = (uint32_t)val;
+    e->pc = (uint32_t)cpu->pc;
+    e->ra = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA];
+    e->asid = (uint32_t)cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI]
+        & ENTRYHI_ASID;
+    e->source = (uint8_t)source;
+    e->len = (uint8_t)len;
+
+    m->wince.sec0_l1_slot_ring_head =
+        (uint8_t)((idx + 1u) % WINCE_SEC0_L1_SLOT_RING_SIZE);
+    if (m->wince.sec0_l1_slot_ring_filled < WINCE_SEC0_L1_SLOT_RING_SIZE)
+        m->wince.sec0_l1_slot_ring_filled++;
+    m->wince.sec0_l1_slot_ring_total++;
+}
+
+static void sec0_l1_slot_ring_dump(machine_t *m)
+{
+    uint32_t want_pa;
+    unsigned filled;
+    unsigned head;
+    unsigned printed = 0;
+    unsigned i;
+
+    if (!m || !m->wince.sec0_first_bad_transition_logged)
+        return;
+    if (!likely_wince_table_va(m->wince.sec0_first_bad_new_table))
+        return;
+
+    want_pa = table_va_to_pa(m->wince.sec0_first_bad_new_table)
+        + UINT32_C(0x7F8);
+
+    fprintf(stderr,
+        "[WINCE_SEC0_L1_WATCH] target_pa=0x%08X new_table=0x%08X"
+        " first_bad_instrs=%llu ring_total=%u ring_filled=%u\n",
+        want_pa,
+        m->wince.sec0_first_bad_new_table,
+        (unsigned long long)m->wince.sec0_first_bad_ninstrs,
+        (unsigned)m->wince.sec0_l1_slot_ring_total,
+        (unsigned)m->wince.sec0_l1_slot_ring_filled);
+
+    filled = m->wince.sec0_l1_slot_ring_filled;
+    head = m->wince.sec0_l1_slot_ring_head;
+    for (i = 0; i < filled; i++) {
+        unsigned slot = (head + WINCE_SEC0_L1_SLOT_RING_SIZE - filled + i)
+            % WINCE_SEC0_L1_SLOT_RING_SIZE;
+        const wince_sec0_l1_slot_entry_t *e =
+            &m->wince.sec0_l1_slot_ring[slot];
+        const char *phase;
+        int64_t delta;
+
+        if ((uint32_t)e->paddr != want_pa)
+            continue;
+
+        delta = (int64_t)e->instrs
+            - (int64_t)m->wince.sec0_first_bad_ninstrs;
+        phase = delta < 0 ? "pre" : (delta == 0 ? "at" : "post");
+        fprintf(stderr,
+            "[WINCE_SEC0_L1_WATCH] #%u phase=%s delta=%lld"
+            " pa=0x%08X val=0x%08X pc=0x%08X ra=0x%08X"
+            " asid=%u src=%s instrs=%llu\n",
+            printed,
+            phase,
+            (long long)delta,
+            (uint32_t)e->paddr,
+            e->val,
+            e->pc,
+            e->ra,
+            e->asid,
+            wince_ram_source_name((wince_boot_ram_source_t)e->source),
+            (unsigned long long)e->instrs);
+        printed++;
+    }
+    if (printed == 0) {
+        fprintf(stderr,
+            "[WINCE_SEC0_L1_WATCH] no_ring_entries_match target_pa=0x%08X\n",
+            want_pa);
     }
 }
 
@@ -12634,6 +12745,7 @@ void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
         }
         maybe_log_tracked_sec0_hot_mapping_access(m, cpu, paddr, len, val,
             source);
+        sec0_l1_slot_ring_record(m, cpu, paddr, len, val, source);
     }
 
     if (is_write)
