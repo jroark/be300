@@ -43,12 +43,177 @@ static bool be300_restore_main_trace_active = false;
 static bool be300_restore_main_trace_done = false;
 static unsigned be300_restore_main_trace_remaining = 0;
 
+static int be300_read_u32_va(machine_t *m, uint64_t va, uint32_t *value);
+
 static uint32_t be300_canonicalize_nk_pc(uint32_t pc)
 {
     if ((pc & 0xE0000000u) == 0x80000000u
         || (pc & 0xE0000000u) == 0xA0000000u)
         return (pc & 0x1FFFFFFFu) | 0x80000000u;
     return pc;
+}
+
+static uint64_t be300_va32(uint32_t va)
+{
+    return 0xffffffff00000000ULL | (uint64_t)va;
+}
+
+static bool be300_env_flag_enabled(const char *name)
+{
+    const char *value = getenv(name);
+
+    if (!value || value[0] == '\0')
+        return false;
+
+    if (strcmp(value, "0") == 0
+        || strcmp(value, "false") == 0
+        || strcmp(value, "FALSE") == 0
+        || strcmp(value, "no") == 0
+        || strcmp(value, "NO") == 0)
+        return false;
+
+    return true;
+}
+
+static const char *be300_addr_region_name(uint32_t addr)
+{
+    if (addr >= 0xBFC00000u)
+        return "kseg1-rom";
+    if (addr >= 0xA0F00000u && addr < 0xA1000000u)
+        return "kseg1-spl";
+    if (addr >= 0xA0000000u)
+        return "kseg1";
+    if (addr >= 0x9FC00000u && addr < 0xA0000000u)
+        return "kseg0-rom";
+    if (addr >= 0x80F00000u && addr < 0x81000000u)
+        return "kseg0-spl";
+    if (addr >= 0x80000000u)
+        return "kseg0";
+    return "mapped";
+}
+
+static void be300_record_early_pc(machine_t *m, uint32_t pc)
+{
+    if (!m || m->early_bev_trace_fired || m->wince.cold_boot_copy_done)
+        return;
+
+    m->early_pc_ring[m->early_pc_ring_next] = pc;
+    m->early_pc_ring_next =
+        (uint8_t)((m->early_pc_ring_next + 1u) % BE300_EARLY_PC_RING_CAP);
+    if (m->early_pc_ring_count < BE300_EARLY_PC_RING_CAP)
+        m->early_pc_ring_count++;
+}
+
+static void be300_dump_words_va(machine_t *m, const char *label,
+                                uint32_t va, size_t n_words)
+{
+    if (!m || !m->cpu || !label || n_words == 0)
+        return;
+
+    fprintf(stderr,
+        "[BE300][EARLY_BEV] %s base=0x%08X region=%s\n",
+        label, va, be300_addr_region_name(va));
+
+    for (size_t i = 0; i < n_words; i++) {
+        uint32_t word = 0;
+        uint32_t word_va = (va & ~3u) + (uint32_t)(i * 4u);
+
+        if (be300_read_u32_va(m, be300_va32(word_va), &word)) {
+            fprintf(stderr,
+                "[BE300][EARLY_BEV]   0x%08X: 0x%08X\n",
+                word_va, word);
+        } else {
+            fprintf(stderr,
+                "[BE300][EARLY_BEV]   0x%08X: <unreadable>\n",
+                word_va);
+        }
+    }
+}
+
+static void be300_dump_recent_early_pcs(machine_t *m)
+{
+    if (!m || m->early_pc_ring_count == 0)
+        return;
+
+    fprintf(stderr,
+        "[BE300][EARLY_BEV] recent_pcs count=%u\n",
+        (unsigned)m->early_pc_ring_count);
+
+    for (uint8_t i = 0; i < m->early_pc_ring_count; i++) {
+        uint8_t idx = (uint8_t)((m->early_pc_ring_next
+            + BE300_EARLY_PC_RING_CAP - m->early_pc_ring_count + i)
+            % BE300_EARLY_PC_RING_CAP);
+        uint32_t pc = m->early_pc_ring[idx];
+
+        fprintf(stderr,
+            "[BE300][EARLY_BEV]   pc[%u]=0x%08X region=%s\n",
+            (unsigned)i, pc, be300_addr_region_name(pc));
+    }
+}
+
+static void be300_log_first_early_bev(machine_t *m, uint32_t vector_pa)
+{
+    uint64_t *cp0;
+    uint32_t epc;
+    uint32_t cause;
+    uint32_t status;
+    uint32_t badvaddr;
+    uint32_t entryhi;
+    uint32_t context;
+    uint32_t pagemask;
+    uint32_t vector_va;
+
+    if (!m || !m->cpu || m->early_bev_trace_fired)
+        return;
+
+    cp0 = m->cpu->cd.mips.coproc[0]->reg;
+    epc = (uint32_t)cp0[COP0_EPC];
+    cause = (uint32_t)cp0[COP0_CAUSE];
+    status = (uint32_t)cp0[COP0_STATUS];
+    badvaddr = (uint32_t)cp0[COP0_BADVADDR];
+    entryhi = (uint32_t)cp0[COP0_ENTRYHI];
+    context = (uint32_t)cp0[COP0_CONTEXT];
+    pagemask = (uint32_t)cp0[COP0_PAGEMASK];
+    vector_va = 0xBFC00000u + (vector_pa - 0x1FC00000u);
+
+    m->early_bev_trace_fired = true;
+
+    fprintf(stderr,
+        "[BE300][EARLY_BEV] vector_pa=0x%08X vector_va=0x%08X"
+        " pc=0x%08X epc=0x%08X cause=0x%08X status=0x%08X"
+        " badvaddr=0x%08X entryhi=0x%08X context=0x%08X"
+        " pagemask=0x%08X asid=%u exl=%u erl=%u bev=%u bd=%u\n",
+        vector_pa,
+        vector_va,
+        (uint32_t)m->cpu->pc,
+        epc,
+        cause,
+        status,
+        badvaddr,
+        entryhi,
+        context,
+        pagemask,
+        entryhi & 0xFFu,
+        (status & STATUS_EXL) ? 1u : 0u,
+        (status & STATUS_ERL) ? 1u : 0u,
+        (status & STATUS_BEV) ? 1u : 0u,
+        (cause & CAUSE_BD) ? 1u : 0u);
+    fprintf(stderr,
+        "[BE300][EARLY_BEV] epc_region=%s badvaddr_region=%s\n",
+        be300_addr_region_name(epc & ~1u),
+        be300_addr_region_name(badvaddr));
+
+    be300_dump_recent_early_pcs(m);
+    be300_dump_words_va(m, "vector_words", vector_va, 8);
+    be300_dump_words_va(m, "epc_words", epc & ~1u, 8);
+
+    if (m->stop_on_first_early_bev) {
+        fprintf(stderr,
+            "[BE300][EARLY_BEV] stopping after first early BEV"
+            " due to BE300_STOP_ON_FIRST_EARLY_BEV\n");
+        emul_shutdown = true;
+        __sync_synchronize();
+    }
 }
 
 static void be300_handle_stop_signal(int signum)
@@ -153,116 +318,6 @@ static bool be300_nand_image_looks_bootable(const machine_t *m)
         return false;
 
     return memcmp(m->nand_data + 0x4000u, spl_sig, sizeof(spl_sig)) == 0;
-}
-
-/*
- *  The masked ROM does not provide usable BEV exception handlers at +0x200
- *  and +0x380 for the cold-boot path we emulate. Install MIPS32 stubs there
- *  so early ROM TLB faults can refill and return cleanly while the original
- *  boot flow continues through relocated instructions.
- */
-static void be300_patch_boot_rom_vectors(machine_t *m)
-{
-    static const uint32_t tlb_refill[] = {
-        0x401B5000, /* mfc0 $k1, EntryHi    */
-        0x001BD1C2, /* srl  $k0, $k1, 7     */
-        0x3C1B0003, /* lui  $k1, 0x0003     */
-        0x377BFFFF, /* ori  $k1, 0xFFFF     */
-        0x035BD024, /* and  $k0, $k0, $k1   */
-        0x375A003F, /* ori  $k0, $k0, 0x3F  */
-        0x409A1000, /* mtc0 $k0, EntryLo0   */
-        0x275B0100, /* addiu $k1,$k0, 0x100 */
-        0x409B1800, /* mtc0 $k1, EntryLo1   */
-        0x3C1B0000, /* lui  $k1, 0x0000     */
-        0x377B1800, /* ori  $k1, 0x1800     */
-        0x409B2800, /* mtc0 $k1, PageMask   */
-        0x42000006, /* tlbwr                */
-        0x42000018, /* eret                 */
-    };
-    static const uint32_t gen_handler[] = {
-        0x401A6800, /* mfc0 $k0, Cause        */
-        0x335A007C, /* andi $k0, $k0, 0x7C    */
-        0x13400006, /* beqz $k0, handle_irq   */
-        0x00000000, /* nop                    */
-        0x235BFFF8, /* addi $k1, $k0, -8      */
-        0x2F7B0008, /* sltiu $k1, $k1, 8      */
-        0x17600005, /* bne $k1, $zero, tlb    */
-        0x00000000, /* nop                    */
-        0x42000018, /* eret                   */
-        0x00000000, /* nop                    */
-        0x42000018, /* eret                   */
-        0x00000000, /* nop                    */
-        0x401B5000, /* mfc0 $k1, EntryHi      */
-        0x001BD1C2, /* srl  $k0, $k1, 7       */
-        0x3C1B1FFF, /* lui  $k1, 0x1FFF       */
-        0x377BFFFF, /* ori  $k1, 0xFFFF       */
-        0x035BD024, /* and  $k0, $k0, $k1     */
-        0x375A003F, /* ori  $k0, $k0, 0x3F    */
-        0x409A1000, /* mtc0 $k0, EntryLo0     */
-        0x275B0100, /* addiu $k1, $k0, 0x100  */
-        0x409B1800, /* mtc0 $k1, EntryLo1     */
-        0x3C1B0000, /* lui  $k1, 0x0000       */
-        0x377B1800, /* ori  $k1, 0x1800       */
-        0x409B2800, /* mtc0 $k1, PageMask     */
-        0x42000006, /* tlbwr                  */
-        0x42000018, /* eret                   */
-    };
-    uint64_t rom_va;
-    size_t j;
-
-    if (!m || !m->cpu)
-        return;
-
-    rom_va = 0xffffffffBFC00000ULL;
-
-    for (j = 0; j < sizeof(tlb_refill) / sizeof(tlb_refill[0]); j++) {
-        store_32bit_word(m->cpu, rom_va + 0x200 + j * 4, tlb_refill[j]);
-    }
-
-    for (j = 0; j < sizeof(gen_handler) / sizeof(gen_handler[0]); j++) {
-        store_32bit_word(m->cpu, rom_va + 0x2300 + j * 4, gen_handler[j]);
-    }
-
-    store_32bit_word(m->cpu, rom_va + 0x280, 0x0BF008C0); /* j 0xBFC02300 */
-    store_32bit_word(m->cpu, rom_va + 0x284, 0x00000000); /* nop */
-
-    store_32bit_word(m->cpu, rom_va + 0x380, 0x00000000); /* nop */
-    store_32bit_word(m->cpu, rom_va + 0x384, 0x401A6000); /* mfc0 $k0, Status */
-    store_32bit_word(m->cpu, rom_va + 0x388, 0x335A0002); /* andi $k0, $k0, 2 */
-    store_32bit_word(m->cpu, rom_va + 0x38C, 0x1740FFBC); /* bne $k0,$zero,+0x280 */
-    store_32bit_word(m->cpu, rom_va + 0x390, 0x00000000); /* nop */
-
-    store_32bit_word(m->cpu, rom_va + 0x394, 0x3C058001);
-    store_32bit_word(m->cpu, rom_va + 0x398, 0x24A50034);
-    store_32bit_word(m->cpu, rom_va + 0x39C, 0x80A00000);
-    store_32bit_word(m->cpu, rom_va + 0x3A0, 0x3C089FC0);
-    store_32bit_word(m->cpu, rom_va + 0x3A4, 0x25080C85);
-    store_32bit_word(m->cpu, rom_va + 0x3A8, 0x0100F809);
-    store_32bit_word(m->cpu, rom_va + 0x3AC, 0x00000000);
-    store_32bit_word(m->cpu, rom_va + 0x3B0, 0x3C059FC0);
-    store_32bit_word(m->cpu, rom_va + 0x3B4, 0x24A50C21);
-    store_32bit_word(m->cpu, rom_va + 0x3B8, 0x00A0F809);
-    store_32bit_word(m->cpu, rom_va + 0x3BC, 0x00000000);
-    store_32bit_word(m->cpu, rom_va + 0x3C0, 0x0FF0013A);
-    store_32bit_word(m->cpu, rom_va + 0x3C4, 0x00000000);
-    store_32bit_word(m->cpu, rom_va + 0x3C8, 0x0FF00122);
-    store_32bit_word(m->cpu, rom_va + 0x3CC, 0x00000000);
-    store_32bit_word(m->cpu, rom_va + 0x3D0, 0x1040FFF7);
-    store_32bit_word(m->cpu, rom_va + 0x3D4, 0x8D080000);
-    store_32bit_word(m->cpu, rom_va + 0x3D8, 0x01000008);
-    store_32bit_word(m->cpu, rom_va + 0x3DC, 0x00000000);
-    store_32bit_word(m->cpu, rom_va + 0x3E4, 0x0BF000EC);
-    store_32bit_word(m->cpu, rom_va + 0x2360, 0x3C08A006);
-    store_32bit_word(m->cpu, rom_va + 0x2364, 0x25080004);
-    store_32bit_word(m->cpu, rom_va + 0x2368, 0x01000008);
-    store_32bit_word(m->cpu, rom_va + 0x236C, 0x00000000);
-    store_32bit_word(m->cpu, rom_va + 0x3EC, 0x0FF00126);
-    store_32bit_word(m->cpu, rom_va + 0x3F0, 0x24040004);
-    store_32bit_word(m->cpu, rom_va + 0x3F4, 0x0BF000E8);
-    store_32bit_word(m->cpu, rom_va + 0x3F8, 0x00000000);
-
-    fprintf(stderr,
-        "[BE300] Patched boot ROM BEV vectors (+0x200 refill, +0x2300 general, +0x380 redirect)\n");
 }
 
 static bool be300_read_guest_cstring(machine_t *m, uint32_t va,
@@ -501,6 +556,8 @@ machine_t *be300_create(const machine_config_t *cfg)
     machine_t *m = calloc(1, sizeof(machine_t));
     if (!m) return NULL;
     m->cfg = *cfg;
+    m->stop_on_first_early_bev =
+        be300_env_flag_enabled("BE300_STOP_ON_FIRST_EARLY_BEV");
     m->boot_mode = BE300_BOOT_NONE;
     m->use_builtin_ui = true;
     m->save_exit_screenshot = true;
@@ -687,11 +744,9 @@ machine_t *be300_create(const machine_config_t *cfg)
 
         /*
          * Load the real BE-300 boot ROM into PA 0x1FC00000.
-         * This 16KB masked ROM contains the reset vector, BEV
-         * exception handlers, and utility routines that NK.exe
-         * may call during initialization.  Captured from real
-         * hardware via BEDiag (CRC32=0xFA3B5582).
-         *
+         * The image is used verbatim; if the emulator ever takes an
+         * unexpected early BEV exception, the single-shot trace above
+         * should capture it instead of patching the ROM in place.
          */
         {
 #include "boot_rom_embedded.h"
@@ -704,8 +759,6 @@ machine_t *be300_create(const machine_config_t *cfg)
                     }
                     fprintf(stderr, "[BE300] Loaded embedded boot ROM"
                         " (%u bytes) at PA 0x1FC00000\n", be300_boot_rom_len);
-
-                    be300_patch_boot_rom_vectors(m);
                 }
         }
 
@@ -988,6 +1041,9 @@ static void be300_runtime_start(machine_t *m)
     m->throttle_instr_origin = 0;
     m->last_report = 0;
     m->loop_count = 0;
+    m->early_bev_trace_fired = false;
+    m->early_pc_ring_count = 0;
+    m->early_pc_ring_next = 0;
     m->runtime_initialized = true;
     m->runtime_stopped = false;
     m->runtime_finalized = false;
@@ -1006,6 +1062,11 @@ static void be300_runtime_start(machine_t *m)
         fprintf(stderr,
             "[PPSH] console bridge enabled"
             " (stdin is line-buffered unless the caller supplies raw input)\n");
+    }
+
+    if (m->stop_on_first_early_bev) {
+        fprintf(stderr,
+            "[BE300] Early BEV diagnostics: stop_on_first=yes\n");
     }
 }
 
@@ -1051,6 +1112,8 @@ static bool be300_run_batch(machine_t *m)
         wince_boot_pc_ring_dump(m);
         return false;
     }
+
+    be300_record_early_pc(m, (uint32_t)m->cpu->pc);
 
     if (m->wince.cold_boot_copy_done && m->nand_data) {
         uint32_t raw_pc = (uint32_t)m->cpu->pc;
@@ -1332,19 +1395,11 @@ static bool be300_run_batch(machine_t *m)
     /* Detect SPL entry: PC in range 0x80F00000-0x80F0FFFF (PA 0xF00000) */
     {
         static int spl_entry_logged = 0;
-        static int spl_probe_done = 0;
         uint32_t pc = (uint32_t)m->cpu->pc;
         uint32_t pa = pc & 0x1FFFFFFFu;
         /* Also detect exceptions (BEV handler entry) */
         if (pa == 0x1FC00200u || pa == 0x1FC00280u || pa == 0x1FC00380u) {
-            static int exc_logged = 0;
-            if (exc_logged < 5) {
-                uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
-                fprintf(stderr,
-                    "[BE300] *** BEV EXCEPTION at PA=0x%08X EPC=0x%08X Cause=0x%08X ***\n",
-                    pa, (uint32_t)cp0[COP0_EPC], (uint32_t)cp0[COP0_CAUSE]);
-                exc_logged++;
-            }
+            be300_log_first_early_bev(m, pa);
         }
         if (!spl_entry_logged && pa >= 0xF00000u && pa < 0x1000000u) {
             fprintf(stderr,
