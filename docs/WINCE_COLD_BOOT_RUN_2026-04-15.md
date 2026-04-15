@@ -71,3 +71,40 @@ The instruction count changed slightly to:
 - `[BE300] Emulation stopped after 341502892 instructions`
 
 This keeps the same kernel-side process-switch fault as the current baseline and confirms that the decoder-closure pass did not introduce a new WinCE regression.
+
+## Early BEV Investigation
+
+To test whether the emulator still depended on ROM BEV vector patching, the
+boot ROM was rerun unmodified with the patch removed and with a single-shot
+early-BEV tracer armed:
+
+```bash
+make -j4
+BE300_STOP_ON_FIRST_EARLY_BEV=1 gtimeout 20s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
+  > early_bev_check.stdout 2> early_bev_check.stderr
+gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
+  > cold_stdout.log 2> cold_stderr.log
+```
+
+Results:
+
+- no early BEV vector entry was logged at `0xBFC00200`, `0xBFC00280`, or
+  `0xBFC00380`
+- the unpatched ROM still reached SPL entry at `PC=0xA0F027A4`
+- the unpatched ROM still reached NK handoff at `PA_24FC=0xA0060004`,
+  `PC=0x80F027E8`
+- the 60-second run kept the same late-kernel failure signature:
+  - `[PPSH_SUMMARY] ... last_exit=0x80078600`
+  - `[WINCE_SEC0_SUMMARY] class=slot0_callback_page_missing_at_process_switch ... pc=0x8008B594 ra=0x8008B52C asid=1`
+  - `[WINCE_EXC_SUMMARY] class=slot0_callback_page_missing_at_process_switch ...`
+  - `[BE300] Emulation stopped after 341507994 instructions`
+
+Interpretation:
+
+- the ROM BEV patch is not required on the current tree for the successful
+  ROM -> SPL -> NK cold-boot path
+- the earlier assumption that the boot needed synthetic BEV handlers no longer
+  reproduces after the MIPS16/TLB cleanup work
+- because the original `0xBFC00380` region overlaps normal ROM continuation,
+  patching it was riskier than it looked; the project now relies on the
+  captured ROM image verbatim and uses early-BEV logging only for diagnosis

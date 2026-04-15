@@ -81,6 +81,7 @@ typedef enum {
 } be300_boot_mode_t;
 
 #define BE300_SERIAL_RING_CAP 65536u
+#define BE300_EARLY_PC_RING_CAP 16u
 
 /*
  * BE-300 machine state.
@@ -143,6 +144,8 @@ typedef struct be300_state {
     bool         runtime_initialized;
     bool         runtime_stopped;
     bool         runtime_finalized;
+    bool         stop_on_first_early_bev;
+    bool         early_bev_trace_fired;
     bool         web_mode;
     bool         use_builtin_ui;
     bool         save_exit_screenshot;
@@ -158,6 +161,11 @@ typedef struct be300_state {
     size_t       serial_head;
     size_t       serial_tail;
     size_t       serial_count;
+
+    /* Early ROM/SPL exception forensics */
+    uint32_t     early_pc_ring[BE300_EARLY_PC_RING_CAP];
+    uint8_t      early_pc_ring_count;
+    uint8_t      early_pc_ring_next;
 } be300_state_t;
 
 typedef be300_state_t machine_t;
