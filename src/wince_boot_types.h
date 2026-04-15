@@ -49,8 +49,20 @@ typedef struct {
     uint32_t selected_lo;
     uint32_t entryhi;
     uint32_t asid;
+    uint32_t tlb_match_entryhi;
+    uint32_t tlb_match_lo;
+    uint32_t tlb_match_page_vbase;
+    uint32_t tlb_match_paddr;
+    uint32_t tlb_match_page_size;
+    int16_t tlb_match_idx;
+    int8_t  tlb_match_page;
     bool odd_page;
     bool selected_valid;
+    bool tlb_match_found;
+    bool tlb_match_active;
+    bool tlb_match_asid_match;
+    bool tlb_match_global;
+    bool tlb_match_valid;
 } wince_hot_page_verdict_t;
 
 typedef struct {
@@ -297,8 +309,10 @@ typedef struct {
     uint32_t systempatch_last_sec3;
     wince_serial_exception_record_t serial_exc_pending;
     wince_serial_exception_record_t serial_exc_last;
+    wince_hot_page_verdict_t hot_page_01fe6550;
     wince_hot_page_verdict_t hot_page_01f8f8f8;
     wince_hot_page_verdict_t hot_page_01f94b50;
+    wince_hot_page_verdict_t hot_page_0204fe48;
     wince_hot_page_verdict_t hot_page_02041fa8;
 
     /* Temporary instruction-by-instruction trace window around NK pre-init */
