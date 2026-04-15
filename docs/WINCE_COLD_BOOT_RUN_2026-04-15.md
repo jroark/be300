@@ -174,3 +174,100 @@ This narrows the next investigation target:
   `0x40011E1A/0x40011F1A`
 - explain whether that publication happens before the consumer switch, or via a
   copy/update path that bypasses the current RAM write observer
+
+## Suspect N And P Matrix
+
+To prove or disprove audit suspects `SUSPECT-N` and `SUSPECT-P`, the current
+tree was rebuilt with:
+
+- fast-vs-slow RAM observer source tagging
+- fast-path observation widened to the current sec0 child-table lineage
+- ASID-flush mode control at `COP0_ENTRYHI` writes:
+  - default `current`
+  - `GXEMUL_WINCE_ASID_FLUSH_MODE=asid_only`
+  - `GXEMUL_WINCE_ASID_FLUSH_MODE=all_only`
+
+Commands:
+
+```bash
+make -j4
+gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
+  > cold_stdout.log 2> cold_stderr.log
+GXEMUL_WINCE_ASID_FLUSH_MODE=asid_only \
+  gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
+  > cold_stdout_asid_only.log 2> cold_stderr_asid_only.log
+GXEMUL_WINCE_ASID_FLUSH_MODE=all_only \
+  gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
+  > cold_stdout_all_only.log 2> cold_stderr_all_only.log
+```
+
+### `SUSPECT-N` outcome: proven as an observer gap
+
+The first bad child sec0 table `0x80FF8000` is not staying empty. The current
+tree now sees the missing writes, and they are all coming from the fast
+load/store path:
+
+- `[WINCE_SEC0_L1W] #3 table=0x80FF8000 ... val=0x00000001 ... source=fast`
+- `[WINCE_SEC0_L1W] #4 table=0x80FF8000 ... val=0x80FF7654 ... source=fast`
+- `[WINCE_SEC0_PTEW] #3 table=0x80FF8000 l2=0x80FF7654 ... val=0x40011E1A ... source=fast`
+- `[WINCE_SEC0_PTEW] #4 table=0x80FF8000 l2=0x80FF7654 ... val=0x40011F1A ... source=fast`
+
+The shutdown summary now reports:
+
+- `publish_paths=both`
+- `lineage_paths=fast_only`
+- `l1_src=fast`
+- `pte_src=fast`
+- `verdict=post_switch_pte_write_observed`
+
+Interpretation:
+
+- the earlier `late_fill_visible_without_observed_writes` result was not a
+  guest-side missing-publication bug
+- it was a fast-path observer blind spot
+- `SUSPECT-N` is therefore proven as a diagnostic-observer issue, not as the
+  live WinCE cold-boot blocker
+
+### `SUSPECT-P` outcome: disproven for the current blocker
+
+All three ASID flush policies still hit the same first bad sec0 switch:
+
+- `current`:
+  - `[ASID_FLUSH_MODE] mode=current env=(unset)`
+  - `[WINCE_SEC0_SUMMARY] ... new_table=0x80FF8000 ... pc=0x8008B594 ra=0x8008B52C asid=1`
+  - `[BE300] Emulation stopped after 341513735 instructions`
+- `asid_only`:
+  - `[ASID_FLUSH_MODE] mode=asid_only env=asid_only`
+  - `[WINCE_SEC0_SUMMARY] ... new_table=0x80FF8000 ... pc=0x8008B594 ra=0x8008B52C asid=1`
+  - `[BE300] Emulation stopped after 341512969 instructions`
+- `all_only`:
+  - `[ASID_FLUSH_MODE] mode=all_only env=all_only`
+  - `[WINCE_SEC0_SUMMARY] ... new_table=0x80FF8000 ... pc=0x8008B594 ra=0x8008B52C asid=1`
+  - `[BE300] Emulation stopped after 341503455 instructions`
+
+The sec0 correlation summary is unchanged across the matrix:
+
+- `[WINCE_SEC0_CORR_SUMMARY] ... src_slot=0x80FF8000 publish_paths=both lineage_paths=fast_only ... final_l2=0x80FF7654 final_lo0=0x40011E1A final_lo1=0x40011F1A`
+
+Interpretation:
+
+- removing `INVALIDATE_ALL` does not move the first bad sec0 transition
+- removing `invalidate_asid(old_asid)` also does not move the first bad sec0
+  transition
+- `SUSPECT-P` is therefore disproven for the current
+  `slot0_callback_page_missing_at_process_switch` blocker
+
+### Dyntrans keying note
+
+Current dyntrans cache state is still keyed without ASID tagging:
+
+- `gxemul/src/include/cpu.h` stores `vph_tlb_entry` as
+  `vaddr_page`, `paddr_page`, `writeflag`, and `host_page`
+- there is no ASID field in that structure
+- `gxemul/src/cpus/cpu_mips_coproc.c` still documents the current behavior at
+  `COP0_ENTRYHI` writes: dyntrans translation tables are keyed by virtual page
+  only
+
+That means `SUSPECT-P` remains a plausible correctness concern in general, but
+the fresh matrix shows it is not what causes the current first bad sec0/process
+switch failure.

@@ -9,6 +9,12 @@
 struct cpu;
 struct machine;
 
+typedef enum {
+    WINCE_RAM_SOURCE_UNKNOWN = 0,
+    WINCE_RAM_SOURCE_FAST = 1,
+    WINCE_RAM_SOURCE_SLOW = 2,
+} wince_boot_ram_source_t;
+
 void wince_boot_attach_machine(machine_t *m);
 void wince_boot_detach_machine(machine_t *m);
 void wince_boot_init(machine_t *m);
@@ -39,8 +45,11 @@ void wince_boot_note_ppsh_status_read(struct cpu *cpu, uint16_t status);
 void wince_boot_note_ppsh_data_read(struct cpu *cpu, uint16_t word);
 void wince_boot_note_serial_tx(struct cpu *cpu, unsigned char ch);
 void wince_boot_log_summary(machine_t *m);
+bool wince_boot_should_observe_fast_ram(struct cpu *cpu, uint64_t paddr,
+    size_t len);
 void wince_boot_note_ram_access(struct cpu *cpu, uint64_t paddr,
-    const unsigned char *data, size_t len, bool is_write);
+    const unsigned char *data, size_t len, bool is_write,
+    wince_boot_ram_source_t source);
 void wince_boot_note_mmio_access(struct machine *gxm, struct cpu *cpu,
     uint64_t paddr, size_t len, uint64_t value, bool is_write);
 void wince_boot_note_usermode_entry(machine_t *m);
