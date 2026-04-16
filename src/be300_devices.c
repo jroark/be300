@@ -19,6 +19,7 @@
 
 #include "be300.h"
 #include "devices.h"
+#include "idle_diag.h"
 #include "hw/cf.h"
 #include "hw/nand.h"
 #include "ppsh.h"
@@ -974,18 +975,23 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
             WINCE_AUX_BASE, WINCE_AUX_SIZE,
             dev_be300_wince_aux_access, (void *)aux, DM_DEFAULT, NULL);
     } else {
-        dev_ram_init(gxm, WINCE_AUX_BASE, WINCE_AUX_SIZE + 0x100,
+        uint64_t page_base = WINCE_AUX_BASE & ~(uint64_t)0xFFF;
+        uint32_t page_size = 0x1000;
+        dev_ram_init(gxm, page_base, page_size,
             DEV_RAM_RAM, 0, "ppsh_idle_ram");
         unsigned char *p = memory_paddr_to_hostaddr(gxm->memory,
-            WINCE_AUX_BASE, MEM_WRITE);
+            page_base, MEM_WRITE);
         if (p) {
-            memset(p, 0xFF, WINCE_AUX_SIZE);
-            p[0x400] = 0x20;
-            p[0x401] = 0x23;
+            uint32_t off = (uint32_t)(WINCE_AUX_BASE - page_base);
+            memset(p + off, 0xFF, WINCE_AUX_SIZE);
+            p[off + 0x400] = 0x20;
+            p[off + 0x401] = 0x23;
         }
         fprintf(stderr,
-            "[BE300] PPSH disabled: registered idle RAM at 0x%08llX\n",
-            (unsigned long long)WINCE_AUX_BASE);
+            "[BE300] PPSH disabled: registered idle RAM at 0x%08llX"
+            " (page-aligned 0x%08llX+0x%X, dyntrans-fast)\n",
+            (unsigned long long)WINCE_AUX_BASE,
+            (unsigned long long)page_base, page_size);
     }
 
     fprintf(stderr,
