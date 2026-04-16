@@ -2969,6 +2969,10 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
     case 0x80092488u:
     case 0x8009248Cu:
     case 0x80097000u:
+    case 0x80097844u:
+    case 0x80097AB0u:
+    case 0x80097BC8u:
+    case 0x80097C74u:
     case 0x800971C0u:
     case 0x80098144u:
     case 0x800A3244u:
@@ -3210,6 +3214,38 @@ static void maybe_note_callback_slot_pc(machine_t *m, struct cpu *cpu,
         dump_pointer_bytes(m, "callback_table_store_post_slot",
             UINT32_C(0x01FE6544));
         m->wince.callback_slot_diag_count++;
+        return;
+    }
+
+    case 0x80097844u:
+    case 0x80097AB0u:
+    case 0x80097BC8u:
+    case 0x80097C74u:
+    {
+        static int mapper_call = 0;
+        if (mapper_call < 200) {
+            mapper_call++;
+            uint32_t sp32 = (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_SP];
+            fprintf(stderr,
+                "[L2_MAPPER_ENTRY] #%d pc=0x%08X ra=0x%08X sp=0x%08X"
+                " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
+                " s0=0x%08X s1=0x%08X s2=0x%08X s3=0x%08X"
+                " t0=0x%08X asid=%02x\n",
+                mapper_call,
+                pc32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_RA],
+                sp32,
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_A3],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S0],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S1],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S2],
+                (uint32_t)cpu->cd.mips.gpr[MIPS_GPR_S3],
+                (uint32_t)cpu->cd.mips.gpr[8],
+                (uint32_t)(cpu->cd.mips.coproc[0]->reg[COP0_ENTRYHI] & 0xff));
+        }
         return;
     }
 
