@@ -18,6 +18,7 @@
 #include "misc.h"
 
 #include "be300.h"
+#include "devices.h"
 #include "hw/cf.h"
 #include "hw/nand.h"
 #include "ppsh.h"
@@ -178,6 +179,7 @@ struct be300_wince_aux {
     bool     ppsh_enabled;    /* --ppsh: enable PPSH debug shell probe */
     bool     ppsh_ack_pending;
     bool     ppsh_tx_valid;
+    uint32_t ppsh_idle_poll_count;
     bool     ppsh_text_emitting;
     uint8_t  ppsh_tx_byte;
     uint8_t  ppsh_host_queue[PPSH_QUEUE_CAP];
@@ -482,32 +484,61 @@ DEVICE_ACCESS(be300_wince_aux)
         return 0;
 
     /*
-     * When PPSH is disabled, offsets 0x000 (data) and 0x400 (status/cmd)
-     * of this window must bus-error on real BE-300 hardware. NK.exe's
-     * Level-2 PPSH probe at 0x8007858x wraps its 0x3330 controller-ID
-     * poll in an SEH __try block specifically to catch the DBE that the
-     * absent parallel companion raises on those two offsets, and uses
-     * the caught exception as the fast-path "no PPFS" signal. Offset
-     * 0x004 (Level-1 hw test) is NOT wrapped in __try and must still
-     * return a clean non-0x2320 value so the Level-1 check fails
-     * without taking an exception.
+     * When PPSH is disabled, model the parallel port controller as
+     * present but with no host connected. On real BE-300 hardware
+     * the VRC4173 parallel port registers are always readable —
+     * only the absence of a debug HOST causes the protocol probe
+     * to fail, not the absence of the hardware itself.
      *
-     * Returning 0 from a GXemul DEVICE_ACCESS handler causes
-     * memory_rw.c to inject EXCEPTION_DBE for MIPS, which is exactly
-     * what we want here. Previous attempts modelled these offsets as
-     * read-zero / stateful-status and caused NK to spin on the 0xFFFF
-     * inner watchdog of every poll loop for the entire boot.
+     * Level-1 (offset 0x004): write-readback test against the
+     * bytes[] array. Returns whatever was last written, which
+     * won't match 0x2320 → Level-1 fails cleanly.
+     *
+     * Level-2 (offsets 0x000 / 0x400): writes are absorbed.
+     * Reads from offset 0x400 return 0x2320 ("ready") after a
+     * small number of polls, simulating the controller completing
+     * the command internally. Reads from offset 0x000 return 0
+     * (no data from host). The protocol probe sees the "ready"
+     * status but wrong data → decides "no PPFS" quickly instead
+     * of spinning through millions of timeout iterations.
      */
     if (!d->ppsh_enabled && (off == 0x000 || off == 0x400)) {
-        if (d->log_mmio) {
+        if (writeflag == MEM_WRITE) {
+            memcpy(&d->bytes[off], data, len);
+            if (off == 0x400 && d->ppsh_idle_poll_count < 32)
+                d->ppsh_idle_poll_count = 0;
+            if (d->log_mmio)
+                fprintf(stderr,
+                    "[WINCE_AUX] W PA=0x%08X size=%zu absorbed"
+                    " (idle) PC=0x%08X\n",
+                    (uint32_t)(WINCE_AUX_BASE + off), len,
+                    (uint32_t)cpu->pc);
+            return 1;
+        }
+        if (off == 0x400) {
+            d->ppsh_idle_poll_count++;
+            uint16_t status = 0x2320;
+            data[0] = status & 0xFF;
+            if (len > 1) data[1] = (status >> 8) & 0xFF;
+            if (d->log_mmio && d->ppsh_idle_poll_count <= 20)
+                fprintf(stderr,
+                    "[WINCE_AUX] R PA=0x%08X size=%zu val=0x%04X"
+                    " (idle #%u) PC=0x%08X\n",
+                    (uint32_t)(WINCE_AUX_BASE + off), len,
+                    (unsigned)status, d->ppsh_idle_poll_count,
+                    (uint32_t)cpu->pc);
+            return 1;
+        }
+        data[0] = 0xFF;
+        if (len > 1) data[1] = 0xFF;
+        for (size_t i = 2; i < len; i++) data[i] = 0xFF;
+        if (d->log_mmio)
             fprintf(stderr,
-                "[WINCE_AUX] %c PA=0x%08X size=%zu DBE (ppsh absent)"
-                " PC=0x%08X\n",
-                writeflag == MEM_WRITE ? 'W' : 'R',
+                "[WINCE_AUX] R PA=0x%08X size=%zu val=0xFFFF"
+                " (idle) PC=0x%08X\n",
                 (uint32_t)(WINCE_AUX_BASE + off), len,
                 (uint32_t)cpu->pc);
-        }
-        return 0;
+        return 1;
     }
 
     if (writeflag == MEM_WRITE) {
@@ -938,9 +969,24 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
             dev_be300_vrc4173_access, (void *)seg, DM_DEFAULT, NULL);
     }
 
-    memory_device_register(gxm->memory, "be300_wince_aux",
-        WINCE_AUX_BASE, WINCE_AUX_SIZE,
-        dev_be300_wince_aux_access, (void *)aux, DM_DEFAULT, NULL);
+    if (enable_ppsh) {
+        memory_device_register(gxm->memory, "be300_wince_aux",
+            WINCE_AUX_BASE, WINCE_AUX_SIZE,
+            dev_be300_wince_aux_access, (void *)aux, DM_DEFAULT, NULL);
+    } else {
+        dev_ram_init(gxm, WINCE_AUX_BASE, WINCE_AUX_SIZE + 0x100,
+            DEV_RAM_RAM, 0, "ppsh_idle_ram");
+        unsigned char *p = memory_paddr_to_hostaddr(gxm->memory,
+            WINCE_AUX_BASE, MEM_WRITE);
+        if (p) {
+            memset(p, 0xFF, WINCE_AUX_SIZE);
+            p[0x400] = 0x20;
+            p[0x401] = 0x23;
+        }
+        fprintf(stderr,
+            "[BE300] PPSH disabled: registered idle RAM at 0x%08llX\n",
+            (unsigned long long)WINCE_AUX_BASE);
+    }
 
     fprintf(stderr,
         "[BE300] Registered VRC4173 latch plus WinCE 0x0C000120 alias\n");
