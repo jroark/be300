@@ -56,7 +56,6 @@ typedef struct {
     bool        log_mmio;
     bool        sfb_5bit_green;
     bool        log_nand_legacy;
-    bool        debug_serial;
     bool        enable_ppsh;
     bool        restore;
 
