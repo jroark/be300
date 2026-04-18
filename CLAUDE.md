@@ -8,7 +8,7 @@ The Linux kernel boot path (`--kernel`), its ELF loader, and the `kernels/` tree
 
 **Always prefer hardware-accurate emulation over workarounds.** Do not use seeds, patches, memory pre-population, guest binary modifications, or forced handoff shortcuts to work around emulation bugs. If a guest OS behavior fails, the root cause is a missing or incorrect hardware behavior in the emulator. Find and fix the emulator bug rather than patching the guest. The ROM and NK.exe binaries are captured from real hardware and must run unmodified.
 
-Before adding any behavior that looks like a workaround (register value synthesis, TLB overrides, forced interrupt assertions, memory pre-population, etc.), cite the hardware source that *either* justifies it as real silicon behavior (VR4131 UM §X, `docs/hw_dump_*.txt` line Y, ROM disassembly at PC Z) *or* acknowledges it as a temporary patch with a dated TODO for root-cause investigation. Commits that add workarounds without citations will be reverted.
+Before adding any behavior that looks like a workaround (register value synthesis, TLB overrides, forced interrupt assertions, memory pre-population, etc.), cite the hardware source that *either* justifies it as real silicon behavior (VR4131 UM §X, `docs/hardware/hw_dump_*.txt` line Y, ROM disassembly at PC Z) *or* acknowledges it as a temporary patch with a dated TODO for root-cause investigation. Commits that add workarounds without citations will be reverted.
 
 Do not reintroduce `resume_ctx` seeding, synthetic warm-boot state, or any other fake cold-start shortcut.
 
@@ -26,16 +26,16 @@ Available external reference environments:
 - Platform Builder 3.0 VM
 
 Primary local references:
-- `docs/Vr4131-um_200203.pdf` - NEC VR4131 SoC users manual
-- `docs/U14579EJ2V0UM00.pdf` - NEC VRC4173 companion chip users manual
-- `docs/hardware.txt` - notes from Linux4be project developers
-- `docs/hw_dump_vr4131.txt` - VR4131 register dumps from real hardware
-- `docs/hw_dump_vrc4173.txt` - VRC4173 register dumps from real hardware
-- `docs/hw_dump_memory.txt` - SDRAM, exception vectors, boot params, and ROM dumps from real hardware
-- `docs/hw_dump_tlb.txt` - TLB state snapshots from real hardware
-- `docs/hw_dump_diffs.txt` - memory diffs, focus probes, and region summaries from real hardware
-- `docs/BE300BootROM_v1.txt` - full 16 KB ROM dump at PA `0x1FC00000` with CRC32 `0xFA3B5582`
-- `docs/be300_boot_rom.bin` - extracted ROM binary embedded into the emulator at build time
+- `docs/hardware/Vr4131-um_200203.pdf` - NEC VR4131 SoC users manual
+- `docs/hardware/U14579EJ2V0UM00.pdf` - NEC VRC4173 companion chip users manual
+- `docs/hardware/hardware.txt` - notes from Linux4be project developers
+- `docs/hardware/hw_dump_vr4131.txt` - VR4131 register dumps from real hardware
+- `docs/hardware/hw_dump_vrc4173.txt` - VRC4173 register dumps from real hardware
+- `docs/hardware/hw_dump_memory.txt` - SDRAM, exception vectors, boot params, and ROM dumps from real hardware
+- `docs/hardware/hw_dump_tlb.txt` - TLB state snapshots from real hardware
+- `docs/hardware/hw_dump_diffs.txt` - memory diffs, focus probes, and region summaries from real hardware
+- `docs/hardware/BE300BootROM_v1.txt` - full 16 KB ROM dump at PA `0x1FC00000` with CRC32 `0xFA3B5582`
+- `docs/hardware/be300_boot_rom.bin` - extracted ROM binary embedded into the emulator at build time
 - `docs/ROM_SPL_HANDOFF.md` - ROM to SPL to NK handoff analysis
 - `docs/HARDWARE_GROUND_TRUTH.md` - synthesized hardware reference notes
 - `ce/bediag/` - BEDiag diagnostic tool source and output
@@ -151,7 +151,7 @@ Recovery boot through `--restore --cf` is still implemented for NANDWRITER-path 
 ### Boot ROM
 
 - 16 KB masked ROM at PA `0x1FC00000` (VA `0xBFC00000` in kseg1, `0x9FC00000` in kseg0)
-- Dumped from real hardware: `docs/be300_boot_rom.bin`
+- Dumped from real hardware: `docs/hardware/be300_boot_rom.bin`
 - Reset vector: NOP -> LUI/ORI/JR to `0xBFC002F0`
 - ROM initializes CP0, SDRAM timing, clocks, NAND, and SPL loading
 - Original ROM has no real BEV TLB refill handler at `+0x200`
@@ -326,6 +326,6 @@ The `gxemul/` submodule points at the `be300-minimal` branch of `jroark/GXemul`.
 
 - Current layout: pristine GXemul 0.7.0 (`c35c056`) + a squash adding MIPS16 interpreter and BE-300 platform glue (`3c3d5cb`) + a full VR4131 RTC/ETIMER/ECMP implementation (`53c5910`) + MIPS AdEL on misaligned jr/jalr (`8b8449d`). Three delta commits on top of upstream. Do not accumulate more without first documenting the justification.
 - Before adding a gxemul-side fix, **diff against 0.7.0**: `git -C gxemul show c35c056:<path>` versus the current file. Confirm the change actually improves on upstream behavior. Several historical "fixes" on the prior `be300` branch were identity transformations of existing 0.7.0 code.
-- Before adding a gxemul-side fix, **cite the VR4131 UM section or `docs/hw_dump_*.txt` line** that justifies it. If you can't, the fix might be a workaround for a different emulator bug — keep root-causing.
+- Before adding a gxemul-side fix, **cite the VR4131 UM section or `docs/hardware/hw_dump_*.txt` line** that justifies it. If you can't, the fix might be a workaround for a different emulator bug — keep root-causing.
 - One functional change per gxemul commit. Do not bundle platform integration, behavioral fixes, and diagnostics together (the prior `be300` branch had a commit that bundled a MIPS16 decode fix with BCU latch machinery and diagnostic fprintfs — it was unsplittable for cherry-pick later).
 - If a commit resolves a warning sign listed in `docs/LEGITIMATE_FIXES_NOT_APPLIED.md`, update that file in the same or adjacent commit.

@@ -6,7 +6,7 @@ back out to the next-stage entry handoff.
 It does **not** treat the emulator source or emulator runtime as ground truth.
 Evidence is ranked in this order:
 
-1. Raw ROM dump: `docs/be300_boot_rom.bin`, `docs/BE300BootROM_v1.txt`
+1. Raw ROM dump: `../hardware/be300_boot_rom.bin`, `../hardware/BE300BootROM_v1.txt`
 2. Raw NAND bytes: `ce/restore_images/All_nand_300.bin`
 3. Static decoding of those bytes, including `tools/extract_b000ff.py`
 4. Existing repo notes and captures, only when they match the raw artifacts
@@ -23,7 +23,7 @@ Status labels used below:
 The MIPS32 ROM code around `0x9FC00354..0x9FC00494` establishes a small SDRAM
 handoff mailbox at physical `0x2400/0x24FC`.
 
-Confirmed from `docs/be300_boot_rom.bin`:
+Confirmed from `../hardware/be300_boot_rom.bin`:
 
 ```mips
 9fc00354: lui   a1,0xa000
@@ -465,9 +465,9 @@ Open:
 - What exact outer wrapper/compression grammar turns the on-NAND NK bytes at
   `0x14001` into the logical stream consumed by `0x80F0A160`?
 
-## Appendix: Interpreting `docs/be300_boot_rom.dis`
+## Appendix: Interpreting `../hardware/be300_boot_rom.dis`
 
-The checked-in file [`be300_boot_rom.dis`](/Users/jroark/src/be300-framebuffer/docs/be300_boot_rom.dis)
+The checked-in file [`be300_boot_rom.dis`](/Users/jroark/src/be300-framebuffer/../hardware/be300_boot_rom.dis)
 does not appear to be a directly correct ROM disassembly, but it is still
 useful as a transformed view of the raw ROM bytes.
 

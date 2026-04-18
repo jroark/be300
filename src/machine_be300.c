@@ -416,7 +416,7 @@ machine_t *be300_create(const machine_config_t *cfg)
          * The SPL doesn't clear BEV, so NK.exe starts with BEV=1.
          * Exception vectors (TLB refill, general, interrupt) go to
          * PA 0x1FC00000 + offset.  Real BE-300 hardware has 16K ROM
-         * there (per docs/hardware.txt).  Without this RAM, exception
+         * there (per docs/hardware/hardware.txt).  Without this RAM, exception
          * handlers can't be installed and WinCE can't set up virtual
          * memory or run the scheduler.
          */
