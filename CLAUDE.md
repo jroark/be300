@@ -8,6 +8,8 @@ Linux kernel boot (`--kernel`) and non-3.0 WinCE images are no longer project go
 
 **Always prefer hardware-accurate emulation over workarounds.** Do not use seeds, patches, memory pre-population, guest binary modifications, or forced handoff shortcuts to work around emulation bugs. If a guest OS behavior fails, the root cause is a missing or incorrect hardware behavior in the emulator. Find and fix the emulator bug rather than patching the guest. The ROM and NK.exe binaries are captured from real hardware and must run unmodified.
 
+Before adding any behavior that looks like a workaround (register value synthesis, TLB overrides, forced interrupt assertions, memory pre-population, etc.), cite the hardware source that *either* justifies it as real silicon behavior (VR4131 UM §X, `docs/hw_dump_*.txt` line Y, ROM disassembly at PC Z) *or* acknowledges it as a temporary patch with a dated TODO for root-cause investigation. Commits that add workarounds without citations will be reverted.
+
 Do not reintroduce `resume_ctx` seeding, synthetic warm-boot state, or any other fake cold-start shortcut.
 
 ## Current Scope And Non-Goals
@@ -48,8 +50,6 @@ Primary local references:
 - `main.c` — CLI parsing for `--nand`, `--restore`, `--cf`, `--ppsh`, and other boot options
 - `host_io.c` / `host_io.h` — host stdin/stdout handling
 - `ppsh.h` — PPSH transport helpers
-- `wince_boot.c` / `wince_boot.h` — WinCE cold-boot tracing and checkpoint logging
-- `wince_boot_types.h` — WinCE boot state and tracing flags
 - `be300_devices.c` — VRC4173 latch, CF window, PPSH debug shell, WinCE aux device
 
 **GXemul CPU engine (`gxemul/`)**
@@ -278,9 +278,8 @@ mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL nk_decompressed.bin
 - Secondary implemented paths: `--restore --cf` and `--ppsh`
 - Do not spend effort on Linux regressions unless explicitly requested
 - Do not solve cold boot with guest patches, RAM seeds, `resume_ctx` seeds, or forced handoff shortcuts
-- For current unresolved issues and next debugging targets, read:
-  - `docs/WINCE_COLD_BOOT_SESSION_2026-04-08.md`
-  - `docs/STATUS_AND_NEXT_STEPS.md`
+- For legitimate upstream GXemul 0.7.0 bugs that are *not* on the current boot path but may become relevant for future investigations, see:
+  - `docs/LEGITIMATE_FIXES_NOT_APPLIED.md` — catalog of real bugs left unpatched, each with citation, warning signs that would justify re-applying, and a "do not reconsider" list of genuinely non-legitimate drops
 
 ## Key Files For Current WinCE Work
 
@@ -288,8 +287,6 @@ mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL nk_decompressed.bin
 - `src/be300.h` — NAND, CF, and machine configuration state
 - `src/machine_be300.c` — boot-mode setup, ROM and NAND boot path, NK dump logic, runtime finalization, screenshot-on-shutdown behavior
 - `src/loader.c` — ELF kernel loader and NAND image reader
-- `src/wince_boot.c` — cold-boot tracing and checkpoint logging
-- `src/wince_boot_types.h` — WinCE tracing state
 - `src/hw/nand.c` — NAND controller and NANDWRITER restore-engine behavior
 - `src/hw/cf.c` — CompactFlash emulation and recovery-boot support
 - `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, and interrupt-clear behavior
@@ -300,15 +297,16 @@ mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL nk_decompressed.bin
 
 ## Commit, Branch, And Push Rules
 
-After every attempt, regardless of success or failure, commit and push the relevant changes with a detailed message covering:
-- what was tried
-- the outcome
-- what was learned or confirmed
-- the next step
+Commit when you have a **functional change backed by evidence** that moves the project forward: a real fix, a platform integration, or a clean refactor. Do **not** commit:
+- Investigation probes, PC rings, watchpoints, one-time debug prints, or any `fprintf(stderr, …)` added for a specific debugging session
+- Wrong-semantics stepping stones. If your first attempt had an incorrect model (e.g., wrong exception EPC semantics), revert it before trying again — don't leave superseded commits on `main`
+- Dump-to-file debug output
+- Files mixing diagnostic code with functional fixes. If you find yourself writing both in the same edit, split them: commit only the functional change, discard the diagnostics
+- Unrelated files or build artifacts
 
-Do not commit unrelated files or build artifacts.
+Each commit message should still cover: what was tried, outcome, what was learned, next step — but only when there *is* something worth committing.
 
-Use double quotes for `git commit -m "..."` in this repo and avoid shell quoting patterns that break when the message contains punctuation.
+Use double quotes for `git commit -m "..."`. For multi-line messages, prefer a heredoc or a `/tmp/msg.txt` file and `git commit -F /tmp/msg.txt`.
 
 Stay on the current branch. Do not create PRs.
 
@@ -317,3 +315,22 @@ Push with:
 ```bash
 git push -u origin <current branch>
 ```
+
+## Instrumentation Hygiene
+
+When you need temporary diagnostics:
+
+- Add them to a local working copy only. Revert before committing.
+- If an investigation genuinely needs more than one session of probe code, create a dedicated `investigate/<topic>` branch and keep it local. Do not push. When you find the fix, extract *only* the functional change onto `main` and discard the investigation branch.
+- Never add `wince_boot_*` / `idle_diag_*` style hook call sites to GXemul core files (`gxemul/src/cpus/`, `gxemul/src/core/`, `gxemul/src/devices/`). That pattern — host-side diagnostic code reaching into the CPU/memory/device layers via hook includes — is how `wince_boot.c` grew to 13 KLOC before it was deleted. If a behavior needs observation, use the existing `--trace` flag, GXemul's built-in single-step disassembly, or a throwaway `fprintf` in exactly one call site that you revert before committing.
+- `docs/LEGITIMATE_FIXES_NOT_APPLIED.md` lists upstream GXemul 0.7.0 bugs that are not on the current boot path. Consult it before adding a workaround for a symptom that matches one of its "warning signs."
+
+## GXemul Submodule Hygiene
+
+The `gxemul/` submodule points at the `be300-minimal` branch of `jroark/GXemul`. Keep it thin.
+
+- Current layout: pristine GXemul 0.7.0 (`c35c056`) + a squash adding MIPS16 interpreter and BE-300 platform glue (`3c3d5cb`) + a full VR4131 RTC/ETIMER/ECMP implementation (`53c5910`) + MIPS AdEL on misaligned jr/jalr (`8b8449d`). Three delta commits on top of upstream. Do not accumulate more without first documenting the justification.
+- Before adding a gxemul-side fix, **diff against 0.7.0**: `git -C gxemul show c35c056:<path>` versus the current file. Confirm the change actually improves on upstream behavior. Several historical "fixes" on the prior `be300` branch were identity transformations of existing 0.7.0 code.
+- Before adding a gxemul-side fix, **cite the VR4131 UM section or `docs/hw_dump_*.txt` line** that justifies it. If you can't, the fix might be a workaround for a different emulator bug — keep root-causing.
+- One functional change per gxemul commit. Do not bundle platform integration, behavioral fixes, and diagnostics together (the prior `be300` branch had a commit that bundled a MIPS16 decode fix with BCU latch machinery and diagnostic fprintfs — it was unsplittable for cherry-pick later).
+- If a commit resolves a warning sign listed in `docs/LEGITIMATE_FIXES_NOT_APPLIED.md`, update that file in the same or adjacent commit.
