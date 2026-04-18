@@ -1,1 +1,0 @@
-#define CONFIG_EMBEDDED_RAMDISK_IMAGE "ramdisk.gz"

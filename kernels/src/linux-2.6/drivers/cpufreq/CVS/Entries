@@ -1,9 +1,0 @@
-/Kconfig/1.7/Fri Apr 23 15:54:12 2004/-ko/D2004.08.13.07.00.00
-/Makefile/1.4/Tue Sep  9 16:40:59 2003/-ko/D2004.08.13.07.00.00
-/cpufreq.c/1.9/Wed Jun 16 12:09:36 2004/-ko/D2004.08.13.07.00.00
-/cpufreq_performance.c/1.1/Tue Sep  9 16:40:59 2003/-ko/D2004.08.13.07.00.00
-/cpufreq_powersave.c/1.1/Tue Sep  9 16:40:59 2003/-ko/D2004.08.13.07.00.00
-/cpufreq_userspace.c/1.6/Wed Jun  9 14:12:08 2004/-ko/D2004.08.13.07.00.00
-/freq_table.c/1.2/Thu Jun  5 00:04:34 2003/-ko/D2004.08.13.07.00.00
-/proc_intf.c/1.7/Wed Jun  9 14:12:08 2004/-ko/D2004.08.13.07.00.00
-D

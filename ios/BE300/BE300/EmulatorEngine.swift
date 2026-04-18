@@ -15,34 +15,11 @@ final class EmulatorEngine: ObservableObject {
     @Published var serialOutput = ""
 
     func boot() {
-        guard machine == nil else { return }
-
-        machine = be300_create_web(16, 166, false)
-        guard let m = machine else {
-            print("[EmulatorEngine] Failed to create emulator")
-            return
-        }
-
-        guard let kernelURL = Bundle.main.url(forResource: "vmlinux-pgui-demo", withExtension: nil) else {
-            print("[EmulatorEngine] Kernel not found in bundle")
-            return
-        }
-
-        do {
-            let kernelData = try Data(contentsOf: kernelURL)
-            let cmdline = "console=tty0 root=/dev/ram"
-            let result = kernelData.withUnsafeBytes { rawBuf -> Int32 in
-                let ptr = rawBuf.baseAddress!
-                return cmdline.withCString { cmd in
-                    be300_boot_linux_from_memory(m, ptr, rawBuf.count, cmd)
-                }
-            }
-            if result != 0 {
-                print("[EmulatorEngine] Failed to load kernel: \(result)")
-            }
-        } catch {
-            print("[EmulatorEngine] Failed to read kernel: \(error)")
-        }
+        // The Linux boot path and `be300_create_web` were removed along with
+        // `src/loader.c`. iOS needs to load a WinCE NAND image and feed it
+        // through the NAND config path — this stub is a placeholder until
+        // that wiring is added.
+        print("[EmulatorEngine] boot() not implemented (WinCE NAND path pending)")
     }
 
     func start() {

@@ -1,1 +1,0 @@
-cmd_drivers/mtd/built-in.o :=  mipsel-linux-ld  --oformat elf32-tradlittlemips  -r -o drivers/mtd/built-in.o drivers/mtd/mtdcore.o drivers/mtd/mtdchar.o drivers/mtd/nftl.o drivers/mtd/mtd_blkdevs.o drivers/mtd/chips/built-in.o drivers/mtd/maps/built-in.o drivers/mtd/devices/built-in.o drivers/mtd/nand/built-in.o

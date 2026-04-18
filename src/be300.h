@@ -54,15 +54,11 @@ struct emul;
 typedef struct {
     bool        trace;
     bool        log_mmio;
-    bool        sfb_5bit_green;
     bool        log_nand_legacy;
     bool        enable_ppsh;
     bool        restore;
 
     const char *rom_path;
-    const char *kernel_path;
-    const char *cmdline;
-    const char *ram_path;
     const char *nand_path;
     const char *cf_path;
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
@@ -71,8 +67,6 @@ typedef struct {
 
 typedef enum {
     BE300_BOOT_NONE = 0,
-    BE300_BOOT_LINUX_PATH,
-    BE300_BOOT_LINUX_MEMORY,
     BE300_BOOT_NAND,
     BE300_BOOT_RESTORE,
     BE300_BOOT_ROM,
@@ -161,12 +155,6 @@ typedef be300_state_t machine_t;
  * Main API — called from main.c
  */
 machine_t *be300_create(const machine_config_t *cfg);
-machine_t *be300_create_web(uint32_t sdram_mb, uint32_t target_mhz,
-                            bool sfb_5bit_green);
-int        be300_boot_linux_from_memory(machine_t *m,
-                                        const void *kernel_data,
-                                        size_t kernel_size,
-                                        const char *cmdline);
 int        be300_step(machine_t *m, uint32_t max_batches);
 int        be300_copy_frame_rgba8888(machine_t *m, uint8_t *dst,
                                      size_t dst_len,

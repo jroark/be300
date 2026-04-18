@@ -1,1 +1,0 @@
-#define CONFIG_HAVE_DEC_LOCK 1
