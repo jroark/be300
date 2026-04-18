@@ -537,6 +537,7 @@ static void be300_runtime_finalize(machine_t *m)
     signal(SIGTERM, SIG_DFL);
     signal(SIGINT, SIG_DFL);
     cpu_run_deinit(m->gxe_machine);
+    console_deinit_main();
     m->runtime_stopped = true;
     m->runtime_finalized = true;
 }
