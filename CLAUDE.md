@@ -189,6 +189,8 @@ Cold boot through `--nand` starts at the ROM reset vector `0xBFC00000`, matching
 3. touch calibration
 4. WinCE desktop
 
+Reference screenshots of the splash stages are committed at the repo root as `Initializing.bmp`, `Starting.bmp`, and `All_nand_300.png`. Use them for visual regression when comparing the emulator's saved screenshot (per `[UI] Screenshot saved:` in stderr) against expected real-hardware output.
+
 ### Splash Screen Notes
 
 - `Initializing...` and `Starting...` are rendered at runtime, not stored as ASCII, UTF-16, or bitmaps in the image
