@@ -324,7 +324,7 @@ When you need temporary diagnostics:
 
 The `gxemul/` submodule points at the `be300-minimal` branch of `jroark/GXemul`. Keep it thin.
 
-- Current layout: pristine GXemul 0.7.0 (`c35c056`) + a squash adding MIPS16 interpreter and BE-300 platform glue (`3c3d5cb`) + a full VR4131 RTC/ETIMER/ECMP implementation (`53c5910`) + MIPS AdEL on misaligned jr/jalr (`8b8449d`). Three delta commits on top of upstream. Do not accumulate more without first documenting the justification.
+- Current layout: pristine GXemul 0.7.0 (`c35c056`) + a squash adding MIPS16 interpreter and BE-300 platform glue (`3c3d5cb`) + a full VR4131 RTC/ETIMER/ECMP implementation (`53c5910`) + MIPS AdEL on misaligned jr/jalr (`8b8449d`) + VR41xx COP0 SUSPEND → wait-for-interrupt (`3250bb8`, VR4131 UM §4.3.3) + VR41xx RTCL1 timer SYSINT1-ack + edge-pulse IRQ (`8775b00`, VR4131 UM §11.2.1 / §13.2.3). Five delta commits on top of upstream. Do not accumulate more without first documenting the justification.
 - Before adding a gxemul-side fix, **diff against 0.7.0**: `git -C gxemul show c35c056:<path>` versus the current file. Confirm the change actually improves on upstream behavior. Several historical "fixes" on the prior `be300` branch were identity transformations of existing 0.7.0 code.
 - Before adding a gxemul-side fix, **cite the VR4131 UM section or `docs/hardware/hw_dump_*.txt` line** that justifies it. If you can't, the fix might be a workaround for a different emulator bug — keep root-causing.
 - One functional change per gxemul commit. Do not bundle platform integration, behavioral fixes, and diagnostics together (the prior `be300` branch had a commit that bundled a MIPS16 decode fix with BCU latch machinery and diagnostic fprintfs — it was unsplittable for cherry-pick later).
