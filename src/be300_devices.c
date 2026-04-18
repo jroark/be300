@@ -19,7 +19,6 @@
 
 #include "be300.h"
 #include "devices.h"
-#include "idle_diag.h"
 #include "hw/cf.h"
 #include "hw/nand.h"
 #include "ppsh.h"
