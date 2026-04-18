@@ -848,9 +848,6 @@ static void nand_boot_latch_addr(nand_state_t *s, uint8_t data_byte)
     }
 }
 
-static int nand_boot_stream_count = 0;
-static uint32_t nand_boot_stream_max_page = 0;
-
 static void nand_boot_start_stream(nand_state_t *s)
 {
     uint32_t page;
@@ -859,17 +856,6 @@ static void nand_boot_start_stream(nand_state_t *s)
     col = s->boot_addr_bytes[0];
     page = (uint32_t)s->boot_addr_bytes[1]
          | ((uint32_t)(s->boot_addr_bytes[2] & 0x7Fu) << 8);
-
-    nand_boot_stream_count++;
-    if (page > nand_boot_stream_max_page)
-        nand_boot_stream_max_page = page;
-    if ((nand_boot_stream_count & (nand_boot_stream_count - 1)) == 0 ||
-        nand_boot_stream_count <= 16) {
-        fprintf(stderr,
-                "[NAND_BOOT_STREAM] #%d page=0x%04X col=0x%02X max_page=0x%04X block=%u\n",
-                nand_boot_stream_count, page, col,
-                nand_boot_stream_max_page, page / NAND_BLOCK_PAGES);
-    }
 
     s->stream_page = page;
     s->stream_col = col;
@@ -899,21 +885,11 @@ static void nand_boot_finish_ecc_input(nand_state_t *s)
 }
 
 /* Rate-limited indexed register logging */
-static int nand_idx_log_count = 0;
-#define NAND_IDX_LOG_MAX 50000
 #define LEGACY_STATUS_IDX          0x07u
 #define LEGACY_STATUS_ESCAPE_READS 64u
 #define LEGACY_STATUS_IDLE_MASK    0xC0u
 #define UART_TX_CONSOLE_PC         UINT32_C(0x80F03308)
 #define UART_TX_CONSOLE_PC_CENET   UINT32_C(0x80F03350)
-static int nand_stream_start_log_count = 0;
-static int nand_stream_first_log_count = 0;
-#define NAND_STREAM_LOG_MAX 8192
-static int nand_dma_status_diag_count = 0;
-#define NAND_DMA_STATUS_DIAG_MAX 64
-static int nand_dma_write_diag_count = 0;
-#define NAND_DMA_WRITE_DIAG_MAX 96
-
 bool nand_restore_handles_offset(uint32_t offset)
 {
     if ((offset >= NAND_RESTORE_BUF_BASE && offset < NAND_RESTORE_BUF_END) ||
@@ -966,13 +942,7 @@ uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size,
     }
 
 out:
-    if (log) {
-        fprintf(stderr,
-            "[NAND_RESTORE] R%u offset=0x%04X -> 0x%08" PRIX64
-            " pc=0x%08X mode=0x%02X cmd=0x%02X page=0x%04X pos=%u/%u\n",
-            size * 8, offset, val, pc, s->restore_mode, s->restore_last_cmd,
-            s->restore_page_addr, s->restore_stream_pos, s->restore_stream_limit);
-    }
+
     return val;
 }
 
@@ -1077,21 +1047,12 @@ void nand_restore_write(nand_state_t *s, uint32_t offset, unsigned size,
     }
 
 out:
-    if (log) {
-        fprintf(stderr,
-            "[NAND_RESTORE] W%u offset=0x%04X val=0x%08" PRIX64
-            " pc=0x%08X phase=0x%02X mode=0x%02X cmd=0x%02X page=0x%04X\n",
-            size * 8, offset, value, pc, s->restore_phase, s->restore_mode,
-            s->restore_last_cmd, s->restore_page_addr);
-    }
+    return;
 }
 
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 uint64_t value, bool log, uint32_t pc)
 {
-    if (log)
-        fprintf(stderr, "[NAND] W%u offset=0x%04X val=0x%08" PRIX64 "\n",
-                size * 8, offset, value);
 
     /* Control/timing registers — latch + functional status */
     if (offset >= NAND_CTRL_BASE && offset < NAND_CTRL_END) {
@@ -1207,19 +1168,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 s->stream_cursor = 0;
                 s->stream_limit = NAND_PAGE_RAW - col;
                 s->stream_active = true;
-                if (log && nand_stream_start_log_count < NAND_STREAM_LOG_MAX) {
-                    fprintf(stderr,
-                            "[NAND_STREAM_START] pc=0x%08X mode=0x%02X"
-                            " addr24=0x%06X bytes=[%02X %02X %02X]"
-                            " row=0x%04X col=0x%02X base=0x%08X\n",
-                            pc, data_byte,
-                            (unsigned)s->xfer_addr24,
-                            (unsigned)s->xfer_addr_bytes[0],
-                            (unsigned)s->xfer_addr_bytes[1],
-                            (unsigned)s->xfer_addr_bytes[2],
-                            row, col, s->stream_base);
-                    nand_stream_start_log_count++;
-                }
             } else if (data_byte == 0x06u) {
                 s->stream_base = NAND_PAGE_DATA + 8u;
                 s->stream_cursor = 0;
@@ -1300,8 +1248,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
     /* Enable register */
     if (offset >= NAND_ENABLE_BASE && offset < NAND_ENABLE_END) {
         s->enabled = (value & 1) != 0;
-        if (log) fprintf(stderr, "[NAND] controller %s\n",
-                         s->enabled ? "enabled" : "disabled");
         return;
     }
 
@@ -1315,19 +1261,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             uint32_t idx = (offset - NAND_DMA_BASE) + i;
             if (idx < 8)
                 s->dma_cmd[idx] = (uint8_t)((value >> (8u * i)) & 0xFFu);
-        }
-        if ((pc >= UINT32_C(0x9FC010EC) && pc <= UINT32_C(0x9FC01360)) &&
-            nand_dma_write_diag_count < NAND_DMA_WRITE_DIAG_MAX) {
-            nand_dma_write_diag_count++;
-            fprintf(stderr,
-                    "[NAND_DMA_WR] pc=0x%08X off=0x%X size=%u val=0x%08" PRIX64
-                    " cmd=[%02X %02X %02X %02X %02X %02X %02X %02X]"
-                    " before={active=%d cursor=%u total=%u addr=0x%06X} #%d\n",
-                    pc, offset - NAND_DMA_BASE, size, value,
-                    s->dma_cmd[0], s->dma_cmd[1], s->dma_cmd[2], s->dma_cmd[3],
-                    s->dma_cmd[4], s->dma_cmd[5], s->dma_cmd[6], s->dma_cmd[7],
-                    old_active ? 1 : 0, old_cursor, old_total, old_addr,
-                    nand_dma_write_diag_count);
         }
         /* Byte 7 write triggers transfer setup.
          * The ROM uses at least two command-byte values here:
@@ -1358,26 +1291,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 s->dma_total_bytes = pages * NAND_PAGE_DATA;
                 s->dma_cursor = 0;
                 s->dma_active = true;
-                if (log || ((pc >= UINT32_C(0x9FC010EC) &&
-                             pc <= UINT32_C(0x9FC01360)) &&
-                            nand_dma_write_diag_count <= NAND_DMA_WRITE_DIAG_MAX))
-                    fprintf(stderr, "[NAND_DMA] READ trigger cmd7=0x%02X:"
-                            " page=0x%06X byte_off=0x%06X"
-                            " pages=%u total=%u PC=0x%08X"
-                            " before={active=%d cursor=%u total=%u addr=0x%06X}\n",
-                            cmd7, page, s->dma_nand_addr,
-                            pages, s->dma_total_bytes, pc,
-                            old_active ? 1 : 0, old_cursor, old_total, old_addr);
-            } else {
-                /* Command latch (block_size etc.) — just record */
-                if (log)
-                    fprintf(stderr, "[NAND_DMA] CMD byte7=0x%02X"
-                            " cmd=[%02X %02X %02X %02X %02X %02X %02X %02X]"
-                            " PC=0x%08X\n",
-                            cmd7,
-                            s->dma_cmd[0], s->dma_cmd[1], s->dma_cmd[2],
-                            s->dma_cmd[3], s->dma_cmd[4], s->dma_cmd[5],
-                            s->dma_cmd[6], s->dma_cmd[7], pc);
             }
         }
         return;
@@ -1397,30 +1310,14 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             s->dma_active = false;
             s->dma_cursor = 0;
             s->dma_total_bytes = 0;
-            if (log)
-                fprintf(stderr,
-                        "[NAND_DMA] CTRL clear → idle PC=0x%08X\n",
-                        pc);
-        } else if (log) {
-            fprintf(stderr,
-                    "[NAND_DMA] CTRL=0x%02X (latched, no transfer trigger)"
-                    " PC=0x%08X\n",
-                    ctrl, pc);
         }
+        (void)ctrl;
         return;
     }
 
     /* Direct I/O control register (D002): sets CLE/ALE mode for D000 */
     if (offset == NAND_REG_DIO_CTRL) {
         s->dio_mode = (uint8_t)(value & 0xFFu);
-        if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
-            fprintf(stderr, "[NAND_DIO] CTRL=0x%02X (%s) PC=0x%08X\n",
-                    s->dio_mode,
-                    (s->dio_mode & 0x80u) ? "CLE" :
-                    (s->dio_mode & 0x01u) ? "ALE" : "DATA",
-                    pc);
-            nand_idx_log_count++;
-        }
         return;
     }
 
@@ -1430,11 +1327,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         s->dio_last_write = data_byte;  /* latch for echo-back reads */
         if (s->dio_mode & 0x80u) {
             /* CLE mode: data_byte is a NAND command */
-            if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
-                fprintf(stderr, "[NAND_DIO] CMD=0x%02X PC=0x%08X\n",
-                        data_byte, pc);
-                nand_idx_log_count++;
-            }
             s->last_cmd    = data_byte;
             s->addr_cycle  = 0;
             s->xfer_cursor = 0;
@@ -1499,11 +1391,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             }
         } else if (s->dio_mode & 0x01u) {
             /* ALE mode: data_byte is an address byte */
-            if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
-                fprintf(stderr, "[NAND_DIO] ADDR[%u]=0x%02X PC=0x%08X\n",
-                        s->addr_cycle, data_byte, pc);
-                nand_idx_log_count++;
-            }
             switch (s->addr_cycle) {
             case 0:
                 if (s->state == NAND_STATE_READ_DATA)
@@ -1597,7 +1484,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
             s->ready = true;
             break;
         default:
-            if (log) fprintf(stderr, "[NAND] unknown cmd 0x%02X\n", cmd);
             s->state = NAND_STATE_IDLE;
             s->ready = true;
             break;
@@ -1644,11 +1530,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
     /* Legacy port control register */
     if (offset == NAND_REG_PORTCTL) {
         s->portctl = (uint16_t)(value & 0xFFFFu);
-        if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
-            fprintf(stderr, "[NAND_IDX] SEL idx=0x%02X PC=0x%08X\n",
-                    (unsigned)(value & 0xFF), pc);
-            nand_idx_log_count++;
-        }
         return;
     }
 
@@ -1705,11 +1586,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                     fflush(stdout);
                 }
             }
-        }
-        if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
-            fprintf(stderr, "[NAND_IDX] W idx=0x%02X val=0x%02X PC=0x%08X\n",
-                    (unsigned)(idx & 0xFF), (unsigned)(value & 0xFF), pc);
-            nand_idx_log_count++;
         }
         return;
     }
@@ -1812,15 +1688,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
             val = (size >= 4) ? UINT32_C(0xFFFFFFFF) : UINT64_C(0xFF);
         else {
             val = nand_stream_read(s, size);
-            if (log && s->stream_cursor == size && nand_stream_first_log_count < NAND_STREAM_LOG_MAX) {
-                uint32_t first_data_off = s->stream_page * NAND_PAGE_DATA + s->stream_col;
-                fprintf(stderr,
-                        "[NAND_STREAM_FIRST] pc=0x%08X page=0x%04X col=0x%02X"
-                        " first_data_off=0x%08X size=%u val=0x%08" PRIX64 "\n",
-                        pc, s->stream_page, s->stream_col,
-                        first_data_off, size, val);
-                nand_stream_first_log_count++;
-            }
         }
         goto out;
     }
@@ -1832,11 +1699,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
              * verify the NAND controller I/O path is functional. */
             val = s->dio_last_write;
             s->dio_last_write = 0;
-            if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
-                fprintf(stderr, "[NAND_DIO] R echo=0x%02X PC=0x%08X\n",
-                        (unsigned)(val & 0xFF), pc);
-                nand_idx_log_count++;
-            }
             goto out;
         }
         if (s->state == NAND_STATE_READ_STATUS) {
@@ -1866,11 +1728,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
             }
         } else {
             val = 0xFF;
-        }
-        if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
-            fprintf(stderr, "[NAND_DIO] R data=0x%02X cursor=%u PC=0x%08X\n",
-                    (unsigned)(val & 0xFF), s->xfer_cursor, pc);
-            nand_idx_log_count++;
         }
         goto out;
     }
@@ -2034,11 +1891,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
 
             val |= ((uint64_t)byte_val) << (8u * i);
         }
-        if (log && nand_idx_log_count < NAND_IDX_LOG_MAX) {
-            fprintf(stderr, "[NAND_IDX] R idx=0x%02X val=0x%02X PC=0x%08X\n",
-                    (unsigned)(idx & 0xFF), (unsigned)(val & 0xFF), pc);
-            nand_idx_log_count++;
-        }
         goto out;
     }
 
@@ -2071,20 +1923,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
         uint32_t reg_off = offset - NAND_DMA_BASE;
         if (reg_off == 0 && s->dma_active) {
             /* FIFO data port: return sequential NAND page data */
-            {
-                static int fifo_read_count = 0;
-                if (fifo_read_count < 5 || (fifo_read_count % 100 == 0)) {
-                    fprintf(stderr, "[NAND_FIFO] read #%d: cursor=%u"
-                        " total=%u addr=0x%06X size=%u"
-                        " PC=0x%08X byte=0x%02X\n",
-                        fifo_read_count, s->dma_cursor,
-                        s->dma_total_bytes, s->dma_nand_addr,
-                        (unsigned)size, pc,
-                        nand_dma_byte(s, s->dma_nand_addr +
-                        s->dma_cursor, pc));
-                }
-                fifo_read_count++;
-            }
             val = 0;
             for (unsigned i = 0; i < size; i++) {
                 uint8_t byte;
@@ -2103,14 +1941,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
              * leak stack frames until execution falls into low RAM.
              */
             if (s->dma_cursor >= s->dma_total_bytes)
-                if (nand_dma_status_diag_count < NAND_DMA_STATUS_DIAG_MAX) {
-                    nand_dma_status_diag_count++;
-                    fprintf(stderr,
-                        "[NAND_DMA_DONE] pc=0x%08X cursor=%u total=%u"
-                        " active->0 addr=0x%06X #%d\n",
-                        pc, s->dma_cursor, s->dma_total_bytes,
-                        s->dma_nand_addr, nand_dma_status_diag_count);
-                }
             if (s->dma_cursor >= s->dma_total_bytes)
                 s->dma_active = false;
             goto out;
@@ -2134,17 +1964,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
                 } else {
                     byte = 0x58u;        /* busy: data available */
                 }
-                if ((pc >= UINT32_C(0x9FC013B8) &&
-                     pc <= UINT32_C(0x9FC0141A)) &&
-                    nand_dma_status_diag_count < NAND_DMA_STATUS_DIAG_MAX) {
-                    nand_dma_status_diag_count++;
-                    fprintf(stderr,
-                        "[NAND_DMA_ST] pc=0x%08X byte=0x%02X"
-                        " active=%d cursor=%u total=%u addr=0x%06X #%d\n",
-                        pc, byte, s->dma_active ? 1 : 0,
-                        s->dma_cursor, s->dma_total_bytes,
-                        s->dma_nand_addr, nand_dma_status_diag_count);
-                }
             } else {
                 byte = s->dma_cmd[reg_off + i];
             }
@@ -2160,8 +1979,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, ui
     }
 
 out:
-    if (log)
-        fprintf(stderr, "[NAND] R%u offset=0x%04X -> 0x%08" PRIX64 "\n",
-                size * 8, offset, val);
+
     return val;
 }

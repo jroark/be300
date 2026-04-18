@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include "rtc.h"
 
 static inline void rtc_update_elapsed_irq(rtc_state_t *s)
@@ -87,14 +86,7 @@ void rtc_init(rtc_state_t *s)
 uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
 {
     if (offset == RTC_ETIMELREG || offset == RTC_ETIMEMREG || offset == RTC_ETIMEHREG) {
-        static int etime_read_count = 0;
         uint64_t snap = s->etime;
-        etime_read_count++;
-        if (offset == RTC_ETIMELREG &&
-            (etime_read_count <= 3 || (etime_read_count & 0xFFFFF) == 0)) {
-            fprintf(stderr, "[RTC_ETIME_RD] etime=0x%llX size=%u #%d\n",
-                    (unsigned long long)snap, size, etime_read_count);
-        }
         uint32_t ret = 0;
 
         if (size >= 4) {
@@ -139,7 +131,6 @@ uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
     case 0x3C:
         return 0; /* RFU in RTC2 window on VR4131 */
     default:
-        fprintf(stderr, "[RTC] Unhandled read offset 0x%02X\n", offset);
         return 0;
     }
 }
@@ -198,8 +189,6 @@ void rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case 0x3C:
         break; /* RFU */
     default:
-        fprintf(stderr, "[RTC] Unhandled write offset 0x%02X = 0x%04X\n",
-                offset, val);
         break;
     }
 }

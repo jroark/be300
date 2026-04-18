@@ -124,8 +124,6 @@ int ui_init(machine_t *m)
         return 0;
     }
 
-    fprintf(stderr, "[UI] SDL2 display: %ux%u @ 2x scale (RGB565)\n",
-            m->fb_width, m->fb_height);
     return 0;
 }
 
@@ -241,10 +239,6 @@ void ui_update(machine_t *m)
         if (!m->gxe_machine->fb || !m->gxe_machine->fb->framebuffer)
             return;  /* dev_fb not yet initialized */
         m->fb_data = m->gxe_machine->fb->framebuffer;
-        fprintf(stderr, "[UI] Framebuffer host pointer resolved (%ux%u, %d bpp)\n",
-                m->gxe_machine->fb->visible_xsize,
-                m->gxe_machine->fb->visible_ysize,
-                m->gxe_machine->fb->bit_depth);
     }
 
     const uint16_t *src = (const uint16_t *)m->fb_data;

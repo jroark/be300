@@ -138,9 +138,6 @@ static int load_file(machine_t *m, const char *path,
 
     gxe_mem_write(m->cpu, (uint32_t)pa, buf, (size_t)fsize);
     free(buf);
-
-    fprintf(stderr, "[LOADER] Loaded %ld bytes from '%s' to PA 0x%08llX\n",
-            fsize, path, (unsigned long long)pa);
     return 0;
 }
 
@@ -252,9 +249,6 @@ int loader_load_elf_from_memory(machine_t *m, const void *data_ptr, size_t data_
         return -1;
     }
 
-    fprintf(stderr, "[LOADER] ELF32 MIPS LE  entry=0x%08X  phnum=%u\n",
-            eh->e_entry, eh->e_phnum);
-
     /* Load PT_LOAD segments */
     for (int i = 0; i < eh->e_phnum; i++) {
         const Elf32_Phdr *ph;
@@ -269,9 +263,6 @@ int loader_load_elf_from_memory(machine_t *m, const void *data_ptr, size_t data_
         uint32_t pa     = ph->p_paddr & 0x1FFFFFFFu;
         uint32_t filesz = ph->p_filesz;
         uint32_t memsz  = ph->p_memsz;
-
-        fprintf(stderr, "[LOADER]   seg[%d] PA=0x%08X  filesz=0x%X  memsz=0x%X\n",
-                i, pa, filesz, memsz);
 
         if (pa + memsz > m->cfg.sdram_size) {
             fprintf(stderr, "[LOADER] Segment %d exceeds SDRAM (PA=0x%X memsz=0x%X sdram=%u)\n",
@@ -291,8 +282,6 @@ int loader_load_elf_from_memory(machine_t *m, const void *data_ptr, size_t data_
             uint32_t bss_pa  = pa + filesz;
             uint32_t bss_len = memsz - filesz;
             gxe_mem_zero(m->cpu, bss_pa, bss_len);
-            fprintf(stderr, "[LOADER]   zeroed BSS PA=0x%08X len=0x%X\n",
-                    bss_pa, bss_len);
         }
     }
 
@@ -301,16 +290,12 @@ int loader_load_elf_from_memory(machine_t *m, const void *data_ptr, size_t data_
 
     if (jiffies_pa_out) {
         uint32_t jiffies_pa = 0;
-        if (find_jiffies_symbol_pa(data, fsize, eh, &jiffies_pa)) {
+        if (find_jiffies_symbol_pa(data, fsize, eh, &jiffies_pa))
             *jiffies_pa_out = jiffies_pa;
-            fprintf(stderr, "[LOADER] Symbol jiffies PA=0x%08X\n", jiffies_pa);
-        } else {
+        else
             *jiffies_pa_out = 0;
-            fprintf(stderr, "[LOADER] Symbol jiffies not found in ELF symbols\n");
-        }
     }
 
-    fprintf(stderr, "[LOADER] ELF loaded, entry VA=0x%08X\n", eh->e_entry);
     return 0;
 }
 
@@ -395,9 +380,6 @@ int loader_load_nand_image(machine_t *m, const char *path)
 
     m->nand_data = data;
     m->nand_size = alloc_size;
-    fprintf(stderr,
-        "[LOADER] NAND image loaded: file=%ld bytes backing=%zu bytes\n",
-        fsize, alloc_size);
     return 0;
 }
 
@@ -415,8 +397,5 @@ int loader_create_blank_nand_image(machine_t *m)
     memset(data, 0xFF, NAND_IMAGE_SIZE);
     m->nand_data = data;
     m->nand_size = NAND_IMAGE_SIZE;
-    fprintf(stderr,
-        "[LOADER] Blank NAND image created: %u bytes\n",
-        (unsigned)NAND_IMAGE_SIZE);
     return 0;
 }

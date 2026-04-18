@@ -17,7 +17,6 @@
 		F7A49A7FFE7ACB94F155850F /* host_io.c in Sources */ = {isa = PBXBuildFile; fileRef = 313E8868C10B01DF050865B1 /* host_io.c */; };
 		870B1C3D019D35459FC8E476 /* loader.c in Sources */ = {isa = PBXBuildFile; fileRef = 42D562D4D7C48191D56D6DB2 /* loader.c */; };
 		4CABCE4D9E057707FAFB85F9 /* ui.c in Sources */ = {isa = PBXBuildFile; fileRef = 43111E1277C6BCEFEA39A48B /* ui.c */; };
-		0A75D580E0283328799486A4 /* wince_boot.c in Sources */ = {isa = PBXBuildFile; fileRef = F67610FA40F96F0C5F1BFA38 /* wince_boot.c */; };
 		4BEF73D55973C6D3731E8A14 /* bcu.c in Sources */ = {isa = PBXBuildFile; fileRef = 0DE8A5BA776098B59D6E4B57 /* bcu.c */; };
 		D002BD0C91A0C6CDC900EA61 /* cmu.c in Sources */ = {isa = PBXBuildFile; fileRef = 28E30C61D0C8FFC25D674B66 /* cmu.c */; };
 		DF748758DA6C5CB5AEDCF9EB /* pmu.c in Sources */ = {isa = PBXBuildFile; fileRef = 998EB357C4FB6C9E29031C10 /* pmu.c */; };
@@ -63,7 +62,6 @@
 		313E8868C10B01DF050865B1 /* host_io.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/host_io.c"; sourceTree = "<group>"; };
 		42D562D4D7C48191D56D6DB2 /* loader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/loader.c"; sourceTree = "<group>"; };
 		43111E1277C6BCEFEA39A48B /* ui.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/ui.c"; sourceTree = "<group>"; };
-		F67610FA40F96F0C5F1BFA38 /* wince_boot.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/wince_boot.c"; sourceTree = "<group>"; };
 		0DE8A5BA776098B59D6E4B57 /* bcu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/bcu.c"; sourceTree = "<group>"; };
 		28E30C61D0C8FFC25D674B66 /* cmu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/cmu.c"; sourceTree = "<group>"; };
 		998EB357C4FB6C9E29031C10 /* pmu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/pmu.c"; sourceTree = "<group>"; };
@@ -134,7 +132,6 @@
 				313E8868C10B01DF050865B1 /* host_io.c */,
 				42D562D4D7C48191D56D6DB2 /* loader.c */,
 				43111E1277C6BCEFEA39A48B /* ui.c */,
-				F67610FA40F96F0C5F1BFA38 /* wince_boot.c */,
 			);
 			name = "BE300 C";
 			sourceTree = "<group>";
@@ -271,7 +268,6 @@
 				F7A49A7FFE7ACB94F155850F /* host_io.c in Sources */,
 				870B1C3D019D35459FC8E476 /* loader.c in Sources */,
 				4CABCE4D9E057707FAFB85F9 /* ui.c in Sources */,
-				0A75D580E0283328799486A4 /* wince_boot.c in Sources */,
 				4BEF73D55973C6D3731E8A14 /* bcu.c in Sources */,
 				D002BD0C91A0C6CDC900EA61 /* cmu.c in Sources */,
 				DF748758DA6C5CB5AEDCF9EB /* pmu.c in Sources */,

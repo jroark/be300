@@ -22,7 +22,6 @@ be300_c_files = [
     ('host_io', '../../src/host_io.c'),
     ('loader', '../../src/loader.c'),
     ('ui', '../../src/ui.c'),
-    ('wince_boot', '../../src/wince_boot.c'),
 ]
 
 hw_c_files = [

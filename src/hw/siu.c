@@ -45,7 +45,6 @@ uint32_t siu_read(siu_state_t *s, uint32_t offset, unsigned size)
     case SIU_SCR:   return s->scr;
 
     default:
-        fprintf(stderr, "[SIU] Unhandled read offset 0x%02X\n", offset);
         return 0;
     }
 }
@@ -86,8 +85,6 @@ void siu_write(siu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case SIU_MSR:   /* read-only, ignore */ break;
 
     default:
-        fprintf(stderr, "[SIU] Unhandled write offset 0x%02X = 0x%02X\n",
-                offset, val);
         break;
     }
 }
