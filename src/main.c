@@ -3,14 +3,19 @@
 #include <string.h>
 #include "be300.h"
 
+/* GXemul global verbosity gates — see gxemul/src/core/debugmsg.c.
+ * debug() is silent while emul_executing unless verbose >= 1. */
+extern int verbose;
+extern int quiet_mode;
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
         "Usage: %s [options] [rom.bin]\n"
         "\n"
         "Options:\n"
-        "  --trace               Print each executed instruction to stderr\n"
-        "  --log-mmio            Log all MMIO register reads/writes\n"
+        "  --trace               Print each executed instruction (stdout, GXemul debug())\n"
+        "  --log-mmio            Log all MMIO register reads/writes (stderr)\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
         "  --cf <image>          Attach a FAT16 CF image\n"
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
@@ -95,6 +100,11 @@ int main(int argc, char *argv[])
             usage(argv[0]);
             return 1;
         }
+    }
+
+    if (cfg.trace) {
+        verbose = 1;
+        quiet_mode = 0;
     }
 
     machine_t *m = be300_create(&cfg);

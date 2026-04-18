@@ -9,6 +9,7 @@
  *  flash controller which dev_vr41xx doesn't cover.
  */
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -22,6 +23,24 @@
 #include "hw/cf.h"
 #include "hw/nand.h"
 #include "ppsh.h"
+
+/*
+ * --log-mmio: print one line per dispatched access. Volume-heavy by design
+ * (every MMIO touch), matches the flag name in src/main.c usage text.
+ */
+static void be300_log_mmio(const char *name, int writeflag, uint32_t off,
+    unsigned len, const unsigned char *data, uint32_t pc)
+{
+    uint64_t val = 0;
+    unsigned i;
+    unsigned n = len > 8 ? 8 : len;
+    for (i = 0; i < n; i++)
+        val |= (uint64_t)data[i] << (8u * i);
+    fprintf(stderr, "[MMIO] pc=%08X %s %s @%X len=%u %s 0x%0*" PRIX64 "\n",
+        pc, writeflag == MEM_WRITE ? "wr" : "rd", name, off, len,
+        writeflag == MEM_WRITE ? "<=" : "=>", (int)(n * 2),
+        (uint64_t)val);
+}
 
 /*
  *  VRC4173 NAND flash controller device.
@@ -48,6 +67,9 @@ DEVICE_ACCESS(be300_nand)
     struct be300_nand_device *d = (struct be300_nand_device *)extra;
     uint32_t offset = (uint32_t)relative_addr + 0xA000 + d->reg_offset;
     uint32_t pc = (uint32_t)cpu->pc;
+
+    if (d->log_mmio)
+        be300_log_mmio("be300_nand", writeflag, offset, (unsigned)len, data, pc);
 
     if (offset >= 0xA03Cu && offset < 0xA040u && d->cf) {
         if (writeflag == MEM_WRITE) {
@@ -89,6 +111,10 @@ DEVICE_ACCESS(be300_cf_window)
     struct be300_cf_window_device *d =
         (struct be300_cf_window_device *)extra;
     uint32_t offset = (uint32_t)relative_addr;
+
+    if (d->log_mmio)
+        be300_log_mmio("be300_cf_window", writeflag, offset,
+            (unsigned)len, data, (uint32_t)cpu->pc);
 
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
@@ -301,6 +327,10 @@ DEVICE_ACCESS(be300_vrc4173)
     if (off + len > VRC4173_LATCH_SIZE)
         return 0;
 
+    if (d->log_mmio)
+        be300_log_mmio("be300_vrc4173", writeflag, off, (unsigned)len,
+            data, (uint32_t)cpu->pc);
+
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
         bool suspend_latch = false;
@@ -422,6 +452,10 @@ DEVICE_ACCESS(be300_wince_aux)
 
     if (off + len > WINCE_AUX_SIZE)
         return 0;
+
+    if (d->log_mmio)
+        be300_log_mmio("be300_wince_aux", writeflag, off, (unsigned)len,
+            data, (uint32_t)cpu->pc);
 
     /*
      * When PPSH is disabled, model the parallel port controller as
@@ -987,6 +1021,10 @@ DEVICE_ACCESS(be300_touch)
     uint32_t off = (uint32_t)relative_addr;
     uint64_t val;
 
+    if (d->log_mmio)
+        be300_log_mmio("be300_touch", writeflag, off, (unsigned)len,
+            data, (uint32_t)cpu->pc);
+
     if (writeflag == MEM_WRITE) {
         val = memory_readmax64(cpu, data, len);
 
@@ -1104,6 +1142,10 @@ DEVICE_ACCESS(be300_buttons)
 {
     struct be300_input_device *d = (struct be300_input_device *)extra;
     machine_t *m = d->m;
+
+    if (d->log_mmio)
+        be300_log_mmio("be300_buttons", writeflag, (uint32_t)relative_addr,
+            (unsigned)len, data, (uint32_t)cpu->pc);
 
     if (writeflag == MEM_WRITE)
         return 1;
