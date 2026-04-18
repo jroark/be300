@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include "gpio.h"
 
 void gpio_init(gpio_state_t *s)
@@ -39,7 +38,6 @@ uint32_t gpio_read(gpio_state_t *s, uint32_t offset, unsigned size)
     case GPIO_GIUINTHTSELH:return s->inthtsel_hi;
     case 0x1Cu:            return 0; /* RFU on VR4131 */
     default:
-        fprintf(stderr, "[GPIO] Unhandled read offset 0x%02X\n", offset);
         return 0;
     }
 }
@@ -65,8 +63,6 @@ void gpio_write(gpio_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case 0x1Cu:
         break; /* RFU */
     default:
-        fprintf(stderr, "[GPIO] Unhandled write offset 0x%02X = 0x%04X\n",
-                offset, val);
         break;
     }
 }

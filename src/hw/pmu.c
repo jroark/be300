@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include "pmu.h"
 
 void pmu_init(pmu_state_t *s)
@@ -26,7 +25,6 @@ uint32_t pmu_read(pmu_state_t *s, uint32_t offset, unsigned size)
     case PMU_PMUWAITREG:    return s->pmuwaitreg;
     case PMU_PMUDIVREG:     return s->pmudivreg;
     default:
-        fprintf(stderr, "[PMU] Unhandled read offset 0x%02X\n", offset);
         return 0;
     }
 }
@@ -42,8 +40,6 @@ void pmu_write(pmu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case PMU_PMUWAITREG:    s->pmuwaitreg    = (uint16_t)val; break;
     case PMU_PMUDIVREG:     s->pmudivreg     = (uint16_t)val; break;
     default:
-        fprintf(stderr, "[PMU] Unhandled write offset 0x%02X = 0x%04X\n",
-                offset, val);
         break;
     }
 }

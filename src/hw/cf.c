@@ -239,7 +239,6 @@ int cf_load_image(cf_state_t *s, const char *path)
     cf_seed_companion_page(s);
     cf_reset_taskfile(s);
     cf_arm_boot_status(s);
-    fprintf(stderr, "[CF] Image loaded: %s (%ld bytes)\n", path, fsize);
     return 0;
 }
 
@@ -264,8 +263,6 @@ int cf_save_image(cf_state_t *s)
     fclose(f);
 
     s->dirty = false;
-    fprintf(stderr, "[CF] Image saved: %s (%zu bytes)\n",
-        s->image_path, s->image_size);
     return 0;
 }
 
@@ -740,11 +737,6 @@ uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size,
             val |= (uint64_t)s->companion_page[offset + i] << (8u * i);
     }
 
-    if (log) {
-        fprintf(stderr,
-            "[CF_CFG] R off=0x%03X size=%u val=0x%08" PRIX64 " PC=0x%08X\n",
-            offset, size, val, pc);
-    }
     return val;
 }
 
@@ -756,11 +748,6 @@ void cf_companion_write(cf_state_t *s, uint32_t offset, unsigned size,
     if (!s || size == 0)
         return;
 
-    if (log) {
-        fprintf(stderr,
-            "[CF_CFG] W off=0x%03X size=%u val=0x%08" PRIX64 " PC=0x%08X\n",
-            offset, size, value, pc);
-    }
 
     for (i = 0; i < size && (offset + i) < sizeof(s->companion_page); i++)
         s->companion_page[offset + i] = (uint8_t)((value >> (8u * i)) & 0xFFu);
@@ -794,11 +781,6 @@ uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size,
         val = cf_cis_read(s, offset, size);
     }
 
-    if (log) {
-        fprintf(stderr,
-            "[CF_WIN] R off=0x%03X size=%u val=0x%08" PRIX64 " PC=0x%08X\n",
-            offset, size, val, pc);
-    }
     return val;
 }
 
@@ -821,11 +803,6 @@ void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
                 (uint8_t)((value >> (8u * i)) & 0xFFu), pc);
     }
 
-    if (log) {
-        fprintf(stderr,
-            "[CF_WIN] W off=0x%03X size=%u val=0x%08" PRIX64 " PC=0x%08X\n",
-            offset, size, value, pc);
-    }
 }
 
 uint64_t cf_boot_read(cf_state_t *s, uint32_t offset, unsigned size,
@@ -854,12 +831,6 @@ uint64_t cf_boot_read(cf_state_t *s, uint32_t offset, unsigned size,
         val = size >= 4 ? UINT32_C(0xFFFFFFFF) : UINT64_C(0xFF);
     }
 
-    if (log) {
-        fprintf(stderr,
-            "[CF_BOOT] R off=0x%04X size=%u val=0x%08" PRIX64
-            " PC=0x%08X visible=%d\n",
-            offset, size, val, pc, s->boot_visible ? 1 : 0);
-    }
     return val;
 }
 
@@ -884,10 +855,4 @@ void cf_boot_write(cf_state_t *s, uint32_t offset, unsigned size,
         }
     }
 
-    if (log) {
-        fprintf(stderr,
-            "[CF_BOOT] W off=0x%04X size=%u val=0x%08" PRIX64
-            " PC=0x%08X visible=%d\n",
-            offset, size, value, pc, s->boot_visible ? 1 : 0);
-    }
 }

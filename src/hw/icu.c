@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include "icu.h"
 
 void icu_init(icu_state_t *s)
@@ -60,7 +59,6 @@ uint32_t icu_read(icu_state_t *s, uint32_t offset, unsigned size)
     case ICU_MBCUINTREG:  return s->mbcuint;
     case 0x3Cu:           return 0; /* RFU on VR4131 window */
     default:
-        fprintf(stderr, "[ICU] Unhandled read offset 0x%02X\n", offset);
         return 0;
     }
 }
@@ -109,8 +107,6 @@ void icu_write(icu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case 0x3Cu:
         break;   /* stub */
     default:
-        fprintf(stderr, "[ICU] Unhandled write offset 0x%02X = 0x%04X\n",
-                offset, val);
         break;
     }
 }

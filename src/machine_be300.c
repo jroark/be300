@@ -17,7 +17,6 @@
 #include "loader.h"
 #include "ppsh.h"
 #include "ui.h"
-#include "wince_boot.h"
 
 /* GXemul headers */
 #include "interrupt.h"
@@ -37,178 +36,6 @@
 /* GXemul externs */
 extern volatile bool emul_shutdown;
 extern volatile bool emul_executing;
-static int be300_read_u32_va(machine_t *m, uint64_t va, uint32_t *value);
-
-static uint32_t be300_canonicalize_nk_pc(uint32_t pc)
-{
-    if ((pc & 0xE0000000u) == 0x80000000u
-        || (pc & 0xE0000000u) == 0xA0000000u)
-        return (pc & 0x1FFFFFFFu) | 0x80000000u;
-    return pc;
-}
-
-static uint64_t be300_va32(uint32_t va)
-{
-    return 0xffffffff00000000ULL | (uint64_t)va;
-}
-
-static bool be300_env_flag_enabled(const char *name)
-{
-    const char *value = getenv(name);
-
-    if (!value || value[0] == '\0')
-        return false;
-
-    if (strcmp(value, "0") == 0
-        || strcmp(value, "false") == 0
-        || strcmp(value, "FALSE") == 0
-        || strcmp(value, "no") == 0
-        || strcmp(value, "NO") == 0)
-        return false;
-
-    return true;
-}
-
-static const char *be300_addr_region_name(uint32_t addr)
-{
-    if (addr >= 0xBFC00000u)
-        return "kseg1-rom";
-    if (addr >= 0xA0F00000u && addr < 0xA1000000u)
-        return "kseg1-spl";
-    if (addr >= 0xA0000000u)
-        return "kseg1";
-    if (addr >= 0x9FC00000u && addr < 0xA0000000u)
-        return "kseg0-rom";
-    if (addr >= 0x80F00000u && addr < 0x81000000u)
-        return "kseg0-spl";
-    if (addr >= 0x80000000u)
-        return "kseg0";
-    return "mapped";
-}
-
-static void be300_record_early_pc(machine_t *m, uint32_t pc)
-{
-    if (!m || m->early_bev_trace_fired || m->wince.cold_boot_copy_done)
-        return;
-
-    m->early_pc_ring[m->early_pc_ring_next] = pc;
-    m->early_pc_ring_next =
-        (uint8_t)((m->early_pc_ring_next + 1u) % BE300_EARLY_PC_RING_CAP);
-    if (m->early_pc_ring_count < BE300_EARLY_PC_RING_CAP)
-        m->early_pc_ring_count++;
-}
-
-static void be300_dump_words_va(machine_t *m, const char *label,
-                                uint32_t va, size_t n_words)
-{
-    if (!m || !m->cpu || !label || n_words == 0)
-        return;
-
-    fprintf(stderr,
-        "[BE300][EARLY_BEV] %s base=0x%08X region=%s\n",
-        label, va, be300_addr_region_name(va));
-
-    for (size_t i = 0; i < n_words; i++) {
-        uint32_t word = 0;
-        uint32_t word_va = (va & ~3u) + (uint32_t)(i * 4u);
-
-        if (be300_read_u32_va(m, be300_va32(word_va), &word)) {
-            fprintf(stderr,
-                "[BE300][EARLY_BEV]   0x%08X: 0x%08X\n",
-                word_va, word);
-        } else {
-            fprintf(stderr,
-                "[BE300][EARLY_BEV]   0x%08X: <unreadable>\n",
-                word_va);
-        }
-    }
-}
-
-static void be300_dump_recent_early_pcs(machine_t *m)
-{
-    if (!m || m->early_pc_ring_count == 0)
-        return;
-
-    fprintf(stderr,
-        "[BE300][EARLY_BEV] recent_pcs count=%u\n",
-        (unsigned)m->early_pc_ring_count);
-
-    for (uint8_t i = 0; i < m->early_pc_ring_count; i++) {
-        uint8_t idx = (uint8_t)((m->early_pc_ring_next
-            + BE300_EARLY_PC_RING_CAP - m->early_pc_ring_count + i)
-            % BE300_EARLY_PC_RING_CAP);
-        uint32_t pc = m->early_pc_ring[idx];
-
-        fprintf(stderr,
-            "[BE300][EARLY_BEV]   pc[%u]=0x%08X region=%s\n",
-            (unsigned)i, pc, be300_addr_region_name(pc));
-    }
-}
-
-static void be300_log_first_early_bev(machine_t *m, uint32_t vector_pa)
-{
-    uint64_t *cp0;
-    uint32_t epc;
-    uint32_t cause;
-    uint32_t status;
-    uint32_t badvaddr;
-    uint32_t entryhi;
-    uint32_t context;
-    uint32_t pagemask;
-    uint32_t vector_va;
-
-    if (!m || !m->cpu || m->early_bev_trace_fired)
-        return;
-
-    cp0 = m->cpu->cd.mips.coproc[0]->reg;
-    epc = (uint32_t)cp0[COP0_EPC];
-    cause = (uint32_t)cp0[COP0_CAUSE];
-    status = (uint32_t)cp0[COP0_STATUS];
-    badvaddr = (uint32_t)cp0[COP0_BADVADDR];
-    entryhi = (uint32_t)cp0[COP0_ENTRYHI];
-    context = (uint32_t)cp0[COP0_CONTEXT];
-    pagemask = (uint32_t)cp0[COP0_PAGEMASK];
-    vector_va = 0xBFC00000u + (vector_pa - 0x1FC00000u);
-
-    m->early_bev_trace_fired = true;
-
-    fprintf(stderr,
-        "[BE300][EARLY_BEV] vector_pa=0x%08X vector_va=0x%08X"
-        " pc=0x%08X epc=0x%08X cause=0x%08X status=0x%08X"
-        " badvaddr=0x%08X entryhi=0x%08X context=0x%08X"
-        " pagemask=0x%08X asid=%u exl=%u erl=%u bev=%u bd=%u\n",
-        vector_pa,
-        vector_va,
-        (uint32_t)m->cpu->pc,
-        epc,
-        cause,
-        status,
-        badvaddr,
-        entryhi,
-        context,
-        pagemask,
-        entryhi & 0xFFu,
-        (status & STATUS_EXL) ? 1u : 0u,
-        (status & STATUS_ERL) ? 1u : 0u,
-        (status & STATUS_BEV) ? 1u : 0u,
-        (cause & CAUSE_BD) ? 1u : 0u);
-    fprintf(stderr,
-        "[BE300][EARLY_BEV] epc_region=%s badvaddr_region=%s\n",
-        be300_addr_region_name(epc & ~1u),
-        be300_addr_region_name(badvaddr));
-
-    be300_dump_recent_early_pcs(m);
-    be300_dump_words_va(m, "vector_words", vector_va, 8);
-    be300_dump_words_va(m, "epc_words", epc & ~1u, 8);
-
-    if (m->stop_on_first_early_bev) {
-        fprintf(stderr,
-            "[BE300][EARLY_BEV] stopping after first early BEV"
-            " due to BE300_STOP_ON_FIRST_EARLY_BEV\n");
-        emul_shutdown = true;
-        __sync_synchronize();
-    }
-}
 
 static void be300_handle_stop_signal(int signum)
 {
@@ -264,11 +91,7 @@ static void be300_ppsh_poll_host_input(machine_t *m)
     }
 
     queued = be300_ppsh_queue_host_input(cooked, cooked_len);
-    if (m->cfg.log_mmio && queued > 0) {
-        fprintf(stderr,
-            "[PPSH] queued %zu host byte%s for guest transport\n",
-            queued, queued == 1 ? "" : "s");
-    }
+    (void)queued;
 }
 
 static void be300_register_linux_input_if_needed(machine_t *m)
@@ -314,119 +137,6 @@ static bool be300_nand_image_looks_bootable(const machine_t *m)
     return memcmp(m->nand_data + 0x4000u, spl_sig, sizeof(spl_sig)) == 0;
 }
 
-static bool be300_read_guest_cstring(machine_t *m, uint32_t va,
-                                     char *out, size_t out_sz)
-{
-    size_t pos = 0;
-
-    if (!m || !m->cpu || !out || out_sz == 0)
-        return false;
-
-    while (pos + 1 < out_sz) {
-        uint8_t ch = 0;
-        uint64_t gva = 0xFFFFFFFF00000000ULL | (uint64_t)va;
-
-        if (!m->cpu->memory_rw(m->cpu, m->cpu->mem, gva, &ch, 1,
-                MEM_READ, CACHE_DATA | NO_EXCEPTIONS))
-            return false;
-
-        out[pos++] = (char)ch;
-        va++;
-        if (ch == '\0')
-            return true;
-    }
-
-    out[out_sz - 1] = '\0';
-    return true;
-}
-
-static void be300_trace_restore_format(machine_t *m)
-{
-    static uint32_t last_ra = 0;
-    static unsigned log_count = 0;
-    uint32_t pc;
-    uint32_t ra;
-    uint32_t fmt_va;
-    uint32_t a1;
-    uint32_t a2;
-    uint32_t a3;
-    char fmt[160];
-
-    if (!m || m->boot_mode != BE300_BOOT_RESTORE || log_count >= 256)
-        return;
-
-    pc = be300_canonicalize_nk_pc((uint32_t)m->cpu->pc);
-    if (pc != 0x80E04428u)
-        return;
-
-    ra = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA];
-    if (ra == last_ra)
-        return;
-    last_ra = ra;
-
-    fmt_va = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0];
-    a1 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1];
-    a2 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A2];
-    a3 = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A3];
-
-    if (!be300_read_guest_cstring(m, fmt_va, fmt, sizeof(fmt)))
-        snprintf(fmt, sizeof(fmt), "<unreadable @0x%08X>", fmt_va);
-
-    fprintf(stderr,
-        "[RESTORE_FMT] ra=0x%08X fmt=\"%s\" a1=0x%08X a2=0x%08X a3=0x%08X\n",
-        ra, fmt, a1, a2, a3);
-    log_count++;
-}
-
-static void be300_trace_restore_checkpoints(machine_t *m)
-{
-    static const struct {
-        uint32_t pc;
-        const char *name;
-    } checkpoints[] = {
-        { 0x80E03374u, "area_lookup_ret" },
-        { 0x80E033D8u, "all_nand_lookup_ret" },
-        { 0x80E034D8u, "have_all_nand" },
-        { 0x80E03770u, "volume_read_ret" },
-        { 0x80E03DF4u, "nandcoldboot_enter" },
-        { 0x80E03E00u, "restore_return" },
-        { 0x80E04364u, "main_result_check" },
-    };
-    static uint32_t seen[(sizeof(checkpoints) / sizeof(checkpoints[0]))];
-    uint32_t pc;
-    size_t i;
-
-    if (!m || m->boot_mode != BE300_BOOT_RESTORE)
-        return;
-
-    pc = be300_canonicalize_nk_pc((uint32_t)m->cpu->pc);
-    for (i = 0; i < sizeof(checkpoints) / sizeof(checkpoints[0]); i++) {
-        if (pc != checkpoints[i].pc || seen[i] == pc)
-            continue;
-
-        seen[i] = pc;
-        fprintf(stderr,
-            "[RESTORE_CKPT] %s pc=0x%08X v0=0x%08X v1=0x%08X"
-            " a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X"
-            " s0=0x%08X s1=0x%08X s6=0x%08X s7=0x%08X"
-            " ra=0x%08X sp=0x%08X\n",
-            checkpoints[i].name,
-            pc,
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V0],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V1],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A2],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A3],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S0],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S1],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S6],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S7],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP]);
-    }
-}
-
 static void be300_sync_nand_image(machine_t *m)
 {
     FILE *f;
@@ -444,8 +154,6 @@ static void be300_sync_nand_image(machine_t *m)
         fprintf(stderr, "[BE300] Short write while saving NAND image\n");
     fclose(f);
     m->nand.dirty = false;
-    fprintf(stderr, "[BE300] NAND image saved: %s (%zu bytes)\n",
-        m->cfg.nand_path, m->nand_size);
 }
 
 static void be300_refresh_linux_bootinfo(machine_t *m)
@@ -496,10 +204,6 @@ static int be300_boot_linux_path(machine_t *m, const char *kernel_path,
 
     m->cpu->pc = (uint64_t)(int32_t)entry_va;
     m->boot_mode = BE300_BOOT_LINUX_PATH;
-    fprintf(stderr, "[BE300] Kernel entry: PC=0x%08X\n", entry_va);
-
-    if (cmdline && cmdline[0])
-        fprintf(stderr, "[BE300] Kernel cmdline: %s\n", cmdline);
 
     if (ram_path)
         loader_load_ram(m, ram_path);
@@ -536,8 +240,6 @@ static int be300_boot_linux_memory_internal(machine_t *m,
 
     m->cpu->pc = (uint64_t)(int32_t)entry_va;
     m->boot_mode = BE300_BOOT_LINUX_MEMORY;
-    fprintf(stderr, "[BE300] In-memory kernel entry: PC=0x%08X\n", entry_va);
-    fprintf(stderr, "[BE300] Kernel cmdline: %s\n", cmdline);
 
     be300_register_linux_input_if_needed(m);
     return 0;
@@ -550,8 +252,6 @@ machine_t *be300_create(const machine_config_t *cfg)
     machine_t *m = calloc(1, sizeof(machine_t));
     if (!m) return NULL;
     m->cfg = *cfg;
-    m->stop_on_first_early_bev =
-        be300_env_flag_enabled("BE300_STOP_ON_FIRST_EARLY_BEV");
     m->boot_mode = BE300_BOOT_NONE;
     m->use_builtin_ui = true;
     m->save_exit_screenshot = true;
@@ -559,7 +259,6 @@ machine_t *be300_create(const machine_config_t *cfg)
     m->fb_width = 240;
     m->fb_height = 320;
     m->fb_stride = 256;
-    wince_boot_init(m);
 
     /*
      * Initialize GXemul subsystems once per process.
@@ -703,11 +402,6 @@ machine_t *be300_create(const machine_config_t *cfg)
             bool cf_boot_visible = cfg->restore || !nand_bootable;
 
             cf_set_boot_visibility(&m->cf, cf_boot_visible);
-            fprintf(stderr,
-                "[BE300] CF ROM path %s (%s)\n",
-                cf_boot_visible ? "enabled" : "disabled",
-                cfg->restore ? "--restore" :
-                (nand_bootable ? "bootable NAND present" : "NAND not bootable"));
         }
 
         /* True cold boot: start at ROM reset vector.
@@ -715,8 +409,6 @@ machine_t *be300_create(const machine_config_t *cfg)
          * section copier and boot dispatcher, then jump to NK.exe. */
         m->cpu->pc = 0xffffffffBFC00000ULL;
         m->boot_mode = cfg->restore ? BE300_BOOT_RESTORE : BE300_BOOT_NAND;
-        fprintf(stderr, "[BE300] %s: PC=0xBFC00000 (ROM reset vector)\n",
-            cfg->restore ? "Restore boot" : "Cold boot");
 
         /* Re-initialize NAND controller with image data */
         if (m->nand_data) {
@@ -751,12 +443,8 @@ machine_t *be300_create(const machine_config_t *cfg)
                                      (be300_boot_rom[i+2] << 16) | (be300_boot_rom[i+3] << 24);
                         store_32bit_word(m->cpu, base_va + i, w);
                     }
-                    fprintf(stderr, "[BE300] Loaded embedded boot ROM"
-                        " (%u bytes) at PA 0x1FC00000\n", be300_boot_rom_len);
                 }
         }
-
-        fprintf(stderr, "[BE300] ROM-era TLB preloads disabled\n");
 
         extern void be300_register_cf_window(struct machine *, machine_t *, bool);
         be300_register_cf_window(gxm, m, cfg->log_mmio);
@@ -774,7 +462,6 @@ machine_t *be300_create(const machine_config_t *cfg)
         extern void be300_register_input(struct machine *, machine_t *, bool);
         be300_register_input(gxm, m, cfg->log_mmio);
         m->input_registered = true;
-        wince_boot_note_spl_handoff(m);
 
     } else if (cfg->rom_path) {
         if (loader_load_rom(m, cfg->rom_path) != 0) {
@@ -785,10 +472,6 @@ machine_t *be300_create(const machine_config_t *cfg)
         m->boot_mode = BE300_BOOT_ROM;
     }
 
-    wince_boot_attach_machine(m);
-
-    fprintf(stderr, "[BE300] Machine created: %u MB SDRAM, VR4131 CPU\n",
-            cfg->sdram_size / (1024 * 1024));
     return m;
 }
 
@@ -800,185 +483,6 @@ static uint64_t monotonic_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
-static uint64_t be300_sext32(uint32_t v)
-{
-    return (uint64_t)(int64_t)(int32_t)v;
-}
-
-static int be300_read_u32_va(machine_t *m, uint64_t va, uint32_t *value)
-{
-    unsigned char buf[4];
-
-    if (!m || !m->cpu || !value)
-        return 0;
-
-    if (!m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, sizeof(buf),
-        MEM_READ, CACHE_NONE | NO_EXCEPTIONS))
-        return 0;
-
-    *value = (uint32_t)buf[0]
-        | ((uint32_t)buf[1] << 8)
-        | ((uint32_t)buf[2] << 16)
-        | ((uint32_t)buf[3] << 24);
-    return 1;
-}
-
-static void be300_dump_virtual_page(machine_t *m, const char *label,
-                                    uint64_t va)
-{
-    unsigned char page[4096];
-    uint64_t paddr = 0;
-    uint64_t page_va;
-    uint64_t page_paddr;
-    char path[128];
-    FILE *f;
-    size_t wrote;
-
-    if (!m || !m->cpu || !m->cpu->translate_v2p)
-        return;
-
-    if (!m->cpu->translate_v2p(m->cpu, va, &paddr,
-        FLAG_NOEXCEPTIONS | FLAG_INSTR)) {
-        fprintf(stderr,
-            "[BE300] STUCK_DUMP %s va=0x%08" PRIx64 " map_ok=0\n",
-            label, va);
-        return;
-    }
-
-    page_va = va & ~0xfffULL;
-    page_paddr = paddr & ~0xfffULL;
-    if (!m->cpu->memory_rw(m->cpu, m->cpu->mem, page_paddr, page,
-        sizeof(page), MEM_READ,
-        PHYSICAL | NO_EXCEPTIONS | CACHE_INSTRUCTION)) {
-        fprintf(stderr,
-            "[BE300] STUCK_DUMP %s va_page=0x%08" PRIx64
-            " paddr_page=0x%08" PRIx64 " read_ok=0\n",
-            label, page_va, page_paddr);
-        return;
-    }
-
-    snprintf(path, sizeof(path), "stuck_%s_page_%08x.bin", label,
-        (uint32_t)page_paddr);
-    f = fopen(path, "wb");
-    if (!f) {
-        fprintf(stderr,
-            "[BE300] STUCK_DUMP %s va_page=0x%08" PRIx64
-            " paddr_page=0x%08" PRIx64 " fopen failed for %s\n",
-            label, page_va, page_paddr, path);
-        return;
-    }
-
-    wrote = fwrite(page, 1, sizeof(page), f);
-    fclose(f);
-
-    fprintf(stderr,
-        "[BE300] STUCK_DUMP %s va_page=0x%08" PRIx64
-        " paddr_page=0x%08" PRIx64 " path=%s wrote=%zu\n",
-        label, page_va, page_paddr, path, wrote);
-}
-
-static void be300_dump_virtual_dword(machine_t *m, const char *label,
-                                     uint64_t va)
-{
-    uint32_t value = 0;
-    uint64_t paddr = 0;
-    int map_ok;
-    int read_ok;
-
-    if (!m || !m->cpu || !m->cpu->translate_v2p)
-        return;
-
-    map_ok = m->cpu->translate_v2p(m->cpu, va, &paddr, FLAG_NOEXCEPTIONS);
-    read_ok = m->cpu->memory_rw(m->cpu, m->cpu->mem, va,
-        (unsigned char *)&value, sizeof(value), MEM_READ,
-        CACHE_DATA | NO_EXCEPTIONS);
-
-    fprintf(stderr,
-        "[BE300] STUCK_DWORD %s va=0x%08" PRIx64
-        " map_ok=%d paddr=%s0x%08" PRIx64
-        " read_ok=%d value=%s0x%08X\n",
-        label,
-        va,
-        map_ok,
-        map_ok ? "" : "(none) ",
-        paddr,
-        read_ok,
-        read_ok ? "" : "(none) ",
-        value);
-}
-
-static void be300_dump_live_nk_image(machine_t *m, uint32_t entry_va,
-                                     uint32_t base_pa)
-{
-    uint32_t nk_pa = base_pa;
-    uint32_t nk_size = 0x00800000u;
-    uint32_t sig = 0;
-    uint32_t p_toc = 0;
-    uint32_t physfirst = 0;
-    uint32_t physlast = 0;
-    FILE *nk_fp;
-
-    if (!m || !m->cpu || base_pa == 0 || base_pa >= 0x00800000u)
-        return;
-
-    nk_fp = fopen("nk_decompressed.bin", "wb");
-
-    if (be300_read_u32_va(m,
-            0xffffffffA0000000ULL | (uint64_t)(base_pa + 0x40u),
-            &sig)
-        && sig == 0x43454345u
-        && be300_read_u32_va(m,
-            0xffffffffA0000000ULL | (uint64_t)(base_pa + 0x44u),
-            &p_toc)
-        && be300_read_u32_va(m, be300_sext32(p_toc + 0x08u), &physfirst)
-        && be300_read_u32_va(m, be300_sext32(p_toc + 0x0Cu), &physlast)
-        && physlast > physfirst) {
-        nk_pa = physfirst & 0x1FFFFFFFu;
-        nk_size = physlast - physfirst;
-    }
-
-    fprintf(stderr,
-        "[BE300] NK dump plan: entry=0x%08X base_pa=0x%08X"
-        " sig=0x%08X pTOC=0x%08X physfirst=0x%08X"
-        " physlast=0x%08X size=0x%08X\n",
-        entry_va, base_pa, sig, p_toc, physfirst, physlast, nk_size);
-
-    if (nk_fp) {
-        uint8_t page[4096];
-        uint32_t off = 0;
-
-        while (off < nk_size) {
-            uint32_t chunk = nk_size - off;
-            uint64_t va;
-
-            if (chunk > sizeof(page))
-                chunk = sizeof(page);
-            va = 0xffffffffA0000000ULL | (uint64_t)(nk_pa + off);
-            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                    va, page, chunk, MEM_READ, CACHE_NONE))
-                fwrite(page, 1, chunk, nk_fp);
-            else
-                break;
-            off += chunk;
-        }
-        fclose(nk_fp);
-        fprintf(stderr,
-            "[BE300] Dumped NK.exe (%u bytes) to nk_decompressed.bin\n",
-            off);
-    }
-
-    {
-        uint32_t sigw = 0;
-        uint64_t sig_va = 0xffffffffA0000000ULL | (uint64_t)(nk_pa + 0x40u);
-
-        if (be300_read_u32_va(m, sig_va, &sigw)) {
-            fprintf(stderr,
-                "[BE300] NK.exe ECEC check: 0x%08X %s\n",
-                sigw, sigw == 0x43454345u ? "OK" : "MISMATCH");
-        }
-    }
-}
-
 static void be300_runtime_start(machine_t *m)
 {
     struct machine *gxm = m->gxe_machine;
@@ -986,9 +490,6 @@ static void be300_runtime_start(machine_t *m)
 
     if (m->runtime_initialized)
         return;
-
-    fprintf(stderr, "[BE300] Starting emulation at PC=0x%08" PRIx64 "\n",
-            m->cpu->pc);
 
     cpu_run_init(gxm);
     m->cpu->running = true;
@@ -1002,25 +503,11 @@ static void be300_runtime_start(machine_t *m)
     if (m->use_builtin_ui)
         ui_init(m);
 
-    if (m->cfg.target_mhz > 0) {
-        if (m->web_mode)
-            fprintf(stderr, "[BE300] Web pacing target: %u MHz-equivalent\n",
-                    m->cfg.target_mhz);
-        else
-            fprintf(stderr, "[BE300] Throttle: targeting %u MHz\n",
-                    m->cfg.target_mhz);
-    } else {
-        fprintf(stderr, "[BE300] Throttle: disabled (unthrottled)\n");
-    }
-
     m->throttle_target_ips = (uint64_t)m->cfg.target_mhz * 1000000ULL;
     m->throttle_wall_origin = 0;
     m->throttle_instr_origin = 0;
     m->last_report = 0;
     m->loop_count = 0;
-    m->early_bev_trace_fired = false;
-    m->early_pc_ring_count = 0;
-    m->early_pc_ring_next = 0;
     m->runtime_initialized = true;
     m->runtime_stopped = false;
     m->runtime_finalized = false;
@@ -1034,17 +521,6 @@ static void be300_runtime_start(machine_t *m)
     host_io_set_serial_sink(be300_serial_sink, m);
     host_io_set_stdout_enabled(m->mirror_serial_to_stdout);
     host_io_set_console_stdin_enabled(!m->cfg.enable_ppsh);
-
-    if (m->cfg.enable_ppsh) {
-        fprintf(stderr,
-            "[PPSH] console bridge enabled"
-            " (stdin is line-buffered unless the caller supplies raw input)\n");
-    }
-
-    if (m->stop_on_first_early_bev) {
-        fprintf(stderr,
-            "[BE300] Early BEV diagnostics: stop_on_first=yes\n");
-    }
 }
 
 static void be300_runtime_finalize(machine_t *m)
@@ -1069,191 +545,21 @@ static void be300_runtime_finalize(machine_t *m)
     cpu_run_deinit(m->gxe_machine);
     m->runtime_stopped = true;
     m->runtime_finalized = true;
-
-    wince_boot_log_summary(m);
-    fprintf(stderr, "[BE300] Emulation stopped after %" PRIi64 " instructions\n",
-            m->cpu->ninstrs);
 }
 
 static bool be300_run_batch(machine_t *m)
 {
-    static uint64_t last_progress_pc = 0;
-    static int same_progress_pc_reports = 0;
-    static int stuck_dumped = 0;
-
     struct machine *gxm = m->gxe_machine;
 
     __sync_synchronize();
-    if (emul_shutdown) {
-        fprintf(stderr, "[BE300] Loop exit: emul_shutdown is true\n");
-        wince_boot_pc_ring_dump(m);
+    if (emul_shutdown)
         return false;
-    }
 
-    be300_record_early_pc(m, (uint32_t)m->cpu->pc);
-
-    be300_trace_restore_format(m);
-    be300_trace_restore_checkpoints(m);
-
-    if (m->loop_count % 1000 == 0) {
-        fprintf(stderr, "[BE300] Loop batch %d, PC=0x%08" PRIx64 "\n",
-                m->loop_count, m->cpu->pc);
-    }
-
-    /* Detect user-mode execution (PC in kuseg: 0x00000000-0x7FFFFFFF) */
-    {
-        static int usermode_logged = 0;
-        uint64_t pc = m->cpu->pc;
-        if (!usermode_logged && pc < 0x80000000ULL && pc > 0x1000ULL) {
-            fprintf(stderr, "[BE300] *** USER MODE DETECTED: PC=0x%08" PRIx64 " ***\n", pc);
-            usermode_logged = 1;
-            wince_boot_note_usermode_entry(m);
-        }
-    }
-
-    /*
-     * Poll PA 0x24FC for NK.exe entry point (set by SPL after decompression).
-     * When detected, dump boot state BEFORE NK.exe starts executing.
-     */
-    if (!m->wince.cold_boot_copy_done && m->nand_data) {
-        static int entry_poll_logged = 0;
-        uint8_t buf24fc[4];
-        uint64_t va24fc = 0xffffffffA00024FCULL;
-        if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                va24fc, buf24fc, 4, MEM_READ, CACHE_NONE)) {
-            uint32_t entry = buf24fc[0] | (buf24fc[1]<<8)
-                | (buf24fc[2]<<16) | (buf24fc[3]<<24);
-            uint32_t entry_pa = entry & 0x1FFFFFFFu;
-            if (entry_pa >= 0x60000u && entry_pa < 0x100000u
-                && !entry_poll_logged) {
-                uint32_t base_pa = entry_pa - 4u;
-
-                entry_poll_logged = 1;
-                m->wince.cold_boot_copy_done = true;
-                m->wince.cold_boot_redirected = true;
-                wince_boot_pc_ring_activate(m);
-                fprintf(stderr,
-                    "[BE300] *** NK.exe entry at PA_24FC=0x%08X"
-                    " (PC=0x%08X batch=%d) ***\n",
-                    entry, (uint32_t)m->cpu->pc, m->loop_count);
-                be300_dump_live_nk_image(m, entry, base_pa);
-
-                /* NOTE: Method 113 of API set 0 ("Win32") at function table
-                 * 0x800753D8+0x1C4 = 0xFFFFFFFF (PSL server redirect).
-                 * This is likely CreateFileW. When filesys.exe calls it
-                 * during its own init, the PSL dispatch should detect
-                 * that the caller IS the server and handle it locally.
-                 * Patching 0xFFFFFFFF to a return-error stub doesn't work
-                 * because filesys.exe needs CreateFileW to succeed. */
-            }
-        }
-    }
-
-    /* Detect SPL entry: PC in range 0x80F00000-0x80F0FFFF (PA 0xF00000) */
-    {
-        static int spl_entry_logged = 0;
-        uint32_t pc = (uint32_t)m->cpu->pc;
-        uint32_t pa = pc & 0x1FFFFFFFu;
-        /* Also detect exceptions (BEV handler entry) */
-        if (pa == 0x1FC00200u || pa == 0x1FC00280u || pa == 0x1FC00380u) {
-            be300_log_first_early_bev(m, pa);
-        }
-        if (!spl_entry_logged && pa >= 0xF00000u && pa < 0x1000000u) {
-            fprintf(stderr,
-                    "[BE300] *** SPL ENTRY DETECTED: PC=0x%08X PA=0x%08X batch=%d ***\n",
-                    pc, pa, m->loop_count);
-            spl_entry_logged = 1;
-        }
-    }
-
-    /*
-     * Detect NK.exe entry and dump the decompressed image for analysis.
-     * Derive the image base from the live entry at PA 0x24FC instead of
-     * assuming the WinCE 3.0 layout. The .NET image enters at 0xA0029004,
-     * while the 3.0 image enters at 0xA0060004.
-     */
-    if (!m->wince.cold_boot_copy_done && m->nand_data) {
-        uint32_t pc = (uint32_t)m->cpu->pc;
-        uint32_t pa = pc & 0x1FFFFFFFu;
-        uint32_t entry_va = 0;
-        uint32_t entry_pa = 0;
-        uint32_t base_pa = 0;
-
-        if (be300_read_u32_va(m, 0xffffffffA00024FCULL, &entry_va)
-            && ((entry_va & 0xE0000000u) == 0x80000000u
-                || (entry_va & 0xE0000000u) == 0xA0000000u)
-            && (entry_va & 0x1FFFFFFFu) >= 4u) {
-            entry_pa = entry_va & 0x1FFFFFFFu;
-            base_pa = entry_pa - 4u;
-        }
-
-        if (base_pa != 0
-            && base_pa < 0x00800000u
-            && pa >= base_pa
-            && pa < base_pa + 0x00800000u) {
-            m->wince.cold_boot_copy_done = true;
-            m->wince.cold_boot_redirected = true;
-            fprintf(stderr,
-                "[BE300] *** NK.exe entry detected at PC=0x%08X batch=%d ***\n",
-                pc, m->loop_count);
-            be300_dump_live_nk_image(m, entry_va, base_pa);
-        }
-    }
-
-    if (!machine_run(gxm)) {
-        wince_boot_note_fatal_stop(m, "machine-no-longer-running");
-        fprintf(stderr, "[BE300] Loop exit: machine no longer running"
-            " (mips16=%d halted=%d PC=0x%08X)\n",
-            m->cpu->cd.mips.mips16,
-            m->cpu->is_halted,
-            (uint32_t)m->cpu->pc);
-
-        /* Dump PC ring buffer on crash */
-        wince_boot_pc_ring_dump(m);
-
-        /* Dump boot signature at PA 0x2700 (FUN_80079E48 cold/warm check) */
-        if (m->nand_data) {
-            uint8_t sig[16];
-            uint64_t sig_va = 0xffffffffA0002700ULL;
-            if (m->cpu->memory_rw(m->cpu, m->cpu->mem,
-                    sig_va, sig, 16, MEM_READ, CACHE_NONE)) {
-                fprintf(stderr,
-                    "[CRASH] PA 0x2700 boot_sig:"
-                    " %02X %02X %02X %02X %02X %02X %02X %02X"
-                    " %02X %02X %02X %02X %02X %02X %02X %02X\n",
-                    sig[0],sig[1],sig[2],sig[3],sig[4],sig[5],sig[6],sig[7],
-                    sig[8],sig[9],sig[10],sig[11],sig[12],sig[13],sig[14],sig[15]);
-            }
-        }
-
-        /* Basic crash diagnostics */
-        {
-            uint32_t pc = (uint32_t)m->cpu->pc;
-            fprintf(stderr, "[CRASH] PC=0x%08X batch=%d instrs=%" PRIi64 "\n",
-                pc, m->loop_count, m->cpu->ninstrs);
-            fprintf(stderr, "[CRASH] CP0: Status=0x%08X"
-                " Cause=0x%08X EPC=0x%08X BadVA=0x%08X\n",
-                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_STATUS],
-                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_CAUSE],
-                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_EPC],
-                (uint32_t)m->cpu->cd.mips.coproc[0]->reg[COP0_BADVADDR]);
-            fprintf(stderr, "[CRASH] GPR:"
-                " sp=%08X fp=%08X ra=%08X gp=%08X\n",
-                (uint32_t)m->cpu->cd.mips.gpr[29],
-                (uint32_t)m->cpu->cd.mips.gpr[30],
-                (uint32_t)m->cpu->cd.mips.gpr[31],
-                (uint32_t)m->cpu->cd.mips.gpr[28]);
-        }
-
+    if (!machine_run(gxm))
         return false;
-    }
 
     if (m->web_mode)
         timer_tick_manual();
-
-    if (m->loop_count % 1000 == 0) {
-        fprintf(stderr, "[BE300] Loop batch %d done\n", m->loop_count);
-    }
 
     if (!m->web_mode && m->throttle_target_ips > 0) {
         uint64_t now_ns = monotonic_ns();
@@ -1292,130 +598,10 @@ static bool be300_run_batch(machine_t *m)
     if (m->use_builtin_ui)
         ui_update(m);
 
-    if (m->use_builtin_ui && ui_should_quit(m)) {
-        fprintf(stderr, "[BE300] Loop exit: ui_should_quit is true\n");
+    if (m->use_builtin_ui && ui_should_quit(m))
         return false;
-    }
 
-    if (m->cpu->ninstrs - m->last_report >= 50000000LL) {
-        uint64_t *cp0 = m->cpu->cd.mips.coproc[0]->reg;
-        fprintf(stderr, "[BE300] Progress: %" PRIi64 "M instrs,"
-            " PC=0x%08" PRIx64
-            " Status=0x%08X Cause=0x%08X EPC=0x%08X"
-            " BadVA=0x%08X SP=0x%08X RA=0x%08X\n",
-            m->cpu->ninstrs / 1000000LL, m->cpu->pc,
-            (uint32_t)cp0[COP0_STATUS],
-            (uint32_t)cp0[COP0_CAUSE],
-            (uint32_t)cp0[COP0_EPC],
-            (uint32_t)cp0[COP0_BADVADDR],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
-            (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
-        m->last_report = m->cpu->ninstrs;
-
-        if (m->cpu->pc == last_progress_pc)
-            same_progress_pc_reports++;
-        else
-            same_progress_pc_reports = 0;
-        last_progress_pc = m->cpu->pc;
-
-        if (!stuck_dumped &&
-            same_progress_pc_reports >= 5) {
-            uint32_t io_base = (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V1];
-            uint32_t epc = (uint32_t)cp0[COP0_EPC];
-            uint32_t badvaddr = (uint32_t)cp0[COP0_BADVADDR];
-            uint32_t latch_val = 0;
-
-            stuck_dumped = 1;
-            fprintf(stderr,
-                "[BE300] STUCK_PC pc=0x%08" PRIx64 " same_reports=%d"
-                " status=0x%08X cause=0x%08X epc=0x%08X"
-                " badvaddr=0x%08X sp=0x%08X ra=0x%08X"
-                " v0=0x%08X v1=0x%08X a0=0x%08X a1=0x%08X"
-                " a2=0x%08X a3=0x%08X s0=0x%08X s1=0x%08X"
-                " s2=0x%08X s3=0x%08X gp=0x%08X t9=0x%08X\n",
-                m->cpu->pc,
-                same_progress_pc_reports,
-                (uint32_t)cp0[COP0_STATUS],
-                (uint32_t)cp0[COP0_CAUSE],
-                (uint32_t)cp0[COP0_EPC],
-                (uint32_t)cp0[COP0_BADVADDR],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_SP],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_RA],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V0],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_V1],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A0],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A1],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A2],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_A3],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S0],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S1],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S2],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_S3],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_GP],
-                (uint32_t)m->cpu->cd.mips.gpr[MIPS_GPR_T9]);
-            be300_dump_virtual_page(m, "pc", m->cpu->pc);
-            be300_dump_virtual_dword(m, "pc_word", m->cpu->pc);
-            be300_dump_virtual_page(m, "ra",
-                m->cpu->cd.mips.gpr[MIPS_GPR_RA]);
-            if (epc != 0) {
-                be300_dump_virtual_page(m, "epc", epc);
-                be300_dump_virtual_dword(m, "epc_word", epc);
-            }
-            if (badvaddr != 0) {
-                be300_dump_virtual_dword(m, "badvaddr", badvaddr);
-                if ((badvaddr & ~0xfffU) != (epc & ~0xfffU))
-                    be300_dump_virtual_page(m, "badvaddr", badvaddr);
-            }
-
-            if (m->cpu->pc < 0x80000000ULL) {
-                be300_dump_virtual_dword(m, "global_01f620c8", 0x01f620c8u);
-                be300_dump_virtual_dword(m, "io_base",
-                    (uint64_t)io_base);
-                be300_dump_virtual_dword(m, "io_03c0",
-                    (uint64_t)io_base + 0x3c0u);
-                be300_dump_virtual_dword(m, "io_03c4",
-                    (uint64_t)io_base + 0x3c4u);
-                be300_dump_virtual_dword(m, "io_03f4",
-                    (uint64_t)io_base + 0x3f4u);
-                if (be300_vrc4173_latch_read_u32(0x0A0003C0u, &latch_val))
-                    fprintf(stderr,
-                        "[BE300] STUCK_LATCH pa=0x0A0003C0 value=0x%08X\n",
-                        latch_val);
-                if (be300_vrc4173_latch_read_u32(0x0A0003C4u, &latch_val))
-                    fprintf(stderr,
-                        "[BE300] STUCK_LATCH pa=0x0A0003C4 value=0x%08X\n",
-                        latch_val);
-                if (be300_vrc4173_latch_read_u32(0x0A0003C8u, &latch_val))
-                    fprintf(stderr,
-                        "[BE300] STUCK_LATCH pa=0x0A0003C8 value=0x%08X\n",
-                        latch_val);
-                if (be300_vrc4173_latch_read_u32(0x0A0003F4u, &latch_val))
-                    fprintf(stderr,
-                        "[BE300] STUCK_LATCH pa=0x0A0003F4 value=0x%08X\n",
-                        latch_val);
-            }
-        }
-
-        /* Check PA 0x24FC and version at PA 0x2400 */
-        {
-            uint8_t buf[4];
-            uint64_t va;
-            va = 0xffffffffA0002400ULL;
-            if (m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4, MEM_READ, CACHE_DATA)) {
-                uint32_t ver = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
-                va = 0xffffffffA00024FCULL;
-                m->cpu->memory_rw(m->cpu, m->cpu->mem, va, buf, 4, MEM_READ, CACHE_DATA);
-                uint32_t ep = buf[0]|(buf[1]<<8)|(buf[2]<<16)|(buf[3]<<24);
-                fprintf(stderr, "[BE300]   PA_2400=0x%08X PA_24FC=0x%08X\n", ver, ep);
-            }
-        }
-
-    }
-
-    if (++m->loop_count % 100 == 0) {
-        /* keep hook point for extremely verbose diagnostics */
-    }
-
+    m->loop_count++;
     return true;
 }
 
@@ -1592,7 +778,6 @@ void be300_destroy(machine_t *m)
     be300_stop(m);
     be300_runtime_finalize(m);
 
-    wince_boot_detach_machine(m);
     be300_sync_nand_image(m);
     cf_save_image(&m->cf);
 

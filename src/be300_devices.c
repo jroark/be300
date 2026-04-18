@@ -23,7 +23,6 @@
 #include "hw/cf.h"
 #include "hw/nand.h"
 #include "ppsh.h"
-#include "wince_boot.h"
 
 /*
  *  VRC4173 NAND flash controller device.
@@ -56,13 +55,9 @@ DEVICE_ACCESS(be300_nand)
             uint64_t val = memory_readmax64(cpu, data, len);
             if (val == 0 || (val & 0x22u) == 0)
                 cf_clear_irq(d->cf);
-            wince_boot_note_mmio_access(cpu->machine, cpu,
-                0x0A000000ULL + offset, len, val, true);
         } else {
             uint64_t val = cf_card_state_bits(d->cf);
             memory_writemax64(cpu, data, len, val);
-            wince_boot_note_mmio_access(cpu->machine, cpu,
-                0x0A000000ULL + offset, len, val, false);
         }
         return 1;
     }
@@ -71,14 +66,10 @@ DEVICE_ACCESS(be300_nand)
         if (writeflag == MEM_WRITE) {
             uint64_t val = memory_readmax64(cpu, data, len);
             cf_boot_write(d->cf, offset, (unsigned)len, val, d->log_mmio, pc);
-            wince_boot_note_mmio_access(cpu->machine, cpu,
-                0x0A000000ULL + offset, len, val, true);
         } else {
             uint64_t val = cf_boot_read(d->cf, offset, (unsigned)len,
                 d->log_mmio, pc);
             memory_writemax64(cpu, data, len, val);
-            wince_boot_note_mmio_access(cpu->machine, cpu,
-                0x0A000000ULL + offset, len, val, false);
         }
         return 1;
     }
@@ -86,14 +77,9 @@ DEVICE_ACCESS(be300_nand)
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
         nand_write(d->nand, offset, (unsigned)len, val, d->log_mmio, pc);
-
-        wince_boot_note_mmio_access(cpu->machine, cpu,
-            0x0A000000ULL + offset, len, val, true);
     } else {
         uint64_t val = nand_read(d->nand, offset, (unsigned)len, d->log_mmio, pc);
         memory_writemax64(cpu, data, len, val);
-        wince_boot_note_mmio_access(cpu->machine, cpu,
-            0x0A000000ULL + offset, len, val, false);
     }
 
     return 1;
@@ -109,14 +95,10 @@ DEVICE_ACCESS(be300_cf_window)
         uint64_t val = memory_readmax64(cpu, data, len);
         cf_window_write(d->cf, offset, (unsigned)len, val, d->log_mmio,
             (uint32_t)cpu->pc);
-        wince_boot_note_mmio_access(cpu->machine, cpu,
-            PA_ROM_BASE + offset, len, val, true);
     } else {
         uint64_t val = cf_window_read(d->cf, offset, (unsigned)len,
             d->log_mmio, (uint32_t)cpu->pc);
         memory_writemax64(cpu, data, len, val);
-        wince_boot_note_mmio_access(cpu->machine, cpu,
-            PA_ROM_BASE + offset, len, val, false);
     }
 
     return 1;
@@ -175,7 +157,8 @@ struct be300_wince_aux {
     uint8_t bytes[WINCE_AUX_SIZE];
     bool    log_mmio;
     uint16_t ppsh_status_520;
-    uint16_t ppsh_data;         /* response data at offset 0x000 */
+    uint16_t ppsh_data;
+         /* response data at offset 0x000 */
     bool     ppsh_response_pending; /* true after cmd dispatch until data read */
     bool     ppsh_enabled;    /* --ppsh: enable PPSH debug shell probe */
     bool     ppsh_ack_pending;
@@ -272,19 +255,7 @@ static void ppsh_guest_submit_byte(struct be300_wince_aux *d, uint8_t byte,
         return;
 
     d->ppsh_guest_byte_count++;
-
-    if (d->ppsh_guest_byte_count == 1) {
-        fprintf(stderr,
-            "[PPSH] guest transport traffic detected"
-            " at PC=0x%08X\n", pc);
-    }
-
-    if (d->log_mmio && d->ppsh_raw_log_count < 64) {
-        fprintf(stderr,
-            "[PPSH_TX] byte=0x%02X PC=0x%08X count=%zu\n",
-            byte, pc, d->ppsh_guest_byte_count);
-        d->ppsh_raw_log_count++;
-    }
+    (void)pc;
 
     ppsh_guest_note_text_byte(d, byte);
 }
@@ -304,14 +275,8 @@ static size_t ppsh_queue_host_bytes(struct be300_wince_aux *d,
         queued++;
     }
 
-    if (queued > 0) {
+    if (queued > 0)
         d->ppsh_host_byte_count += queued;
-        if (d->log_mmio) {
-            fprintf(stderr,
-                "[PPSH_RX] queued=%zu total=%zu pending=%zu\n",
-                queued, d->ppsh_host_byte_count, d->ppsh_host_q_count);
-        }
-    }
 
     ppsh_refresh_status(d);
     return queued;
@@ -345,8 +310,6 @@ DEVICE_ACCESS(be300_vrc4173)
             nand_restore_handles_offset(off)) {
             nand_restore_write(&g_be300_machine->nand, off, (unsigned)len,
                 val, d->log_mmio, (uint32_t)cpu->pc);
-            wince_boot_note_mmio_access(cpu->machine, cpu,
-                VRC4173_LATCH_BASE + off, len, val, true);
             return 1;
         }
 
@@ -354,8 +317,6 @@ DEVICE_ACCESS(be300_vrc4173)
             cf_companion_write(&g_be300_machine->cf, off - 0x1000u,
                 (unsigned)len, val, d->log_mmio, (uint32_t)cpu->pc);
             memcpy(&d->bytes[off], data, len);
-            wince_boot_note_mmio_access(cpu->machine, cpu,
-                VRC4173_LATCH_BASE + off, len, val, true);
             return 1;
         }
 
@@ -398,13 +359,6 @@ DEVICE_ACCESS(be300_vrc4173)
         } else {
             memcpy(&d->bytes[off], data, len);
         }
-        if (d->log_mmio)
-            fprintf(stderr, "[VRC4173] W PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
-                    (uint32_t)(VRC4173_LATCH_BASE + off), len,
-                    (unsigned long long)val, (uint32_t)cpu->pc);
-        wince_boot_note_mmio_access(cpu->machine, cpu,
-            VRC4173_LATCH_BASE + off, len, val, true);
-
         /* PIU control registers at offsets 0x000-0x05F: re-evaluate
          * scan sequencer state when NK.exe configures the PIU. */
         if (off < 0x060 && g_be300_machine && g_be300_machine->touch_device)
@@ -415,8 +369,6 @@ DEVICE_ACCESS(be300_vrc4173)
             uint64_t val = be300_latch_peek_u32(d, off)
                 | cf_giu_source_bits(&g_be300_machine->cf);
             memory_writemax64(cpu, data, len, val);
-            wince_boot_note_mmio_access(cpu->machine, cpu,
-                VRC4173_LATCH_BASE + off, len, val, false);
             return 1;
         }
 
@@ -425,8 +377,6 @@ DEVICE_ACCESS(be300_vrc4173)
             uint64_t val = nand_restore_read(&g_be300_machine->nand, off,
                 (unsigned)len, d->log_mmio, (uint32_t)cpu->pc);
             memory_writemax64(cpu, data, len, val);
-            wince_boot_note_mmio_access(cpu->machine, cpu,
-                VRC4173_LATCH_BASE + off, len, val, false);
             return 1;
         }
 
@@ -435,8 +385,6 @@ DEVICE_ACCESS(be300_vrc4173)
                 off - 0x1000u, (unsigned)len, d->log_mmio,
                 (uint32_t)cpu->pc);
             memory_writemax64(cpu, data, len, val);
-            wince_boot_note_mmio_access(cpu->machine, cpu,
-                VRC4173_LATCH_BASE + off, len, val, false);
             return 1;
         }
 
@@ -462,14 +410,6 @@ DEVICE_ACCESS(be300_vrc4173)
         } else {
             memcpy(data, &d->bytes[off], len);
         }
-        if (d->log_mmio)
-            fprintf(stderr, "[VRC4173] R PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
-                    (uint32_t)(VRC4173_LATCH_BASE + off), len,
-                    (unsigned long long)memory_readmax64(cpu, data, len),
-                    (uint32_t)cpu->pc);
-        wince_boot_note_mmio_access(cpu->machine, cpu,
-            VRC4173_LATCH_BASE + off, len,
-            memory_readmax64(cpu, data, len), false);
     }
 
     return 1;
@@ -508,12 +448,6 @@ DEVICE_ACCESS(be300_wince_aux)
             memcpy(&d->bytes[off], data, len);
             if (off == 0x400 && d->ppsh_idle_poll_count < 32)
                 d->ppsh_idle_poll_count = 0;
-            if (d->log_mmio)
-                fprintf(stderr,
-                    "[WINCE_AUX] W PA=0x%08X size=%zu absorbed"
-                    " (idle) PC=0x%08X\n",
-                    (uint32_t)(WINCE_AUX_BASE + off), len,
-                    (uint32_t)cpu->pc);
             return 1;
         }
         if (off == 0x400) {
@@ -521,24 +455,11 @@ DEVICE_ACCESS(be300_wince_aux)
             uint16_t status = 0x2320;
             data[0] = status & 0xFF;
             if (len > 1) data[1] = (status >> 8) & 0xFF;
-            if (d->log_mmio && d->ppsh_idle_poll_count <= 20)
-                fprintf(stderr,
-                    "[WINCE_AUX] R PA=0x%08X size=%zu val=0x%04X"
-                    " (idle #%u) PC=0x%08X\n",
-                    (uint32_t)(WINCE_AUX_BASE + off), len,
-                    (unsigned)status, d->ppsh_idle_poll_count,
-                    (uint32_t)cpu->pc);
             return 1;
         }
         data[0] = 0xFF;
         if (len > 1) data[1] = 0xFF;
         for (size_t i = 2; i < len; i++) data[i] = 0xFF;
-        if (d->log_mmio)
-            fprintf(stderr,
-                "[WINCE_AUX] R PA=0x%08X size=%zu val=0xFFFF"
-                " (idle) PC=0x%08X\n",
-                (uint32_t)(WINCE_AUX_BASE + off), len,
-                (uint32_t)cpu->pc);
         return 1;
     }
 
@@ -564,8 +485,6 @@ DEVICE_ACCESS(be300_wince_aux)
          */
         if (off == 0x400 && len >= 2) {
             uint16_t cmd = (uint16_t)val;
-
-            wince_boot_note_ppsh_command(cpu, cmd);
             switch (cmd) {
             case 0x3330:
                 ppsh_refresh_status(d);
@@ -595,12 +514,6 @@ DEVICE_ACCESS(be300_wince_aux)
             }
         }
 
-        if (d->log_mmio) {
-            fprintf(stderr,
-                "[WINCE_AUX] W PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
-                (uint32_t)(WINCE_AUX_BASE + off), len,
-                (unsigned long long)val, (uint32_t)cpu->pc);
-        }
     } else {
         memcpy(data, &d->bytes[off], len);
         val = memory_readmax64(cpu, data, len);
@@ -627,7 +540,6 @@ DEVICE_ACCESS(be300_wince_aux)
                 memory_writemax64(cpu, data, len, (word >> 8) & 0xffu);
             val = len >= 2 ? word : ((word >> 8) & 0xffu);
             ppsh_refresh_status(d);
-            wince_boot_note_ppsh_data_read(cpu, word);
         }
 
         /*
@@ -638,17 +550,9 @@ DEVICE_ACCESS(be300_wince_aux)
             ppsh_refresh_status(d);
             val = d->ppsh_status_520;
             memory_writemax64(cpu, data, len, val);
-            wince_boot_note_ppsh_status_read(cpu, (uint16_t)val);
-        }
-
-        if (d->log_mmio) {
-            fprintf(stderr,
-                "[WINCE_AUX] R PA=0x%08X size=%zu val=0x%llX PC=0x%08X\n",
-                (uint32_t)(WINCE_AUX_BASE + off), len,
-                (unsigned long long)memory_readmax64(cpu, data, len),
-                (uint32_t)cpu->pc);
         }
     }
+    (void)val;
 
     return 1;
 }
@@ -714,9 +618,6 @@ void be300_register_nand(struct machine *gxm, nand_state_t *nand,
     memory_device_register(gxm->memory, "be300_nand_hi",
         0x0A00A050ULL, 0x37B0,
         dev_be300_nand_access, (void *)hi, DM_DEFAULT, NULL);
-
-    fprintf(stderr, "[BE300] Registered NAND controller"
-            " (lo: 0x0A00A000+0x40, hi: 0x0A00A050+0x37B0)\n");
 }
 
 
@@ -898,42 +799,6 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
 
             ppsh_refresh_status(aux);
         }
-
-        fprintf(stderr,
-            "[BE300] VRC seed"
-            " 8010=%08X 1120=%08X 1128=%08X 112C=%08X"
-            " 1138=%08X 113C=%08X 1B10=%08X 1B14=%08X"
-            " 1B20=%08X 1B2C=%08X"
-            " 03C0=%08X 03C4=%08X 03C8=%08X 03F4=%08X"
-            " 0880=%08X 0888=%08X 1118=%08X\n",
-            be300_latch_peek_u32(latch, 0x8010u),
-            be300_latch_peek_u32(latch, 0x1120u),
-            be300_latch_peek_u32(latch, 0x1128u),
-            be300_latch_peek_u32(latch, 0x112Cu),
-            be300_latch_peek_u32(latch, 0x1138u),
-            be300_latch_peek_u32(latch, 0x113Cu),
-            be300_latch_peek_u32(latch, 0x1B10u),
-            be300_latch_peek_u32(latch, 0x1B14u),
-            be300_latch_peek_u32(latch, 0x1B20u),
-            be300_latch_peek_u32(latch, 0x1B2Cu),
-            be300_latch_peek_u32(latch, 0x03C0u),
-            be300_latch_peek_u32(latch, 0x03C4u),
-            be300_latch_peek_u32(latch, 0x03C8u),
-            be300_latch_peek_u32(latch, 0x03F4u),
-            be300_latch_peek_u32(latch, 0x0880u),
-            be300_latch_peek_u32(latch, 0x0888u),
-            be300_latch_peek_u32(latch, 0x1118u));
-        fprintf(stderr,
-            "[BE300] VRC audio seed"
-            " 03C0=%08X 03C4=%08X 03C8=%08X 03F4=%08X"
-            " 0880=%08X 0888=%08X 1118=%08X\n",
-            be300_latch_peek_u32(latch, 0x03C0u),
-            be300_latch_peek_u32(latch, 0x03C4u),
-            be300_latch_peek_u32(latch, 0x03C8u),
-            be300_latch_peek_u32(latch, 0x03F4u),
-            be300_latch_peek_u32(latch, 0x0880u),
-            be300_latch_peek_u32(latch, 0x0888u),
-            be300_latch_peek_u32(latch, 0x1118u));
     }
 
     /*
@@ -987,15 +852,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
             p[off + 0x400] = 0x20;
             p[off + 0x401] = 0x23;
         }
-        fprintf(stderr,
-            "[BE300] PPSH disabled: registered idle RAM at 0x%08llX"
-            " (page-aligned 0x%08llX+0x%X, dyntrans-fast)\n",
-            (unsigned long long)WINCE_AUX_BASE,
-            (unsigned long long)page_base, page_size);
     }
-
-    fprintf(stderr,
-        "[BE300] Registered VRC4173 latch plus WinCE 0x0C000120 alias\n");
 }
 
 void be300_register_cf_window(struct machine *gxm, machine_t *m, bool log_mmio)
@@ -1009,10 +866,6 @@ void be300_register_cf_window(struct machine *gxm, machine_t *m, bool log_mmio)
     memory_device_register(gxm->memory, "be300_cf_window",
         PA_ROM_BASE, CF_WINDOW_SIZE,
         dev_be300_cf_window_access, (void *)d, DM_DEFAULT, NULL);
-
-    fprintf(stderr,
-        "[BE300] Registered CF window at PA 0x%08X (%s)\n",
-        PA_ROM_BASE, cf_present(&m->cf) ? "card present" : "no card");
 }
 
 
@@ -1138,10 +991,6 @@ DEVICE_ACCESS(be300_touch)
     if (writeflag == MEM_WRITE) {
         val = memory_readmax64(cpu, data, len);
 
-        if (d->log_mmio)
-            fprintf(stderr, "[PIU] W off=0x%02X val=0x%04X PC=0x%08X\n",
-                off, (uint16_t)val, (uint32_t)cpu->pc);
-
         if (off <= 0x18 && (off & 3) == 0) {
             uint32_t idx = off / 4;
             if (off == 0x00) {
@@ -1163,8 +1012,6 @@ DEVICE_ACCESS(be300_touch)
                 d->piu_regs[idx] = (uint16_t)val;
             }
         }
-        wince_boot_note_mmio_access(m->gxe_machine, cpu, 0x0A000300ULL
-            + off, len, val, true);
         return 1;
     }
 
@@ -1211,13 +1058,6 @@ DEVICE_ACCESS(be300_touch)
     }
 
     memory_writemax64(cpu, data, len, val);
-
-    if (d->log_mmio)
-        fprintf(stderr, "[PIU] R off=0x%02X val=0x%04X PC=0x%08X\n",
-            off, (uint16_t)val, (uint32_t)cpu->pc);
-
-    wince_boot_note_mmio_access(m->gxe_machine, cpu, 0x0A000300ULL
-        + off, len, val, false);
     return 1;
 }
 
@@ -1273,7 +1113,8 @@ DEVICE_ACCESS(be300_buttons)
     switch ((uint32_t)relative_addr) {
     case 0x02: val = m->btn_set1; break;   /* 0x0A00A042 */
     case 0x03: val = m->btn_set2; break;   /* 0x0A00A043 */
-    default:   val = 0;           break;
+    default:   val = 0;
+           break;
     }
 
     memory_writemax64(cpu, data, len, val);
@@ -1320,7 +1161,4 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
     memory_device_register(gxm->memory, "be300_buttons",
         0x0A00A040ULL, 0x10,
         dev_be300_buttons_access, (void *)btn_d, DM_DEFAULT, NULL);
-
-    fprintf(stderr, "[BE300] Registered input devices:"
-            " touch@0x0A000300 buttons@0x0A00A040\n");
 }

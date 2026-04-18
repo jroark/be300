@@ -113,7 +113,6 @@ set(BE300_SOURCES
     src/host_io.c
     src/loader.c
     src/ui.c
-    src/wince_boot.c
     src/hw/bcu.c
     src/hw/cmu.c
     src/hw/pmu.c
