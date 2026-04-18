@@ -210,11 +210,11 @@ typedef struct {
 } nand_state_t;
 
 void     nand_init(nand_state_t *s, uint8_t *image, size_t size);
-uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, uint32_t pc);
+uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
+                   uint32_t pc);
 void     nand_write(nand_state_t *s, uint32_t offset, unsigned size,
-                    uint64_t value, bool log, uint32_t pc);
+                    uint64_t value, uint32_t pc);
 bool     nand_restore_handles_offset(uint32_t offset);
-uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size,
-                           bool log, uint32_t pc);
+uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size);
 void     nand_restore_write(nand_state_t *s, uint32_t offset, unsigned size,
-                            uint64_t value, bool log, uint32_t pc);
+                            uint64_t value);

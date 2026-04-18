@@ -913,8 +913,7 @@ bool nand_restore_handles_offset(uint32_t offset)
     }
 }
 
-uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size,
-                           bool log, uint32_t pc)
+uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size)
 {
     uint64_t val = 0;
 
@@ -947,7 +946,7 @@ out:
 }
 
 void nand_restore_write(nand_state_t *s, uint32_t offset, unsigned size,
-                        uint64_t value, bool log, uint32_t pc)
+                        uint64_t value)
 {
     if (offset >= NAND_RESTORE_BUF_BASE && offset < NAND_RESTORE_BASE) {
         nand_restore_buffer_write(s, size, value);
@@ -1051,7 +1050,7 @@ out:
 }
 
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
-                uint64_t value, bool log, uint32_t pc)
+                uint64_t value, uint32_t pc)
 {
 
     /* Control/timing registers — latch + functional status */
@@ -1622,7 +1621,8 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
 
 }
 
-uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size, bool log, uint32_t pc)
+uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
+                   uint32_t pc)
 {
     uint64_t val = 0;
 

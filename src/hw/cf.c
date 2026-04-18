@@ -655,10 +655,8 @@ static uint8_t cf_read_reg8(cf_state_t *s, int reg, bool is_alt, bool boot_path)
 }
 
 static void cf_write_reg8(cf_state_t *s, int reg, bool is_alt, bool boot_path,
-                          uint8_t value, uint32_t pc)
+                          uint8_t value)
 {
-    (void)pc;
-
     if (is_alt) {
         s->device_control = value;
         if (boot_path && s->boot_visible && value == 0) {
@@ -719,8 +717,7 @@ static uint64_t cf_cis_read(const cf_state_t *s, uint32_t offset,
     return val;
 }
 
-uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size,
-                           bool log, uint32_t pc)
+uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size)
 {
     uint64_t val = 0;
     unsigned i;
@@ -741,7 +738,7 @@ uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size,
 }
 
 void cf_companion_write(cf_state_t *s, uint32_t offset, unsigned size,
-                        uint64_t value, bool log, uint32_t pc)
+                        uint64_t value)
 {
     unsigned i;
 
@@ -756,8 +753,7 @@ void cf_companion_write(cf_state_t *s, uint32_t offset, unsigned size,
         cf_clear_irq(s);
 }
 
-uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size,
-                        bool log, uint32_t pc)
+uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size)
 {
     bool is_alt = false;
     int reg;
@@ -785,7 +781,7 @@ uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size,
 }
 
 void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
-                     uint64_t value, bool log, uint32_t pc)
+                     uint64_t value)
 {
     bool is_alt = false;
     int reg;
@@ -800,13 +796,12 @@ void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
     } else if (reg >= 0) {
         for (i = 0; i < size; i++)
             cf_write_reg8(s, reg, is_alt, false,
-                (uint8_t)((value >> (8u * i)) & 0xFFu), pc);
+                (uint8_t)((value >> (8u * i)) & 0xFFu));
     }
 
 }
 
-uint64_t cf_boot_read(cf_state_t *s, uint32_t offset, unsigned size,
-                      bool log, uint32_t pc)
+uint64_t cf_boot_read(cf_state_t *s, uint32_t offset, unsigned size)
 {
     bool is_alt = false;
     int reg;
@@ -835,7 +830,7 @@ uint64_t cf_boot_read(cf_state_t *s, uint32_t offset, unsigned size,
 }
 
 void cf_boot_write(cf_state_t *s, uint32_t offset, unsigned size,
-                   uint64_t value, bool log, uint32_t pc)
+                   uint64_t value)
 {
     bool is_alt = false;
     int reg;
@@ -851,7 +846,7 @@ void cf_boot_write(cf_state_t *s, uint32_t offset, unsigned size,
     } else if (reg >= 0) {
         for (i = 0; i < size; i++) {
             cf_write_reg8(s, reg, is_alt, true,
-                (uint8_t)((value >> (8u * i)) & 0xFFu), pc);
+                (uint8_t)((value >> (8u * i)) & 0xFFu));
         }
     }
 
