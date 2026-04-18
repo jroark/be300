@@ -6,9 +6,18 @@ test_basic
 build/
 build-docker/
 build-host/
+build-host-*/
+build-test/
 *.o
 *.log
 boot_stdout*.txt
+cold_stderr.log
+cold_stdout.log
+co.out
+co.err
+d.out
+d.err
+*.orig
 
 # CMake artifacts
 CMakeCache.txt
