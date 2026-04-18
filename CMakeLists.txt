@@ -4,8 +4,6 @@ project(be300 C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-option(BUILD_WEB "Build the WebAssembly frontend bundle" OFF)
-
 # Auto-detect Apple Silicon even if running in Rosetta
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     execute_process(COMMAND sysctl -n hw.optional.arm64 OUTPUT_VARIABLE IS_ARM64_HW OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -24,21 +22,17 @@ add_compile_options(-Wall -g -O2
 )
 
 # SDL2 (optional, for framebuffer display)
-if(EMSCRIPTEN)
-    message(STATUS "Emscripten build — forcing headless UI path")
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(SDL2 QUIET sdl2)
+endif()
+find_package(SDL2 QUIET)
+if(SDL2_FOUND OR SDL2_LIBRARIES)
+    include_directories(${SDL2_INCLUDE_DIRS})
+    add_compile_definitions(HAVE_SDL2)
+    message(STATUS "SDL2 found — building with display support")
 else()
-    find_package(PkgConfig QUIET)
-    if(PKG_CONFIG_FOUND)
-        pkg_check_modules(SDL2 QUIET sdl2)
-    endif()
-    find_package(SDL2 QUIET)
-    if(SDL2_FOUND OR SDL2_LIBRARIES)
-        include_directories(${SDL2_INCLUDE_DIRS})
-        add_compile_definitions(HAVE_SDL2)
-        message(STATUS "SDL2 found — building with display support")
-    else()
-        message(STATUS "SDL2 not found — building headless (no display)")
-    endif()
+    message(STATUS "SDL2 not found — building headless (no display)")
 endif()
 
 # Generate embedded boot ROM header from binary
@@ -126,10 +120,6 @@ set(BE300_SOURCES
 # Main executable
 add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
 target_link_libraries(be300 m ${SDL2_LIBRARIES})
-
-if(BUILD_WEB)
-    message(FATAL_ERROR "BUILD_WEB is no longer supported (Linux boot path removed)")
-endif()
 
 # Tests
 enable_testing()
