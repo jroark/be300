@@ -14,7 +14,6 @@
 
 #include "be300.h"
 #include "host_io.h"
-#include "loader.h"
 #include "ppsh.h"
 #include "ui.h"
 
@@ -94,34 +93,6 @@ static void be300_ppsh_poll_host_input(machine_t *m)
     (void)queued;
 }
 
-static void be300_register_linux_input_if_needed(machine_t *m)
-{
-    if (m->input_registered)
-        return;
-
-    extern void be300_register_input(struct machine *, machine_t *, bool);
-    be300_register_input(m->gxe_machine, m, m->cfg.log_mmio);
-    m->input_registered = true;
-}
-
-static void be300_set_linux_boot_strings(machine_t *m,
-                                         const char *kernel_name,
-                                         const char *cmdline)
-{
-    struct machine *gxm = m->gxe_machine;
-    const char *safe_kernel = kernel_name ? kernel_name : "vmlinux";
-    const char *safe_cmdline = cmdline ? cmdline : "";
-
-    free(gxm->boot_kernel_filename);
-    gxm->boot_kernel_filename = strdup(safe_kernel);
-
-    free(gxm->boot_string_argument);
-    gxm->boot_string_argument = strdup(safe_cmdline);
-
-    gxm->bootstr = gxm->boot_kernel_filename;
-    gxm->bootarg = gxm->boot_string_argument[0] ? gxm->boot_string_argument : NULL;
-}
-
 static bool be300_uses_rom_boot(const machine_config_t *cfg)
 {
     return cfg && (cfg->nand_path || cfg->restore);
@@ -156,92 +127,123 @@ static void be300_sync_nand_image(machine_t *m)
     m->nand.dirty = false;
 }
 
-static void be300_refresh_linux_bootinfo(machine_t *m)
+/* ------------------------------------------------------------------ */
+/* Image loaders — ROM and NAND                                        */
+/* ------------------------------------------------------------------ */
+
+static int be300_load_rom_image(machine_t *m, const char *path)
 {
-    struct machine *gxm = m->gxe_machine;
-    uint64_t ram_top;
-    uint64_t argv_base;
+    FILE *f;
+    long fsize;
+    void *buf;
+    uint64_t max = PA_ROM_BASE + PA_ROM_SIZE - PA_RESET_VECTOR;
+    uint64_t kseg0_addr;
 
-    if (!gxm->prom_emulation)
-        return;
-
-    ram_top = 0x80000000ULL + ((uint64_t)gxm->physical_ram_in_mb << 20);
-    argv_base = ram_top - 512;
-
-    m->cpu->cd.mips.gpr[MIPS_GPR_A0] = 1;
-    m->cpu->cd.mips.gpr[MIPS_GPR_A1] = argv_base;
-    m->cpu->cd.mips.gpr[MIPS_GPR_A2] = ram_top - 256;
-
-    store_32bit_word(m->cpu, argv_base, argv_base + 16);
-    store_32bit_word(m->cpu, argv_base + 4, 0);
-    store_32bit_word(m->cpu, argv_base + 8, 0);
-    store_string(m->cpu, argv_base + 16, gxm->boot_kernel_filename);
-
-    if (gxm->boot_string_argument && gxm->boot_string_argument[0]) {
-        m->cpu->cd.mips.gpr[MIPS_GPR_A0]++;
-        store_32bit_word(m->cpu, argv_base + 4, argv_base + 64);
-        store_32bit_word(m->cpu, argv_base + 8, 0);
-        store_string(m->cpu, argv_base + 64, gxm->boot_string_argument);
-    }
-}
-
-static int be300_boot_linux_path(machine_t *m, const char *kernel_path,
-                                 const char *cmdline, const char *ram_path)
-{
-    uint32_t entry_va = 0;
-    uint32_t jiffies_pa = 0;
-
-    if (!kernel_path)
-        return -1;
-
-    be300_set_linux_boot_strings(m, kernel_path, cmdline);
-    be300_refresh_linux_bootinfo(m);
-
-    if (loader_load_elf(m, kernel_path, &entry_va, &jiffies_pa) != 0) {
-        fprintf(stderr, "[BE300] Failed to load kernel ELF\n");
+    f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "[BE300] Cannot open ROM: %s\n", path);
         return -1;
     }
 
-    m->cpu->pc = (uint64_t)(int32_t)entry_va;
-    m->boot_mode = BE300_BOOT_LINUX_PATH;
+    fseek(f, 0, SEEK_END);
+    fsize = ftell(f);
+    rewind(f);
 
-    if (ram_path)
-        loader_load_ram(m, ram_path);
+    if (fsize <= 0) {
+        fprintf(stderr, "[BE300] ROM is empty\n");
+        fclose(f);
+        return -1;
+    }
+    if ((uint64_t)fsize > max) {
+        fprintf(stderr, "[BE300] ROM too large (%ld bytes, region %llu bytes)\n",
+                fsize, (unsigned long long)max);
+        fclose(f);
+        return -1;
+    }
 
-    be300_register_linux_input_if_needed(m);
+    buf = malloc((size_t)fsize);
+    if (!buf) {
+        fprintf(stderr, "[BE300] OOM reading ROM\n");
+        fclose(f);
+        return -1;
+    }
+
+    if ((long)fread(buf, 1, (size_t)fsize, f) != fsize) {
+        fprintf(stderr, "[BE300] Short read from ROM\n");
+        free(buf);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    kseg0_addr = 0xffffffff80000000ULL | (uint64_t)PA_RESET_VECTOR;
+    store_buf(m->cpu, kseg0_addr, (const char *)buf, (size_t)fsize);
+    free(buf);
     return 0;
 }
 
-static int be300_boot_linux_memory_internal(machine_t *m,
-                                            const void *kernel_data,
-                                            size_t kernel_size,
-                                            const char *cmdline)
+static int be300_load_nand_image_file(machine_t *m, const char *path)
 {
-    uint32_t entry_va = 0;
-    uint32_t jiffies_pa = 0;
+    FILE *f = fopen(path, "rb");
+    uint8_t *data;
+    size_t alloc_size;
+    size_t bytes_read;
+    long fsize;
 
-    if (!m || !kernel_data || kernel_size == 0 || !cmdline) {
-        fprintf(stderr, "[BE300] Web boot requires a kernel image\n");
-        return -1;
-    }
-    if (m->boot_mode != BE300_BOOT_NONE) {
-        fprintf(stderr, "[BE300] Machine already has boot media loaded\n");
-        return -1;
-    }
-
-    be300_set_linux_boot_strings(m, "vmlinux", cmdline);
-    be300_refresh_linux_bootinfo(m);
-
-    if (loader_load_elf_from_memory(m, kernel_data, kernel_size,
-                                    &entry_va, &jiffies_pa) != 0) {
-        fprintf(stderr, "[BE300] Failed to load in-memory kernel ELF\n");
+    if (!f) {
+        fprintf(stderr, "[BE300] Cannot open NAND image: %s\n", path);
         return -1;
     }
 
-    m->cpu->pc = (uint64_t)(int32_t)entry_va;
-    m->boot_mode = BE300_BOOT_LINUX_MEMORY;
+    fseek(f, 0, SEEK_END);
+    fsize = ftell(f);
+    rewind(f);
 
-    be300_register_linux_input_if_needed(m);
+    if (fsize < 0) {
+        fclose(f);
+        return -1;
+    }
+    if ((uint64_t)fsize > NAND_IMAGE_SIZE) {
+        fprintf(stderr, "[BE300] NAND image too large (%ld bytes)\n", fsize);
+        fclose(f);
+        return -1;
+    }
+
+    alloc_size = NAND_IMAGE_SIZE;
+    data = malloc(alloc_size);
+    if (!data) {
+        fprintf(stderr, "[BE300] OOM reading NAND (%zu bytes)\n", alloc_size);
+        fclose(f);
+        return -1;
+    }
+
+    memset(data, 0xFF, alloc_size);
+    bytes_read = fread(data, 1, (size_t)fsize, f);
+    if ((long)bytes_read != fsize) {
+        fprintf(stderr, "[BE300] Short read from NAND image\n");
+        free(data); fclose(f); return -1;
+    }
+    fclose(f);
+
+    m->nand_data = data;
+    m->nand_size = alloc_size;
+    return 0;
+}
+
+static int be300_create_blank_nand(machine_t *m)
+{
+    uint8_t *data;
+
+    if (!m)
+        return -1;
+
+    data = malloc(NAND_IMAGE_SIZE);
+    if (!data)
+        return -1;
+
+    memset(data, 0xFF, NAND_IMAGE_SIZE);
+    m->nand_data = data;
+    m->nand_size = NAND_IMAGE_SIZE;
     return 0;
 }
 
@@ -310,11 +312,10 @@ machine_t *be300_create(const machine_config_t *cfg)
     gxm->machine_subtype = MACHINE_HPCMIPS_CASIO_BE300;
     gxm->cpu_name = strdup("VR4131");
     gxm->physical_ram_in_mb = cfg->sdram_size / (1024 * 1024);
-    /* Enable prom emulation for Linux (sets up hpc_bootinfo, argc/argv),
-     * but disable for NAND boot (SPL doesn't use NetBSD boot convention) */
+    /* NAND/ROM boot does not use the NetBSD prom_emulation boot convention. */
     gxm->prom_emulation = be300_uses_rom_boot(cfg) ? 0 : 1;
-    gxm->boot_kernel_filename = cfg->kernel_path ? strdup(cfg->kernel_path) : strdup("");
-    gxm->boot_string_argument = cfg->cmdline ? strdup(cfg->cmdline) : strdup("");
+    gxm->boot_kernel_filename = strdup("");
+    gxm->boot_string_argument = strdup("");
 
     if (cfg->trace)
         gxm->instruction_trace = 1;
@@ -369,23 +370,16 @@ machine_t *be300_create(const machine_config_t *cfg)
         m->btn_set2 = 0x80u;
 
     /*
-     * Load kernel or NAND image.
+     * Load NAND image or ROM image.
      */
-    if (cfg->kernel_path) {
-        if (be300_boot_linux_path(m, cfg->kernel_path, cfg->cmdline,
-                                  cfg->ram_path) != 0) {
-            free(m);
-            return NULL;
-        }
-
-    } else if (cfg->nand_path || cfg->restore) {
+    if (cfg->nand_path || cfg->restore) {
         if (cfg->nand_path) {
-            if (loader_load_nand_image(m, cfg->nand_path) != 0) {
+            if (be300_load_nand_image_file(m, cfg->nand_path) != 0) {
                 fprintf(stderr, "[BE300] Failed to load NAND image\n");
                 free(m);
                 return NULL;
             }
-        } else if (loader_create_blank_nand_image(m) != 0) {
+        } else if (be300_create_blank_nand(m) != 0) {
             fprintf(stderr, "[BE300] Failed to create blank NAND image\n");
             free(m);
             return NULL;
@@ -464,7 +458,7 @@ machine_t *be300_create(const machine_config_t *cfg)
         m->input_registered = true;
 
     } else if (cfg->rom_path) {
-        if (loader_load_rom(m, cfg->rom_path) != 0) {
+        if (be300_load_rom_image(m, cfg->rom_path) != 0) {
             fprintf(stderr, "[BE300] Failed to load ROM image\n");
             free(m);
             return NULL;
@@ -636,44 +630,6 @@ void be300_run(machine_t *m)
     }
 }
 
-machine_t *be300_create_web(uint32_t sdram_mb, uint32_t target_mhz,
-                            bool sfb_5bit_green)
-{
-    machine_config_t cfg = {
-        .trace = false,
-        .log_mmio = false,
-        .sfb_5bit_green = sfb_5bit_green,
-        .log_nand_legacy = false,
-        .enable_ppsh = false,
-        .restore = false,
-        .rom_path = NULL,
-        .kernel_path = NULL,
-        .cmdline = NULL,
-        .ram_path = NULL,
-        .nand_path = NULL,
-        .cf_path = NULL,
-        .sdram_size = (sdram_mb ? sdram_mb : 16u) * 1024u * 1024u,
-        .target_mhz = target_mhz,
-    };
-    machine_t *m = be300_create(&cfg);
-    if (!m)
-        return NULL;
-
-    m->web_mode = true;
-    m->use_builtin_ui = false;
-    m->save_exit_screenshot = false;
-    m->mirror_serial_to_stdout = false;
-    return m;
-}
-
-int be300_boot_linux_from_memory(machine_t *m,
-                                 const void *kernel_data,
-                                 size_t kernel_size,
-                                 const char *cmdline)
-{
-    return be300_boot_linux_memory_internal(m, kernel_data, kernel_size, cmdline);
-}
-
 int be300_copy_frame_rgba8888(machine_t *m, uint8_t *dst, size_t dst_len,
                               uint32_t *width_out, uint32_t *height_out)
 {
@@ -704,13 +660,8 @@ int be300_copy_frame_rgba8888(machine_t *m, uint8_t *dst, size_t dst_len,
             uint32_t g;
             size_t off = ((size_t)y * width + x) * 4u;
 
-            if (m->cfg.sfb_5bit_green) {
-                g = (pixel >> 5) & 0x1Fu;
-                g = (g << 3) | (g >> 2);
-            } else {
-                g = (pixel >> 5) & 0x3Fu;
-                g = (g << 2) | (g >> 4);
-            }
+            g = (pixel >> 5) & 0x3Fu;
+            g = (g << 2) | (g >> 4);
 
             r = (r << 3) | (r >> 2);
             b = (b << 3) | (b >> 2);

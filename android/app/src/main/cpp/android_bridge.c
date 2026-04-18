@@ -57,39 +57,38 @@ typedef struct {
     machine_t *m;
     pthread_t thread;
     machine_config_t cfg;
+    char *nand_path;
 } bridge_state_t;
 
 JNIEXPORT jlong JNICALL
 Java_com_jroark_be300android_Be300Native_nativeCreate(
     JNIEnv *env, jobject thiz,
-    jstring kernelPath, jstring cmdline, jboolean sfb5bitGreen, jint sdramMb)
+    jstring nandPath, jstring unusedCmdline, jboolean unusedSfb5, jint sdramMb)
 {
+    (void)unusedCmdline;
+    (void)unusedSfb5;
     android_fix_stdin();
 
-    const char *c_kernelPath = (*env)->GetStringUTFChars(env, kernelPath, NULL);
-    const char *c_cmdline = (*env)->GetStringUTFChars(env, cmdline, NULL);
-    LOGI("nativeCreate: kernel=%s, cmdline=%s", c_kernelPath, c_cmdline);
+    const char *c_nandPath = (*env)->GetStringUTFChars(env, nandPath, NULL);
+    LOGI("nativeCreate: nand=%s", c_nandPath);
 
     bridge_state_t *state = (bridge_state_t *)calloc(1, sizeof(bridge_state_t));
     if (!state) return 0;
 
-    state->cfg.kernel_path = strdup(c_kernelPath);
-    state->cfg.cmdline = strdup(c_cmdline);
-    state->cfg.sfb_5bit_green = sfb5bitGreen;
+    state->nand_path = strdup(c_nandPath);
+    state->cfg.nand_path = state->nand_path;
     state->cfg.sdram_size = (uint32_t)sdramMb * 1024u * 1024u;
     state->cfg.trace = false;
     state->cfg.log_mmio = false;
     state->cfg.target_mhz = 10u;
 
-    (*env)->ReleaseStringUTFChars(env, kernelPath, c_kernelPath);
-    (*env)->ReleaseStringUTFChars(env, cmdline, c_cmdline);
+    (*env)->ReleaseStringUTFChars(env, nandPath, c_nandPath);
 
     LOGI("Calling be300_create...");
     state->m = be300_create(&state->cfg);
     if (!state->m) {
         LOGE("Failed to create BE-300 machine");
-        free((void*)state->cfg.kernel_path);
-        free((void*)state->cfg.cmdline);
+        free(state->nand_path);
         free(state);
         return 0;
     }
@@ -160,24 +159,15 @@ Java_com_jroark_be300android_Be300Native_nativeCopyFrameToBitmap(JNIEnv *env, jo
     uint32_t fb_stride = 256;
     uint32_t dst_stride = info.stride / sizeof(uint32_t);
 
-    bool sfb_5bit = state->cfg.sfb_5bit_green;
-
     for (uint32_t y = 0; y < fb_height; y++) {
         for (uint32_t x = 0; x < fb_width; x++) {
             uint16_t pixel = src[y * fb_stride + x];
 
             uint32_t r = (pixel >> 11) & 0x1F;
             uint32_t b =  pixel        & 0x1F;
-            uint32_t g;
+            uint32_t g = (pixel >> 5) & 0x3F;
 
-            if (sfb_5bit) {
-                g = (pixel >> 5) & 0x1F;
-                g = (g << 3) | (g >> 2);  /* 5-bit green -> 8-bit */
-            } else {
-                g = (pixel >> 5) & 0x3F;
-                g = (g << 2) | (g >> 4);  /* 6-bit green -> 8-bit */
-            }
-
+            g = (g << 2) | (g >> 4);  /* 6-bit green -> 8-bit */
             r = (r << 3) | (r >> 2);
             b = (b << 3) | (b >> 2);
 
@@ -252,8 +242,7 @@ Java_com_jroark_be300android_Be300Native_nativeDestroy(JNIEnv *env, jobject thiz
         LOGI("nativeDestroy: be300_destroy done");
     }
 
-    free((void*)state->cfg.kernel_path);
-    free((void*)state->cfg.cmdline);
+    free(state->nand_path);
     free(state);
     LOGI("nativeDestroy: bridge state freed");
 }

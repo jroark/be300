@@ -1,1 +1,0 @@
-#define CONFIG_IRQ_CPU 1

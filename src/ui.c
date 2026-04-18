@@ -243,25 +243,11 @@ void ui_update(machine_t *m)
 
     const uint16_t *src = (const uint16_t *)m->fb_data;
 
-    /* Copy visible rectangle from stride-256 buffer into staging.
-     * When sfb_5bit_green is set (2.6 kernel), green occupies bits 9:5 only
-     * (bit 10 = 0).  Expand to 6-bit before uploading to the RGB565 texture. */
-    if (m->cfg.sfb_5bit_green) {
-        for (uint32_t y = 0; y < m->fb_height; y++) {
-            for (uint32_t x = 0; x < m->fb_width; x++) {
-                uint16_t p = src[y * m->fb_stride + x];
-                uint16_t g5 = (p >> 5) & 0x1F;
-                uint16_t g6 = (g5 << 1) | (g5 >> 4);  /* 5->6 bit expansion */
-                staging_buf[y * m->fb_width + x] =
-                    (p & 0xF800) | (g6 << 5) | (p & 0x001F);
-            }
-        }
-    } else {
-        for (uint32_t y = 0; y < m->fb_height; y++) {
-            memcpy(staging_buf + y * m->fb_width,
-                   src + y * m->fb_stride,
-                   m->fb_width * sizeof(uint16_t));
-        }
+    /* Copy visible rectangle from stride-256 buffer into staging (RGB565). */
+    for (uint32_t y = 0; y < m->fb_height; y++) {
+        memcpy(staging_buf + y * m->fb_width,
+               src + y * m->fb_stride,
+               m->fb_width * sizeof(uint16_t));
     }
 
     /* Upload to texture and render */

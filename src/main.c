@@ -9,8 +9,6 @@ static void usage(const char *prog)
         "Usage: %s [options] [rom.bin]\n"
         "\n"
         "Options:\n"
-        "  --kernel <vmlinux>    Load ELF kernel directly\n"
-        "  --cmdline <string>    Kernel command line passed via bootinfo\n"
         "  --trace               Print each executed instruction to stderr\n"
         "  --log-mmio            Log all MMIO register reads/writes\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
@@ -22,7 +20,7 @@ static void usage(const char *prog)
         "  -h, --help            Show this help\n"
         "\n"
         "ROM image (positional arg) is loaded at PA 0x1FC00000 (MIPS reset vector).\n"
-        "--kernel, --restore/--nand, and rom.bin are mutually exclusive.\n",
+        "--restore/--nand and rom.bin are mutually exclusive.\n",
         prog);
 }
 
@@ -38,9 +36,6 @@ int main(int argc, char *argv[])
         .enable_ppsh    = false,
         .restore        = false,
         .rom_path       = NULL,
-        .kernel_path    = NULL,
-        .cmdline        = NULL,
-        .ram_path       = NULL,
         .nand_path      = NULL,
         .cf_path        = NULL,
         .sdram_size     = 16u * 1024u * 1024u,
@@ -48,11 +43,7 @@ int main(int argc, char *argv[])
     };
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--kernel") == 0 && i + 1 < argc) {
-            cfg.kernel_path = argv[++i];
-        } else if (strcmp(argv[i], "--cmdline") == 0 && i + 1 < argc) {
-            cfg.cmdline = argv[++i];
-        } else if (strcmp(argv[i], "--trace") == 0) {
+        if (strcmp(argv[i], "--trace") == 0) {
             cfg.trace = true;
         } else if (strcmp(argv[i], "--log-mmio") == 0) {
             cfg.log_mmio = true;
@@ -64,8 +55,6 @@ int main(int argc, char *argv[])
             cfg.cf_path = argv[++i];
         } else if (strcmp(argv[i], "--restore") == 0) {
             cfg.restore = true;
-        } else if (strcmp(argv[i], "--ram") == 0 && i + 1 < argc) {
-            cfg.ram_path = argv[++i];
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
             cfg.target_mhz = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--sdram") == 0 && i + 1 < argc) {
@@ -88,8 +77,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (!cfg.kernel_path && !cfg.rom_path && !cfg.nand_path && !cfg.restore) {
-        fprintf(stderr, "Error: must specify --kernel, --nand, --restore, or a ROM image\n");
+    if (!cfg.rom_path && !cfg.nand_path && !cfg.restore) {
+        fprintf(stderr, "Error: must specify --nand, --restore, or a ROM image\n");
         usage(argv[0]);
         return 1;
     }
@@ -99,11 +88,10 @@ int main(int argc, char *argv[])
         return 1;
     }
     {
-        int boot_modes = (cfg.kernel_path ? 1 : 0) +
-                         (cfg.rom_path    ? 1 : 0) +
+        int boot_modes = (cfg.rom_path    ? 1 : 0) +
                          ((cfg.nand_path || cfg.restore) ? 1 : 0);
         if (boot_modes > 1) {
-            fprintf(stderr, "Error: --kernel, --restore/--nand, and rom.bin are mutually exclusive\n");
+            fprintf(stderr, "Error: --restore/--nand and rom.bin are mutually exclusive\n");
             usage(argv[0]);
             return 1;
         }

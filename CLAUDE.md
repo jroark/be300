@@ -4,7 +4,7 @@
 
 The goal of this project is **accurate cold boot of Windows CE 3.0** (`ce/restore_images/All_nand_300.bin`) on the Casio BE-300. The emulator must boot from the ROM reset vector through SPL, NK.exe decompression, and into WinCE 3.0 exactly as real hardware does after battery removal.
 
-Linux kernel boot (`--kernel`) and non-3.0 WinCE images are no longer project goals. They remain in the tree for historical reference but are not tested or supported.
+The Linux kernel boot path (`--kernel`), its ELF loader, and the `kernels/` tree have been removed. Non-3.0 WinCE images remain in the tree for reference only but are not tested or supported.
 
 **Always prefer hardware-accurate emulation over workarounds.** Do not use seeds, patches, memory pre-population, guest binary modifications, or forced handoff shortcuts to work around emulation bugs. If a guest OS behavior fails, the root cause is a missing or incorrect hardware behavior in the emulator. Find and fix the emulator bug rather than patching the guest. The ROM and NK.exe binaries are captured from real hardware and must run unmodified.
 
@@ -16,7 +16,7 @@ Do not reintroduce `resume_ctx` seeding, synthetic warm-boot state, or any other
 
 - Primary active target: WinCE 3.0 cold boot via `--nand ce/restore_images/All_nand_300.bin`
 - Secondary code paths still present in the tree: CF recovery boot via `--restore --cf`, PPSH debug-shell probing via `--ppsh`
-- Linux boot paths, Linux NAND packaging, and non-3.0 WinCE images are historical reference paths only unless the user explicitly asks for them
+- Non-3.0 WinCE images remain in the tree for reference only
 
 ## Reference & Documentation
 
@@ -43,9 +43,8 @@ Primary local references:
 ## Source Code Layout
 
 **Core emulation (`src/`)**
-- `machine_be300.c` — machine setup, boot-mode selection, device registration, ROM loading, main emulation loop, NK dumping, runtime shutdown
+- `machine_be300.c` — machine setup, boot-mode selection, device registration, ROM and NAND image loading, main emulation loop, NK dumping, runtime shutdown
 - `be300.h` — `be300_state_t`, `machine_config_t`, physical address map constants
-- `loader.c` / `loader.h` — ELF kernel loader and NAND image reader
 - `ui.c` / `ui.h` — SDL2 display, input handling, screenshot capture
 - `main.c` — CLI parsing for `--nand`, `--restore`, `--cf`, `--ppsh`, and other boot options
 - `host_io.c` / `host_io.h` — host stdin/stdout handling
@@ -270,15 +269,10 @@ Historical reverse-engineering found that NK reaches warm-resume-style logic dur
 mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL nk_decompressed.bin
 ```
 
-### Legacy Linux NAND Tool
-
-`tools/build_nand_linux.py` remains in the tree for historical reference only and is not part of supported regression work.
-
 ## Current Investigation Guidance
 
 - Primary active target: WinCE 3.0 cold boot via `--nand ce/restore_images/All_nand_300.bin`
 - Secondary implemented paths: `--restore --cf` and `--ppsh`
-- Do not spend effort on Linux regressions unless explicitly requested
 - Do not solve cold boot with guest patches, RAM seeds, `resume_ctx` seeds, or forced handoff shortcuts
 - For legitimate upstream GXemul 0.7.0 bugs that are *not* on the current boot path but may become relevant for future investigations, see:
   - `docs/LEGITIMATE_FIXES_NOT_APPLIED.md` — catalog of real bugs left unpatched, each with citation, warning signs that would justify re-applying, and a "do not reconsider" list of genuinely non-legitimate drops
@@ -287,8 +281,7 @@ mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL nk_decompressed.bin
 
 - `src/main.c` — CLI parsing for `--nand`, `--restore`, `--cf`, `--ppsh`, and related boot options
 - `src/be300.h` — NAND, CF, and machine configuration state
-- `src/machine_be300.c` — boot-mode setup, ROM and NAND boot path, NK dump logic, runtime finalization, screenshot-on-shutdown behavior
-- `src/loader.c` — ELF kernel loader and NAND image reader
+- `src/machine_be300.c` — boot-mode setup, ROM and NAND boot path, image loaders, NK dump logic, runtime finalization, screenshot-on-shutdown behavior
 - `src/hw/nand.c` — NAND controller and NANDWRITER restore-engine behavior
 - `src/hw/cf.c` — CompactFlash emulation and recovery-boot support
 - `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, and interrupt-clear behavior

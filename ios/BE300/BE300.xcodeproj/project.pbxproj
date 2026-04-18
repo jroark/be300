@@ -15,7 +15,6 @@
 		8477786EC1795A6BF36AA9B8 /* machine_be300.c in Sources */ = {isa = PBXBuildFile; fileRef = C24A7B3E1C4D033DB9514989 /* machine_be300.c */; };
 		A2ACCC4E9C98A56B6816221C /* be300_devices.c in Sources */ = {isa = PBXBuildFile; fileRef = F7612349758122050CB10F79 /* be300_devices.c */; };
 		F7A49A7FFE7ACB94F155850F /* host_io.c in Sources */ = {isa = PBXBuildFile; fileRef = 313E8868C10B01DF050865B1 /* host_io.c */; };
-		870B1C3D019D35459FC8E476 /* loader.c in Sources */ = {isa = PBXBuildFile; fileRef = 42D562D4D7C48191D56D6DB2 /* loader.c */; };
 		4CABCE4D9E057707FAFB85F9 /* ui.c in Sources */ = {isa = PBXBuildFile; fileRef = 43111E1277C6BCEFEA39A48B /* ui.c */; };
 		4BEF73D55973C6D3731E8A14 /* bcu.c in Sources */ = {isa = PBXBuildFile; fileRef = 0DE8A5BA776098B59D6E4B57 /* bcu.c */; };
 		D002BD0C91A0C6CDC900EA61 /* cmu.c in Sources */ = {isa = PBXBuildFile; fileRef = 28E30C61D0C8FFC25D674B66 /* cmu.c */; };
@@ -47,7 +46,6 @@
 		B791182E2AC265F2CB472F0F /* machine.c in Sources */ = {isa = PBXBuildFile; fileRef = F80E6508C7CC3D8C4D77DC2B /* machine.c */; };
 		49CA2EBA68A6C1D97AC9F058 /* machine_hpcmips.c in Sources */ = {isa = PBXBuildFile; fileRef = 009295B982D1D7A48CAB34CF /* machine_hpcmips.c */; };
 		87717B54E518B7A2280627E7 /* stubs.c in Sources */ = {isa = PBXBuildFile; fileRef = A3CBB388FA1F67C9CAA4002B /* stubs.c */; };
-		B8FA8CFC2DC93A158B85FA94 /* vmlinux-pgui-demo in Resources */ = {isa = PBXBuildFile; fileRef = F2644B81A69E9ECC197E0959 /* vmlinux-pgui-demo */; };
 		99810209AD4FE3320BC122AD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A8E322B9AD0FDA30220B81A1 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -60,7 +58,6 @@
 		C24A7B3E1C4D033DB9514989 /* machine_be300.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/machine_be300.c"; sourceTree = "<group>"; };
 		F7612349758122050CB10F79 /* be300_devices.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/be300_devices.c"; sourceTree = "<group>"; };
 		313E8868C10B01DF050865B1 /* host_io.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/host_io.c"; sourceTree = "<group>"; };
-		42D562D4D7C48191D56D6DB2 /* loader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/loader.c"; sourceTree = "<group>"; };
 		43111E1277C6BCEFEA39A48B /* ui.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/ui.c"; sourceTree = "<group>"; };
 		0DE8A5BA776098B59D6E4B57 /* bcu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/bcu.c"; sourceTree = "<group>"; };
 		28E30C61D0C8FFC25D674B66 /* cmu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../src/hw/cmu.c"; sourceTree = "<group>"; };
@@ -92,7 +89,6 @@
 		F80E6508C7CC3D8C4D77DC2B /* machine.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/machines/machine.c"; sourceTree = "<group>"; };
 		009295B982D1D7A48CAB34CF /* machine_hpcmips.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/machines/machine_hpcmips.c"; sourceTree = "<group>"; };
 		A3CBB388FA1F67C9CAA4002B /* stubs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../gxemul/src/stubs.c"; sourceTree = "<group>"; };
-		F2644B81A69E9ECC197E0959 /* vmlinux-pgui-demo */ = {isa = PBXFileReference; lastKnownFileType = file; path = "../../kernels/vmlinux-pgui-demo"; sourceTree = "<group>"; };
 		A8E322B9AD0FDA30220B81A1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = BE300/Assets.xcassets; sourceTree = "<group>"; };
 		B015712C977C235D0C570238 /* BE300-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BE300-Bridging-Header.h"; sourceTree = "<group>"; };
 		07198B23AF252C3674F23953 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = BE300/Info.plist; sourceTree = "<group>"; };
@@ -130,7 +126,6 @@
 				C24A7B3E1C4D033DB9514989 /* machine_be300.c */,
 				F7612349758122050CB10F79 /* be300_devices.c */,
 				313E8868C10B01DF050865B1 /* host_io.c */,
-				42D562D4D7C48191D56D6DB2 /* loader.c */,
 				43111E1277C6BCEFEA39A48B /* ui.c */,
 			);
 			name = "BE300 C";
@@ -184,7 +179,6 @@
 			isa = PBXGroup;
 			children = (
 				A8E322B9AD0FDA30220B81A1 /* Assets.xcassets */,
-				F2644B81A69E9ECC197E0959 /* vmlinux-pgui-demo */,
 				B015712C977C235D0C570238 /* BE300-Bridging-Header.h */,
 				07198B23AF252C3674F23953 /* Info.plist */,
 			);
@@ -246,7 +240,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B8FA8CFC2DC93A158B85FA94 /* vmlinux-pgui-demo in Resources */,
 				99810209AD4FE3320BC122AD /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -266,7 +259,6 @@
 				8477786EC1795A6BF36AA9B8 /* machine_be300.c in Sources */,
 				A2ACCC4E9C98A56B6816221C /* be300_devices.c in Sources */,
 				F7A49A7FFE7ACB94F155850F /* host_io.c in Sources */,
-				870B1C3D019D35459FC8E476 /* loader.c in Sources */,
 				4CABCE4D9E057707FAFB85F9 /* ui.c in Sources */,
 				4BEF73D55973C6D3731E8A14 /* bcu.c in Sources */,
 				D002BD0C91A0C6CDC900EA61 /* cmu.c in Sources */,

@@ -1,1 +1,0 @@
-#undef CONFIG_LOGO_LINUX_MONO

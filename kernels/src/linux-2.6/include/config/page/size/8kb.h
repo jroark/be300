@@ -1,1 +1,0 @@
-#undef CONFIG_PAGE_SIZE_8KB

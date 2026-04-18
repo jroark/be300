@@ -1,1 +1,0 @@
-#undef CONFIG_SERIO_CT82C710

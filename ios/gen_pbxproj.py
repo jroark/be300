@@ -20,7 +20,6 @@ be300_c_files = [
     ('machine_be300', '../../src/machine_be300.c'),
     ('be300_devices', '../../src/be300_devices.c'),
     ('host_io', '../../src/host_io.c'),
-    ('loader', '../../src/loader.c'),
     ('ui', '../../src/ui.c'),
 ]
 
@@ -85,15 +84,6 @@ for key, path in all_source_files:
     source_build_ids.append('\t\t\t\t%s /* %s in Sources */,' % (bid, name))
 
 # Resource files
-kernel_fid = uid('file_kernel')
-kernel_bid = uid('build_kernel')
-file_ref_lines.append(
-    '\t\t%s /* vmlinux-pgui-demo */ = {isa = PBXFileReference; lastKnownFileType = file; path = "../../kernels/vmlinux-pgui-demo"; sourceTree = "<group>"; };'
-    % kernel_fid)
-build_file_lines.append(
-    '\t\t%s /* vmlinux-pgui-demo in Resources */ = {isa = PBXBuildFile; fileRef = %s /* vmlinux-pgui-demo */; };'
-    % (kernel_bid, kernel_fid))
-
 assets_fid = uid('file_assets')
 assets_bid = uid('build_assets')
 file_ref_lines.append(
@@ -176,7 +166,6 @@ w('\t\t%s /* Resources */ = {' % uid('resourcesGroup'))
 w('\t\t\tisa = PBXGroup;')
 w('\t\t\tchildren = (')
 w('\t\t\t\t%s /* Assets.xcassets */,' % assets_fid)
-w('\t\t\t\t%s /* vmlinux-pgui-demo */,' % kernel_fid)
 w('\t\t\t\t%s /* BE300-Bridging-Header.h */,' % bridging_fid)
 w('\t\t\t\t%s /* Info.plist */,' % infoplist_fid)
 w('\t\t\t);')
@@ -247,7 +236,6 @@ w('\t\t%s /* Resources */ = {' % uid('buildPhase_resources'))
 w('\t\t\tisa = PBXResourcesBuildPhase;')
 w('\t\t\tbuildActionMask = 2147483647;')
 w('\t\t\tfiles = (')
-w('\t\t\t\t%s /* vmlinux-pgui-demo in Resources */,' % kernel_bid)
 w('\t\t\t\t%s /* Assets.xcassets in Resources */,' % assets_bid)
 w('\t\t\t);')
 w('\t\t\trunOnlyForDeploymentPostprocessing = 0;')

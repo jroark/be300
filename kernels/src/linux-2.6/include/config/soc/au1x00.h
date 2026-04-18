@@ -1,1 +1,0 @@
-#undef CONFIG_SOC_AU1X00

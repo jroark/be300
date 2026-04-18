@@ -1,1 +1,0 @@
-cmd_drivers/net/built-in.o :=  mipsel-linux-ld  --oformat elf32-tradlittlemips  -r -o drivers/net/built-in.o drivers/net/Space.o drivers/net/net_init.o drivers/net/loopback.o drivers/net/ppp_generic.o drivers/net/slhc.o drivers/net/ppp_async.o drivers/net/ppp_deflate.o drivers/net/bsd_comp.o drivers/net/dummy.o

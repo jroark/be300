@@ -1,1 +1,0 @@
-#define CONFIG_LOGO_LINUX_VGA16 1

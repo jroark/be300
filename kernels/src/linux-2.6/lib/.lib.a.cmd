@@ -1,1 +1,0 @@
-cmd_lib/lib.a := rm -f lib/lib.a; mipsel-linux-ar  rcs lib/lib.a lib/bitmap.o lib/bust_spinlocks.o lib/cmdline.o lib/ctype.o lib/div64.o lib/dump_stack.o lib/errno.o lib/extable.o lib/idr.o lib/int_sqrt.o lib/kobject.o lib/parser.o lib/radix-tree.o lib/rbtree.o lib/rwsem-spinlock.o lib/string.o lib/vsprintf.o

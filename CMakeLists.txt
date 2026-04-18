@@ -111,7 +111,6 @@ set(BE300_SOURCES
     src/machine_be300.c
     src/be300_devices.c
     src/host_io.c
-    src/loader.c
     src/ui.c
     src/hw/bcu.c
     src/hw/cmu.c
@@ -129,42 +128,7 @@ add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HD
 target_link_libraries(be300 m ${SDL2_LIBRARIES})
 
 if(BUILD_WEB)
-    if(NOT EMSCRIPTEN)
-        message(FATAL_ERROR "BUILD_WEB requires an Emscripten toolchain")
-    endif()
-
-    set(WEB_OUTPUT_DIR ${CMAKE_BINARY_DIR}/web)
-    file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR})
-    file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR}/kernels)
-    foreach(asset index.html app.js worker.js styles.css be300_frame.png favicon.svg)
-        configure_file(${CMAKE_SOURCE_DIR}/web/${asset}
-                       ${WEB_OUTPUT_DIR}/${asset}
-                       COPYONLY)
-    endforeach()
-    foreach(kernel_asset vmlinux-pgui-demo vmlinux-mw vmlinux-2.6)
-        configure_file(${CMAKE_SOURCE_DIR}/kernels/${kernel_asset}
-                       ${WEB_OUTPUT_DIR}/kernels/${kernel_asset}
-                       COPYONLY)
-    endforeach()
-
-    add_executable(be300_web ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
-    set_target_properties(be300_web PROPERTIES
-        OUTPUT_NAME "be300_web"
-        RUNTIME_OUTPUT_DIRECTORY ${WEB_OUTPUT_DIR}
-    )
-    target_link_libraries(be300_web m)
-    target_link_options(be300_web PRIVATE
-        "--no-entry"
-        "-sALLOW_MEMORY_GROWTH=1"
-        "-sENVIRONMENT=worker"
-        "-sEXPORT_ES6=1"
-        "-sMODULARIZE=1"
-        "-sEXPORT_NAME=createBe300Module"
-        "-sNO_EXIT_RUNTIME=1"
-        "-sFILESYSTEM=0"
-        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_be300_create_web','_be300_boot_linux_from_memory','_be300_step','_be300_copy_frame_rgba8888','_be300_drain_serial','_be300_set_touch','_be300_set_buttons','_be300_stop','_be300_destroy']"
-        "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU32']"
-    )
+    message(FATAL_ERROR "BUILD_WEB is no longer supported (Linux boot path removed)")
 endif()
 
 # Tests

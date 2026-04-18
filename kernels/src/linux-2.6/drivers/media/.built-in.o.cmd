@@ -1,1 +1,0 @@
-cmd_drivers/media/built-in.o :=  mipsel-linux-ld  --oformat elf32-tradlittlemips  -r -o drivers/media/built-in.o drivers/media/video/built-in.o drivers/media/radio/built-in.o drivers/media/dvb/built-in.o drivers/media/common/built-in.o

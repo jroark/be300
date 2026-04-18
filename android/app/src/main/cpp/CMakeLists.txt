@@ -59,7 +59,6 @@ set(BE300_CORE_SOURCES
     ${BE300_SRC}/machine_be300.c
     ${BE300_SRC}/be300_devices.c
     ${BE300_SRC}/host_io.c
-    ${BE300_SRC}/loader.c
     ${BE300_SRC}/ui.c
 
     # Hardware peripherals
