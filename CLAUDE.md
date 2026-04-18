@@ -35,8 +35,6 @@ Primary local references:
 - `docs/BE300BootROM_v1.txt` - full 16 KB ROM dump at PA `0x1FC00000` with CRC32 `0xFA3B5582`
 - `docs/be300_boot_rom.bin` - extracted ROM binary embedded into the emulator at build time
 - `docs/ROM_SPL_HANDOFF.md` - ROM to SPL to NK handoff analysis
-- `docs/WINCE_COLD_BOOT_SESSION_2026-04-08.md` - recent cold-boot investigation notes and current blocker history
-- `docs/STATUS_AND_NEXT_STEPS.md` - current state summary and next likely debugging targets
 - `docs/HARDWARE_GROUND_TRUTH.md` - synthesized hardware reference notes
 - `ce/bediag/` - BEDiag diagnostic tool source and output
 
@@ -193,7 +191,7 @@ Cold boot through `--nand` starts at the ROM reset vector `0xBFC00000`, matching
 
 ### Splash Screen Notes
 
-- `Starting...` and `Initializing...` are rendered at runtime, not stored as ASCII, UTF-16, or bitmaps in the image
+- `Initializing...` and `Starting...` are rendered at runtime, not stored as ASCII, UTF-16, or bitmaps in the image
 - OAL display function `0x80078E10` acts as a blit dispatcher
 - `a0 = 10` clears the framebuffer at `0xAA200000`
 - `a0 = 0` blits the splash buffer at VA `0x80061188`
@@ -240,7 +238,7 @@ Historical reverse-engineering found that NK reaches warm-resume-style logic dur
 
 ### PPSH
 
-- PPSH is a Casio debug interface, not a companion MCU
+- PPSH is a WinCE debug interface, not a companion MCU
 - Data register: PA `0x0C000120`
 - Status / command register: PA `0x0C000520`
 - Emulated in `src/be300_devices.c` as `be300_wince_aux`
