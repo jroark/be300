@@ -5,7 +5,7 @@ Ghidra setup procedure for the BE-300 boot ROM.
 
 The target is the raw 16 KB masked ROM image at:
 
-- [`docs/be300_boot_rom.bin`](/Users/jroark/src/be300-framebuffer/docs/be300_boot_rom.bin)
+- [`../hardware/be300_boot_rom.bin`](/Users/jroark/src/be300-framebuffer/../hardware/be300_boot_rom.bin)
 
 This ROM is mixed-mode:
 
@@ -13,7 +13,7 @@ This ROM is mixed-mode:
 - MIPS16 function library
 - MIPS32 helper routines callable from the MIPS16 region
 
-Do not use [`docs/be300_boot_rom.dis`](/Users/jroark/src/be300-framebuffer/docs/be300_boot_rom.dis)
+Do not use [`../hardware/be300_boot_rom.dis`](/Users/jroark/src/be300-framebuffer/../hardware/be300_boot_rom.dis)
 as the import source. That file is a transformed ROM view, not a directly
 correct disassembly. See the appendix in
 [`docs/ROM_SPL_HANDOFF.md`](/Users/jroark/src/be300-framebuffer/docs/ROM_SPL_HANDOFF.md)
@@ -26,7 +26,7 @@ Create a new Ghidra project and import the ROM as a raw binary.
 Use these settings:
 
 - Format: `Raw Binary`
-- File: [`docs/be300_boot_rom.bin`](/Users/jroark/src/be300-framebuffer/docs/be300_boot_rom.bin)
+- File: [`../hardware/be300_boot_rom.bin`](/Users/jroark/src/be300-framebuffer/../hardware/be300_boot_rom.bin)
 - Language: `MIPS:LE:32:default`
 - Compiler spec: default MIPS compiler spec
 - Base address: `0x9FC00000`

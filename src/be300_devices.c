@@ -970,7 +970,7 @@ static void piu_update_state(struct be300_input_device *d)
 /*
  *  Touchpanel device — PA 0x0A000300, size 0x60
  *
- *  Register layout from docs/hardware.txt ISR analysis (GIRQ0-9):
+ *  Register layout from docs/hardware/hardware.txt ISR analysis (GIRQ0-9):
  *
  *  +0x00 PIUCNTREG: bit 13 (0x2000) = pendown status
  *  +0x04 PIUINTREG: byte 0 (bits 7:0) = pending status (set by HW)

@@ -36,7 +36,7 @@ else()
 endif()
 
 # Generate embedded boot ROM header from binary
-set(BOOT_ROM_BIN "${CMAKE_SOURCE_DIR}/docs/be300_boot_rom.bin")
+set(BOOT_ROM_BIN "${CMAKE_SOURCE_DIR}/docs/hardware/be300_boot_rom.bin")
 set(BOOT_ROM_HDR "${CMAKE_BINARY_DIR}/boot_rom_embedded.h")
 add_custom_command(
     OUTPUT "${BOOT_ROM_HDR}"
