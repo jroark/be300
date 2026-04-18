@@ -50,15 +50,12 @@ bool     cf_boot_handles_rom_offset(const cf_state_t *s, uint32_t offset);
 void     cf_clear_irq(cf_state_t *s);
 uint32_t cf_giu_source_bits(const cf_state_t *s);
 uint16_t cf_card_state_bits(const cf_state_t *s);
-uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size,
-                           bool log, uint32_t pc);
+uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size);
 void     cf_companion_write(cf_state_t *s, uint32_t offset, unsigned size,
-                            uint64_t value, bool log, uint32_t pc);
-uint64_t cf_boot_read(cf_state_t *s, uint32_t offset, unsigned size,
-                      bool log, uint32_t pc);
+                            uint64_t value);
+uint64_t cf_boot_read(cf_state_t *s, uint32_t offset, unsigned size);
 void     cf_boot_write(cf_state_t *s, uint32_t offset, unsigned size,
-                       uint64_t value, bool log, uint32_t pc);
-uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size,
-                        bool log, uint32_t pc);
+                       uint64_t value);
+uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size);
 void     cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
-                         uint64_t value, bool log, uint32_t pc);
+                         uint64_t value);

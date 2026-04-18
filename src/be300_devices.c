@@ -86,10 +86,9 @@ DEVICE_ACCESS(be300_nand)
     if (d->cf && cf_boot_handles_rom_offset(d->cf, offset)) {
         if (writeflag == MEM_WRITE) {
             uint64_t val = memory_readmax64(cpu, data, len);
-            cf_boot_write(d->cf, offset, (unsigned)len, val, d->log_mmio, pc);
+            cf_boot_write(d->cf, offset, (unsigned)len, val);
         } else {
-            uint64_t val = cf_boot_read(d->cf, offset, (unsigned)len,
-                d->log_mmio, pc);
+            uint64_t val = cf_boot_read(d->cf, offset, (unsigned)len);
             memory_writemax64(cpu, data, len, val);
         }
         return 1;
@@ -97,9 +96,9 @@ DEVICE_ACCESS(be300_nand)
 
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
-        nand_write(d->nand, offset, (unsigned)len, val, d->log_mmio, pc);
+        nand_write(d->nand, offset, (unsigned)len, val, pc);
     } else {
-        uint64_t val = nand_read(d->nand, offset, (unsigned)len, d->log_mmio, pc);
+        uint64_t val = nand_read(d->nand, offset, (unsigned)len, pc);
         memory_writemax64(cpu, data, len, val);
     }
 
@@ -118,11 +117,9 @@ DEVICE_ACCESS(be300_cf_window)
 
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
-        cf_window_write(d->cf, offset, (unsigned)len, val, d->log_mmio,
-            (uint32_t)cpu->pc);
+        cf_window_write(d->cf, offset, (unsigned)len, val);
     } else {
-        uint64_t val = cf_window_read(d->cf, offset, (unsigned)len,
-            d->log_mmio, (uint32_t)cpu->pc);
+        uint64_t val = cf_window_read(d->cf, offset, (unsigned)len);
         memory_writemax64(cpu, data, len, val);
     }
 
@@ -338,13 +335,13 @@ DEVICE_ACCESS(be300_vrc4173)
         if (g_be300_machine &&
             nand_restore_handles_offset(off)) {
             nand_restore_write(&g_be300_machine->nand, off, (unsigned)len,
-                val, d->log_mmio, (uint32_t)cpu->pc);
+                val);
             return 1;
         }
 
         if (g_be300_machine && off >= 0x1000u && off < 0x2000u) {
             cf_companion_write(&g_be300_machine->cf, off - 0x1000u,
-                (unsigned)len, val, d->log_mmio, (uint32_t)cpu->pc);
+                (unsigned)len, val);
             memcpy(&d->bytes[off], data, len);
             return 1;
         }
@@ -404,15 +401,14 @@ DEVICE_ACCESS(be300_vrc4173)
         if (g_be300_machine &&
             nand_restore_handles_offset(off)) {
             uint64_t val = nand_restore_read(&g_be300_machine->nand, off,
-                (unsigned)len, d->log_mmio, (uint32_t)cpu->pc);
+                (unsigned)len);
             memory_writemax64(cpu, data, len, val);
             return 1;
         }
 
         if (g_be300_machine && off >= 0x1000u && off < 0x2000u) {
             uint64_t val = cf_companion_read(&g_be300_machine->cf,
-                off - 0x1000u, (unsigned)len, d->log_mmio,
-                (uint32_t)cpu->pc);
+                off - 0x1000u, (unsigned)len);
             memory_writemax64(cpu, data, len, val);
             return 1;
         }
