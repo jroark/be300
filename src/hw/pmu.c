@@ -48,7 +48,17 @@ void pmu_apply_pending_reset_state(pmu_state_t *s, uint64_t cur_count)
     s->pmuintreg |= (uint16_t)s->pending_reset_cause;
     s->pending_reset_cause = 0;
 
-    s->haltimer_remaining_cycles = s->haltimer_arm_cycles;
+    /*
+     * Do NOT re-arm on reset. Per UM §12.2.2 the HALTIMERRST watchdog
+     * is a one-time "program is running normally" acknowledgement, and
+     * pmu_write(PMUCNTREG) with bit 2 set permanently disarms it (see
+     * there). On the code path that reaches this function — HALTimer
+     * expiry or SOFTRST — the watchdog must not spring back to life:
+     * software has already taken over scheduling its own reset, and
+     * re-arming would produce a perpetual 4 s-interval loop through
+     * the warm path.
+     */
+    s->haltimer_remaining_cycles = 0;
     s->last_count_sample         = cur_count;
 }
 
@@ -79,10 +89,23 @@ void pmu_write(pmu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case PMU_PMUCNTREG:
         s->pmucntreg = (uint16_t)val;
         if (val & PMUCNTREG_HALTIMERRST) {
-            /* Pet the watchdog: refresh the 4 s window. Keep
-               last_count_sample so the next tick accounts for
-               the cycles that elapsed since we last sampled. */
-            s->haltimer_remaining_cycles = s->haltimer_arm_cycles;
+            /*
+             * UM §12.2.2: "The HALTIMERRST bit must be reset (write 1)
+             * within about four seconds after power-on. Resetting the
+             * HALTIMERRST bit enables the VR4131 to recognize that it
+             * has been normally activated."
+             *
+             * This is a one-shot "program is running normally"
+             * acknowledgement, not a periodic pet. The ROM / SPL / NK
+             * boot sequence writes bit 2 several times in the first
+             * ~seconds of boot (observed 0x0004 from ROM at 0xBFC00744,
+             * 0x0006 from SPL at 0xA0F02524, 0x0006 and 0x1006 from
+             * NK at several sites); any one of them disarms the
+             * watchdog permanently. Real-HW behaviour: HALTimer never
+             * actually fires during normal boot.
+             */
+            s->haltimer_remaining_cycles = 0;
+            s->haltimer_arm_cycles       = 0;
         }
         break;
 
