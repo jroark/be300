@@ -302,6 +302,17 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 - For legitimate upstream GXemul 0.7.0 bugs that are *not* on the current boot path but may become relevant for future investigations, see:
   - `docs/LEGITIMATE_FIXES_NOT_APPLIED.md` — catalog of real bugs left unpatched, each with citation, warning signs that would justify re-applying, and a "do not reconsider" list of genuinely non-legitimate drops
 
+### Current Investigation Target
+
+Pass 11/12 (2026-04-19) landed VR4131 HALTimer + SOFTRST + cold-reset mechanics
+correctly, but Pass 10's motivating theory was refuted by an endian re-read of the
+probe data — HALTimer never fires on real HW during normal cold boot. The boot-path
+stall reverts to the Pass 9 cdm.dll LoaderCS deadlock. See:
+
+- `docs/HANDOFF_POST_PASS12_HALTIMER_2026-04-19.md` — current state, why Pass 10 was wrong, what Pass 11 still buys us
+- `docs/INVESTIGATION_CDM_DLL_PASS9.md` — active investigation plan (Steps A–E)
+- `docs/HANDOFF_POST_PPSH_STALL_2026-04-18.md` §1–§4, §6–§9 — stall characterization
+
 ## Key Files For Current WinCE Work
 
 - `src/main.c` — CLI parsing for `--nand`, `--restore`, `--cf`, `--ppsh`, and related boot options
