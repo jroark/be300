@@ -182,11 +182,24 @@ Recovery boot through `--restore --cf` is still implemented for NANDWRITER-path 
 
 Cold boot through `--nand` starts at the ROM reset vector `0xBFC00000`, matching real hardware after battery removal. The ROM reads NAND, loads the SPL, the SPL decompresses NK into RAM, then the ROM MIPS16 boot dispatcher populates callback tables and jumps into NK via the mailbox at PA `0x24FC`.
 
-**Observed real-hardware framebuffer sequence**
-1. `Initializing...` with progress bar
-2. `Starting...`
-3. touch calibration
-4. WinCE desktop
+**Observed real-hardware framebuffer sequence** (battery-disconnected cold boot, captured 2026-04-18):
+
+1. `Initializing...` with progress bar (progress bar fills up)
+2. `Starting...` (backlight gets brighter)
+3. **Black screen** — the display blanks between the two `Starting...` renders. Almost certainly a display-subsystem reset or low-power transition between the early-boot OAL renderer and the user-mode graphics stack coming up.
+4. `Starting...` again (backlight gets brighter a second time — rendered by a different code path than step 2)
+5. Touch-screen calibration prompt:
+   ```
+   [Align Screen]
+   Tap the target at each location on
+   on the screen firmly and precisely.
+   The target continues to shift until
+   the screen is aligned.
+   ```
+   with a cross-hair target in the middle of the screen.
+6. WinCE desktop (after calibration completes)
+
+The two "backlight gets brighter" events plus the intermediate black screen mean boot is **not straight-through**: the first `Starting...` is drawn by OAL early, then the display is blanked (likely a PMU/PWM cycle or a framebuffer reset), then the second `Starting...` is drawn by the user-mode display stack once gwes/drivers come up. This is why the emulator's saved screenshot being byte-identical to `Starting.bmp` corresponds to step 2 — the stall point is **before** the display-blanking transition to step 3, not near the end of boot.
 
 Reference screenshots of the splash stages are committed at the repo root as `Initializing.bmp`, `Starting.bmp`, and `All_nand_300.png`. Use them for visual regression when comparing the emulator's saved screenshot (per `[UI] Screenshot saved:` in stderr) against expected real-hardware output.
 
@@ -269,6 +282,18 @@ Historical reverse-engineering found that NK reaches warm-resume-style logic dur
 mipsel-linux-gnu-objdump -D -b binary -m mips:3000 -EL nk_decompressed.bin
 ```
 
+### Ghidra Reverse-Engineering Hygiene
+
+A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mcp__ghidra__*`). It is the shared knowledge base for NK reverse-engineering, so **always commit what you learn back into the project**:
+
+- **Rename functions** with `rename_function_by_address` as soon as you identify what they do. Prefer descriptive snake_case names (e.g. `IP2_dispatcher_masks_RTCL1`, `Scheduler_MainLoop_never_returns`, `InitializeJit_stub_print_only`). If a function is a stub, a wrapper, or has surprising behavior, say so in the name.
+- **Rename data labels** with `rename_data` for globals whose meaning you've pinned down (scheduler state, signatures like `MIKE`, function-pointer table slots).
+- **Add decompiler comments** with `set_decompiler_comment` at the function entry to record what you inferred: role, calling context, observed runtime behavior (e.g. "stall observed here 2026-04-18"), and important side effects. One paragraph is usually enough — future sessions can read the decompiled code itself for detail.
+- **Prefer names that encode uncertainty.** If you're 70% sure it's the PPSH probe, name it `PPSH_probe_poll_timeout` rather than `PPSH`, so a later session knows to verify. If a name turns out wrong, rename it — don't leave stale names.
+- Do not rename labels (`LAB_xxx`) or data slots as functions unless Ghidra already treats them as functions; if `rename_function_by_address` fails, fall back to `rename_data`.
+- When starting a new investigation, scan the current names and comments at the PCs you care about — prior sessions may have already decoded them.
+- Renames persist in the Ghidra project, not in this repo. There is no "revert before commit" step for Ghidra work; the default is to keep improvements.
+
 ## Current Investigation Guidance
 
 - Primary active target: WinCE 3.0 cold boot via `--nand ce/restore_images/All_nand_300.bin`
@@ -324,7 +349,7 @@ When you need temporary diagnostics:
 
 The `gxemul/` submodule points at the `be300-minimal` branch of `jroark/GXemul`. Keep it thin.
 
-- Current layout: pristine GXemul 0.7.0 (`c35c056`) + a squash adding MIPS16 interpreter and BE-300 platform glue (`3c3d5cb`) + a full VR4131 RTC/ETIMER/ECMP implementation (`53c5910`) + MIPS AdEL on misaligned jr/jalr (`8b8449d`) + VR41xx COP0 SUSPEND → wait-for-interrupt (`3250bb8`, VR4131 UM §4.3.3) + VR41xx RTCL1 timer SYSINT1-ack + edge-pulse IRQ (`8775b00`, VR4131 UM §11.2.1 / §13.2.3) + debug()/fatal()/debugmsg() routed to stderr instead of stdout so guest serial and emulator diagnostics don't interleave (`100bd72`, convention-alignment, not a hardware-accuracy fix). Six delta commits on top of upstream. Do not accumulate more without first documenting the justification.
+- Current layout: pristine GXemul 0.7.0 (`c35c056`) + a squash adding MIPS16 interpreter and BE-300 platform glue (`3c3d5cb`) + a full VR4131 RTC/ETIMER/ECMP implementation (`53c5910`) + MIPS AdEL on misaligned jr/jalr (`8b8449d`) + VR41xx COP0 SUSPEND → wait-for-interrupt (`3250bb8`, VR4131 UM §4.3.3) + VR41xx RTCL1 timer SYSINT1-ack + edge-pulse IRQ (`8775b00`, VR4131 UM §11.2.1 / §13.2.3) + debug()/fatal()/debugmsg() routed to stderr instead of stdout so guest serial and emulator diagnostics don't interleave (`100bd72`, convention-alignment, not a hardware-accuracy fix) + CP0 Compare timer hz/2 + pending cap (`2fa3853`, NEC datasheet Count-at-CPU/2 + R4000 §7.1) + RTCL1 as edge-triggered IP2 via new `ip_edge_triggered_mask` (`201edb0`, VR4131 UM §11.2.1 / §13.2.9, replaces the older deassert-on-next-tick pulse hack) + DEVICE_TICK uses CP0 Count delta as `tick_cycles` (`153d2db`, dyntrans batches terminate early so the nominal `1<<TICKSHIFT` interval is wrong by 8-100×; brings RTCL1 cadence to spec ~991 Hz). Nine delta commits on top of upstream. Do not accumulate more without first documenting the justification.
 - Before adding a gxemul-side fix, **diff against 0.7.0**: `git -C gxemul show c35c056:<path>` versus the current file. Confirm the change actually improves on upstream behavior. Several historical "fixes" on the prior `be300` branch were identity transformations of existing 0.7.0 code.
 - Before adding a gxemul-side fix, **cite the VR4131 UM section or `docs/hardware/hw_dump_*.txt` line** that justifies it. If you can't, the fix might be a workaround for a different emulator bug — keep root-causing.
 - One functional change per gxemul commit. Do not bundle platform integration, behavioral fixes, and diagnostics together (the prior `be300` branch had a commit that bundled a MIPS16 decode fix with BCU latch machinery and diagnostic fprintfs — it was unsplittable for cherry-pick later).

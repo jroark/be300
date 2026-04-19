@@ -10,6 +10,12 @@ All commit hashes refer to the `be300` branch history in the `gxemul/` submodule
 
 ---
 
+## What we re-applied and why
+
+- **2026-04-19** — `2fa3853` ("mips: CP0 Compare timer rate hz/2 + cap pending IP7 at 1") on `be300-minimal` re-applies the *bug-fix essence* of section 1 below, specifically the `compare_interrupts_pending` cap-at-1 change and adds a related VR4131 datasheet correction (Count advances at CPU/2, so wall-clock timer rate is `emulated_hz / (2 * compare_diff)` not `emulated_hz / compare_diff`). Motivation: WinCE NK boot exposed a 12.6 kHz IP7 storm and `pending=194` backlog during cold-boot Pass 7 that contributed to the broader RTCL1 cadence problem (see `memory/project_post_ppsh_stall.md` and `docs/HANDOFF_POST_CADENCE_FIX_2026-04-19.md` §3.6–§3.7). The remaining sub-fixes from section 1 (`COP0_COMPARE` schedule offset, dyntrans end-of-batch crossing check) were *not* applied — they remain unneeded on the BE-300 path because the guest still does not use MTC0 Compare-driven ticks. If a future investigation needs them, treat section 1 below as the reference.
+
+---
+
 ## 1. `42b9ff5` — MIPS Compare/IP7 timer wake coherency
 
 **What it fixes:**
