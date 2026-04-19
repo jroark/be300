@@ -358,7 +358,6 @@ machine_t *be300_create(const machine_config_t *cfg)
      */
     bcu_init(&m->bcu);
     cmu_init(&m->cmu);
-    pmu_init(&m->pmu);
     icu_init(&m->icu);
     siu_init(&m->siu);
     rtc_init(&m->rtc);

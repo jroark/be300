@@ -89,7 +89,6 @@ typedef struct be300_state {
     /* Peripheral state (VR4131 internal I/O) */
     bcu_state_t  bcu;
     cmu_state_t  cmu;
-    pmu_state_t  pmu;
     icu_state_t  icu;
     siu_state_t  siu;
     rtc_state_t  rtc;
