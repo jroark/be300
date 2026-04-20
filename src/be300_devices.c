@@ -409,6 +409,18 @@ DEVICE_ACCESS(be300_vrc4173)
         if (g_be300_machine && off >= 0x1000u && off < 0x2000u) {
             uint64_t val = cf_companion_read(&g_be300_machine->cf,
                 off - 0x1000u, (unsigned)len);
+            /*
+             * Pass 18 (2026-04-19): offset 0x1CD0 is the VRC4173 DMA-pending
+             * status bit that nanddisk.dll's CheckDMAEnd (UM 0x019A55B0) polls
+             * for DMA completion. Real hw always reads 0 once the transfer
+             * finishes (hw_dump_vrc4173.txt:524 shows 0x0A001CD0 = 0 even
+             * after NK runs). Our emulator has no real async DMA — the
+             * underlying NAND XFER engine completes instantly — so bit 0
+             * must always read 0. Without this, CheckDMAEnd times out 210+
+             * times during boot, blocking NAND/FAT mount.
+             */
+            if (off == 0x1CD0u)
+                val &= ~(uint64_t)1u;
             memory_writemax64(cpu, data, len, val);
             return 1;
         }
