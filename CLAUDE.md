@@ -304,14 +304,16 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 
 ### Current Investigation Target
 
-Pass 11/12 (2026-04-19) landed VR4131 HALTimer + SOFTRST + cold-reset mechanics
-correctly, but Pass 10's motivating theory was refuted by an endian re-read of the
-probe data — HALTimer never fires on real HW during normal cold boot. The boot-path
-stall reverts to the Pass 9 cdm.dll LoaderCS deadlock. See:
+Visible stall at `Starting.bmp` (screenshot SHA `e8a8c83cd66b9327f50fc1827eada71fb028b332`)
+persists through Pass 22 (committed: SIU wiring) and Pass 23 (investigation).
+Current characterization: launcher blocked on `a2=0x1E` (gwes.exe) never signalling
+ready; memmgr CS `0x806695A0` held by a thread (handle `0x00F6CD42`, struct at
+`0x80F5DCB0`) parked with saved EPC=`0x8008B8EC` (NK exception/syscall prologue,
+NOT a standard yield point). Thread's user PCs are in module at `0x019B0000`
+(likely DDI.DLL per gwes load chain). See:
 
-- `docs/HANDOFF_POST_PASS12_HALTIMER_2026-04-19.md` — current state, why Pass 10 was wrong, what Pass 11 still buys us
-- `docs/INVESTIGATION_CDM_DLL_PASS9.md` — active investigation plan (Steps A–E)
-- `docs/HANDOFF_POST_PPSH_STALL_2026-04-18.md` §1–§4, §6–§9 — stall characterization
+- `docs/HANDOFF_POST_PASS22_SIU_WIRING_2026-04-19.md` — last committed fix (SIU extensions)
+- `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` — current stall characterization, NK internals appendix (§9), Pass 24 next moves
 
 ## Key Files For Current WinCE Work
 
