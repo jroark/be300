@@ -215,6 +215,16 @@ static uint8_t nand_stream_byte(nand_state_t *s, uint32_t cursor_pos)
     return nand_stream_oob_byte(s, page, in_page - NAND_PAGE_DATA);
 }
 
+void nand_stream_read_dma(nand_state_t *s, uint8_t *dest, uint32_t len)
+{
+    if (!s || !dest || !s->stream_active)
+        return;
+
+    for (uint32_t i = 0; i < len; i++)
+        dest[i] = nand_stream_byte(s, s->stream_cursor + i);
+    s->stream_cursor += len;
+}
+
 static uint32_t nand_restore_reg_index(uint32_t offset)
 {
     return offset >> 2;
