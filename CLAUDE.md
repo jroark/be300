@@ -305,15 +305,17 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 ### Current Investigation Target
 
 Visible stall at `Starting.bmp` (screenshot SHA `e8a8c83cd66b9327f50fc1827eada71fb028b332`)
-persists through Pass 22 (committed: SIU wiring) and Pass 23 (investigation).
+persists through Pass 22 (committed: SIU wiring) and Pass 23/24 (investigation).
 Current characterization: launcher blocked on `a2=0x1E` (gwes.exe) never signalling
-ready; memmgr CS `0x806695A0` held by a thread (handle `0x00F6CD42`, struct at
-`0x80F5DCB0`) parked with saved EPC=`0x8008B8EC` (NK exception/syscall prologue,
-NOT a standard yield point). Thread's user PCs are in module at `0x019B0000`
-(likely DDI.DLL per gwes load chain). See:
+ready; memmgr CS `0x806695A0` held by thread `0x80F5DCB0` (handle `0x00F6CD42`)
+in **slot 1** (not gwes slot 4) — **stall chain crosses processes**. Thread's user
+PCs are in `clblib.dll` (module at `0x019B0000`, Casio BE-300 Common Library —
+power-management/safe-mode/EEPROM). DllMain is called 41× legitimately during
+boot; the stall is NOT in clblib's own code. See:
 
 - `docs/HANDOFF_POST_PASS22_SIU_WIRING_2026-04-19.md` — last committed fix (SIU extensions)
-- `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` — current stall characterization, NK internals appendix (§9), Pass 24 next moves
+- `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` — CS-owner resolution + NK internals appendix
+- `docs/HANDOFF_POST_PASS24_CLBLIB_IDENTIFIED_2026-04-19.md` — module identification + cross-process reframing, Pass 25 candidates
 
 ## Key Files For Current WinCE Work
 
