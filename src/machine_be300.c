@@ -442,6 +442,10 @@ machine_t *be300_create(const machine_config_t *cfg)
         extern void be300_register_cf_window(struct machine *, machine_t *, bool);
         be300_register_cf_window(gxm, m, cfg->log_mmio);
 
+        /* Register VR4131 SIU/DSIU (0x0F000800/0x0F000820 per hardware.txt) */
+        extern void be300_register_vr4131_siu(struct machine *, siu_state_t *, bool);
+        be300_register_vr4131_siu(gxm, &m->siu, cfg->log_mmio);
+
         /* Register VRC4173 latch (catch-all); pre-split to leave gaps for input device */
         extern void be300_register_vrc4173_latch(struct machine *, machine_t *, bool, bool);
         be300_register_vrc4173_latch(gxm, m, cfg->log_mmio, cfg->enable_ppsh);
