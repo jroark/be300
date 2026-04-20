@@ -178,23 +178,30 @@ static uint8_t nand_stream_oob_byte(nand_state_t *s,
 
     /*
      * The restore images are data-only dumps (no physical OOB bytes).
-     * The ROM/SPL logical-block mapper votes across the first five pages of a
-     * block and expects the same tag on at least three of them, so mirror the
-     * synthetic block metadata across that opening page set:
-     *   OOB[0..1] = 0x55AA (little-endian: AA 55),
-     *   OOB[2] = 0x0F, OOB[4..7] = logical block id.
+     * The ROM/SPL logical-block mapper votes across the first five pages
+     * of a block and expects the same tag on at least three of them, so
+     * mirror the synthetic block metadata across that opening page set.
+     *
+     * Two OOB formats are recognised — both share the 0x55AA magic in
+     * OOB[0..1]; OOB[2] and the block-id word distinguish them:
+     *   Allocated:  OOB[2]=0x0F, OOB[4..7]=block_id
+     *   Erased:     OOB[2]=0xFF, OOB[4..7]=0xFFFFFFFF
+     *
+     * Plain 0xFF for every OOB byte matches neither form and fails
+     * nanddisk.dll's NandColdBoot validity checks at UM 0x019A3C88 /
+     * 0x019A3CFC, causing the scan to bail with "NandColdBoot Error!!!".
      */
-    if (page_in_block < 5 &&
-        block < NAND_BLOCK_COUNT &&
-        nand_block_has_data(s, block)) {
+    if (page_in_block < 5 && block < NAND_BLOCK_COUNT) {
+        bool has_data = nand_block_has_data(s, block);
+
         switch (oob_idx) {
         case 0: return 0xAAu;
         case 1: return 0x55u;
-        case 2: return 0x0Fu;
-        case 4: return (uint8_t)(block & 0xFFu);
-        case 5: return (uint8_t)((block >> 8) & 0xFFu);
-        case 6: return 0x00u;
-        case 7: return 0x00u;
+        case 2: return has_data ? 0x0Fu : 0xFFu;
+        case 4: return has_data ? (uint8_t)(block & 0xFFu) : 0xFFu;
+        case 5: return has_data ? (uint8_t)((block >> 8) & 0xFFu) : 0xFFu;
+        case 6: return has_data ? 0x00u : 0xFFu;
+        case 7: return has_data ? 0x00u : 0xFFu;
         default: return 0xFFu;
         }
     }
