@@ -410,17 +410,39 @@ DEVICE_ACCESS(be300_vrc4173)
             uint64_t val = cf_companion_read(&g_be300_machine->cf,
                 off - 0x1000u, (unsigned)len);
             /*
-             * Pass 18 (2026-04-19): offset 0x1CD0 is the VRC4173 DMA-pending
-             * status bit that nanddisk.dll's CheckDMAEnd (UM 0x019A55B0) polls
-             * for DMA completion. Real hw always reads 0 once the transfer
-             * finishes (hw_dump_vrc4173.txt:524 shows 0x0A001CD0 = 0 even
-             * after NK runs). Our emulator has no real async DMA — the
-             * underlying NAND XFER engine completes instantly — so bit 0
-             * must always read 0. Without this, CheckDMAEnd times out 210+
-             * times during boot, blocking NAND/FAT mount.
+             * Pass 18/19 (2026-04-19): offset 0x1CD0 is the VRC4173
+             * DMA-pending status bit that nanddisk.dll's CheckDMAEnd at
+             * UM 0x019A55B0 polls for DMA completion. Real hw always
+             * reads 0 once the transfer finishes (hw_dump_vrc4173.txt:524
+             * shows 0x0A001CD0 = 0 even after NK runs).
+             *
+             * Pass 19 extends this: before returning 0, perform the
+             * actual DMA transfer. The driver programs dest at 0x1CDC
+             * and length at 0x1CD8, then arms via write-1-to-0x1CD0,
+             * then programs XFER engine (MODE=5 stream at 0xAA00A464,
+             * KICK at 0xAA00A460) which sets nand_state.stream_active.
+             * By the time CheckDMAEnd polls 0x1CD0, stream is armed;
+             * we copy `xfer_len` bytes from the NAND stream to the
+             * destination physical address, then report "DMA done".
              */
-            if (off == 0x1CD0u)
+            if (off == 0x1CD0u) {
+                uint32_t latched = be300_latch_peek_u32(d, 0x1CD0);
+                if ((latched & 1u) != 0 && cpu && cpu->mem &&
+                    g_be300_machine->nand.stream_active) {
+                    uint32_t dest_pa = be300_latch_peek_u32(d, 0x1CDC);
+                    uint32_t xfer_len = be300_latch_peek_u32(d, 0x1CD8);
+                    if (xfer_len > 0 && xfer_len <= 0x2000u) {
+                        unsigned char *host = memory_paddr_to_hostaddr(
+                            cpu->mem, (uint64_t)dest_pa, MEM_WRITE);
+                        if (host)
+                            nand_stream_read_dma(&g_be300_machine->nand,
+                                host, xfer_len);
+                    }
+                    /* clear pending so subsequent polls don't re-trigger */
+                    d->bytes[0x1CD0] &= ~(uint8_t)1u;
+                }
                 val &= ~(uint64_t)1u;
+            }
             memory_writemax64(cpu, data, len, val);
             return 1;
         }

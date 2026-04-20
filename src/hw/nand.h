@@ -212,6 +212,13 @@ typedef struct {
 void     nand_init(nand_state_t *s, uint8_t *image, size_t size);
 uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
                    uint32_t pc);
+/*
+ * Pass 19: consume `len` bytes from the active NAND stream into `dest`.
+ * Advances the stream cursor. No-op if stream is not active. Used by the
+ * VRC4173 DMA engine emulation to transfer NAND page data to RAM when
+ * nanddisk.dll arms a DMA by writing 1 to PA 0x0A001CD0.
+ */
+void     nand_stream_read_dma(nand_state_t *s, uint8_t *dest, uint32_t len);
 void     nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                     uint64_t value, uint32_t pc);
 bool     nand_restore_handles_offset(uint32_t offset);
