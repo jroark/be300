@@ -305,17 +305,15 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 ### Current Investigation Target
 
 Visible stall at `Starting.bmp` (screenshot SHA `e8a8c83cd66b9327f50fc1827eada71fb028b332`)
-persists through Pass 22 (committed: SIU wiring) and Pass 23/24 (investigation).
-Current characterization: launcher blocked on `a2=0x1E` (gwes.exe) never signalling
-ready; memmgr CS `0x806695A0` held by thread `0x80F5DCB0` (handle `0x00F6CD42`)
-in **slot 1** (not gwes slot 4) — **stall chain crosses processes**. Thread's user
-PCs are in `clblib.dll` (module at `0x019B0000`, Casio BE-300 Common Library —
-power-management/safe-mode/EEPROM). DllMain is called 41× legitimately during
-boot; the stall is NOT in clblib's own code. See:
+persists through Pass 25 (committed: touch PIUCNTREG bit 0 auto-clear). Internal
+boot state has advanced significantly: gwes.exe now signals ready; launcher
+waits on **Boot.exe (`0x3B`)**. Next blocker is Boot.exe-side; expected to follow
+the same "missing-hardware self-clearing register" pattern as Pass 17/18/22/25.
+See:
 
-- `docs/HANDOFF_POST_PASS22_SIU_WIRING_2026-04-19.md` — last committed fix (SIU extensions)
-- `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` — CS-owner resolution + NK internals appendix
-- `docs/HANDOFF_POST_PASS24_CLBLIB_IDENTIFIED_2026-04-19.md` — module identification + cross-process reframing, Pass 25 candidates
+- `docs/HANDOFF_POST_PASS25_PIU_BIT0_AUTOCLEAR_2026-04-19.md` — current stall characterization, Pass 26 candidates (rerun `--log-mmio`, identify new hot PC)
+- `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` — §9 appendix preserves NK internals (waiter/event struct offsets, ruled-out hypotheses)
+- `docs/HANDOFF_POST_PASS22_SIU_WIRING_2026-04-19.md` — SIU wiring reference
 
 ## Key Files For Current WinCE Work
 
