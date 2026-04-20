@@ -1073,8 +1073,20 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
     if (offset >= 0xA060u && offset < 0xA160u) {
         uint32_t rel = offset - 0xA060u;
 
-        for (unsigned i = 0; i < size && (rel + i) < sizeof(s->strap_regs); i++)
+        /*
+         * Board-ID strap at 0xA0C0 is a read-only hardware strap on
+         * real BE-300 (hw_survey_v8.txt:9 "BoardDetect: 0x7100";
+         * hw_dump_vrc4173.txt:524 shows 0x7100 AFTER boot even though
+         * NK's PPSH_reset_port_ac000124 writes 0xC to this offset as a
+         * side-effect of probing 0xAC000124). Drop writes so pcmcia.dll's
+         * FUN_C at UM 0x0198a9c8 can still read 0x7100 after NK's write.
+         */
+        for (unsigned i = 0; i < size && (rel + i) < sizeof(s->strap_regs); i++) {
+            uint32_t abs_off = offset + i;
+            if (abs_off >= 0xA0C0u && abs_off < 0xA0C4u)
+                continue;
             s->strap_regs[rel + i] = (uint8_t)((value >> (8u * i)) & 0xFFu);
+        }
         return;
     }
 
