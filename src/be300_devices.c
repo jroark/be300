@@ -1165,8 +1165,17 @@ DEVICE_ACCESS(be300_touch)
         if (off <= 0x18 && (off & 3) == 0) {
             uint32_t idx = off / 4;
             if (off == 0x00) {
-                /* PIUCNTREG: store writable bits 9:0 only */
-                d->piu_regs[0] = (uint16_t)(val & 0x03FF);
+                /* PIUCNTREG: store writable bits 9:0, except bit 0
+                 * which is a self-clearing command/start bit.
+                 * Real-hw dump `hw_dump_vrc4173.txt` shows
+                 * `0x0A000300: 00001304` — bit 0 always reads 0.
+                 * touch.dll at UM 0x01A412E0..0x01A412EC spins on
+                 * `andi $9, $8, 1; bnel $9, $0, -2` (wait-for-clear)
+                 * after writing 0x0401 to this register; the write
+                 * is a command kick and hardware auto-clears bit 0
+                 * synchronously. Pass 25 (2026-04-19): without this
+                 * mask the driver polls at ~370k reads/sec forever. */
+                d->piu_regs[0] = (uint16_t)(val & 0x03FE);
                 piu_update_state(d);
             } else if (off == 0x04) {
                 /* PIUINTREG: mask/status byte pair.
