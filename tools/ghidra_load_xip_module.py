@@ -20,7 +20,7 @@
 #   B) Add-to-existing-program (for DLLs whose vbase is disjoint from blocks
 #      already in the current program, e.g. adding clblib.dll at 0x019B0000
 #      to the kernel program that only has blocks in the 0x800xxxxx /
-#      0x9FCxxxxx ranges). Just run the script directly — it will create new
+#      0x9FCxxxxx ranges). Just run the script directly -- it will create new
 #      blocks without touching existing ones.
 #
 # In both cases the script writes the .bin bytes into the created blocks and
@@ -136,7 +136,7 @@ def main():
                 block_name, start_addr, len(blob), 0, monitor, False,
             )
         except MemoryConflictException as e:
-            printerr("Conflict creating block %s: %s — skipping."
+            printerr("Conflict creating block %s: %s -- skipping."
                      % (block_name, e))
             continue
         # Write bytes
