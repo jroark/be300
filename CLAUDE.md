@@ -305,21 +305,24 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 ### Current Investigation Target
 
 Visible stall at `Starting.bmp` (screenshot SHA `e8a8c83cd66b9327f50fc1827eada71fb028b332`)
-persists through Pass 28. Launcher still waits on **Boot.exe (`0x3B`)**.
-Pass 28 loaded Boot.exe into Ghidra, instrumented every direct child
-call in `Boot_WinMain` (`0x00012BD4`) with exec watches, and pinned
-the stall to a single coredll import: the thunk at `0x0001310C`
-reads IAT slot `0x00014084` and calls
-`coredll.<unknown>(0x0101003c, 0, 0, 0, 0, 0)` which never returns.
-Boot.exe's seven sibling init calls (safemode check,
-SyncVersionFiles, alarm DB init, `\Windows\Initialized.$$$` marker
-write, …) all complete successfully in ASID 5 before the stall.
-Pass 29 needs to load coredll.dll into Ghidra and snapshot the
-runtime-resolved IAT value to identify the stuck function.
+persists through Pass 29. Launcher still waits on **Boot.exe (`0x3B`)**.
+Pass 29 loaded coredll.dll into Ghidra at vbase `0x01F80000`,
+captured the runtime IAT binding for Boot.exe's stalling thunk
+(`IAT[0x14084] = 0x01F8D1C8`), decompiled the target coredll
+function, and found it is a standard WinCE API thunk that routes
+to the kernel via PSL (Protected Server Library) syscall trap
+address `0xFFFFFA76`. That trap encodes one specific method in NK's
+`SH_WIN32` API set (method ordinal ~354 by the standard WinCE 3.0
+encoding). Boot.exe fires the call exactly once with
+`(0x0101003c, 0, 0, 0, 0, 0)` and the kernel side of the call never
+returns. Pass 30 needs to switch Ghidra MCP to the NK program and
+walk the PSL dispatcher to name the kernel method, then diagnose
+the hang (filesystem / gwes message queue / handle-wait).
 See:
 
-- `docs/HANDOFF_POST_PASS28_BOOT_EXE_THUNK_1310C_STALL_2026-04-20.md` — Pass 29 steps: load `01_coredll.dll.bin` at `0x01F80000`, add a mem_watch for IAT[0x14084] writes to capture the resolved coredll VA, identify the function, diagnose the hang
-- `docs/HANDOFF_POST_PASS27_BOOT_EXE_STALL_CHARACTERIZED_2026-04-20.md` — background on how we pinned the stall to Boot.exe's init sequence
+- `docs/HANDOFF_POST_PASS29_STALL_IS_PSL_TRAP_FFFFFA76_2026-04-20.md` — Pass 30 steps: switch Ghidra to NK, find the PSL dispatcher, decode trap `0xFFFFFA76` → kernel method name, diagnose why that method never returns
+- `docs/HANDOFF_POST_PASS28_BOOT_EXE_THUNK_1310C_STALL_2026-04-20.md` — Boot.exe-side probe results that led here
+- `docs/HANDOFF_POST_PASS27_BOOT_EXE_STALL_CHARACTERIZED_2026-04-20.md` — original stall characterisation in Boot.exe's init
 - `docs/HANDOFF_POST_PASS26_NO_SIMPLE_MMIO_FIX_2026-04-19.md` — MMIO scan negative result that justified this NK-side work
 - `docs/HANDOFF_POST_PASS25_PIU_BIT0_AUTOCLEAR_2026-04-19.md` — reference methodology (scan → pin → cross-reference), still sound
 - `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` — §9 appendix preserves NK internals (waiter/event struct offsets, ruled-out hypotheses)
