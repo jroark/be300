@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "cpu.h"
+#include "cpu_mips.h"   /* mips_cpu_cold_reset() for KjCMU warm-reset trigger */
 #include "machine.h"
 #include "memory.h"
 #include "misc.h"
@@ -71,6 +72,57 @@ DEVICE_ACCESS(be300_nand)
 
     if (d->log_mmio)
         be300_log_mmio("be300_nand", writeflag, offset, (unsigned)len, data, pc);
+
+    /*
+     * KjCMU warm-reset trigger at PA 0x0A00A0C4 + 0x0A00A0C8.
+     *
+     * Citation chain (TODO 2026-04-20: confirm via VRC4173 UM once the
+     * KjCMU register map is located — the Casio "Kj" companion block is
+     * not described in NEC's U14579EJ2V0UM00):
+     *   - docs/hardware/hardware.txt:192 identifies PA 0x0A00A000 as
+     *     "KjCMU Base on companion" (Casio custom block, clock/reset
+     *     control is the conventional role of a CMU-adjacent region).
+     *   - docs/hardware/hw_dump_vrc4173.txt:524 shows real-hw quiescent
+     *     values PA 0x0A00A0C4=0x3 and PA 0x0A00A0C8=0xFFFF, distinct
+     *     from the magic pair NK writes (7 and 10) — consistent with
+     *     "write magic => trigger => register returns to quiescent
+     *     state" semantics rather than plain latches.
+     *   - NK 0x8007A140..0x8007A178 (FUN_8007A140) writes
+     *     `7 -> 0xA0C4` then `10 -> 0xA0C8` and falls through into
+     *     `jal 0x8007A178` -- the *only* self-jal in all 6 MB of NK
+     *     (Pass 30 handoff §1.3). This is the canonical WinCE
+     *     halt-forever-waiting-for-reset idiom; without the warm-reset
+     *     the CPU spins 555M times in 40 s at that PC (Pass 30 §1.1)
+     *     and Boot.exe's CASIO reboot path never advances.
+     *
+     * We require the exact two-write sequence (7->0xA0C4 immediately
+     * followed by 10->0xA0C8) to fire the reset; any other write to
+     * 0xA0C4 disarms. mips_cpu_cold_reset(cpu) reinitialises CP0 per
+     * the cold-boot state (STATUS=BEV|ERL, PC=0xBFC00000) -- the same
+     * helper the PMU SOFTRST path uses (gxemul/src/devices/dev_vr41xx.c
+     * :845-853). After the reset, ROM re-runs, the second invocation
+     * of Boot.exe sees \Windows\Initialized.$$$ (already created before
+     * the reboot call -- Pass 28), takes the already-initialised branch,
+     * and signals 0x3B ready.
+     */
+    if (writeflag == MEM_WRITE && (offset == 0xA0C4u || offset == 0xA0C8u)) {
+        static int kjcmu_reset_armed = 0;
+        uint64_t val = memory_readmax64(cpu, data, len);
+        if (offset == 0xA0C4u) {
+            kjcmu_reset_armed = (val == 7);
+        } else if (kjcmu_reset_armed && val == 10) {
+            kjcmu_reset_armed = 0;
+            fprintf(stderr,
+                "[KjCMU] warm reset triggered at pc=%08x "
+                "(PA 0x0A00A0C4<=7, PA 0x0A00A0C8<=10)\n",
+                pc);
+            mips_cpu_cold_reset(cpu);
+            return 1;
+        } else {
+            kjcmu_reset_armed = 0;
+        }
+        /* fall through to the normal latch path for read-back consistency */
+    }
 
     if (offset >= 0xA03Cu && offset < 0xA040u && d->cf) {
         if (writeflag == MEM_WRITE) {
