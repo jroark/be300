@@ -305,22 +305,25 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 ### Current Investigation Target
 
 Visible stall at `Starting.bmp` (screenshot SHA `e8a8c83cd66b9327f50fc1827eada71fb028b332`)
-persists through Pass 29. Launcher still waits on **Boot.exe (`0x3B`)**.
-Pass 29 loaded coredll.dll into Ghidra at vbase `0x01F80000`,
-captured the runtime IAT binding for Boot.exe's stalling thunk
-(`IAT[0x14084] = 0x01F8D1C8`), decompiled the target coredll
-function, and found it is a standard WinCE API thunk that routes
-to the kernel via PSL (Protected Server Library) syscall trap
-address `0xFFFFFA76`. That trap encodes one specific method in NK's
-`SH_WIN32` API set (method ordinal ~354 by the standard WinCE 3.0
-encoding). Boot.exe fires the call exactly once with
-`(0x0101003c, 0, 0, 0, 0, 0)` and the kernel side of the call never
-returns. Pass 30 needs to switch Ghidra MCP to the NK program and
-walk the PSL dispatcher to name the kernel method, then diagnose
-the hang (filesystem / gwes message queue / handle-wait).
+persists through Pass 30. Launcher still waits on **Boot.exe (`0x3B`)**.
+Pass 30 root-caused the stall: Boot.exe calls
+`coredll.<unknown>(0x0101003c, ...)` which is the WinCE "reboot via
+`HKLM\Drivers\CASIO\Reboot`" kernel API at NK `0x800A84A8`. That
+API reads `Wait=1000 ms` from the registry, runs a short wait
+loop, then calls `FUN_8007A140` which disables interrupts, writes
+**`7 → PA 0x0A00A0C4`** and **`10 → PA 0x0A00A0C8`** (VRC4173
+GPIO/reset trigger), and falls through into the **only self-`jal`
+in all 6 MB of NK** at `0x8007A178` — a deliberate halt-forever
+loop waiting for the hardware warm-reset to fire. Our emulator
+latches the VRC4173 writes without triggering a reset, so the CPU
+spins in the self-jal (probe captured 555 million hits in 40 s).
+Pass 31 needs to wire the two writes to invoke a CPU reset, using
+the existing PMU SOFTRST path as a reference (`src/hw/pmu.c`
+commits `611c55ad`/`8b93ca33`).
 See:
 
-- `docs/HANDOFF_POST_PASS29_STALL_IS_PSL_TRAP_FFFFFA76_2026-04-20.md` — Pass 30 steps: switch Ghidra to NK, find the PSL dispatcher, decode trap `0xFFFFFA76` → kernel method name, diagnose why that method never returns
+- `docs/HANDOFF_POST_PASS30_BOOT_EXE_TRIGGERS_UNEMULATED_VRC4173_RESET_2026-04-20.md` — Pass 31 steps: locate VRC4173 UM section for PA `0xA0C4`/`0xA0C8` (required citation per CLAUDE.md), extend `be300_vrc4173_latch` write handler to arm-on-`sw 7→0xC4` + fire-on-`sw 10→0xC8`, reuse SOFTRST-style reset mechanism
+- `docs/HANDOFF_POST_PASS29_STALL_IS_PSL_TRAP_FFFFFA76_2026-04-20.md` — how we narrowed to this NK function
 - `docs/HANDOFF_POST_PASS28_BOOT_EXE_THUNK_1310C_STALL_2026-04-20.md` — Boot.exe-side probe results that led here
 - `docs/HANDOFF_POST_PASS27_BOOT_EXE_STALL_CHARACTERIZED_2026-04-20.md` — original stall characterisation in Boot.exe's init
 - `docs/HANDOFF_POST_PASS26_NO_SIMPLE_MMIO_FIX_2026-04-19.md` — MMIO scan negative result that justified this NK-side work
