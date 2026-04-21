@@ -305,17 +305,21 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 ### Current Investigation Target
 
 Visible stall at `Starting.bmp` (screenshot SHA `e8a8c83cd66b9327f50fc1827eada71fb028b332`)
-persists through Pass 27. Launcher still waits on **Boot.exe (`0x3B`)**.
-Pass 27 NK-side decompilation confirmed: Boot.exe *does* spawn (hit=7)
-but never calls `SignalStarted(0x3B)`. Unthrottled 90 s runs reproduce
-the same state as 60 s throttled — timing ruled out. The stall is
-inside Boot.exe's own init sequence, likely in
-`NANDAccess.NANDOpen` → `GetDisk.GetSystemDisk` → `CCFS.CCFS_MountDisk`
-(Boot.exe's only imports). Pass 28 needs UM binary decompilation —
-NK-side analysis has reached its limit.
+persists through Pass 28. Launcher still waits on **Boot.exe (`0x3B`)**.
+Pass 28 loaded Boot.exe into Ghidra, instrumented every direct child
+call in `Boot_WinMain` (`0x00012BD4`) with exec watches, and pinned
+the stall to a single coredll import: the thunk at `0x0001310C`
+reads IAT slot `0x00014084` and calls
+`coredll.<unknown>(0x0101003c, 0, 0, 0, 0, 0)` which never returns.
+Boot.exe's seven sibling init calls (safemode check,
+SyncVersionFiles, alarm DB init, `\Windows\Initialized.$$$` marker
+write, …) all complete successfully in ASID 5 before the stall.
+Pass 29 needs to load coredll.dll into Ghidra and snapshot the
+runtime-resolved IAT value to identify the stuck function.
 See:
 
-- `docs/HANDOFF_POST_PASS27_BOOT_EXE_STALL_CHARACTERIZED_2026-04-20.md` — Pass 28 direction: fix XIP extractor's .rdata coverage, load Boot.exe + 4 callee DLLs into Ghidra, trace init path; lower-cost alternative: add per-ASID PC sampler to `src/be300_probe.c`
+- `docs/HANDOFF_POST_PASS28_BOOT_EXE_THUNK_1310C_STALL_2026-04-20.md` — Pass 29 steps: load `01_coredll.dll.bin` at `0x01F80000`, add a mem_watch for IAT[0x14084] writes to capture the resolved coredll VA, identify the function, diagnose the hang
+- `docs/HANDOFF_POST_PASS27_BOOT_EXE_STALL_CHARACTERIZED_2026-04-20.md` — background on how we pinned the stall to Boot.exe's init sequence
 - `docs/HANDOFF_POST_PASS26_NO_SIMPLE_MMIO_FIX_2026-04-19.md` — MMIO scan negative result that justified this NK-side work
 - `docs/HANDOFF_POST_PASS25_PIU_BIT0_AUTOCLEAR_2026-04-19.md` — reference methodology (scan → pin → cross-reference), still sound
 - `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` — §9 appendix preserves NK internals (waiter/event struct offsets, ruled-out hypotheses)
