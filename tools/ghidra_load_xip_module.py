@@ -1,3 +1,4 @@
+#@runtime Jython
 #@menupath File.BE-300.Load WinCE XIP Module
 #@category BE-300
 #@keybinding
