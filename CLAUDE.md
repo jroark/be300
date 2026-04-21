@@ -305,15 +305,18 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 ### Current Investigation Target
 
 Visible stall at `Starting.bmp` (screenshot SHA `e8a8c83cd66b9327f50fc1827eada71fb028b332`)
-persists through Pass 26. Launcher still waits on **Boot.exe (`0x3B`)**.
-Pass 26 ruled out the "next blocker is another self-clearing register"
-hypothesis by rerunning `--log-mmio` post-Pass-25: the new top MMIO
-target (`be300_nand @B000`, 1.02 M reads) is a legitimate SPL bulk
-stream-copy loop, not a poll. 180 s runs confirm Boot.exe is stuck
-in a clblib critical-section pattern rather than broken hardware.
+persists through Pass 27. Launcher still waits on **Boot.exe (`0x3B`)**.
+Pass 27 NK-side decompilation confirmed: Boot.exe *does* spawn (hit=7)
+but never calls `SignalStarted(0x3B)`. Unthrottled 90 s runs reproduce
+the same state as 60 s throttled — timing ruled out. The stall is
+inside Boot.exe's own init sequence, likely in
+`NANDAccess.NANDOpen` → `GetDisk.GetSystemDisk` → `CCFS.CCFS_MountDisk`
+(Boot.exe's only imports). Pass 28 needs UM binary decompilation —
+NK-side analysis has reached its limit.
 See:
 
-- `docs/HANDOFF_POST_PASS26_NO_SIMPLE_MMIO_FIX_2026-04-19.md` — MMIO scan negative result; Pass 27 candidates (decompile clblib `0x019B17CC`, walk memmgr CS waiter chain, identify struct at `0x80FA5EA0`)
+- `docs/HANDOFF_POST_PASS27_BOOT_EXE_STALL_CHARACTERIZED_2026-04-20.md` — Pass 28 direction: fix XIP extractor's .rdata coverage, load Boot.exe + 4 callee DLLs into Ghidra, trace init path; lower-cost alternative: add per-ASID PC sampler to `src/be300_probe.c`
+- `docs/HANDOFF_POST_PASS26_NO_SIMPLE_MMIO_FIX_2026-04-19.md` — MMIO scan negative result that justified this NK-side work
 - `docs/HANDOFF_POST_PASS25_PIU_BIT0_AUTOCLEAR_2026-04-19.md` — reference methodology (scan → pin → cross-reference), still sound
 - `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` — §9 appendix preserves NK internals (waiter/event struct offsets, ruled-out hypotheses)
 - `docs/HANDOFF_POST_PASS22_SIU_WIRING_2026-04-19.md` — SIU wiring reference
