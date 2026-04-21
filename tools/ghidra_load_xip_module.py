@@ -7,13 +7,23 @@
 # creates per-section memory blocks with correct permissions at the module's
 # preferred vbase.
 #
-# Jython 2.7 (Ghidra default). Run this INSIDE an already-imported program —
-# it doesn't create a new program. If you need a fresh program, first do
-# File -> Import File -> select the .bin as Raw Binary (language
-# MIPS:LE:32:default, base address 0x0 — we'll relocate), then run this script.
+# Jython 2.7 (Ghidra default). Two supported workflows:
 #
-# Or: start from an EMPTY program (File -> New -> MIPS:LE:32:default), then
-# run this script; it will create blocks and load bytes from the .bin into them.
+#   A) Post-Import-File (recommended). First do File -> Import File -> select
+#      the .bin as Raw Binary, language MIPS:LE:32:default, Options -> Base
+#      Address set to the module's vbase. Then open the program and run this
+#      script: it will delete the single big block Import File created,
+#      replace it with per-section blocks at the correct VAs, and set R/W/X
+#      permissions correctly.
+#
+#   B) Add-to-existing-program (for DLLs whose vbase is disjoint from blocks
+#      already in the current program, e.g. adding clblib.dll at 0x019B0000
+#      to the kernel program that only has blocks in the 0x800xxxxx /
+#      0x9FCxxxxx ranges). Just run the script directly — it will create new
+#      blocks without touching existing ones.
+#
+# In both cases the script writes the .bin bytes into the created blocks and
+# sets R/W/X permissions per the sidecar's flags column.
 
 from ghidra.program.model.mem import MemoryConflictException
 from java.io import File
@@ -87,6 +97,29 @@ def main():
 
     memory = currentProgram.getMemory()
     addr_space = currentProgram.getAddressFactory().getDefaultAddressSpace()
+    image_start = addr_space.getAddress(vbase)
+    image_end   = addr_space.getAddress(vbase + vsize - 1)
+
+    # Workflow A: if Import File was used, there is a single big block
+    # spanning the whole image. Remove any block that overlaps the image
+    # range before creating per-section blocks. (Workflow B: no overlapping
+    # block exists, so this loop finds nothing and is a no-op.)
+    removed_any = False
+    for blk in list(memory.getBlocks()):
+        b_start = blk.getStart()
+        b_end   = blk.getEnd()
+        # overlap if b_start <= image_end and b_end >= image_start
+        if (b_start.compareTo(image_end) <= 0 and
+            b_end.compareTo(image_start) >= 0):
+            print("  Removing existing block '%s' at 0x%08X..0x%08X "
+                  "(overlaps image range)"
+                  % (blk.getName(),
+                     b_start.getOffset(), b_end.getOffset()))
+            memory.removeBlock(blk, monitor)
+            removed_any = True
+    if removed_any:
+        print("  (Import File default block(s) cleared; creating per-section "
+              "blocks fresh.)")
 
     for s in sections:
         if s['vsize'] == 0:
