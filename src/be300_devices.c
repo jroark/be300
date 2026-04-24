@@ -231,6 +231,7 @@ struct be300_vrc4173_segment {
 
 /* Forward declarations for cross-device callbacks */
 struct be300_input_device;
+static uint32_t piu_girq0_source_bits(const struct be300_input_device *d);
 static void piu_update_state(struct be300_input_device *d);
 
 #define WINCE_AUX_BASE  0x0C000120ULL
@@ -474,7 +475,10 @@ DEVICE_ACCESS(be300_vrc4173)
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
                 BE300_MMIO_CLASS_KNOWN);
             uint64_t val = be300_latch_peek_u32(d, off)
-                | cf_giu_source_bits(&g_be300_machine->cf);
+                | cf_giu_source_bits(&g_be300_machine->cf)
+                | piu_girq0_source_bits(
+                    (const struct be300_input_device *)
+                    g_be300_machine->touch_device);
             memory_writemax64(cpu, data, len, val);
             return 1;
         }
@@ -1254,15 +1258,17 @@ struct be300_input_device {
     uint16_t   piu_regs[16];       /* register file: index = offset / 4 */
     uint16_t   piu_padstate;       /* PADSTATE(2:0) scan sequencer state */
     bool       piu_prev_touch;     /* previous touch_down for edge detect */
-    struct interrupt piu_irq;      /* VRIP line 5 interrupt handle */
+    struct interrupt piu_irq;      /* BE-300 GIRQ0 cascaded interrupt */
     bool       piu_irq_connected;
     bool       piu_irq_asserted;
 };
 
 /*
- *  PIU interrupt helper — idempotent assert/deassert through VRIP line 5.
- *  INTERRUPT_ASSERT calls vr41xx_vrip_interrupt_assert() (dev_vr41xx.c:249)
- *  which sets VR4131 SYSINT1 bit 5, potentially asserting CPU IRQ 2.
+ *  PIU interrupt helper — idempotent assert/deassert through BE-300's
+ *  cascaded GIU interrupt route.  The Linux4BE hardware notes describe
+ *  touch as SYSINT1 bit 8 (GIU) -> GIUINTLREG bit 0 (GIRQ0) ->
+ *  VRC4173 offset 0x0004 bit 9 (GIRQ0-9), then PIUINTREG at 0x0A000304.
+ *  See docs/hardware/hardware.txt:15-19, :65-89, and :132-145.
  */
 static void piu_irq_update(struct be300_input_device *d, bool want)
 {
@@ -1275,6 +1281,14 @@ static void piu_irq_update(struct be300_input_device *d, bool want)
         INTERRUPT_DEASSERT(d->piu_irq);
         d->piu_irq_asserted = false;
     }
+}
+
+static uint32_t piu_girq0_source_bits(const struct be300_input_device *d)
+{
+    if (!d)
+        return 0;
+
+    return (d->piu_regs[1] & (d->piu_regs[1] >> 8)) ? 0x00000200u : 0;
 }
 
 /*
@@ -1522,14 +1536,14 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
     touch_d->m = m;
     touch_d->log_mmio = log_mmio;
 
-    /* Connect PIU to VRIP interrupt line 5 (VRIP_INTR_PIU).
-     * The VRIP tree is registered by dev_vr41xx_init() — this must
-     * be called AFTER that init.  Same pattern as KIU/GIU at
-     * gxemul/src/devices/dev_vr41xx.c:1237-1242. */
+    /* Connect BE-300 touch through the cascaded GIU route documented in
+     * docs/hardware/hardware.txt:15-19, :65-89, and :132-145:
+     * SYSINT1 bit 8 (GIU) -> GIUINTLREG bit 0 (GIRQ0) ->
+     * VRC4173 offset 0x0004 bit 9 (GIRQ0-9) -> PIUINTREG. */
     {
         char tmps[300];
-        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i",
-            gxm->path, gxm->bootstrap_cpu, 5);
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 0);
         INTERRUPT_CONNECT(tmps, touch_d->piu_irq);
         touch_d->piu_irq_connected = true;
         touch_d->piu_irq_asserted = false;
