@@ -45,6 +45,9 @@ screenshot_*.bmp
 # Python cache
 __pycache__/
 
+# Node tooling
+node_modules/
+
 # Claude Code local config
 .claude/
 

@@ -176,3 +176,83 @@ docker compose run --rm mips-dev /bin/bash
 
 Includes `mipsel-linux-gnu-*` (Linux ELF) and `mipsel-pe-*` (Windows CE PE)
 toolchains.
+
+## Forum Scraping
+
+The repo includes a Playwright-based browser scraper for `be300.org` forum
+research. It is intended for collecting board and topic HTML snapshots when the
+site is reachable in a normal browser but blocks plain HTTP clients.
+
+By default it now archives all discovered boards and all discovered thread
+pages. The `--max-*` flags are optional caps for sampling or debugging.
+
+Install the dependency and Chromium once:
+
+```bash
+npm install
+npx playwright install chromium
+```
+
+Run the scraper in headed mode by default:
+
+```bash
+npm run scrape:be300-forums
+```
+
+The scraper now prefers a real local Chrome install when available and reuses a
+persistent profile under `build-host/be300_forums/profile/`. That gives
+Cloudflare a better chance of treating the session like a normal browser and
+lets any successful challenge solve persist across reruns.
+
+Useful flags:
+
+- `--connect-cdp <url>` to attach to a manually opened Chrome session instead of launching one
+- `--browser auto|chrome|chromium` to force the browser channel
+- `--profile-dir <dir>` to change the persistent browser profile location
+- `--headless=false|true` to switch between interactive and headless runs
+- `--max-boards <n|all>` to cap how many boards are visited
+- `--max-topics-per-board <n|all>` to cap how many topics are crawled per board
+- `--keywords <csv>` to retune ranking toward specific hardware or boot terms
+- `--out <dir>` to change the output directory
+
+Example:
+
+```bash
+npm run scrape:be300-forums -- \
+  --browser chrome \
+  --headless=false \
+  --max-boards 5 \
+  --max-topics-per-board 8
+```
+
+Outputs are written under `build-host/be300_forums/` by default:
+
+- `boards.json` with discovered boards plus every saved board page
+- `topics.json` with discovered topics plus every saved thread page
+- `pages/` with raw HTML snapshots and the initial index screenshot
+- `storage-state.json` with the browser session state for reruns
+
+### Manual Chrome Attach
+
+If Cloudflare keeps reloading when Playwright launches the browser, use a
+manually opened Chrome session and attach to it over CDP instead:
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9222 \
+  --user-data-dir=/tmp/be300-forum-chrome
+```
+
+Then use that Chrome window normally:
+
+1. Open `https://www.be300.org/forums/index.php?action=forum`
+2. Attempt the Cloudflare challenge manually
+3. Leave the browser running
+4. In another terminal, attach the scraper:
+
+```bash
+node tools/scrape_be300_forums.js --connect-cdp http://127.0.0.1:9222
+```
+
+This mode avoids Playwright launching the browser itself and gives the site a
+more normal interactive session to inspect.
