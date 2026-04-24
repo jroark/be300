@@ -109,7 +109,8 @@ typedef struct be300_state {
 
     /* NAND image data (loaded from file) */
     uint8_t     *nand_data;
-    size_t       nand_size;
+    size_t       nand_size;       /* emulated chip buffer size */
+    size_t       nand_file_size;  /* bytes loaded from the data-only image */
 
     /* Framebuffer host pointer (from GXemul dev_fb) */
     void        *fb_data;

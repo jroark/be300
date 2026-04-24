@@ -322,6 +322,7 @@ static int be300_load_nand_image_file(machine_t *m, const char *path)
 
     m->nand_data = data;
     m->nand_size = alloc_size;
+    m->nand_file_size = (size_t)fsize;
     return 0;
 }
 
@@ -339,6 +340,7 @@ static int be300_create_blank_nand(machine_t *m)
     memset(data, 0xFF, NAND_IMAGE_SIZE);
     m->nand_data = data;
     m->nand_size = NAND_IMAGE_SIZE;
+    m->nand_file_size = 0;
     return 0;
 }
 
@@ -475,7 +477,7 @@ machine_t *be300_create(const machine_config_t *cfg)
     siu_init(&m->siu);
     rtc_init(&m->rtc);
     gpio_init(&m->gpio);
-    nand_init(&m->nand, NULL, 0);
+    nand_init(&m->nand, NULL, 0, 0);
     cf_init(&m->cf);
 
     if (cfg->restore)
@@ -518,7 +520,8 @@ machine_t *be300_create(const machine_config_t *cfg)
 
         /* Re-initialize NAND controller with image data */
         if (m->nand_data) {
-            nand_init(&m->nand, m->nand_data, m->nand_size);
+            nand_init(&m->nand, m->nand_data, m->nand_size,
+                      m->nand_file_size);
         }
 
         /*

@@ -11,40 +11,12 @@ static uint8_t nand_image_byte(const nand_state_t *s, uint32_t off)
     return s->image[off];
 }
 
-static bool nand_block_has_data(nand_state_t *s, uint32_t block)
+static bool nand_block_is_allocated(const nand_state_t *s, uint32_t block)
 {
-    uint32_t start_off;
-    uint32_t limit;
-
     if (block >= NAND_BLOCK_COUNT)
         return false;
 
-    if (s->block_data_state[block] >= 0)
-        return s->block_data_state[block] != 0;
-
-    if (!s->image) {
-        s->block_data_state[block] = 0;
-        return false;
-    }
-
-    start_off = block * NAND_BLOCK_PAGES * NAND_PAGE_DATA;
-    limit = NAND_BLOCK_PAGES * NAND_PAGE_DATA;
-    if (start_off >= s->image_size) {
-        s->block_data_state[block] = 0;
-        return false;
-    }
-    if (limit > s->image_size - start_off)
-        limit = (uint32_t)(s->image_size - start_off);
-
-    for (uint32_t i = 0; i < limit; i++) {
-        if (s->image[start_off + i] != 0xFFu) {
-            s->block_data_state[block] = 1;
-            return true;
-        }
-    }
-
-    s->block_data_state[block] = 0;
-    return false;
+    return s->block_data_state[block] > 0;
 }
 
 static bool nand_sector_has_fat16_bpb(const nand_state_t *s, uint32_t sector)
@@ -177,7 +149,9 @@ static uint8_t nand_stream_oob_byte(nand_state_t *s,
         return 0xFFu;
 
     /*
-     * The restore images are data-only dumps (no physical OOB bytes).
+     * The restore images are data-only dumps (no physical OOB bytes;
+     * see ce/restore_images/RESTORE_IMAGES.md), so reconstruct the
+     * per-block tags that NANDWRITER would have stored in the spare area.
      * The ROM/SPL logical-block mapper votes across the first five pages
      * of a block and expects the same tag on at least three of them, so
      * mirror the synthetic block metadata across that opening page set.
@@ -187,21 +161,24 @@ static uint8_t nand_stream_oob_byte(nand_state_t *s,
      *   Allocated:  OOB[2]=0x0F, OOB[4..7]=block_id
      *   Erased:     OOB[2]=0xFF, OOB[4..7]=0xFFFFFFFF
      *
-     * Plain 0xFF for every OOB byte matches neither form and fails
-     * nanddisk.dll's NandColdBoot validity checks at UM 0x019A3C88 /
-     * 0x019A3CFC, causing the scan to bail with "NandColdBoot Error!!!".
+     * Allocation is determined by image coverage, not payload contents:
+     * an all-0xFF logical block in the data-only image still has allocated
+     * spare metadata on real NAND.  nanddisk.dll's NandColdBoot builds
+     * the BAT from these tags at UM 0x019A3B24..0x019A3DCC; mislabelling
+     * image-backed blank payload blocks as erased makes it overrun the
+     * blank-block table at UM 0x019A3D14.
      */
     if (page_in_block < 5 && block < NAND_BLOCK_COUNT) {
-        bool has_data = nand_block_has_data(s, block);
+        bool allocated = nand_block_is_allocated(s, block);
 
         switch (oob_idx) {
         case 0: return 0xAAu;
         case 1: return 0x55u;
-        case 2: return has_data ? 0x0Fu : 0xFFu;
-        case 4: return has_data ? (uint8_t)(block & 0xFFu) : 0xFFu;
-        case 5: return has_data ? (uint8_t)((block >> 8) & 0xFFu) : 0xFFu;
-        case 6: return has_data ? 0x00u : 0xFFu;
-        case 7: return has_data ? 0x00u : 0xFFu;
+        case 2: return allocated ? 0x0Fu : 0xFFu;
+        case 4: return allocated ? (uint8_t)(block & 0xFFu) : 0xFFu;
+        case 5: return allocated ? (uint8_t)((block >> 8) & 0xFFu) : 0xFFu;
+        case 6: return allocated ? 0x00u : 0xFFu;
+        case 7: return allocated ? 0x00u : 0xFFu;
         default: return 0xFFu;
         }
     }
@@ -391,7 +368,7 @@ static void nand_restore_commit_program(nand_state_t *s)
     s->dirty = true;
     block = s->restore_page_addr / NAND_BLOCK_PAGES;
     if (block < NAND_BLOCK_COUNT)
-        s->block_data_state[block] = -1;
+        s->block_data_state[block] = 1;
     s->restore_status_ok = true;
     nand_restore_set_reg(s, NAND_REG_RESTORE_C20, 0x00000001u);
     nand_restore_set_ready(s, true);
@@ -528,7 +505,7 @@ static void nand_commit_program(nand_state_t *s)
         s->dirty = true;
         block = s->page_addr / NAND_BLOCK_PAGES;
         if (block < NAND_BLOCK_COUNT)
-            s->block_data_state[block] = -1;
+            s->block_data_state[block] = 1;
     }
 }
 
@@ -552,16 +529,22 @@ static void nand_commit_erase(nand_state_t *s)
     s->block_data_state[block] = 0;
 }
 
-void nand_init(nand_state_t *s, uint8_t *image, size_t size)
+void nand_init(nand_state_t *s, uint8_t *image, size_t size,
+               size_t valid_size)
 {
     memset(s, 0, sizeof(*s));
     s->image      = image;
     s->image_size = size;
+    s->image_valid_size = valid_size <= size ? valid_size : size;
     s->ready      = true;
     s->state      = NAND_STATE_IDLE;
     s->status_value = 0xC0u;
     s->portctl    = 0;
-    memset(s->block_data_state, -1, sizeof(s->block_data_state));
+    for (uint32_t block = 0; block < NAND_BLOCK_COUNT; block++) {
+        uint64_t start_off = (uint64_t)block * NAND_BLOCK_PAGES * NAND_PAGE_DATA;
+        s->block_data_state[block] =
+            (image && start_off < s->image_valid_size) ? 1 : 0;
+    }
     memset(s->legacy_regs, 0x40, sizeof(s->legacy_regs));
 
     /*
