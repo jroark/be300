@@ -142,3 +142,96 @@ Disassembly script: `/tmp/scan_ddi_flush.py` (one-shot, not a project artifact).
 - Plan: `~/.claude/plans/reflective-sniffing-garden.md`
 - Prior: `docs/HANDOFF_POST_PASS43_LAUNCHER_DEP_CHAIN_WELCOME_SPAWNS_2026-04-24.md`
 - Auxiliary: `MEMORY.md` entries `project_pass32_framebuffer_blit_missing.md`, `project_pass35_virtualcopy_failure.md` — note that the Pass 35 entry hypothesized a VirtualCopy issue but called it "works" without checking destination PA. This pass refines that to "VA mapped, but to the wrong PA".
+
+---
+
+## Pass 45 addendum (2026-04-24, same session) — Pass 44 hypothesis REFUTED
+
+A v2p translation probe (`translate_v2p_mmu4100`) was added to the
+`ddi_mapped_user_va` mem-watch. On a 240 s `--nand` run
+(`build-host/pass45_v2p_stderr.log`), every user-mode write to user VA
+`0x001Exxxx` resolves to PA `0x0A2xxxxx` via the TLB:
+
+```
+[BE300_V2P] label=ddi_mapped_user_va op=W hit=1 vaddr=0x00204dde pa=0x0a224dde rc=2 entryhi=0x00204804
+[BE300_V2P] label=ddi_mapped_user_va op=W hit=2 vaddr=0x00204fde pa=0x0a224fde rc=2 entryhi=0x01a5a804
+... (32 total, all rc=2 = readable+writable)
+```
+
+PA `0x0A200000..0x0A226000` is **the same dev_fb backing memory** as
+kseg1 `0xAA200000..0xAA226000` (kseg1 strips the top 3 PA bits). So
+the user VA mapping IS correct — user-mode writes DO reach dev_fb.
+
+**Pass 44's "TLB maps to plain RAM" hypothesis is refuted.**
+
+### What is actually happening
+
+Counter-evidence from the same 240 s run (`pass51b_240s_stderr.log`):
+
+- `ddi_mapped_user_va writes=16,549` (vs. Pass 44 panic count of "all 0xFFFFFFFF").
+- Sample writes at PC `0x01A53CF0` show value `0x59CE` (a green-cyan
+  RGB565), and PC `0x01A54950` shows value `0x0000` (black). These
+  reach FB memory.
+
+Final-screenshot pixel histogram (`screenshot_20260424_154153.bmp`,
+240 s; AND `screenshot_20260424_161135.bmp`, 360 s — both deterministic):
+
+- 76,480 pixels = pure white `(255,255,255)`
+- 320 pixels = pure black `(0,0,0)`, all on column x=239
+
+The boot reaches a **deterministic "all-white background"** state —
+hardware-accurate user-mode rendering DOES paint a white background
+across the entire 240×320 visible area, but the calibration crosshair
+and "Tap target" text from the real-HW reference are absent.
+
+### Why col 239 looks unrendered (red herring)
+
+All historical reference BMPs (`Starting.bmp`, `Initializing.bmp`,
+prior `screenshot_20260423_233903.bmp`) also show col 239 as black —
+in those cases it just blends into the predominantly-black background.
+This is a pre-existing emulator-side quirk (likely an off-by-one
+somewhere in our SDL display path or a 1-pixel border WinCE always
+draws), not a new regression from Pass 45.
+
+### Real bug location (revised)
+
+The user-mode paint pipeline DOES reach FB. Colored pixels DO get
+written. Pass 50 captured a state with crosshair+icons; Pass 51b /
+Pass 45b capture a state where those have been overwritten by white
+background fills. Possible causes:
+
+1. **Z-order / repaint loop**: WinCE's calibration window's
+   `WM_ERASEBKGND` fires repeatedly (filling white) but
+   `WM_PAINT` (which would draw crosshair+text on top) never
+   completes. We catch the screenshot during the all-white phase.
+2. **Welcome.exe message-loop stall**: gwes posts WM_PAINT to
+   Welcome's message queue but Welcome's `BeginPaint`/`EndPaint`
+   cycle is blocked. So the FB only ever shows the
+   gwes-or-erase-side white fill.
+3. **Different boot path on warm reset**: the calibration wizard
+   only ran once (Pass 50), and the warm-reset path bypasses it,
+   leaving the desktop+taskbar stage rendering with a different
+   visual output (mostly white, no UI yet because shell hasn't
+   finished initializing).
+
+### Pass 46 falsifiable next probe
+
+Trace Welcome.exe's message-loop. The WinCE message-loop pattern is
+`GetMessage → DispatchMessage → WindowProc(WM_PAINT) → BeginPaint →
+... → EndPaint`. Add probes at:
+
+- `coredll!GetMessageW` (UVA TBD; needs symbol resolution).
+- `gwes!Welcome_WindowProc` (need to find Welcome.exe's WindowProc
+  via Ghidra of `Welcome.exe` extracted by `tools/extract_xip_modules.py`).
+- The `WM_PAINT = 0x000F` dispatch site in coredll.
+
+Expected smoking gun: if `GetMessage` returns but `BeginPaint` never
+fires, Welcome's WindowProc isn't handling WM_PAINT (or returning to
+default WM_PAINT handler that just clears the bg).
+
+### Status of probes and commits
+
+- `src/be300_probe.c` working-copy diff retained (now includes
+  `[BE300_V2P]` log line) — DO NOT commit.
+- No emulator code change applied. No guest patch.
+- This addendum supersedes the original Pass 44 §4 conclusion.
