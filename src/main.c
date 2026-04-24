@@ -21,7 +21,12 @@ static void usage(const char *prog)
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
-        "  --speed <mhz>        Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
+        "  --speed <mhz>         Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
+        "  --mmio-coverage       First-hit log per (device, offset, op) + shutdown coverage table\n"
+        "  --detect-stall        Emit [BE300_STALL] when guest spins on a tight PC set\n"
+        "  --stall-window=N      Instructions per sampling bucket (default 10000)\n"
+        "  --stall-threshold=K   Fire when unique PCs in window < K (default 64)\n"
+        "  --stall-wall-secs=T   Sustained wall-seconds below threshold before firing (default 5)\n"
         "  -h, --help            Show this help\n"
         "\n"
         "ROM image (positional arg) is loaded at PA 0x1FC00000 (MIPS reset vector).\n"
@@ -35,11 +40,21 @@ int main(int argc, char *argv[])
     setvbuf(stderr, NULL, _IONBF, 0);
 
     machine_config_t cfg = {
-        .trace          = false,
-        .log_mmio       = false,
+        .trace           = false,
+        .log_mmio        = false,
         .log_nand_legacy = false,
-        .enable_ppsh    = false,
-        .restore        = false,
+        .enable_ppsh     = false,
+        .restore         = false,
+        .mmio_coverage   = false,
+        .detect_stall    = false,
+        /* Defaults calibrated against the current ddi.dll post-splash spin
+         * (Pass 34): a 2-instruction tight loop at PC 0x01a5382c reading
+         * VRC4173 latch offset 0x234. window=10000 + threshold=64 discriminates
+         * tight loops (< 64 unique PCs) from kernel/scheduler activity
+         * (>> 64 unique PCs per 10K-instruction window). */
+        .stall_window            = 10000u,
+        .stall_unique_threshold  = 64u,
+        .stall_wall_secs         = 5u,
         .rom_path       = NULL,
         .nand_path      = NULL,
         .cf_path        = NULL,
@@ -62,6 +77,17 @@ int main(int argc, char *argv[])
             cfg.restore = true;
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
             cfg.target_mhz = (uint32_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--mmio-coverage") == 0) {
+            cfg.mmio_coverage = true;
+        } else if (strcmp(argv[i], "--detect-stall") == 0) {
+            cfg.detect_stall = true;
+        } else if (strncmp(argv[i], "--stall-window=", 15) == 0) {
+            cfg.stall_window = (uint32_t)strtoul(argv[i] + 15, NULL, 0);
+            if (cfg.stall_window < 1000u) cfg.stall_window = 1000u;
+        } else if (strncmp(argv[i], "--stall-threshold=", 18) == 0) {
+            cfg.stall_unique_threshold = (uint32_t)strtoul(argv[i] + 18, NULL, 0);
+        } else if (strncmp(argv[i], "--stall-wall-secs=", 18) == 0) {
+            cfg.stall_wall_secs = (uint32_t)strtoul(argv[i] + 18, NULL, 0);
         } else if (strcmp(argv[i], "--sdram") == 0 && i + 1 < argc) {
             unsigned mb = (unsigned)atoi(argv[++i]);
             if (mb == 0 || mb > 64) {
