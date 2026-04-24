@@ -125,9 +125,10 @@ typedef enum {
 
 typedef struct {
     uint8_t       *image;       /* pointer to NAND image data (NULL = no image) */
-    size_t         image_size;
+    size_t         image_size;        /* emulated chip buffer size */
+    size_t         image_valid_size;  /* bytes backed by the loaded data-only image */
     bool           dirty;
-    int8_t         block_data_state[NAND_BLOCK_COUNT]; /* -1 unknown, 0 blank, 1 contains data */
+    int8_t         block_data_state[NAND_BLOCK_COUNT]; /* synthetic OOB: 0 erased, 1 allocated */
 
     /* State machine */
     nand_cmd_state_t state;
@@ -209,7 +210,8 @@ typedef struct {
     bool     restore_status_ok;
 } nand_state_t;
 
-void     nand_init(nand_state_t *s, uint8_t *image, size_t size);
+void     nand_init(nand_state_t *s, uint8_t *image, size_t size,
+                   size_t valid_size);
 uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
                    uint32_t pc);
 /*
