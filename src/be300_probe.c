@@ -321,6 +321,38 @@ static exec_watch_t g_exec_watches[] = {
     { 0x00035928u, "gwes_message_loop_entry",           0 },
 
     /*
+     * Pass 38 (2026-04-23): Thread A — gwes "ApplySavedCalibration" probe set.
+     *
+     * Pass 37 named PC 0x00017D58 as "gwes queries CalibrationData →
+     * v0=0x57 INVALID_DATA" and hypothesised this was the welcome.exe
+     * launch gate. Static decomp (build-host/xip/03_gwes.exe.bin) shows
+     * the containing function is 0x00017C40 and the branch at 0x17D58 is
+     * `bnez $v0, 0x17E40` — on query failure it jumps to a
+     * RegCloseKey+free+return cleanup block. There is NO welcome.exe
+     * spawn in either branch, and `welcome.exe` is not a literal string
+     * in ANY extracted XIP module (0/95). The function's role is
+     * apply-saved-calibration, not launch-wizard.
+     *
+     * These probes verify at runtime:
+     *   gwes_apply_saved_calib_entry   — function is reached
+     *   gwes_apply_saved_calib_fail    — failure branch taken (expect >0,
+     *                                    matches Pass 37's v0=0x57)
+     *   gwes_apply_saved_calib_ok      — success branch taken (expect 0)
+     *   gwes_apply_saved_calib_loop    — inner point-processing loop
+     *                                    (success path only, expect 0)
+     *   gwes_apply_saved_calib_cleanup — joined cleanup fall-through
+     *
+     * Hit pattern { entry>=1, fail>=1, ok=0, loop=0, cleanup>=1 } confirms
+     * the refutation of Pass 37's hypothesis; no new behaviour required.
+     */
+    { 0x00017C40u, "gwes_apply_saved_calib_entry",      0 },
+    { 0x00017D58u, "gwes_apply_saved_calib_query_ret",  0 },
+    { 0x00017D5Cu, "gwes_apply_saved_calib_ok",         0 },
+    { 0x00017D7Cu, "gwes_apply_saved_calib_loop",       0 },
+    { 0x00017E40u, "gwes_apply_saved_calib_fail",       0 },
+    { 0x00017E70u, "gwes_apply_saved_calib_cleanup",    0 },
+
+    /*
      * Pass 32 addendum 3: does gwes actually load the user-mode display
      * driver? ddi.dll vbase 0x01A50000, vsize 0x01A000 per
      * build-host/modules/index.txt. Exec-watch the first instruction of
