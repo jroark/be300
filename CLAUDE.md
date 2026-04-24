@@ -197,7 +197,18 @@ Cold boot through `--nand` starts at the ROM reset vector `0xBFC00000`, matching
    the screen is aligned.
    ```
    with a cross-hair target in the middle of the screen.
-6. WinCE desktop (after calibration completes)
+6. Date / time setting dialog — the user is prompted to set the
+   current date and time before the desktop appears. This implies
+   WinCE is treating the RTC as uninitialised/invalid on first
+   boot and explicitly asking the user to set it before proceeding.
+7. WinCE desktop (after both calibration and date/time are
+   completed)
+
+Implication for emulator work: on a cold boot the RTC should
+present as uninitialised/default-value to the guest (so this
+dialog fires). Any emulator code that pre-populates a
+"reasonable" RTC date would accidentally skip this step and mask
+a class of guest-visible bugs.
 
 The two "backlight gets brighter" events plus the intermediate black screen mean boot is **not straight-through**: the first `Starting...` is drawn by OAL early, then the display is blanked (likely a PMU/PWM cycle or a framebuffer reset), then the second `Starting...` is drawn by the user-mode display stack once gwes/drivers come up. This is why the emulator's saved screenshot being byte-identical to `Starting.bmp` corresponds to step 2 — the stall point is **before** the display-blanking transition to step 3, not near the end of boot.
 
@@ -304,32 +315,25 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 
 ### Current Investigation Target
 
-Visible stall at `Starting.bmp` (screenshot SHA `e8a8c83cd66b9327f50fc1827eada71fb028b332`)
-persists through Pass 30. Launcher still waits on **Boot.exe (`0x3B`)**.
-Pass 30 root-caused the stall: Boot.exe calls
-`coredll.<unknown>(0x0101003c, ...)` which is the WinCE "reboot via
-`HKLM\Drivers\CASIO\Reboot`" kernel API at NK `0x800A84A8`. That
-API reads `Wait=1000 ms` from the registry, runs a short wait
-loop, then calls `FUN_8007A140` which disables interrupts, writes
-**`7 → PA 0x0A00A0C4`** and **`10 → PA 0x0A00A0C8`** (VRC4173
-GPIO/reset trigger), and falls through into the **only self-`jal`
-in all 6 MB of NK** at `0x8007A178` — a deliberate halt-forever
-loop waiting for the hardware warm-reset to fire. Our emulator
-latches the VRC4173 writes without triggering a reset, so the CPU
-spins in the self-jal (probe captured 555 million hits in 40 s).
-Pass 31 needs to wire the two writes to invoke a CPU reset, using
-the existing PMU SOFTRST path as a reference (`src/hw/pmu.c`
-commits `611c55ad`/`8b93ca33`).
-See:
+**Active blocker (as of Pass 34, 2026-04-22):** the post-Boot.exe-ready paint path. Default cold-boot (`--nand ce/restore_images/All_nand_300.bin`) reaches screenshot SHA `e8a8c83cd66b9327f50fc1827eada71fb028b332` ("Starting" splash drawn by kernel-side OAL at PA `0xAA200000`) and stays there. Pass 31 wired the KjCMU warm-reset, Pass 32 verified `launcher_module_ready_notify hit=7 a0=0x3B` + `CREATEPROCESS hit=15 image="coshell.exe"` on the second boot, and Pass 34 implemented `COP0 HIBERNATE` + a ram stub at PA `0x0B000000`. Nothing in the upstream boot path halts the emulator anymore. The remaining gap:
 
-- `docs/HANDOFF_POST_PASS30_BOOT_EXE_TRIGGERS_UNEMULATED_VRC4173_RESET_2026-04-20.md` — Pass 31 steps: locate VRC4173 UM section for PA `0xA0C4`/`0xA0C8` (required citation per CLAUDE.md), extend `be300_vrc4173_latch` write handler to arm-on-`sw 7→0xC4` + fire-on-`sw 10→0xC8`, reuse SOFTRST-style reset mechanism
-- `docs/HANDOFF_POST_PASS29_STALL_IS_PSL_TRAP_FFFFFA76_2026-04-20.md` — how we narrowed to this NK function
-- `docs/HANDOFF_POST_PASS28_BOOT_EXE_THUNK_1310C_STALL_2026-04-20.md` — Boot.exe-side probe results that led here
-- `docs/HANDOFF_POST_PASS27_BOOT_EXE_STALL_CHARACTERIZED_2026-04-20.md` — original stall characterisation in Boot.exe's init
-- `docs/HANDOFF_POST_PASS26_NO_SIMPLE_MMIO_FIX_2026-04-19.md` — MMIO scan negative result that justified this NK-side work
-- `docs/HANDOFF_POST_PASS25_PIU_BIT0_AUTOCLEAR_2026-04-19.md` — reference methodology (scan → pin → cross-reference), still sound
-- `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` — §9 appendix preserves NK internals (waiter/event struct offsets, ruled-out hypotheses)
-- `docs/HANDOFF_POST_PASS22_SIU_WIRING_2026-04-19.md` — SIU wiring reference
+- `ddi_DrvEnableDriver_impl hits=2`, `ddi_blit_dispatcher_entry hits=27`, `ddi_iFunc10 hits=27`, `ddi_iFunc18 hits=17`, `gdi_surface_0x140000 writes=6992` — ddi.dll's render pipeline runs, fills an off-screen GDI surface at user VA `0x00140000`, and **never writes the primary framebuffer user VA `0x001E0000`**. Kernel-side FB writes (`fb_body_kseg1_writes writes=600934`) come only from the OAL splash drawer (PC `0x80F037CC` / `0x80079130`). No user-mode pixel ever lands in the primary surface.
+
+The falsifiable next-probe list is in **`docs/HANDOFF_POST_PASS34_HIBERNATE_AND_AB_WINDOW_2026-04-22.md` §6**: top priority is probing `ddi_iFunc10` (`0x01A5C9CC`) source/dest surface pointers to see whether destination is always the GDI off-screen, then confirming `DrvEnablePDEV` bound the primary correctly.
+
+Refuted in preceding passes (do not revisit without a probe-driven signal):
+- Pass 33: VRC4173 AIU wave-driver hypothesis (0 accesses to PA `0x0A0000E0..0x0A0000FC` in 180 s).
+- Pass 34: `gwes_worker WFSO(0x000B6834)` — unblocks in our emulator (`gwes_worker_wfso_6834_ret hits=2`), and real HW exhibits the identical block per user's calibration-screen photo analysis.
+
+Authoritative handoff chain (read in reverse order for current state):
+
+- `docs/HANDOFF_POST_PASS34_HIBERNATE_AND_AB_WINDOW_2026-04-22.md` — HIBERNATE fix (VR4131 UM §6.1.3), 0xAB000000 companion-window stub (`hardware.txt:204`), cardex_diag repro recipe, current-blocker definition, ranked next-probe list.
+- `docs/HANDOFF_POST_PASS33_AIU_HYPOTHESIS_REFUTED_2026-04-22.md` — AIU audio hypothesis refuted by first-hit probe; §5 superseded by Pass 34 §6.
+- `docs/HANDOFF_POST_PASS32_LAUNCHER_BLOCKS_ON_BOOTEXE_READY_2026-04-22.md` — launcher-table decode (5 entries × 0x250 stride at user VA `0x0203b4d0`), Boot.exe ready-signal evidence, Boot.exe's reboot-vs-early-exit decision, BE300_LIFECYCLE_PROBE usage.
+- `docs/HANDOFF_POST_PASS30_BOOT_EXE_TRIGGERS_UNEMULATED_VRC4173_RESET_2026-04-20.md` — how we narrowed to the Pass 31 KjCMU warm-reset requirement (historical).
+- `docs/HANDOFF_POST_PASS25_PIU_BIT0_AUTOCLEAR_2026-04-19.md` — reference methodology (scan → pin → cross-reference), still sound.
+- `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` §9 appendix — NK internals reference (waiter/event struct offsets, ruled-out hypotheses).
+- `docs/HANDOFF_POST_PASS22_SIU_WIRING_2026-04-19.md` — SIU wiring reference.
 
 ## Key Files For Current WinCE Work
 
@@ -378,7 +382,9 @@ When you need temporary diagnostics:
 
 The `gxemul/` submodule points at the `be300-minimal` branch of `jroark/GXemul`. Keep it thin.
 
-- Current layout: pristine GXemul 0.7.0 (`c35c056`) + a squash adding MIPS16 interpreter and BE-300 platform glue (`3c3d5cb`) + a full VR4131 RTC/ETIMER/ECMP implementation (`53c5910`) + MIPS AdEL on misaligned jr/jalr (`8b8449d`) + VR41xx COP0 SUSPEND → wait-for-interrupt (`3250bb8`, VR4131 UM §4.3.3) + VR41xx RTCL1 timer SYSINT1-ack + edge-pulse IRQ (`8775b00`, VR4131 UM §11.2.1 / §13.2.3) + debug()/fatal()/debugmsg() routed to stderr instead of stdout so guest serial and emulator diagnostics don't interleave (`100bd72`, convention-alignment, not a hardware-accuracy fix) + CP0 Compare timer hz/2 + pending cap (`2fa3853`, NEC datasheet Count-at-CPU/2 + R4000 §7.1) + RTCL1 as edge-triggered IP2 via new `ip_edge_triggered_mask` (`201edb0`, VR4131 UM §11.2.1 / §13.2.9, replaces the older deassert-on-next-tick pulse hack) + DEVICE_TICK uses CP0 Count delta as `tick_cycles` (`153d2db`, dyntrans batches terminate early so the nominal `1<<TICKSHIFT` interval is wrong by 8-100×; brings RTCL1 cadence to spec ~991 Hz). Nine delta commits on top of upstream. Do not accumulate more without first documenting the justification.
+- Current layout: pristine GXemul 0.7.0 (`c35c056`) + a squash adding MIPS16 interpreter and BE-300 platform glue (`3c3d5cb`) + a full VR4131 RTC/ETIMER/ECMP implementation (`53c5910`) + MIPS AdEL on misaligned jr/jalr (`8b8449d`) + VR41xx COP0 SUSPEND → wait-for-interrupt (`3250bb8`, VR4131 UM §4.3.3) + VR41xx RTCL1 timer SYSINT1-ack + edge-pulse IRQ (`8775b00`, VR4131 UM §11.2.1 / §13.2.3) + debug()/fatal()/debugmsg() routed to stderr instead of stdout so guest serial and emulator diagnostics don't interleave (`100bd72`, convention-alignment, not a hardware-accuracy fix) + CP0 Compare timer hz/2 + pending cap (`2fa3853`, NEC datasheet Count-at-CPU/2 + R4000 §7.1) + RTCL1 as edge-triggered IP2 via new `ip_edge_triggered_mask` (`201edb0`, VR4131 UM §11.2.1 / §13.2.9, replaces the older deassert-on-next-tick pulse hack) + DEVICE_TICK uses CP0 Count delta as `tick_cycles` (`153d2db`, dyntrans batches terminate early so the nominal `1<<TICKSHIFT` interval is wrong by 8-100×; brings RTCL1 cadence to spec ~991 Hz). Nine delta commits on top of upstream.
+- **Pass 34 pending 10th delta (uncommitted)**: VR41xx COP0 HIBERNATE → `mips_cpu_cold_reset` (VR4131 UM §6.1.3 software shutdown; empirically validated via `build-host/cardex_diag_nand2_fixed_stderr.log`). See `docs/HANDOFF_POST_PASS34_HIBERNATE_AND_AB_WINDOW_2026-04-22.md` §3.1 + §8. If committed, update this ledger line.
+- Do not accumulate more without first documenting the justification.
 - Before adding a gxemul-side fix, **diff against 0.7.0**: `git -C gxemul show c35c056:<path>` versus the current file. Confirm the change actually improves on upstream behavior. Several historical "fixes" on the prior `be300` branch were identity transformations of existing 0.7.0 code.
 - Before adding a gxemul-side fix, **cite the VR4131 UM section or `docs/hardware/hw_dump_*.txt` line** that justifies it. If you can't, the fix might be a workaround for a different emulator bug — keep root-causing.
 - One functional change per gxemul commit. Do not bundle platform integration, behavioral fixes, and diagnostics together (the prior `be300` branch had a commit that bundled a MIPS16 decode fix with BCU latch machinery and diagnostic fprintfs — it was unsplittable for cherry-pick later).

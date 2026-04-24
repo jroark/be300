@@ -73,11 +73,11 @@ RUN wget https://ftp.gnu.org/gnu/binutils/binutils-2.21.1.tar.bz2 && \
     cd binutils-2.21.1 && \
     wget https://gist.githubusercontent.com/7shi/1374792/raw/binutils-2.21.1a-mipsel-pe.diff -O mipsel-pe.patch && \
     patch -p1 < mipsel-pe.patch && \
-    ./configure --target=mipsel-pe --build=arm-linux-gnu --disable-werror && \
-    # Build binutils (Gist patch should have fixed target names and relocations)
-    make all-bfd -j$(nproc) && \
-    make all-binutils -j$(nproc) && \
+    ./configure --target=mipsel-pe --disable-werror && \
+    make all-binutils all-gas all-ld -j$(nproc) && \
     make -C binutils install && \
+    make -C gas install && \
+    make -C ld install && \
     cd .. && \
     rm -rf binutils-2.21.1*
 
