@@ -1,0 +1,10 @@
+{
+  "name": "be300-framebuffer-tools",
+  "private": true,
+  "scripts": {
+    "scrape:be300-forums": "node tools/scrape_be300_forums.js"
+  },
+  "dependencies": {
+    "playwright": "^1.55.0"
+  }
+}
