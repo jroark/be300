@@ -179,6 +179,7 @@ int        be300_copy_frame_rgba8888(machine_t *m, uint8_t *dst,
 size_t     be300_drain_serial(machine_t *m, char *dst, size_t dst_len);
 void       be300_set_touch(machine_t *m, bool down, uint16_t x, uint16_t y);
 void       be300_set_buttons(machine_t *m, uint8_t btn_set1, uint8_t btn_set2);
+void       be300_touch_tick(machine_t *m);
 void       be300_stop(machine_t *m);
 void       be300_run(machine_t *m);
 void       be300_destroy(machine_t *m);

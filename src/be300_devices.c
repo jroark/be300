@@ -1281,15 +1281,14 @@ static void piu_irq_update(struct be300_input_device *d, bool want)
  *  PIU scan sequencer state update after PIUCNTREG write.
  *  Follows the state transition diagram in VRC4173 manual Figure 9-4.
  *
- *  PIUCNTREG is at PA 0x0A000000 (VRC4173 PIU Base, offset 0x000),
- *  handled by the VRC4173 latch — NOT by the touch device at PA 0x0A000300.
- *  We read it from the latch so the state machine sees NK.exe's control writes.
+ *  The BE-300 touch panel control block is at PA 0x0A000300. Linux4BE
+ *  notes `TouchPanel (0xaa000300)` and the real VRC4173 dump shows the
+ *  live control/status word at 0x0A000300 (`docs/hardware/hardware.txt:225`,
+ *  `docs/hardware/hw_dump_vrc4173.txt:983`).
  */
 static void piu_update_state(struct be300_input_device *d)
 {
-    uint32_t ctl32 = 0;
-    be300_vrc4173_latch_read_u32(0x0A000000, &ctl32);
-    uint16_t ctl = (uint16_t)ctl32;
+    uint16_t ctl = d->piu_regs[0];
 
     if (ctl & 0x0001) {
         /* PADRST: reset everything */
@@ -1299,15 +1298,12 @@ static void piu_update_state(struct be300_input_device *d)
         return;
     }
 
-    if (!(ctl & 0x0002)) {
-        /* PIUPWR=0 → Disable */
-        d->piu_padstate = 0;
-        piu_irq_update(d, false);
-        return;
-    }
-
-    /* PIUPWR=1: at least Standby */
-    if (d->piu_padstate == 0)
+    /*
+     * The touch.dll init sequence stores 0x0304 to 0x0A000300 and real
+     * hardware reads back 0x1304 there, i.e. PADSTATE=4 with bit 1 clear.
+     * Do not gate this BE-300 touch block on the VRC4173 core PIUPWR bit.
+     */
+    if (d->piu_padstate == 0 && ctl != 0)
         d->piu_padstate = 1;  /* Disable → Standby */
 
     if ((ctl & 0x0004) && (ctl & 0x0100) && ((ctl >> 3) & 3) == 0) {
@@ -1445,10 +1441,9 @@ DEVICE_ACCESS(be300_touch)
 }
 
 /*
- *  be300_touch_tick():
- *
- *  Called from the VR41xx device tick to detect pen state changes
- *  and generate PIU interrupts when the scan sequencer is active.
+ *  Called once per BE-300 run-loop batch after host input is sampled to
+ *  detect pen state changes and generate PIU interrupts when the scan
+ *  sequencer is active.
  */
 void be300_touch_tick(machine_t *m)
 {

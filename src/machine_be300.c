@@ -741,6 +741,8 @@ static bool be300_run_batch(machine_t *m)
     if (m->use_builtin_ui)
         ui_update(m);
 
+    be300_touch_tick(m);
+
     if (m->use_builtin_ui && ui_should_quit(m))
         return false;
 
