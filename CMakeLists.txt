@@ -103,6 +103,7 @@ set(GXEMUL_SOURCES
 # ============================================================
 set(BE300_SOURCES
     src/machine_be300.c
+    src/be300_probe.c
     src/be300_devices.c
     src/host_io.c
     src/ui.c

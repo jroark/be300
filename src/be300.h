@@ -58,6 +58,15 @@ typedef struct {
     bool        enable_ppsh;
     bool        restore;
 
+    /* Default-off coverage instrumentation.
+     * mmio_coverage: first-hit-per-(device, offset, op) log + shutdown table.
+     * detect_stall:  periodic unique-PC sampler that fires [BE300_STALL] on spin. */
+    bool        mmio_coverage;
+    bool        detect_stall;
+    uint32_t    stall_window;            /* instructions per sampling bucket (default 200000) */
+    uint32_t    stall_unique_threshold;  /* fire when unique PCs in window drops below this (default 32) */
+    uint32_t    stall_wall_secs;         /* sustained wall-seconds below threshold before firing (default 15) */
+
     const char *rom_path;
     const char *nand_path;
     const char *cf_path;
@@ -138,6 +147,8 @@ typedef struct be300_state {
     uint64_t     throttle_target_ips;
     uint64_t     throttle_wall_origin;
     uint64_t     throttle_instr_origin;
+    uint64_t     autostop_after_ns;
+    uint64_t     autostop_start_ns;
     int64_t      last_report;
     int          loop_count;
 
@@ -146,6 +157,11 @@ typedef struct be300_state {
     size_t       serial_head;
     size_t       serial_tail;
     size_t       serial_count;
+
+    /* Optional emulator-only flat NK override for diagnostic payload testing */
+    char        *nk_override_path;
+    bool         nk_override_applied;
+    bool         nk_override_failed;
 } be300_state_t;
 
 typedef be300_state_t machine_t;

@@ -20,6 +20,7 @@
 #include "misc.h"
 
 #include "be300.h"
+#include "be300_probe.h"
 #include "devices.h"
 #include "hw/cf.h"
 #include "hw/nand.h"
@@ -72,6 +73,10 @@ DEVICE_ACCESS(be300_nand)
 
     if (d->log_mmio)
         be300_log_mmio("be300_nand", writeflag, offset, (unsigned)len, data, pc);
+
+    be300_probe_note_mmio("vrc4173-nand", offset,
+        writeflag == MEM_WRITE ? 'W' : 'R',
+        (uint32_t)len, (uint64_t)pc, BE300_MMIO_CLASS_KNOWN);
 
     /*
      * KjCMU warm-reset trigger at PA 0x0A00A0C4 + 0x0A00A0C8.
@@ -167,6 +172,11 @@ DEVICE_ACCESS(be300_cf_window)
     if (d->log_mmio)
         be300_log_mmio("be300_cf_window", writeflag, offset,
             (unsigned)len, data, (uint32_t)cpu->pc);
+
+    be300_probe_note_mmio("cf-window", offset,
+        writeflag == MEM_WRITE ? 'W' : 'R',
+        (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+        BE300_MMIO_CLASS_KNOWN);
 
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
@@ -387,12 +397,18 @@ DEVICE_ACCESS(be300_vrc4173)
 
         if (g_be300_machine &&
             nand_restore_handles_offset(off)) {
+            be300_probe_note_mmio("vrc4173-nand-restore", off, 'W',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
             nand_restore_write(&g_be300_machine->nand, off, (unsigned)len,
                 val);
             return 1;
         }
 
         if (g_be300_machine && off >= 0x1000u && off < 0x2000u) {
+            be300_probe_note_mmio("vrc4173-cf-companion", off, 'W',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
             cf_companion_write(&g_be300_machine->cf, off - 0x1000u,
                 (unsigned)len, val);
             memcpy(&d->bytes[off], data, len);
@@ -424,10 +440,16 @@ DEVICE_ACCESS(be300_vrc4173)
          *   0x1B20 INTMASK1 / interrupt acknowledge
          */
         if (suspend_latch) {
+            be300_probe_note_mmio("vrc4173-latch", off, 'W',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_LATCHED);
             memcpy(&d->bytes[off], data, len);
         } else if ((off >= 0x060 && off < 0x078) ||
             (off >= 0x1100 && off < 0x1140) ||
             (off >= 0x1B00 && off < 0x1B30)) {
+            be300_probe_note_mmio("vrc4173-intr-w1c", off, 'W',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
             /* W1C: clear bits that are written as 1 */
             for (size_t i = 0; i < len && (off + i) < VRC4173_LATCH_SIZE; i++) {
                 uint32_t byte_off = off + (uint32_t)i;
@@ -436,6 +458,9 @@ DEVICE_ACCESS(be300_vrc4173)
                 d->bytes[byte_off] &= ~data[i];
             }
         } else {
+            be300_probe_note_mmio("vrc4173-latch", off, 'W',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_LATCHED);
             memcpy(&d->bytes[off], data, len);
         }
         /* PIU control registers at offsets 0x000-0x05F: re-evaluate
@@ -445,6 +470,9 @@ DEVICE_ACCESS(be300_vrc4173)
                 (struct be300_input_device *)g_be300_machine->touch_device);
     } else {
         if (g_be300_machine && off == 0x0004u) {
+            be300_probe_note_mmio("vrc4173-giu-src", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
             uint64_t val = be300_latch_peek_u32(d, off)
                 | cf_giu_source_bits(&g_be300_machine->cf);
             memory_writemax64(cpu, data, len, val);
@@ -453,6 +481,9 @@ DEVICE_ACCESS(be300_vrc4173)
 
         if (g_be300_machine &&
             nand_restore_handles_offset(off)) {
+            be300_probe_note_mmio("vrc4173-nand-restore", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
             uint64_t val = nand_restore_read(&g_be300_machine->nand, off,
                 (unsigned)len);
             memory_writemax64(cpu, data, len, val);
@@ -479,6 +510,9 @@ DEVICE_ACCESS(be300_vrc4173)
              * destination physical address, then report "DMA done".
              */
             if (off == 0x1CD0u) {
+                be300_probe_note_mmio("vrc4173-dma-done-synth", off, 'R',
+                    (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                    BE300_MMIO_CLASS_STUBBED);
                 uint32_t latched = be300_latch_peek_u32(d, 0x1CD0);
                 if ((latched & 1u) != 0 && cpu && cpu->mem &&
                     g_be300_machine->nand.stream_active) {
@@ -495,8 +529,101 @@ DEVICE_ACCESS(be300_vrc4173)
                     d->bytes[0x1CD0] &= ~(uint8_t)1u;
                 }
                 val &= ~(uint64_t)1u;
+            } else {
+                be300_probe_note_mmio("vrc4173-cf-companion", off, 'R',
+                    (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                    BE300_MMIO_CLASS_KNOWN);
             }
             memory_writemax64(cpu, data, len, val);
+            return 1;
+        }
+
+        /*
+         * WORKAROUND: VRC4173 interrupt-aggregate status at
+         * PA 0x0A0008A0 and PA 0x0A000A00.
+         *
+         * NK's OAL idle helper at VA 0x80079920..0x80079958 reads bit 0
+         * of these two VRC4173 offsets (plus PA 0x0A00130C which is
+         * modeled elsewhere as CF-companion). If any of the three has
+         * bit 0 set, the helper skips `c0 0x22` SUSPEND and takes the
+         * "handle pending" path (VA 0x800799C4); if all three read as
+         * zero, it issues SUSPEND and blocks until the next IRQ.
+         *
+         * Real-HW snapshot (docs/hardware/hw_dump_vrc4173.txt):
+         *     0x0A0008A0: 00000000
+         *     0x0A000A00: 00000000
+         * Both read as 0 on quiesced hardware — consistent with
+         * interrupt-aggregate-status regs whose written value does not
+         * latch back into the read side.
+         *
+         * Our catch-all latch returns whatever ddi.dll most recently
+         * WROTE to these addresses (PCs 0x01911D04 and 0x01A53D04
+         * observed — see Pass 36 --mmio-coverage). That makes the idle
+         * helper always take the "pending" path, never SUSPEND, and
+         * execute its 30-ish-instruction body 32 M times per wall
+         * second — blocking ddi.dll's user-mode event-wait at PC
+         * 0x01A53C84.
+         *
+         * Fix: reads at 0x8A0 and 0xA00 return latched & ~1u. Writes
+         * still latch unchanged so non-bit-0 fields continue to round
+         * trip. Pattern is the same as the 0x234 stub above and
+         * matches the real-HW read value (0) for bit 0.
+         *
+         * TODO 2026-04-23: VRC4173 UM does not document these
+         * addresses. Confirm via BEDiag trace; if the block turns out
+         * to be a real interrupt-status aggregate, upgrade to a full
+         * model driven by the lower-level enables at 0x1120 / 0x1B20 /
+         * 0x112C that the ack path already clears.
+         */
+        if (off == 0x8A0u || off == 0xA00u) {
+            uint32_t raw = be300_latch_peek_u32(d, off);
+            uint64_t val = (uint64_t)(raw & ~(uint32_t)1u);
+            memory_writemax64(cpu, data, len, val);
+            be300_probe_note_mmio("vrc4173-intr-aggr-stub", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_STUBBED);
+            return 1;
+        }
+
+        /*
+         * WORKAROUND: VRC4173 display-controller-like block at
+         * PA 0x0A000200..0x0A000234 (undocumented in VRC4173 UM).
+         *
+         * ddi.dll initialises offsets 0x200/0x204/0x208/0x20C/0x210/
+         * 0x214/0x234 from PCs 0x01A53F00..0x01A53F88, then at PC
+         * 0x01A5382C does:
+         *     andi $25, $24, 1 ; bnel $25, $0, -2
+         * spinning until bit 0 of *(0x0A000234) clears. With the
+         * catch-all latch returning the last-written value, bit 0
+         * never clears and ddi.dll spins forever (Pass 35: ~525M
+         * reads/30s observed via --mmio-coverage).
+         *
+         * Real HW dumps at docs/hardware/hw_dump_vrc4173.txt in the
+         * 0x00000200..0x00000234 rows show volatile non-zero values
+         * consistent with a live display / LCD timing controller.
+         * VRC4173 UM (docs/hardware/U14579EJ2V0UM00.pdf) has no
+         * chapter covering offset 0x200; chapters are BCU/DMAAU/DCU/
+         * CMU/ICU/GIU/PIU/AIU/KIU/PS2U/CARDU/USBU/AC97U only. This
+         * appears to be a Casio-specific extension.
+         *
+         * We model bit 0 of 0x234 as a self-clearing "busy" flag
+         * (instant-completion semantics — same pattern as ScCmcu at
+         * 0x7800.. and PIUCNTREG bit 0 self-clear in Pass 25). Other
+         * bits of 0x234 continue to latch on write / read-back so
+         * future bit assignments do not silently break.
+         *
+         * TODO 2026-04-23: no VRC4173 UM citation for this block.
+         * Confirm real-HW semantics via BEDiag or a captured boot
+         * trace and either upgrade this to a full model or keep the
+         * stub with a hardware citation.
+         */
+        if (off == 0x234u) {
+            uint32_t raw = be300_latch_peek_u32(d, off);
+            uint64_t val = (uint64_t)(raw & ~(uint32_t)1u);
+            memory_writemax64(cpu, data, len, val);
+            be300_probe_note_mmio("vrc4173-ddi-ctrl-busy", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_STUBBED);
             return 1;
         }
 
@@ -518,8 +645,14 @@ DEVICE_ACCESS(be300_vrc4173)
          * poll loop spins forever waiting for the MCU to respond.
          */
         if (off >= 0x7800 && off < 0x7840) {
+            be300_probe_note_mmio("vrc4173-scmcu-stub", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_STUBBED);
             memset(data, 0, len);  /* WORKAROUND: instant MCU completion */
         } else {
+            be300_probe_note_mmio("vrc4173-latch", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_LATCHED);
             memcpy(data, &d->bytes[off], len);
         }
     }
@@ -539,6 +672,11 @@ DEVICE_ACCESS(be300_wince_aux)
     if (d->log_mmio)
         be300_log_mmio("be300_wince_aux", writeflag, off, (unsigned)len,
             data, (uint32_t)cpu->pc);
+
+    be300_probe_note_mmio(d->ppsh_enabled ? "ppsh-active" : "ppsh-stub",
+        off, writeflag == MEM_WRITE ? 'W' : 'R', (uint32_t)len,
+        (uint64_t)(uint32_t)cpu->pc,
+        d->ppsh_enabled ? BE300_MMIO_CLASS_KNOWN : BE300_MMIO_CLASS_STUBBED);
 
     /*
      * When PPSH is disabled, model the parallel port controller as
@@ -750,6 +888,10 @@ DEVICE_ACCESS(be300_vr4131_siu)
         be300_log_mmio("be300_vr4131_siu", writeflag, siu_offset,
             (unsigned)len, data, pc);
 
+    be300_probe_note_mmio("vr4131-siu-ext", siu_offset,
+        writeflag == MEM_WRITE ? 'W' : 'R',
+        (uint32_t)len, (uint64_t)pc, BE300_MMIO_CLASS_KNOWN);
+
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
         siu_write(d->siu, siu_offset, (unsigned)len, (uint32_t)val);
@@ -770,6 +912,10 @@ DEVICE_ACCESS(be300_vr4131_dsiu)
     if (d->log_mmio)
         be300_log_mmio("be300_vr4131_dsiu", writeflag, offset,
             (unsigned)len, data, pc);
+
+    be300_probe_note_mmio("vr4131-dsiu-stub", offset,
+        writeflag == MEM_WRITE ? 'W' : 'R',
+        (uint32_t)len, (uint64_t)pc, BE300_MMIO_CLASS_STUBBED);
 
     if (writeflag == MEM_WRITE) {
         /* Accept silently. */
@@ -1211,6 +1357,11 @@ DEVICE_ACCESS(be300_touch)
         be300_log_mmio("be300_touch", writeflag, off, (unsigned)len,
             data, (uint32_t)cpu->pc);
 
+    be300_probe_note_mmio("vrc4173-piu-touch", off,
+        writeflag == MEM_WRITE ? 'W' : 'R',
+        (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+        BE300_MMIO_CLASS_KNOWN);
+
     if (writeflag == MEM_WRITE) {
         val = memory_readmax64(cpu, data, len);
 
@@ -1341,6 +1492,11 @@ DEVICE_ACCESS(be300_buttons)
     if (d->log_mmio)
         be300_log_mmio("be300_buttons", writeflag, (uint32_t)relative_addr,
             (unsigned)len, data, (uint32_t)cpu->pc);
+
+    be300_probe_note_mmio("vrc4173-buttons", (uint32_t)relative_addr,
+        writeflag == MEM_WRITE ? 'W' : 'R',
+        (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+        BE300_MMIO_CLASS_KNOWN);
 
     if (writeflag == MEM_WRITE)
         return 1;

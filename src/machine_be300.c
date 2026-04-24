@@ -13,6 +13,7 @@
 #include <time.h>
 
 #include "be300.h"
+#include "be300_probe.h"
 #include "host_io.h"
 #include "ppsh.h"
 #include "ui.h"
@@ -91,6 +92,100 @@ static void be300_ppsh_poll_host_input(machine_t *m)
 
     queued = be300_ppsh_queue_host_input(cooked, cooked_len);
     (void)queued;
+}
+
+static bool be300_read_phys_u32(machine_t *m, uint32_t pa, uint32_t *out)
+{
+    unsigned char *host;
+
+    if (!m || !m->gxe_machine || !m->gxe_machine->memory || !out)
+        return false;
+
+    host = memory_paddr_to_hostaddr(m->gxe_machine->memory, pa, MEM_READ);
+    if (!host)
+        return false;
+
+    memcpy(out, host, sizeof(*out));
+    return true;
+}
+
+static void be300_maybe_apply_nk_override(machine_t *m)
+{
+    static const uint32_t mailbox_pa = 0x000024FCu;
+    static const uint32_t nk_base_pa = 0x00060000u;
+    static const uint32_t nk_base_va = 0x80060000u;
+    static const uint32_t nk_max_va = 0x81000000u;
+    uint32_t mailbox = 0;
+    uint32_t norm_mailbox;
+    unsigned char *dst;
+    FILE *f;
+    long fsize;
+    char *buf;
+
+    if (!m || !m->nk_override_path || m->nk_override_applied || m->nk_override_failed)
+        return;
+
+    if (!be300_read_phys_u32(m, mailbox_pa, &mailbox))
+        return;
+
+    norm_mailbox = mailbox & ~UINT32_C(0x20000000);
+    if (norm_mailbox < nk_base_va || norm_mailbox >= nk_max_va)
+        return;
+
+    f = fopen(m->nk_override_path, "rb");
+    if (!f) {
+        fprintf(stderr, "[BE300] NK override open failed: %s\n", m->nk_override_path);
+        m->nk_override_failed = true;
+        return;
+    }
+
+    fseek(f, 0, SEEK_END);
+    fsize = ftell(f);
+    rewind(f);
+    if (fsize <= 0) {
+        fprintf(stderr, "[BE300] NK override is empty: %s\n", m->nk_override_path);
+        fclose(f);
+        m->nk_override_failed = true;
+        return;
+    }
+
+    buf = malloc((size_t)fsize);
+    if (!buf) {
+        fprintf(stderr, "[BE300] OOM reading NK override (%ld bytes)\n", fsize);
+        fclose(f);
+        m->nk_override_failed = true;
+        return;
+    }
+    if ((long)fread(buf, 1, (size_t)fsize, f) != fsize) {
+        fprintf(stderr, "[BE300] Short read from NK override: %s\n", m->nk_override_path);
+        free(buf);
+        fclose(f);
+        m->nk_override_failed = true;
+        return;
+    }
+    fclose(f);
+
+    dst = memory_paddr_to_hostaddr(m->gxe_machine->memory, nk_base_pa, MEM_WRITE);
+    if (!dst) {
+        fprintf(stderr, "[BE300] NK override target RAM is not writable yet\n");
+        free(buf);
+        return;
+    }
+
+    memcpy(dst, buf, (size_t)fsize);
+    free(buf);
+
+    /*
+     * Direct host writes into emulated RAM bypass the normal MEM_WRITE path,
+     * so flush any existing dyntrans blocks before guest execution resumes.
+     */
+    if (m->cpu)
+        cpu_create_or_reset_tc(m->cpu);
+
+    m->nk_override_applied = true;
+    fprintf(stderr, "[BE300] Applied flat NK override at pc=%08" PRIx64 ": %s\n",
+        m->cpu ? (uint64_t)m->cpu->pc : UINT64_C(0),
+        m->nk_override_path);
 }
 
 static bool be300_uses_rom_boot(const machine_config_t *cfg)
@@ -252,12 +347,30 @@ machine_t *be300_create(const machine_config_t *cfg)
 {
     static bool subsystems_initialized = false;
     machine_t *m = calloc(1, sizeof(machine_t));
+    const char *nk_override_env;
+    const char *autostop_env;
     if (!m) return NULL;
     m->cfg = *cfg;
     m->boot_mode = BE300_BOOT_NONE;
     m->use_builtin_ui = true;
     m->save_exit_screenshot = true;
     m->mirror_serial_to_stdout = true;
+
+    nk_override_env = getenv("BE300_NK_OVERRIDE");
+    if (nk_override_env && nk_override_env[0] != '\0')
+        m->nk_override_path = strdup(nk_override_env);
+
+    autostop_env = getenv("BE300_AUTOSTOP_SEC");
+    if (autostop_env && autostop_env[0] != '\0') {
+        char *endptr = NULL;
+        unsigned long long seconds = strtoull(autostop_env, &endptr, 10);
+        if (endptr != autostop_env && endptr && *endptr == '\0' && seconds > 0) {
+            m->autostop_after_ns = seconds * 1000000000ULL;
+        } else {
+            fprintf(stderr, "[BE300] Ignoring invalid BE300_AUTOSTOP_SEC=%s\n",
+                autostop_env);
+        }
+    }
     m->fb_width = 240;
     m->fb_height = 320;
     m->fb_stride = 256;
@@ -450,6 +563,25 @@ machine_t *be300_create(const machine_config_t *cfg)
         extern void be300_register_vrc4173_latch(struct machine *, machine_t *, bool, bool);
         be300_register_vrc4173_latch(gxm, m, cfg->log_mmio, cfg->enable_ppsh);
 
+        /*
+         * Companion-chip secondary decode window at PA 0x0B000000.
+         * docs/hardware/hardware.txt:204 lists 0xab000060 (CMU CLKMSK) and
+         * 0xab00011c (GIU_PODATL) as "on companion", i.e. additional
+         * VRC4173 registers accessible through a kseg1-aliased window at
+         * 0xAB000000 distinct from the primary 0xAA000000 window. The
+         * original boot (with unmodified card_ex.dll) and the user's diag
+         * build both reach NK OAL code at pc=0x8007B1D4..0x8007B314 that
+         * writes offsets 0x104, 0x108, 0x10C, 0x110, 0x138, 0x13C, 0x204,
+         * 0x208, 0x520, 0x524 in this window. Without a backing device
+         * the emulator logs "non-existant paddr" and drops the writes,
+         * so any readback (e.g., a card-presence status poll) fails and
+         * the driver stalls. A RAM-backed stub remembers writes so at
+         * least readback of just-written values behaves sensibly; exact
+         * semantics per offset are TBD from card_ex.dll reverse-eng.
+         */
+        dev_ram_init(gxm, 0x0B000000ULL, 0x10000ULL,
+            DEV_RAM_RAM, 0, "be300_companion_ab_window");
+
         /* Register NAND flash; pre-split to leave gap at 0x0A00A040 for input device */
         extern void be300_register_nand(struct machine *, nand_state_t *,
             cf_state_t *, bool);
@@ -488,6 +620,12 @@ static void be300_runtime_start(machine_t *m)
     if (m->runtime_initialized)
         return;
 
+    be300_probe_attach(gxm);
+    be300_probe_set_options(m->cfg.mmio_coverage,
+                            m->cfg.detect_stall,
+                            m->cfg.stall_window,
+                            m->cfg.stall_unique_threshold,
+                            m->cfg.stall_wall_secs);
     cpu_run_init(gxm);
     m->cpu->running = true;
 
@@ -503,6 +641,7 @@ static void be300_runtime_start(machine_t *m)
     m->throttle_target_ips = (uint64_t)m->cfg.target_mhz * 1000000ULL;
     m->throttle_wall_origin = 0;
     m->throttle_instr_origin = 0;
+    m->autostop_start_ns = monotonic_ns();
     m->last_report = 0;
     m->loop_count = 0;
     m->runtime_initialized = true;
@@ -540,6 +679,7 @@ static void be300_runtime_finalize(machine_t *m)
     signal(SIGTERM, SIG_DFL);
     signal(SIGINT, SIG_DFL);
     cpu_run_deinit(m->gxe_machine);
+    be300_probe_detach(m->gxe_machine);
     console_deinit_main();
     m->runtime_stopped = true;
     m->runtime_finalized = true;
@@ -555,6 +695,8 @@ static bool be300_run_batch(machine_t *m)
 
     if (!machine_run(gxm))
         return false;
+
+    be300_maybe_apply_nk_override(m);
 
     if (m->web_mode)
         timer_tick_manual();
@@ -598,6 +740,18 @@ static bool be300_run_batch(machine_t *m)
 
     if (m->use_builtin_ui && ui_should_quit(m))
         return false;
+
+    if (m->autostop_after_ns > 0 && m->autostop_start_ns > 0) {
+        uint64_t now_ns = monotonic_ns();
+        if (now_ns - m->autostop_start_ns >= m->autostop_after_ns) {
+            fprintf(stderr,
+                "[BE300] Autostop reached after %" PRIu64 " s\n",
+                m->autostop_after_ns / 1000000000ULL);
+            emul_shutdown = true;
+            __sync_synchronize();
+            return false;
+        }
+    }
 
     m->loop_count++;
     return true;
@@ -738,6 +892,10 @@ void be300_destroy(machine_t *m)
     if (m->nand_data) {
         free(m->nand_data);
         m->nand_data = NULL;
+    }
+    if (m->nk_override_path) {
+        free(m->nk_override_path);
+        m->nk_override_path = NULL;
     }
     cf_destroy(&m->cf);
 
