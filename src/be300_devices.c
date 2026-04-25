@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "cpu.h"
 #include "cop0.h"
@@ -1850,7 +1851,9 @@ struct be300_input_device {
     bool       piu_prev_touch;     /* previous touch_down for edge detect */
     bool       piu_penstc;         /* PENSTC latched while PENCHGINTR is set */
     bool       piu_data_armed;     /* PenDataScan has a coordinate sample due */
-    uint32_t   piu_data_ready_count;
+    uint64_t   piu_clock_ns;       /* VRC4173 PIU peripheral timebase */
+    uint64_t   piu_last_host_ns;
+    uint64_t   piu_data_ready_ns;
     uint8_t    piu_next_page;      /* next coordinate page buffer interrupt */
     uint16_t   piu_adc[4];         /* y+, y-, x-, x+ */
     uint16_t   piu_page_adc[2][4]; /* page 0/page 1 coordinate buffers */
@@ -1985,7 +1988,7 @@ static void piu_clear_coordinate_state(struct be300_input_device *d)
     d->piu_regs[1] &= (uint16_t)~PIU_PENDING_COORDINATE;
     memset(d->piu_page_valid, 0, sizeof(d->piu_page_valid));
     d->piu_data_armed = false;
-    d->piu_data_ready_count = 0;
+    d->piu_data_ready_ns = 0;
     d->piu_next_page = 0;
 }
 
@@ -2000,43 +2003,48 @@ static bool piu_wait_pen_touch_enabled(const struct be300_input_device *d)
     return (ctl & 0x0004) && (ctl & 0x0100) && ((ctl >> 3) & 3) == 0;
 }
 
-static uint64_t piu_emulated_hz(const struct be300_input_device *d)
+static uint64_t piu_host_monotonic_ns(void)
 {
-    uint64_t hz = 0;
+    struct timespec ts;
 
-    if (d && d->m && d->m->gxe_machine)
-        hz = (uint64_t)d->m->gxe_machine->emulated_hz;
-    if (hz == 0)
-        hz = 131072000ULL;
-
-    return hz;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
-static uint32_t piu_now_count(const struct be300_input_device *d)
+static uint64_t piu_now_ns(struct be300_input_device *d)
 {
-    if (!d || !d->m || !d->m->cpu || !d->m->cpu->cd.mips.coproc[0])
+    uint64_t host_ns;
+
+    if (!d)
         return 0;
 
-    return (uint32_t)d->m->cpu->cd.mips.coproc[0]->reg[COP0_COUNT];
+    /*
+     * VRC4173 UM sections 9.3.3 and 9.3.4 define PIU scan/stabilization
+     * intervals in peripheral-clock-derived microseconds. They are not
+     * driven by the VR4131 CP0 Count register, so tying PIU conversion
+     * completion to CP0 Count makes touch sampling stall while WinCE idles
+     * in WAIT/SUSPEND paths.
+     */
+    host_ns = piu_host_monotonic_ns();
+    if (d->piu_last_host_ns == 0) {
+        d->piu_last_host_ns = host_ns;
+        return d->piu_clock_ns;
+    }
+
+    if (host_ns > d->piu_last_host_ns)
+        d->piu_clock_ns += host_ns - d->piu_last_host_ns;
+    d->piu_last_host_ns = host_ns;
+    return d->piu_clock_ns;
 }
 
-static uint32_t piu_delay_cycles(const struct be300_input_device *d,
-    uint64_t delay_us)
+static uint64_t piu_delay_ns(uint64_t delay_us)
 {
-    uint64_t cycles = (delay_us * piu_emulated_hz(d) + 999999ULL) /
-        1000000ULL;
-
-    if (cycles == 0)
-        cycles = 1;
-    if (cycles > 0x7FFFFFFFULL)
-        cycles = 0x7FFFFFFFULL;
-
-    return (uint32_t)cycles;
+    return delay_us * 1000ULL;
 }
 
-static bool piu_count_reached(uint32_t now, uint32_t due)
+static bool piu_time_reached(uint64_t now_ns, uint64_t due_ns)
 {
-    return (int32_t)(now - due) >= 0;
+    return (int64_t)(now_ns - due_ns) >= 0;
 }
 
 static uint64_t piu_conversion_delay_us(const struct be300_input_device *d)
@@ -2071,15 +2079,14 @@ static void piu_arm_coordinate_sample(struct be300_input_device *d,
     uint64_t delay_us)
 {
     d->piu_data_armed = true;
-    d->piu_data_ready_count = piu_now_count(d) +
-        piu_delay_cycles(d, delay_us);
+    d->piu_data_ready_ns = piu_now_ns(d) + piu_delay_ns(delay_us);
 }
 
 static void piu_arm_coordinate_sample_from(struct be300_input_device *d,
-    uint32_t now_count, uint64_t delay_us)
+    uint64_t now_ns, uint64_t delay_us)
 {
     d->piu_data_armed = true;
-    d->piu_data_ready_count = now_count + piu_delay_cycles(d, delay_us);
+    d->piu_data_ready_ns = now_ns + piu_delay_ns(delay_us);
 }
 
 static void piu_signal_pen_down(struct be300_input_device *d)
@@ -2137,7 +2144,7 @@ static int piu_select_coordinate_page(struct be300_input_device *d)
 static void piu_queue_coordinate_sample(struct be300_input_device *d)
 {
     uint16_t page_bit;
-    uint32_t now_count;
+    uint64_t now_ns;
     int page;
 
     /*
@@ -2151,8 +2158,8 @@ static void piu_queue_coordinate_sample(struct be300_input_device *d)
         return;
     if (d->piu_padstate < 5 || !d->piu_data_armed)
         return;
-    now_count = piu_now_count(d);
-    if (!piu_count_reached(now_count, d->piu_data_ready_count))
+    now_ns = piu_now_ns(d);
+    if (!piu_time_reached(now_ns, d->piu_data_ready_ns))
         return;
     /*
      * VRC4173 UM sections 9.1 and 9.3.2: coordinate data is stored in two
@@ -2164,7 +2171,7 @@ static void piu_queue_coordinate_sample(struct be300_input_device *d)
         d->piu_regs[1] |= PIU_PENDING_DATALOST;
         d->piu_padstate = 1;
         d->piu_data_armed = false;
-        d->piu_data_ready_count = 0;
+        d->piu_data_ready_ns = 0;
         piu_refresh_irq(d);
         return;
     }
@@ -2177,11 +2184,10 @@ static void piu_queue_coordinate_sample(struct be300_input_device *d)
     d->piu_regs[1] |= page_bit;
     if (d->m->touch_down) {
         d->piu_padstate = 6;  /* IntervalNextScan after one coordinate pair. */
-        piu_arm_coordinate_sample_from(d, now_count,
-            piu_interval_delay_us(d));
+        piu_arm_coordinate_sample_from(d, now_ns, piu_interval_delay_us(d));
     } else {
         d->piu_data_armed = false;
-        d->piu_data_ready_count = 0;
+        d->piu_data_ready_ns = 0;
     }
     piu_refresh_irq(d);
 }
@@ -2221,7 +2227,7 @@ static void piu_update_state(struct be300_input_device *d)
         d->piu_prev_touch = false;
         d->piu_penstc = false;
         d->piu_data_armed = false;
-        d->piu_data_ready_count = 0;
+        d->piu_data_ready_ns = 0;
         d->piu_next_page = 0;
         piu_irq_update(d, false);
         return;
