@@ -28,6 +28,7 @@
 #include "hw/nand.h"
 #include "hw/siu.h"
 #include "ppsh.h"
+#include "ui.h"
 
 /*
  * --log-mmio: print one line per dispatched access. Volume-heavy by design
@@ -205,10 +206,21 @@ DEVICE_ACCESS(be300_cf_window)
 
 #define VRC4173_LATCH_BASE   0x0A000000ULL
 #define VRC4173_LATCH_SIZE   0x00020000     /* 128KB covers all VRC4173 space */
+/* Casio SDK buzzer.h ranges: hardware.txt:186 and hardware.txt:188. */
+#define BE300_BUZZER_BLG_OFF 0x0980u
+#define BE300_BUZZER_BLG_LEN 0x0068u
+#define BE300_BUZZER_CMM_OFF 0x1128u
+#define BE300_BUZZER_CMM_LEN 0x0004u
+
+struct be300_buzzer_state {
+    uint8_t blg[BE300_BUZZER_BLG_LEN];
+    uint8_t cmm[BE300_BUZZER_CMM_LEN];
+};
 
 struct be300_vrc4173_latch {
     uint8_t  bytes[0x20000];
     bool     log_mmio;
+    struct be300_buzzer_state buzzer;
 };
 
 static struct be300_vrc4173_latch *g_be300_vrc4173_latch = NULL;
@@ -224,6 +236,151 @@ static uint32_t be300_latch_peek_u32(struct be300_vrc4173_latch *d,
          | ((uint32_t)d->bytes[off + 1u] << 8)
          | ((uint32_t)d->bytes[off + 2u] << 16)
          | ((uint32_t)d->bytes[off + 3u] << 24);
+}
+
+static uint32_t be300_buzzer_peek_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0]
+         | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16)
+         | ((uint32_t)p[3] << 24);
+}
+
+static void be300_buzzer_seed(struct be300_vrc4173_latch *d)
+{
+    /*
+     * Real-hardware idle values:
+     *   docs/hardware/hw_dump_vrc4173.txt:1084 -> BlgReg first 4 words
+     *   docs/hardware/hw_dump_vrc4173.txt:48   -> CmmReg word at 0x1128
+     */
+    static const struct {
+        uint16_t off;
+        uint32_t val;
+    } blg_seed[] = {
+        { 0x0000u, 0x00000001u },
+        { 0x0004u, 0x00000202u },
+        { 0x0008u, 0x00000F70u },
+        { 0x000Cu, 0x00000000u },
+    };
+    uint32_t cmm = 0x00000001u;
+
+    if (!d)
+        return;
+
+    for (unsigned i = 0; i < sizeof(blg_seed) / sizeof(blg_seed[0]); i++) {
+        uint16_t off = blg_seed[i].off;
+        uint32_t v = blg_seed[i].val;
+        if (off + 4u <= BE300_BUZZER_BLG_LEN) {
+            memcpy(&d->buzzer.blg[off], &v, 4);
+            memcpy(&d->bytes[BE300_BUZZER_BLG_OFF + off], &v, 4);
+        }
+    }
+
+    memcpy(d->buzzer.cmm, &cmm, sizeof(cmm));
+    memcpy(&d->bytes[BE300_BUZZER_CMM_OFF], &cmm, sizeof(cmm));
+}
+
+static bool be300_buzzer_range_overlap(uint32_t off, unsigned len,
+    uint32_t range_off, uint32_t range_len)
+{
+    uint64_t a0 = off;
+    uint64_t a1 = a0 + len;
+    uint64_t b0 = range_off;
+    uint64_t b1 = b0 + range_len;
+
+    return len > 0 && a0 < b1 && b0 < a1;
+}
+
+static uint32_t be300_buzzer_tone_hz(const struct be300_buzzer_state *b)
+{
+    uint32_t period = be300_buzzer_peek_le32(&b->blg[0x0008]) & 0xffffu;
+    uint32_t hz;
+
+    if (period == 0)
+        return 1200;
+
+    /*
+     * docs/hardware/hw_dump_vrc4173.txt:1084 captures 0x0F70 in the
+     * timing register; treating it as a 4 MHz divisor yields roughly
+     * 1 kHz, consistent with a piezo notification tone. This conversion
+     * only affects host audio rendering, not guest-visible register values.
+     */
+    hz = 4000000u / period;
+    if (hz < 80)
+        hz = 80;
+    if (hz > 6000)
+        hz = 6000;
+    return hz;
+}
+
+static uint32_t be300_buzzer_tone_ms(const struct be300_buzzer_state *b)
+{
+    uint32_t cfg = be300_buzzer_peek_le32(&b->blg[0x0004]);
+    uint32_t ms = 45u + ((cfg & 0xffu) * 8u);
+
+    if (ms < 35)
+        ms = 35;
+    if (ms > 220)
+        ms = 220;
+    return ms;
+}
+
+static void be300_buzzer_note_write(struct be300_vrc4173_latch *d,
+    uint32_t off, unsigned len, const unsigned char *data)
+{
+    struct be300_buzzer_state *b;
+    uint32_t old_control;
+    uint32_t new_control;
+    uint32_t old_cmm;
+    uint32_t new_cmm;
+    bool touched_blg;
+    bool touched_cmm;
+
+    if (!d || !data || len == 0)
+        return;
+
+    touched_blg = be300_buzzer_range_overlap(off, len,
+        BE300_BUZZER_BLG_OFF, BE300_BUZZER_BLG_LEN);
+    touched_cmm = be300_buzzer_range_overlap(off, len,
+        BE300_BUZZER_CMM_OFF, BE300_BUZZER_CMM_LEN);
+    if (!touched_blg && !touched_cmm)
+        return;
+
+    b = &d->buzzer;
+    old_control = be300_buzzer_peek_le32(&b->blg[0]);
+    old_cmm = be300_buzzer_peek_le32(b->cmm);
+
+    for (unsigned i = 0; i < len; i++) {
+        uint32_t byte_off = off + i;
+
+        if (byte_off >= BE300_BUZZER_BLG_OFF &&
+            byte_off < BE300_BUZZER_BLG_OFF + BE300_BUZZER_BLG_LEN) {
+            uint32_t rel = byte_off - BE300_BUZZER_BLG_OFF;
+            b->blg[rel] = data[i];
+        }
+        if (byte_off >= BE300_BUZZER_CMM_OFF &&
+            byte_off < BE300_BUZZER_CMM_OFF + BE300_BUZZER_CMM_LEN) {
+            uint32_t rel = byte_off - BE300_BUZZER_CMM_OFF;
+            b->cmm[rel] = data[i];
+        }
+    }
+
+    new_control = be300_buzzer_peek_le32(&b->blg[0]);
+    new_cmm = be300_buzzer_peek_le32(b->cmm);
+
+    if ((new_control & 1u) && !(old_control & 1u)) {
+        ui_buzzer_pulse(be300_buzzer_tone_hz(b), be300_buzzer_tone_ms(b));
+        return;
+    }
+
+    if ((new_control & 1u) && touched_blg &&
+        !be300_buzzer_range_overlap(off, len, 0x098Cu, 4u)) {
+        ui_buzzer_pulse(be300_buzzer_tone_hz(b), be300_buzzer_tone_ms(b));
+        return;
+    }
+
+    if (touched_cmm && new_cmm != old_cmm && (new_cmm & 1u))
+        ui_buzzer_pulse(be300_buzzer_tone_hz(b), be300_buzzer_tone_ms(b));
 }
 
 static bool be300_reg_addr_to_pa(uint32_t addr, uint64_t *pa_out)
@@ -668,6 +825,8 @@ DEVICE_ACCESS(be300_vrc4173)
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
         bool suspend_latch = false;
+
+        be300_buzzer_note_write(d, off, (unsigned)len, data);
 
         if (g_be300_machine &&
             nand_restore_handles_offset(off)) {
@@ -1292,6 +1451,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
     aux->ppsh_enabled = enable_ppsh;
     g_be300_wince_aux = aux;
     ppsh_refresh_status(aux);
+    be300_buzzer_seed(latch);
 
     /*
      * Pre-populate latch with real hardware register values from
