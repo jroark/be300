@@ -12,7 +12,8 @@ All commit hashes refer to the `be300` branch history in the `gxemul/` submodule
 
 ## What we re-applied and why
 
-- **2026-04-19** — `2fa3853` ("mips: CP0 Compare timer rate hz/2 + cap pending IP7 at 1") on `be300-minimal` re-applies the *bug-fix essence* of section 1 below, specifically the `compare_interrupts_pending` cap-at-1 change and adds a related VR4131 datasheet correction (Count advances at CPU/2, so wall-clock timer rate is `emulated_hz / (2 * compare_diff)` not `emulated_hz / compare_diff`). Motivation: WinCE NK boot exposed a 12.6 kHz IP7 storm and `pending=194` backlog during cold-boot Pass 7 that contributed to the broader RTCL1 cadence problem (see commit `2fa3853` and `memory/project_post_ppsh_stall.md`). The remaining sub-fixes from section 1 (`COP0_COMPARE` schedule offset, dyntrans end-of-batch crossing check) were *not* applied — they remain unneeded on the BE-300 path because the guest still does not use MTC0 Compare-driven ticks. If a future investigation needs them, treat section 1 below as the reference.
+- **2026-04-19** — `2fa3853` ("mips: CP0 Compare timer rate hz/2 + cap pending IP7 at 1") on `be300-minimal` re-applied the *bug-fix essence* of section 1 below, specifically the `compare_interrupts_pending` cap-at-1 change and a related VR4131 datasheet correction (Count advances at CPU/2, so wall-clock timer rate is `emulated_hz / (2 * compare_diff)` not `emulated_hz / compare_diff`). Motivation: WinCE NK boot exposed a 12.6 kHz IP7 storm and `pending=194` backlog during cold-boot Pass 7 that contributed to the broader RTCL1 cadence problem (see commit `2fa3853` and `memory/project_post_ppsh_stall.md`). At that time, the remaining sub-fixes from section 1 (`COP0_COMPARE` schedule offset, dyntrans end-of-batch crossing check) were left unapplied because the BE-300 path had not yet shown an MTC0 Compare-driven dependency.
+- **2026-04-25** — the remaining load-bearing part of section 1 was re-applied differently: `COP0_COMPARE` no longer uses GXemul's host SIGALRM timer when `emulated_hz > 0`; it schedules IP7 from emulated instruction progress and removes the stale `compare_interrupts_pending` host-timer backlog state. Motivation: BE-300 touch calibration proved trace-sensitive because diagnostic logging slowed the host enough for WinCE's Compare-driven scheduler tick to wake `touch.dll`'s IST before PIU data aged out. A deterministic no-lifecycle replay after the fix showed `touch_wait_ret`, `touch_pen_ack_store`, page ACKs, and ADC reads.
 
 ---
 
@@ -23,9 +24,9 @@ All commit hashes refer to the `be300` branch history in the `gxemul/` submodule
 - `COP0_COMPARE` write handler schedules the host timer using `(new_compare - old_compare)` instead of `(new_compare - current_count)`. The diff is mostly meaningless and the `< 0` branch falls through via dead code.
 - End-of-batch `Count` crossing check in `cpu_dyntrans.c` is disabled when `emulated_hz > 0` (marked "Not yet TODO"); the `diff1 > 0 && diff2 <= 0` check never fires.
 
-**Why not load-bearing for us:** BE-300 drives timer interrupts via VR4131 RTCL1 → VRIP.ETIMER, not via MIPS `Count`/`Compare`. Our guest (WinCE) does not use the MIPS timer.
+**Current BE-300 status:** this is now load-bearing. WinCE's touch IST wakeup path depends on Compare-driven scheduler progress even though the board also has VR4131 RTCL1/ETIMER. Host-wall-clock Compare delivery made touch behavior change with trace/logging speed, so the fix is now applied in the `gxemul/` submodule.
 
-**Warning signs that would justify re-applying:**
+**Warning signs for future regressions:**
 - A guest OS port (NetBSD, Linux for VR4131, etc.) that uses MIPS `Compare`-driven ticks stalls indefinitely.
 - Tests that call `MTC0 Compare` and expect IP7 to fire after exactly `(compare - count)` cycles.
 
