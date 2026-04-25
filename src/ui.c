@@ -29,6 +29,10 @@ static bool quit_requested = false;
 
 /* Mouse button held state for touch drag tracking */
 static bool mouse_button_held = false;
+static bool touch_release_pending = false;
+static uint16_t touch_release_x = 0;
+static uint16_t touch_release_y = 0;
+static uint32_t touch_release_due_tick = 0;
 
 /* Frame rate limiting */
 static uint32_t last_frame_tick = 0;
@@ -36,6 +40,37 @@ static uint32_t last_frame_tick = 0;
 
 /* Staging buffer for visible rectangle extraction */
 static uint16_t *staging_buf = NULL;
+
+static void ui_window_to_touch(machine_t *m, int win_x, int win_y,
+    uint16_t *x_out, uint16_t *y_out)
+{
+    int tx, ty;
+
+    /* SDL window is 2x scaled; divide to get screen pixel coords. */
+    tx = win_x / 2;
+    ty = win_y / 2;
+    if (tx < 0) tx = 0;
+    if (ty < 0) ty = 0;
+    if ((uint32_t)tx >= m->fb_width)  tx = (int)m->fb_width  - 1;
+    if ((uint32_t)ty >= m->fb_height) ty = (int)m->fb_height - 1;
+
+    *x_out = (uint16_t)tx;
+    *y_out = (uint16_t)ty;
+}
+
+static void ui_set_touch_from_window(machine_t *m, bool down, int win_x,
+    int win_y)
+{
+    uint16_t tx, ty;
+
+    ui_window_to_touch(m, win_x, win_y, &tx, &ty);
+    be300_set_touch(m, down, tx, ty);
+}
+
+static bool ui_tick_reached(uint32_t now, uint32_t due)
+{
+    return (int32_t)(now - due) >= 0;
+}
 
 int ui_init(machine_t *m)
 {
@@ -45,6 +80,7 @@ int ui_init(machine_t *m)
 
     quit_requested = false;
     mouse_button_held = false;
+    touch_release_pending = false;
     last_frame_tick = 0;
 
     /* Skip SDL when no display server is available (headless / Docker) */
@@ -134,6 +170,12 @@ void ui_update(machine_t *m)
 
     /* Rate-limit to ~30 fps */
     uint32_t now = SDL_GetTicks();
+    if (touch_release_pending &&
+        ui_tick_reached(now, touch_release_due_tick)) {
+        be300_set_touch(m, false, touch_release_x, touch_release_y);
+        touch_release_pending = false;
+    }
+
     if (now - last_frame_tick < FRAME_INTERVAL_MS)
         return;
     last_frame_tick = now;
@@ -196,36 +238,24 @@ void ui_update(machine_t *m)
         case SDL_MOUSEBUTTONDOWN:
             if (ev.button.button == SDL_BUTTON_LEFT) {
                 mouse_button_held = true;
-                m->touch_down = true;
-                /* SDL window is 2× scaled; divide to get screen pixel coords */
-                int tx = ev.button.x / 2;
-                int ty = ev.button.y / 2;
-                if (tx < 0) tx = 0;
-                if (ty < 0) ty = 0;
-                if ((uint32_t)tx >= m->fb_width)  tx = (int)m->fb_width  - 1;
-                if ((uint32_t)ty >= m->fb_height) ty = (int)m->fb_height - 1;
-                m->touch_x = (uint16_t)tx;
-                m->touch_y = (uint16_t)ty;
+                touch_release_pending = false;
+                ui_set_touch_from_window(m, true, ev.button.x, ev.button.y);
             }
             break;
 
         case SDL_MOUSEBUTTONUP:
             if (ev.button.button == SDL_BUTTON_LEFT) {
                 mouse_button_held = false;
-                m->touch_down = false;
+                ui_window_to_touch(m, ev.button.x, ev.button.y,
+                    &touch_release_x, &touch_release_y);
+                touch_release_due_tick = now + FRAME_INTERVAL_MS;
+                touch_release_pending = true;
             }
             break;
 
         case SDL_MOUSEMOTION:
             if (mouse_button_held) {
-                int tx = ev.motion.x / 2;
-                int ty = ev.motion.y / 2;
-                if (tx < 0) tx = 0;
-                if (ty < 0) ty = 0;
-                if ((uint32_t)tx >= m->fb_width)  tx = (int)m->fb_width  - 1;
-                if ((uint32_t)ty >= m->fb_height) ty = (int)m->fb_height - 1;
-                m->touch_x = (uint16_t)tx;
-                m->touch_y = (uint16_t)ty;
+                ui_set_touch_from_window(m, true, ev.motion.x, ev.motion.y);
             }
             break;
 
