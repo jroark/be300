@@ -351,11 +351,7 @@ void ui_update(machine_t *m)
         ui_release_touch(m);
     }
 
-    if (now - last_frame_tick < FRAME_INTERVAL_MS)
-        return;
-    last_frame_tick = now;
-
-    /* Poll events */
+    /* Poll input every emulator batch; only rendering is frame-limited. */
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
@@ -452,6 +448,10 @@ void ui_update(machine_t *m)
             break;
         }
     }
+
+    if (now - last_frame_tick < FRAME_INTERVAL_MS)
+        return;
+    last_frame_tick = now;
 
     /* Lazy-resolve framebuffer host pointer from GXemul's vfb_data */
     if (!m->fb_data) {

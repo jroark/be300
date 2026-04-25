@@ -1848,6 +1848,7 @@ struct be300_input_device {
     uint16_t   piu_regs[16];       /* register file: index = offset / 4 */
     uint16_t   piu_padstate;       /* PADSTATE(2:0) scan sequencer state */
     bool       piu_prev_touch;     /* previous touch_down for edge detect */
+    bool       piu_penstc;         /* PENSTC latched while PENCHGINTR is set */
     bool       piu_data_armed;     /* PenDataScan has a coordinate sample due */
     uint32_t   piu_data_ready_count;
     uint8_t    piu_next_page;      /* next coordinate page buffer interrupt */
@@ -1905,6 +1906,23 @@ static uint32_t piu_girq0_source_bits(const struct be300_input_device *d)
 static void piu_refresh_irq(struct be300_input_device *d)
 {
     piu_irq_update(d, (d->piu_regs[1] & (d->piu_regs[1] >> 8)) != 0);
+}
+
+static void piu_raise_penchg(struct be300_input_device *d, bool down)
+{
+    if (!d)
+        return;
+
+    /*
+     * VRC4173 UM §9.3.1: PENSTC records the touch-panel state at the time
+     * PENCHGINTR is set, and it remains latched until PENCHGINTR is
+     * cleared. Returning the live host pen state here makes short taps
+     * disappear if WinCE services the interrupt after the host button has
+     * already lifted.
+     */
+    if (!(d->piu_regs[1] & PIU_PENDING_PENCHG))
+        d->piu_penstc = down;
+    d->piu_regs[1] |= PIU_PENDING_PENCHG;
 }
 
 static void piu_latch_sample(struct be300_input_device *d)
@@ -2076,7 +2094,7 @@ static void piu_signal_pen_down(struct be300_input_device *d)
     }
 
     piu_latch_sample(d);
-    d->piu_regs[1] |= PIU_PENDING_PENCHG;
+    piu_raise_penchg(d, true);
     piu_refresh_irq(d);
 }
 
@@ -2099,7 +2117,7 @@ static void piu_signal_pen_up(struct be300_input_device *d)
         piu_refresh_irq(d);
         return;
     }
-    d->piu_regs[1] |= PIU_PENDING_PENCHG;
+    piu_raise_penchg(d, false);
     piu_refresh_irq(d);
 }
 
@@ -2201,6 +2219,7 @@ static void piu_update_state(struct be300_input_device *d)
         piu_reset_regs(d);
         d->piu_padstate = 0;  /* Disable */
         d->piu_prev_touch = false;
+        d->piu_penstc = false;
         d->piu_data_armed = false;
         d->piu_data_ready_count = 0;
         d->piu_next_page = 0;
@@ -2288,6 +2307,8 @@ DEVICE_ACCESS(be300_touch)
                 uint16_t pending_ack = (uint16_t)(val & 0xFFu);
                 bool data_acked = (old_pending & pending_ack &
                     (PIU_PENDING_TOUCH_DATA | PIU_PENDING_DATALOST)) != 0;
+                bool lost_acked = (old_pending & pending_ack &
+                    PIU_PENDING_DATALOST) != 0;
 
                 /* PIUINTREG: mask/status byte pair.
                  * Byte 0 (bits 7:0) = pending status (set by HW, W1C)
@@ -2306,6 +2327,14 @@ DEVICE_ACCESS(be300_touch)
                     d->piu_page_valid[0] = false;
                 if (pending_ack & PIU_PENDING_PAGE1)
                     d->piu_page_valid[1] = false;
+                if (pending_ack & PIU_PENDING_PENCHG)
+                    d->piu_penstc = m->touch_down;
+                if (lost_acked && m->touch_down &&
+                    piu_wait_pen_touch_enabled(d) &&
+                    (d->piu_regs[1] & PIU_PENDING_COORDINATE) == 0) {
+                    d->piu_padstate = 5;
+                    piu_arm_coordinate_sample(d, piu_conversion_delay_us(d));
+                }
                 if (data_acked && m->touch_down && d->piu_padstate >= 5 &&
                     !d->piu_data_armed)
                     piu_arm_coordinate_sample(d, piu_interval_delay_us(d));
@@ -2325,7 +2354,8 @@ DEVICE_ACCESS(be300_touch)
         /* PIUCNTREG: compose from stored bits + dynamic state */
         val = (d->piu_regs[0] & 0x03FFu)
             | ((uint16_t)(d->piu_padstate & 7) << 10)
-            | (m->touch_down ? 0x2000u : 0);
+            | ((d->piu_regs[1] & PIU_PENDING_PENCHG ?
+                d->piu_penstc : m->touch_down) ? 0x2000u : 0);
     } else if (off == 0x04) {
         piu_maybe_queue_coordinate_sample(d);
         /* Return (mask << 8) | pending; ISR does pending & mask */
