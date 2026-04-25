@@ -27,6 +27,9 @@ static void *frame_cb_data = NULL;
 
 /* Quit flag */
 static bool quit_requested = false;
+static bool sdl_video_initialized = false;
+static bool sdl_audio_initialized = false;
+static SDL_AudioDeviceID audio_device = 0;
 
 /* Mouse button held state for touch drag tracking */
 static bool mouse_button_held = false;
@@ -45,6 +48,94 @@ static uint32_t last_frame_tick = 0;
 
 /* Staging buffer for visible rectangle extraction */
 static uint16_t *staging_buf = NULL;
+
+#define BUZZER_SAMPLE_RATE      44100
+#define BUZZER_MAX_QUEUE_MS       250
+#define BUZZER_DEFAULT_HZ        1200
+#define BUZZER_DEFAULT_MS          60
+
+static bool ui_audio_env_enabled(void)
+{
+    const char *v = getenv("BE300_AUDIO");
+
+    if (!v || !*v)
+        return true;
+    return strcmp(v, "0") != 0 &&
+        strcmp(v, "false") != 0 &&
+        strcmp(v, "FALSE") != 0 &&
+        strcmp(v, "off") != 0 &&
+        strcmp(v, "OFF") != 0;
+}
+
+static void ui_audio_init(void)
+{
+    SDL_AudioSpec want, have;
+
+    if (!ui_audio_env_enabled())
+        return;
+
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+        fprintf(stderr, "[UI] SDL audio init failed: %s — continuing silent\n",
+                SDL_GetError());
+        return;
+    }
+    sdl_audio_initialized = true;
+
+    memset(&want, 0, sizeof(want));
+    want.freq = BUZZER_SAMPLE_RATE;
+    want.format = AUDIO_S16SYS;
+    want.channels = 1;
+    want.samples = 512;
+
+    audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (!audio_device) {
+        fprintf(stderr,
+            "[UI] SDL_OpenAudioDevice failed: %s — continuing silent\n",
+            SDL_GetError());
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        sdl_audio_initialized = false;
+        return;
+    }
+
+    SDL_PauseAudioDevice(audio_device, 0);
+}
+
+static void ui_audio_destroy(void)
+{
+    if (audio_device) {
+        SDL_ClearQueuedAudio(audio_device);
+        SDL_CloseAudioDevice(audio_device);
+        audio_device = 0;
+    }
+    if (sdl_audio_initialized) {
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        sdl_audio_initialized = false;
+    }
+}
+
+static void ui_video_destroy(machine_t *m)
+{
+    if (m->sdl_texture) {
+        SDL_DestroyTexture((SDL_Texture *)m->sdl_texture);
+        m->sdl_texture = NULL;
+    }
+    if (m->sdl_renderer) {
+        SDL_DestroyRenderer((SDL_Renderer *)m->sdl_renderer);
+        m->sdl_renderer = NULL;
+    }
+    if (m->sdl_window) {
+        SDL_DestroyWindow((SDL_Window *)m->sdl_window);
+        m->sdl_window = NULL;
+    }
+    if (staging_buf) {
+        free(staging_buf);
+        staging_buf = NULL;
+    }
+    if (sdl_video_initialized) {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        sdl_video_initialized = false;
+    }
+}
 
 static void ui_window_to_touch(machine_t *m, int win_x, int win_y,
     uint16_t *x_out, uint16_t *y_out)
@@ -120,6 +211,8 @@ int ui_init(machine_t *m)
     touch_down_tick = 0;
     last_frame_tick = 0;
 
+    ui_audio_init();
+
     /* Skip SDL when no display server is available (headless / Docker) */
 #ifndef __APPLE__
     if (!getenv("DISPLAY") && !getenv("WAYLAND_DISPLAY")) {
@@ -128,11 +221,12 @@ int ui_init(machine_t *m)
     }
 #endif
 
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "[UI] SDL_Init failed: %s — continuing headless\n",
                 SDL_GetError());
         return 0;
     }
+    sdl_video_initialized = true;
 
     /* 2× scaled window */
     int win_w = m->fb_width  * 2;
@@ -145,7 +239,7 @@ int ui_init(machine_t *m)
     if (!win) {
         fprintf(stderr, "[UI] SDL_CreateWindow failed: %s — continuing headless\n",
                 SDL_GetError());
-        SDL_Quit();
+        ui_video_destroy(m);
         return 0;
     }
     m->sdl_window = win;
@@ -158,9 +252,7 @@ int ui_init(machine_t *m)
     if (!ren) {
         fprintf(stderr, "[UI] SDL_CreateRenderer failed: %s — continuing headless\n",
                 SDL_GetError());
-        SDL_DestroyWindow(win);
-        m->sdl_window = NULL;
-        SDL_Quit();
+        ui_video_destroy(m);
         return 0;
     }
     m->sdl_renderer = ren;
@@ -174,11 +266,7 @@ int ui_init(machine_t *m)
     if (!tex) {
         fprintf(stderr, "[UI] SDL_CreateTexture failed: %s — continuing headless\n",
                 SDL_GetError());
-        SDL_DestroyRenderer(ren);
-        SDL_DestroyWindow(win);
-        m->sdl_renderer = NULL;
-        m->sdl_window = NULL;
-        SDL_Quit();
+        ui_video_destroy(m);
         return 0;
     }
     m->sdl_texture = tex;
@@ -187,13 +275,7 @@ int ui_init(machine_t *m)
     staging_buf = malloc(m->fb_width * m->fb_height * sizeof(uint16_t));
     if (!staging_buf) {
         fprintf(stderr, "[UI] staging buffer alloc failed — continuing headless\n");
-        SDL_DestroyTexture(tex);
-        SDL_DestroyRenderer(ren);
-        SDL_DestroyWindow(win);
-        m->sdl_texture = NULL;
-        m->sdl_renderer = NULL;
-        m->sdl_window = NULL;
-        SDL_Quit();
+        ui_video_destroy(m);
         return 0;
     }
 
@@ -379,23 +461,70 @@ void ui_save_screenshot(machine_t *m)
 
 void ui_destroy(machine_t *m)
 {
-    if (m->sdl_texture) {
-        SDL_DestroyTexture((SDL_Texture *)m->sdl_texture);
-        m->sdl_texture = NULL;
+    ui_video_destroy(m);
+    ui_audio_destroy();
+    if (SDL_WasInit(0) == 0)
+        SDL_Quit();
+}
+
+void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
+{
+    uint32_t queued_max;
+    uint32_t period;
+    uint32_t samples;
+    int16_t *pcm;
+
+    if (!audio_device)
+        return;
+
+    if (frequency_hz == 0)
+        frequency_hz = BUZZER_DEFAULT_HZ;
+    if (duration_ms == 0)
+        duration_ms = BUZZER_DEFAULT_MS;
+
+    if (frequency_hz < 80)
+        frequency_hz = 80;
+    if (frequency_hz > 6000)
+        frequency_hz = 6000;
+    if (duration_ms > 500)
+        duration_ms = 500;
+
+    samples = (BUZZER_SAMPLE_RATE * duration_ms) / 1000u;
+    if (samples == 0)
+        return;
+
+    pcm = malloc((size_t)samples * sizeof(*pcm));
+    if (!pcm)
+        return;
+
+    period = BUZZER_SAMPLE_RATE / frequency_hz;
+    if (period < 2)
+        period = 2;
+
+    for (uint32_t i = 0; i < samples; i++) {
+        uint32_t edge = (i * 12u) / samples;
+        int32_t amp = 6500;
+
+        if (edge < 12u)
+            amp = (amp * (int32_t)edge) / 12;
+        if (i > samples - (samples / 8u + 1u)) {
+            uint32_t rem = samples - i;
+            uint32_t tail = samples / 8u + 1u;
+            amp = (amp * (int32_t)rem) / (int32_t)tail;
+        }
+
+        pcm[i] = ((i % period) < (period / 2u))
+            ? (int16_t)amp
+            : (int16_t)-amp;
     }
-    if (m->sdl_renderer) {
-        SDL_DestroyRenderer((SDL_Renderer *)m->sdl_renderer);
-        m->sdl_renderer = NULL;
-    }
-    if (m->sdl_window) {
-        SDL_DestroyWindow((SDL_Window *)m->sdl_window);
-        m->sdl_window = NULL;
-    }
-    if (staging_buf) {
-        free(staging_buf);
-        staging_buf = NULL;
-    }
-    SDL_Quit();
+
+    queued_max = (BUZZER_SAMPLE_RATE * sizeof(int16_t) *
+        BUZZER_MAX_QUEUE_MS) / 1000u;
+    if (SDL_GetQueuedAudioSize(audio_device) > queued_max)
+        SDL_ClearQueuedAudio(audio_device);
+
+    SDL_QueueAudio(audio_device, pcm, samples * sizeof(*pcm));
+    free(pcm);
 }
 
 #else  /* !HAVE_SDL2 — headless stubs */
@@ -405,6 +534,8 @@ void ui_update(machine_t *m)       { (void)m; }
 void ui_destroy(machine_t *m)      { (void)m; }
 bool ui_should_quit(machine_t *m)  { (void)m; return false; }
 void ui_save_screenshot(machine_t *m) { (void)m; }
+void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
+    { (void)frequency_hz; (void)duration_ms; }
 
 #endif  /* HAVE_SDL2 */
 
