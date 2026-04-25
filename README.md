@@ -29,7 +29,7 @@ Historical pass handoffs and superseded investigation notes are archived in
 
 - CMake 3.10+
 - C11 compiler
-- SDL2 for the interactive framebuffer window
+- SDL2 for the interactive framebuffer window and host buzzer audio
 - `gtimeout` or GNU `timeout` for bounded boot smoke tests
 
 The GXemul CPU engine is a submodule. Fresh clones need:
@@ -58,7 +58,9 @@ cd build-host
 ```
 
 Serial output is written to stdout. Emulator diagnostics are written to stderr.
-An SDL window opens for the framebuffer when SDL is available.
+An SDL window opens for the framebuffer when SDL is available. The Casio
+piezo buzzer is rendered through SDL audio; set `BE300_AUDIO=0` to mute host
+audio without changing guest-visible hardware state.
 
 For a bounded smoke test:
 
