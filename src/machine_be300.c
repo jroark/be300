@@ -585,6 +585,16 @@ machine_t *be300_create(const machine_config_t *cfg)
         dev_ram_init(gxm, 0x0B000000ULL, 0x10000ULL,
             DEV_RAM_RAM, 0, "be300_companion_ab_window");
 
+        /*
+         * PCMCIA "no card" stub at PA 0x0B400000-0x0B700000.
+         * Returns 0xFF on reads (= CISTPL_END per PC Card spec §3.2.10),
+         * terminating pcmcia.dll's CIS scan after one byte instead of
+         * spinning forever on unmapped reads. See src/be300_devices.c
+         * `be300_register_pcmcia_no_card` for the rationale + TODO.
+         */
+        extern void be300_register_pcmcia_no_card(struct machine *);
+        be300_register_pcmcia_no_card(gxm);
+
         /* Register NAND flash; pre-split to leave gap at 0x0A00A040 for input device */
         extern void be300_register_nand(struct machine *, nand_state_t *,
             cf_state_t *, bool);

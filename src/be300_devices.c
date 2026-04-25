@@ -224,6 +224,277 @@ static uint32_t be300_latch_peek_u32(struct be300_vrc4173_latch *d,
          | ((uint32_t)d->bytes[off + 3u] << 24);
 }
 
+static bool be300_reg_addr_to_pa(uint32_t addr, uint64_t *pa_out)
+{
+    if (!pa_out)
+        return false;
+
+    if (addr >= 0x80000000u && addr < 0xC0000000u)
+        *pa_out = (uint64_t)(addr & 0x1FFFFFFFu);
+    else
+        *pa_out = (uint64_t)addr;
+
+    return true;
+}
+
+static void be300_fb_mark_dirty(machine_t *m, uint32_t off, uint32_t len)
+{
+    struct vfb_data *fb;
+    uint32_t bpp, stride, start_y, end_y, x1, x2;
+
+    if (!m || !m->gxe_machine || !m->gxe_machine->fb || len == 0)
+        return;
+
+    fb = m->gxe_machine->fb;
+    if (fb->bit_depth <= 0 || fb->bytes_per_line <= 0 ||
+        fb->xsize <= 0 || fb->ysize <= 0)
+        return;
+
+    bpp = (uint32_t)((fb->bit_depth + 7) / 8);
+    stride = (uint32_t)fb->bytes_per_line;
+    if (bpp == 0 || stride == 0)
+        return;
+
+    start_y = off / stride;
+    end_y = (off + len - 1u) / stride;
+    if (start_y >= (uint32_t)fb->ysize)
+        return;
+    if (end_y >= (uint32_t)fb->ysize)
+        end_y = (uint32_t)fb->ysize - 1u;
+
+    if (start_y == end_y) {
+        x1 = (off % stride) / bpp;
+        x2 = ((off + len - 1u) % stride) / bpp;
+    } else {
+        x1 = 0;
+        x2 = (uint32_t)fb->xsize - 1u;
+    }
+
+    if (x1 >= (uint32_t)fb->xsize)
+        x1 = (uint32_t)fb->xsize - 1u;
+    if (x2 >= (uint32_t)fb->xsize)
+        x2 = (uint32_t)fb->xsize - 1u;
+
+    if (fb->update_x1 > (int)x1) fb->update_x1 = (int)x1;
+    if (fb->update_y1 > (int)start_y) fb->update_y1 = (int)start_y;
+    if (fb->update_x2 < (int)x2) fb->update_x2 = (int)x2;
+    if (fb->update_y2 < (int)end_y) fb->update_y2 = (int)end_y;
+}
+
+static void be300_vrc4173_a00_blit_maybe(struct cpu *cpu,
+    struct be300_vrc4173_latch *d)
+{
+    machine_t *m = g_be300_machine;
+    struct vfb_data *fb;
+    uint32_t status, command, count_words, src_reg, dst_reg;
+    uint32_t dst_off;
+    uint64_t src_pa;
+    size_t len, fb_size;
+    unsigned char *src, *dst;
+
+    if (!cpu || !cpu->mem || !d || !m || !m->gxe_machine ||
+        !m->gxe_machine->fb)
+        return;
+
+    status = be300_latch_peek_u32(d, 0x0A00);
+    if ((status & 1u) == 0)
+        return;
+
+    command = be300_latch_peek_u32(d, 0x0A04);
+    if ((command & 0x81u) != 0x81u)
+        return;
+
+    count_words = be300_latch_peek_u32(d, 0x0A08);
+    src_reg = be300_latch_peek_u32(d, 0x0A10);
+    dst_reg = be300_latch_peek_u32(d, 0x0A14);
+
+    /*
+     * VRC4173/Casio graphics copy engine at PA 0x0A000A00.
+     *
+     * docs/hardware/hw_dump_vrc4173.txt:1085-1086 show this block
+     * populated after boot (`0x0A000A00: 00000000 00000001 00000018 ...`,
+     * `0x0A000A10: 00005A00 00027D7C ...`): idle status, mode 1, word
+     * count, source scratch address, and framebuffer byte offset.
+     * ddi.dll's row blitter at UM 0x01A53AD0..0x01A53D04 programs the
+     * same block, stages a source row into low SDRAM (0x5800/0x5A00),
+     * writes command 0x81, then triggers by writing bit 0 at 0xA00.
+     *
+     * Model the observed command as an immediate SDRAM-to-framebuffer copy.
+     * TODO 2026-04-25: confirm the full bit assignments and completion
+     * timing with a BEDiag hardware trace; this currently covers the only
+     * command shape seen on the WinCE 3.0 boot path.
+     */
+    if (count_words == 0)
+        goto complete;
+
+    if (!be300_reg_addr_to_pa(src_reg, &src_pa))
+        goto complete;
+
+    fb = m->gxe_machine->fb;
+    if (!fb->framebuffer || fb->framebuffer_size == 0)
+        goto complete;
+
+    fb_size = fb->framebuffer_size;
+    if ((uint64_t)dst_reg >= PA_VRC4173_FB &&
+        (uint64_t)dst_reg < PA_VRC4173_FB + (uint64_t)fb_size) {
+        dst_off = dst_reg - PA_VRC4173_FB;
+    } else if (((uint64_t)dst_reg & 0x1FFFFFFFu) >= PA_VRC4173_FB &&
+        ((uint64_t)dst_reg & 0x1FFFFFFFu) <
+            PA_VRC4173_FB + (uint64_t)fb_size) {
+        dst_off = (uint32_t)(((uint64_t)dst_reg & 0x1FFFFFFFu) -
+            PA_VRC4173_FB);
+    } else {
+        dst_off = dst_reg;
+    }
+
+    if ((uint64_t)dst_off >= (uint64_t)fb_size)
+        goto complete;
+
+    len = (size_t)count_words * 4u;
+    if (len == 0)
+        goto complete;
+    if (len > fb_size - (size_t)dst_off)
+        len = fb_size - (size_t)dst_off;
+
+    src = memory_paddr_to_hostaddr(cpu->mem, src_pa, MEM_READ);
+    if (!src)
+        goto complete;
+
+    dst = fb->framebuffer + dst_off;
+    memcpy(dst, src, len);
+    be300_fb_mark_dirty(m, dst_off, (uint32_t)len);
+
+complete:
+    d->bytes[0x0A00] &= ~(uint8_t)1u;   /* trigger/busy complete */
+    d->bytes[0x0A04] &= ~(uint8_t)0x80u; /* command bit self-clears */
+}
+
+static void be300_vrc4173_200_display_op_maybe(
+    struct be300_vrc4173_latch *d)
+{
+    machine_t *m = g_be300_machine;
+    struct vfb_data *fb;
+    uint32_t mode, dst_off, width, height, color, src_off, bit_off;
+    uint32_t stride, bpp;
+
+    if (!d || !m || !m->gxe_machine || !m->gxe_machine->fb)
+        return;
+
+    fb = m->gxe_machine->fb;
+    if (!fb->framebuffer || fb->framebuffer_size == 0 ||
+        fb->bit_depth != 16 || fb->bytes_per_line <= 0)
+        goto complete;
+
+    if ((be300_latch_peek_u32(d, 0x0234) & 1u) == 0)
+        return;
+
+    mode = be300_latch_peek_u32(d, 0x0200);
+    dst_off = (be300_latch_peek_u32(d, 0x0210) & 0xFFFFu)
+        | ((be300_latch_peek_u32(d, 0x0214) & 0xFFFFu) << 16);
+    width = be300_latch_peek_u32(d, 0x0208);
+    height = be300_latch_peek_u32(d, 0x020C);
+    color = be300_latch_peek_u32(d, 0x0204) & 0xFFFFu;
+    stride = (uint32_t)fb->bytes_per_line;
+    bpp = 2;
+
+    /*
+     * VRC4173/Casio display fill engine at PA 0x0A000200.
+     *
+     * The real-hardware dump identifies this as display-related:
+     * docs/hardware/hw_dump_vrc4173.txt:977-982 shows the block populated,
+     * including PA 0x0A000220 = 0x1E0 (240 visible pixels * 2 bytes).
+     * ddi.dll's solid-fill path at UM 0x01A53EC8..0x01A53FA0 programs
+     * destination byte offset at 0x210/0x214, width/height at 0x208/0x20C,
+     * RGB565 color at 0x204, mode 0 at 0x200, then starts the operation by
+     * writing 1 to 0x234. Model that mode as an immediate framebuffer fill.
+     *
+     * The same dump also captures mode 2 immediately below the seed row
+     * (PA 0x0A000200 = 2, 0x0208/0x020C = 4x9, 0x0210 = 0xB414,
+     * 0x0220 = 0x1E0, 0x0238 = 1). ddi.dll's glyph path at UM
+     * 0x01A53848..0x01A53AAC programs mode 2, stages 1-bpp glyph rows into
+     * the framebuffer row padding at byte offset 0x1E0, then starts the
+     * block via 0x0234. Model that observed mode as transparent mono
+     * expansion from the staged padding rows into the visible destination.
+     *
+     * TODO 2026-04-25: capture BEDiag traces for the remaining non-zero
+     * modes; copy/ROP modes in this block are deliberately left
+     * unimplemented until observed on the boot path with enough register
+     * evidence.
+     */
+    if (width == 0 || height == 0 ||
+        (uint64_t)dst_off >= (uint64_t)fb->framebuffer_size)
+        goto complete;
+
+    if (mode == 0) {
+        for (uint32_t y = 0; y < height; y++) {
+            uint64_t row_off = (uint64_t)dst_off + (uint64_t)y * stride;
+            if (row_off >= (uint64_t)fb->framebuffer_size)
+                break;
+
+            size_t row_left = fb->framebuffer_size - (size_t)row_off;
+            uint32_t row_width = width;
+            if ((uint64_t)row_width * bpp > row_left)
+                row_width = (uint32_t)(row_left / bpp);
+
+            uint16_t *row = (uint16_t *)(void *)(fb->framebuffer + row_off);
+            for (uint32_t x = 0; x < row_width; x++)
+                row[x] = (uint16_t)color;
+        }
+
+        {
+            uint64_t len64 = (uint64_t)(height - 1u) * stride
+                + (uint64_t)width * bpp;
+            uint32_t len = len64 > UINT32_MAX ? UINT32_MAX : (uint32_t)len64;
+            be300_fb_mark_dirty(m, dst_off, len);
+        }
+    } else if (mode == 2) {
+        src_off = (be300_latch_peek_u32(d, 0x0220) & 0xFFFFu)
+            | ((be300_latch_peek_u32(d, 0x0224) & 0xFFFFu) << 16);
+        bit_off = be300_latch_peek_u32(d, 0x0228) & 7u;
+
+        for (uint32_t y = 0; y < height; y++) {
+            uint64_t dst_row_off = (uint64_t)dst_off + (uint64_t)y * stride;
+            uint64_t src_row_off = (uint64_t)src_off + (uint64_t)y * stride;
+            uint32_t row_width = width;
+            uint8_t *src_row;
+            uint16_t *dst_row;
+
+            if (dst_row_off >= (uint64_t)fb->framebuffer_size ||
+                src_row_off >= (uint64_t)fb->framebuffer_size)
+                break;
+            if ((uint64_t)row_width * bpp >
+                (uint64_t)fb->framebuffer_size - dst_row_off)
+                row_width = (uint32_t)(((uint64_t)fb->framebuffer_size -
+                    dst_row_off) / bpp);
+
+            src_row = fb->framebuffer + src_row_off;
+            dst_row = (uint16_t *)(void *)(fb->framebuffer + dst_row_off);
+            for (uint32_t x = 0; x < row_width; x++) {
+                uint32_t bit = bit_off + x;
+                uint64_t src_byte_off = src_row_off + (bit >> 3);
+                uint8_t mask;
+
+                if (src_byte_off >= (uint64_t)fb->framebuffer_size)
+                    break;
+
+                mask = (uint8_t)(0x80u >> (bit & 7u));
+                if (src_row[bit >> 3] & mask)
+                    dst_row[x] = (uint16_t)color;
+            }
+        }
+
+        {
+            uint64_t len64 = (uint64_t)(height - 1u) * stride
+                + (uint64_t)width * bpp;
+            uint32_t len = len64 > UINT32_MAX ? UINT32_MAX : (uint32_t)len64;
+            be300_fb_mark_dirty(m, dst_off, len);
+        }
+    }
+
+complete:
+    d->bytes[0x0234] &= ~(uint8_t)1u;   /* trigger/busy complete */
+}
+
 struct be300_vrc4173_segment {
     struct be300_vrc4173_latch *latch;
     uint32_t offset_in_latch;    /* offset of this segment within the latch */
@@ -464,6 +735,10 @@ DEVICE_ACCESS(be300_vrc4173)
                 BE300_MMIO_CLASS_LATCHED);
             memcpy(&d->bytes[off], data, len);
         }
+        if (off <= 0x0A00u && off + len > 0x0A00u)
+            be300_vrc4173_a00_blit_maybe(cpu, d);
+        if (off <= 0x0234u && off + len > 0x0234u)
+            be300_vrc4173_200_display_op_maybe(d);
         /* PIU control registers at offsets 0x000-0x05F: re-evaluate
          * scan sequencer state when NK.exe configures the PIU. */
         if (off < 0x060 && g_be300_machine && g_be300_machine->touch_device)
@@ -1235,6 +1510,61 @@ void be300_register_cf_window(struct machine *gxm, machine_t *m, bool log_mmio)
     memory_device_register(gxm->memory, "be300_cf_window",
         PA_ROM_BASE, CF_WINDOW_SIZE,
         dev_be300_cf_window_access, (void *)d, DM_DEFAULT, NULL);
+}
+
+/*
+ *  PCMCIA "no card present" stub at PA 0x0B400000-0x0B700000.
+ *
+ *  Background: pcmcia.dll has two card-window read helpers that
+ *  flood unmapped reads when no card is present:
+ *    - 0x0198a3b0 / lbu @ 0x0198a3f0 = `pcmcia_window_read_byte(base,
+ *      offset*2)` — flooded PA 0x0B600000+ (initial finding).
+ *    - 0x0198a488 / lbu @ 0x0198a490 = `simple_read_byte(base+offset)`
+ *      — flooded PA 0x0B400000+0x1F5 (after the 0x0B600000 stub
+ *      shifted the scan to a second polling loop).
+ *
+ *  Both loops walk PCMCIA attribute memory looking for CIS tuples.
+ *  With our emulator returning 0 for unmapped paddr, the parser
+ *  interprets every byte as `CISTPL_NULL (0x00)` and walks forever.
+ *  With the stub returning 0xFF, the parser sees `CISTPL_END` and
+ *  terminates the walk.
+ *
+ *  Hardware accuracy: real BE-300 with no card inserted reads the
+ *  attribute-memory window's pulled-up bus as 0xFF. The PC Card
+ *  standard Release 8 §3.2.10 defines `0xFF = CISTPL_END` (terminate
+ *  tuple chain), so a real CIS scanner reads one 0xFF byte and stops.
+ *
+ *  Range: 0x0B400000-0x0B700000 (3 MB) covers both observed flood
+ *  windows plus margin for any future PCMCIA bridge programmed
+ *  elsewhere in the lower 0x0B0xxxxx-0x0BFxxxxx range. The existing
+ *  `be300_companion_ab_window` covers 0x0B000000-0x0B010000
+ *  separately (companion-chip secondary decode window — different
+ *  semantics, must remain RAM-backed).
+ *
+ *  TODO(2026-04-24): the *correct* fix is to model the
+ *  VRC4173 PCMCIA host bridge — its window-translation registers
+ *  determine where the card window actually decodes. Without that,
+ *  pcmcia.dll programs default windows that land at 0x0B4-0x0B6.
+ *  This stub returns 0xFF to terminate CIS walks; revisit once the
+ *  bridge is modeled or once a CompactFlash card is inserted in the
+ *  emulator.
+ */
+DEVICE_ACCESS(be300_pcmcia_no_card)
+{
+    (void)cpu; (void)mem; (void)relative_addr; (void)extra;
+    if (writeflag == MEM_READ) {
+        memset(data, 0xFF, len);
+    }
+    /* Writes are silently dropped (host-bus pull-up has no backing). */
+    return 1;
+}
+
+void be300_register_pcmcia_no_card(struct machine *gxm)
+{
+    memory_device_register(gxm->memory, "be300_pcmcia_no_card",
+        0x0B400000ULL, 0x300000ULL,
+        dev_be300_pcmcia_no_card_access, NULL,
+        DM_DEFAULT | DM_READS_HAVE_NO_SIDE_EFFECTS, NULL);
 }
 
 
