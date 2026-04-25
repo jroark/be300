@@ -310,30 +310,10 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 - Primary active target: WinCE 3.0 cold boot via `--nand ce/restore_images/All_nand_300.bin`
 - Secondary implemented paths: `--restore --cf` and `--ppsh`
 - Do not solve cold boot with guest patches, RAM seeds, `resume_ctx` seeds, or forced handoff shortcuts
+- `docs/CURRENT_STATUS.md` is the current handoff for boot status, touch status, and the next investigation focus
+- Historical pass handoffs live under `docs/archive/`; do not treat them as current unless `docs/CURRENT_STATUS.md` explicitly points back to one
 - For legitimate upstream GXemul 0.7.0 bugs that are *not* on the current boot path but may become relevant for future investigations, see:
   - `docs/LEGITIMATE_FIXES_NOT_APPLIED.md` — catalog of real bugs left unpatched, each with citation, warning signs that would justify re-applying, and a "do not reconsider" list of genuinely non-legitimate drops
-
-### Current Investigation Target
-
-**Active blocker (as of Pass 34, 2026-04-22):** the post-Boot.exe-ready paint path. Default cold-boot (`--nand ce/restore_images/All_nand_300.bin`) reaches screenshot SHA `e8a8c83cd66b9327f50fc1827eada71fb028b332` ("Starting" splash drawn by kernel-side OAL at PA `0xAA200000`) and stays there. Pass 31 wired the KjCMU warm-reset, Pass 32 verified `launcher_module_ready_notify hit=7 a0=0x3B` + `CREATEPROCESS hit=15 image="coshell.exe"` on the second boot, and Pass 34 implemented `COP0 HIBERNATE` + a ram stub at PA `0x0B000000`. Nothing in the upstream boot path halts the emulator anymore. The remaining gap:
-
-- `ddi_DrvEnableDriver_impl hits=2`, `ddi_blit_dispatcher_entry hits=27`, `ddi_iFunc10 hits=27`, `ddi_iFunc18 hits=17`, `gdi_surface_0x140000 writes=6992` — ddi.dll's render pipeline runs, fills an off-screen GDI surface at user VA `0x00140000`, and **never writes the primary framebuffer user VA `0x001E0000`**. Kernel-side FB writes (`fb_body_kseg1_writes writes=600934`) come only from the OAL splash drawer (PC `0x80F037CC` / `0x80079130`). No user-mode pixel ever lands in the primary surface.
-
-The falsifiable next-probe list is in **`docs/HANDOFF_POST_PASS34_HIBERNATE_AND_AB_WINDOW_2026-04-22.md` §6**: top priority is probing `ddi_iFunc10` (`0x01A5C9CC`) source/dest surface pointers to see whether destination is always the GDI off-screen, then confirming `DrvEnablePDEV` bound the primary correctly.
-
-Refuted in preceding passes (do not revisit without a probe-driven signal):
-- Pass 33: VRC4173 AIU wave-driver hypothesis (0 accesses to PA `0x0A0000E0..0x0A0000FC` in 180 s).
-- Pass 34: `gwes_worker WFSO(0x000B6834)` — unblocks in our emulator (`gwes_worker_wfso_6834_ret hits=2`), and real HW exhibits the identical block per user's calibration-screen photo analysis.
-
-Authoritative handoff chain (read in reverse order for current state):
-
-- `docs/HANDOFF_POST_PASS34_HIBERNATE_AND_AB_WINDOW_2026-04-22.md` — HIBERNATE fix (VR4131 UM §6.1.3), 0xAB000000 companion-window stub (`hardware.txt:204`), cardex_diag repro recipe, current-blocker definition, ranked next-probe list.
-- `docs/HANDOFF_POST_PASS33_AIU_HYPOTHESIS_REFUTED_2026-04-22.md` — AIU audio hypothesis refuted by first-hit probe; §5 superseded by Pass 34 §6.
-- `docs/HANDOFF_POST_PASS32_LAUNCHER_BLOCKS_ON_BOOTEXE_READY_2026-04-22.md` — launcher-table decode (5 entries × 0x250 stride at user VA `0x0203b4d0`), Boot.exe ready-signal evidence, Boot.exe's reboot-vs-early-exit decision, BE300_LIFECYCLE_PROBE usage.
-- `docs/HANDOFF_POST_PASS30_BOOT_EXE_TRIGGERS_UNEMULATED_VRC4173_RESET_2026-04-20.md` — how we narrowed to the Pass 31 KjCMU warm-reset requirement (historical).
-- `docs/HANDOFF_POST_PASS25_PIU_BIT0_AUTOCLEAR_2026-04-19.md` — reference methodology (scan → pin → cross-reference), still sound.
-- `docs/HANDOFF_POST_PASS23_CS_OWNER_RESOLVED_2026-04-19.md` §9 appendix — NK internals reference (waiter/event struct offsets, ruled-out hypotheses).
-- `docs/HANDOFF_POST_PASS22_SIU_WIRING_2026-04-19.md` — SIU wiring reference.
 
 ## Key Files For Current WinCE Work
 
@@ -380,10 +360,10 @@ When you need temporary diagnostics:
 
 ## GXemul Submodule Hygiene
 
-The `gxemul/` submodule points at the `be300-minimal` branch of `jroark/GXemul`. Keep it thin.
+The `gxemul/` submodule points at the `be300` branch of `jroark/GXemul`. Keep it thin.
 
-- Current layout: pristine GXemul 0.7.0 (`c35c056`) + a squash adding MIPS16 interpreter and BE-300 platform glue (`3c3d5cb`) + a full VR4131 RTC/ETIMER/ECMP implementation (`53c5910`) + MIPS AdEL on misaligned jr/jalr (`8b8449d`) + VR41xx COP0 SUSPEND → wait-for-interrupt (`3250bb8`, VR4131 UM §4.3.3) + VR41xx RTCL1 timer SYSINT1-ack + edge-pulse IRQ (`8775b00`, VR4131 UM §11.2.1 / §13.2.3) + debug()/fatal()/debugmsg() routed to stderr instead of stdout so guest serial and emulator diagnostics don't interleave (`100bd72`, convention-alignment, not a hardware-accuracy fix) + CP0 Compare timer hz/2 + pending cap (`2fa3853`, NEC datasheet Count-at-CPU/2 + R4000 §7.1) + RTCL1 as edge-triggered IP2 via new `ip_edge_triggered_mask` (`201edb0`, VR4131 UM §11.2.1 / §13.2.9, replaces the older deassert-on-next-tick pulse hack) + DEVICE_TICK uses CP0 Count delta as `tick_cycles` (`153d2db`, dyntrans batches terminate early so the nominal `1<<TICKSHIFT` interval is wrong by 8-100×; brings RTCL1 cadence to spec ~991 Hz). Nine delta commits on top of upstream.
-- **Pass 34 pending 10th delta (uncommitted)**: VR41xx COP0 HIBERNATE → `mips_cpu_cold_reset` (VR4131 UM §6.1.3 software shutdown; empirically validated via `build-host/cardex_diag_nand2_fixed_stderr.log`). See `docs/HANDOFF_POST_PASS34_HIBERNATE_AND_AB_WINDOW_2026-04-22.md` §3.1 + §8. If committed, update this ledger line.
+- Current layout: pristine GXemul 0.7.0 (`c35c056`) plus the BE-300 delta history on `be300`. As of this cleanup, `git -C gxemul log --oneline --reverse c35c056..HEAD` reports 17 commits ending at `93ee4a9` (`vr41xx: preserve shared IP2 level interrupts`).
+- The submodule history includes committed fixes for MIPS16/BE-300 platform glue, VR4131 timers/interrupts, reset and hibernate handling, GIUINTSTAT write-one-clear behavior, and shared IP2 level preservation. Use the git log as the authoritative ledger instead of copying a stale pass list into this file.
 - Do not accumulate more without first documenting the justification.
 - Before adding a gxemul-side fix, **diff against 0.7.0**: `git -C gxemul show c35c056:<path>` versus the current file. Confirm the change actually improves on upstream behavior. Several historical "fixes" on the prior `be300` branch were identity transformations of existing 0.7.0 code.
 - Before adding a gxemul-side fix, **cite the VR4131 UM section or `docs/hardware/hw_dump_*.txt` line** that justifies it. If you can't, the fix might be a workaround for a different emulator bug — keep root-causing.

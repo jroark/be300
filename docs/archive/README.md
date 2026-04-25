@@ -3,6 +3,7 @@
 This directory holds session-scoped investigation notes from the WinCE cold-boot reverse-engineering work. They are preserved as a historical trail but are not current reference material — several reach conclusions that were later superseded (e.g., warm-boot `resume_ctx` seeding paths that the project explicitly forbids).
 
 For **current** reference see:
+- `../CURRENT_STATUS.md` — active boot target, current behavior, and the next investigation focus
 - `../LEGITIMATE_FIXES_NOT_APPLIED.md` — upstream GXemul 0.7.0 bugs left unpatched, with warning signs that would justify re-applying
 - `../HARDWARE_GROUND_TRUTH.md` — synthesized hardware-behavior notes
 - `../HARDWARE_SURVEY_SYNTHESIS.md` — register survey synthesis
@@ -14,6 +15,8 @@ For **current** reference see:
 - `WINCE_COLD_BOOT_SESSION_2026-04-08.md` … `SESSION_2026-04-14_PHASE_B[B-F].md` — per-session cold-boot investigation dumps from early April 2026
 - `WINCE_COLD_BOOT_RUN_2026-04-15.md` — single-run log
 - `NK_MM_PHASE_AD/AF/AH/AI/AJ/X.md`, `NK_MM_GROUND_TRUTH_2026-04-13.md`, `NK_MM_INVESTIGATION_CORRECTIONS.md` — WinCE NK memory-management investigation phases
+- `HANDOFF_POST_PASS32_*.md` … `HANDOFF_POST_PASS44_*.md` and `HANDOFF_POST_SESSION_*.md` — launcher, Welcome.exe, framebuffer, DDI, VirtualCopy, and related late-April 2026 pass handoffs. These are historical and many were superseded by later passes.
+- `DEVICE_COVERAGE_AUDIT_PASS35.md` — one-time MMIO coverage audit from the Pass 35 stall investigation. Keep it as historical reference; its "current stall" language is not current project status.
 - `STATUS_AND_NEXT_STEPS.md` — stale status pointer from before the 2026-04-17 minimization
 - `DEBUG_FLOW.md` — older debug-flow notes
 
