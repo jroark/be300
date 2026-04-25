@@ -1865,6 +1865,7 @@ struct be300_input_device {
 #define PIU_PENDING_PAGE0       0x08u
 #define PIU_PENDING_PAGE1       0x10u
 #define PIU_PENDING_TOUCH_DATA  (PIU_PENDING_PAGE0 | PIU_PENDING_PAGE1)
+#define PIU_PENDING_COORDINATE  (PIU_PENDING_TOUCH_DATA | PIU_PENDING_DATALOST)
 #define PIU_PENDING_TOUCH_GROUP 0x5Cu
 #define PIU_PENDING_ANY         (PIU_PENDING_PENCHG | PIU_PENDING_TOUCH_GROUP)
 #define TOUCH_PANEL_W           240u
@@ -1937,6 +1938,48 @@ static void piu_store_page_sample(struct be300_input_device *d, unsigned page)
 
     memcpy(d->piu_page_adc[page], d->piu_adc, sizeof(d->piu_adc));
     d->piu_page_valid[page] = true;
+}
+
+static bool piu_coordinate_page_available(const struct be300_input_device *d,
+    unsigned page)
+{
+    uint16_t page_bit;
+
+    if (!d || page >= 2)
+        return false;
+
+    page_bit = page ? PIU_PENDING_PAGE1 : PIU_PENDING_PAGE0;
+    return !(d->piu_regs[1] & page_bit) && !d->piu_page_valid[page];
+}
+
+static void piu_clear_coordinate_state(struct be300_input_device *d)
+{
+    if (!d)
+        return;
+
+    /*
+     * VRC4173 UM §9.2 models pen contact as a state-machine transition
+     * from WaitPenTouch into PenDataScan/IntervalNextScan and back again.
+     * Coordinate page buffers belong to that scan session; carrying old
+     * page-valid/data-lost state into the next pen session can suppress the
+     * next page or pen-change interrupt and was observed as missed taps.
+     */
+    d->piu_regs[1] &= (uint16_t)~PIU_PENDING_COORDINATE;
+    memset(d->piu_page_valid, 0, sizeof(d->piu_page_valid));
+    d->piu_data_armed = false;
+    d->piu_data_ready_count = 0;
+    d->piu_next_page = 0;
+}
+
+static bool piu_wait_pen_touch_enabled(const struct be300_input_device *d)
+{
+    uint16_t ctl;
+
+    if (!d)
+        return false;
+
+    ctl = d->piu_regs[0];
+    return (ctl & 0x0004) && (ctl & 0x0100) && ((ctl >> 3) & 3) == 0;
 }
 
 static uint64_t piu_emulated_hz(const struct be300_input_device *d)
@@ -2026,6 +2069,7 @@ static void piu_signal_pen_down(struct be300_input_device *d)
     if (!d)
         return;
 
+    piu_clear_coordinate_state(d);
     if (d->piu_padstate == 4 && (d->piu_regs[0] & 0x100)) {
         d->piu_padstate = 5;
         piu_arm_coordinate_sample(d, piu_conversion_delay_us(d));
@@ -2038,14 +2082,23 @@ static void piu_signal_pen_down(struct be300_input_device *d)
 
 static void piu_signal_pen_up(struct be300_input_device *d)
 {
+    bool wait_enabled;
+    bool should_signal;
+
     if (!d)
         return;
 
-    if (d->piu_padstate >= 4)
+    wait_enabled = piu_wait_pen_touch_enabled(d);
+    should_signal = wait_enabled || d->piu_padstate >= 4;
+    piu_clear_coordinate_state(d);
+    if (wait_enabled)
         d->piu_padstate = 4;
-
-    d->piu_data_armed = false;
-    d->piu_data_ready_count = 0;
+    else if (d->piu_padstate > 1)
+        d->piu_padstate = 1;
+    if (!should_signal) {
+        piu_refresh_irq(d);
+        return;
+    }
     d->piu_regs[1] |= PIU_PENDING_PENCHG;
     piu_refresh_irq(d);
 }
@@ -2054,12 +2107,10 @@ static int piu_select_coordinate_page(struct be300_input_device *d)
 {
     unsigned page = d->piu_next_page & 1u;
     unsigned other = page ^ 1u;
-    uint16_t page_bit = page ? PIU_PENDING_PAGE1 : PIU_PENDING_PAGE0;
-    uint16_t other_bit = other ? PIU_PENDING_PAGE1 : PIU_PENDING_PAGE0;
 
-    if (!(d->piu_regs[1] & page_bit))
+    if (piu_coordinate_page_available(d, page))
         return (int)page;
-    if (!(d->piu_regs[1] & other_bit))
+    if (piu_coordinate_page_available(d, other))
         return (int)other;
 
     return -1;
@@ -2165,7 +2216,7 @@ static void piu_update_state(struct be300_input_device *d)
     if (d->piu_padstate == 0 && ctl != 0)
         d->piu_padstate = 1;  /* Disable → Standby */
 
-    if ((ctl & 0x0004) && (ctl & 0x0100) && ((ctl >> 3) & 3) == 0) {
+    if (piu_wait_pen_touch_enabled(d)) {
         /* PIUSEQEN=1, PADATSTART=1, PIUMODE=00 → WaitPenTouch */
         if (d->piu_padstate < 4)
             d->piu_padstate = 4;  /* → WaitPenTouch */
@@ -2176,6 +2227,7 @@ static void piu_update_state(struct be300_input_device *d)
     } else if (!(ctl & 0x0004)) {
         /* PIUSEQEN=0 → back to Standby */
         if (d->piu_padstate > 1) {
+            piu_clear_coordinate_state(d);
             d->piu_padstate = 1;
             piu_irq_update(d, false);
         }
@@ -2330,7 +2382,7 @@ void be300_touch_tick(machine_t *m)
     if (d->piu_padstate == 4 && now && !prev) {
         /* WaitPenTouch + pen down → PenDataScan */
         piu_signal_pen_down(d);
-    } else if (d->piu_padstate >= 4 && !now && prev) {
+    } else if (!now && prev) {
         /* Pen release */
         piu_signal_pen_up(d);
     } else if (now) {
