@@ -1589,6 +1589,8 @@ struct be300_input_device {
     uint16_t   piu_padstate;       /* PADSTATE(2:0) scan sequencer state */
     bool       piu_prev_touch;     /* previous touch_down for edge detect */
     bool       piu_sample_valid;   /* latched ADC sample for pending touch */
+    bool       piu_data_armed;     /* PenDataScan has a coordinate sample due */
+    uint8_t    piu_next_page;      /* next coordinate page buffer interrupt */
     uint16_t   piu_adc[4];         /* y+, y-, x-, x+ */
     struct interrupt piu_irq;      /* BE-300 GIRQ0 cascaded interrupt */
     bool       piu_irq_connected;
@@ -1596,8 +1598,11 @@ struct be300_input_device {
 };
 
 #define PIU_PENDING_PENCHG      0x01u
-#define PIU_PENDING_TOUCH_DATA  0x5Cu
-#define PIU_PENDING_ANY         (PIU_PENDING_PENCHG | PIU_PENDING_TOUCH_DATA)
+#define PIU_PENDING_PAGE0       0x08u
+#define PIU_PENDING_PAGE1       0x10u
+#define PIU_PENDING_TOUCH_DATA  (PIU_PENDING_PAGE0 | PIU_PENDING_PAGE1)
+#define PIU_PENDING_TOUCH_GROUP 0x5Cu
+#define PIU_PENDING_ANY         (PIU_PENDING_PENCHG | PIU_PENDING_TOUCH_GROUP)
 #define TOUCH_PANEL_W           240u
 #define TOUCH_PANEL_H           (319u + 40u)
 
@@ -1664,11 +1669,13 @@ static void piu_signal_pen_down(struct be300_input_device *d)
     if (!d)
         return;
 
-    if (d->piu_padstate == 4 && (d->piu_regs[0] & 0x100))
+    if (d->piu_padstate == 4 && (d->piu_regs[0] & 0x100)) {
         d->piu_padstate = 5;
+        d->piu_data_armed = true;
+    }
 
     piu_latch_sample(d);
-    d->piu_regs[1] |= PIU_PENDING_PENCHG | PIU_PENDING_TOUCH_DATA;
+    d->piu_regs[1] |= PIU_PENDING_PENCHG;
     piu_refresh_irq(d);
 }
 
@@ -1680,7 +1687,34 @@ static void piu_signal_pen_up(struct be300_input_device *d)
     if (d->piu_padstate >= 4)
         d->piu_padstate = 4;
 
+    d->piu_data_armed = false;
     d->piu_regs[1] |= PIU_PENDING_PENCHG;
+    piu_refresh_irq(d);
+}
+
+static void piu_queue_coordinate_sample(struct be300_input_device *d)
+{
+    uint16_t page_bit;
+
+    /*
+     * VRC4173 UM section 9.2: with PADATSTART active, WaitPenTouch
+     * moves to PenDataScan on contact, samples four coordinate values,
+     * and then raises page-buffer interrupts. touch.dll consumes three
+     * repeated page samples before accepting a stable calibration
+     * coordinate.
+     */
+    if (!d || !d->m || !d->m->touch_down)
+        return;
+    if (d->piu_padstate < 5 || !d->piu_data_armed)
+        return;
+    if (d->piu_regs[1] & (PIU_PENDING_PENCHG | PIU_PENDING_TOUCH_GROUP))
+        return;
+
+    piu_latch_sample(d);
+    page_bit = d->piu_next_page ? PIU_PENDING_PAGE1 : PIU_PENDING_PAGE0;
+    d->piu_next_page ^= 1u;
+    d->piu_regs[1] |= page_bit;
+    d->piu_data_armed = false;
     piu_refresh_irq(d);
 }
 
@@ -1703,6 +1737,8 @@ static void piu_update_state(struct be300_input_device *d)
         d->piu_padstate = 0;  /* Disable */
         d->piu_prev_touch = false;
         d->piu_sample_valid = false;
+        d->piu_data_armed = false;
+        d->piu_next_page = 0;
         piu_irq_update(d, false);
         return;
     }
@@ -1738,11 +1774,12 @@ static void piu_update_state(struct be300_input_device *d)
  *  Register layout from docs/hardware/hardware.txt ISR analysis (GIRQ0-9):
  *
  *  +0x00 PIUCNTREG: bit 13 (0x2000) = pendown status
- *  +0x04 PIUINTREG: byte 0 (bits 7:0) = pending status (set by HW)
+ *  +0x04 PIUINTREG: byte 0 (bits 7:0) = pending status (set by HW, W1C)
  *                   byte 1 (bits 15:8) = interrupt mask (R/W by driver)
  *                   ISR does: intr = W[304]; intr &= (intr >> 8);
- *                   Active bits: 0x5C → SYSINTR_TOUCH, 0x01 → SYSINTR_TOUCH_CHANGED
- *                   ISR clears by zeroing mask bits (NOT write-1-to-clear)
+ *                   Active bits: 0x5C -> SYSINTR_TOUCH, 0x01 -> SYSINTR_TOUCH_CHANGED
+ *                   OAL masks delivered bits in the high byte; touch.dll
+ *                   clears the low-byte pending bits with W1C writes.
  *  +0x20-0x2C, +0x50-0x5C: ADC coordinate buffers (y+, y-, x-, x+)
  */
 DEVICE_ACCESS(be300_touch)
@@ -1780,23 +1817,27 @@ DEVICE_ACCESS(be300_touch)
                 d->piu_regs[0] = (uint16_t)(val & 0x03FE);
                 piu_update_state(d);
             } else if (off == 0x04) {
-                uint16_t old_mask = d->piu_regs[1] >> 8;
+                uint16_t old_pending = d->piu_regs[1] & 0xFFu;
                 uint16_t new_mask = (uint16_t)((val >> 8) & 0xFFu);
-                uint16_t acked = old_mask & (uint16_t)~new_mask;
+                uint16_t pending_ack = (uint16_t)(val & 0xFFu);
+                bool data_acked = (old_pending & pending_ack &
+                    PIU_PENDING_TOUCH_DATA) != 0;
 
                 /* PIUINTREG: mask/status byte pair.
-                 * Byte 0 (bits 7:0) = pending status (read-only, set by HW)
+                 * Byte 0 (bits 7:0) = pending status (set by HW, W1C)
                  * Byte 1 (bits 15:8) = interrupt mask (writable)
                  * docs/hardware/hardware.txt:132-145 shows the ISR
-                 * handles delivered GIRQ0-9 sources by clearing mask
-                 * bits (for example W[0x0A000304] &= 0xA300 for
-                 * 0x5C touch data). Treat a 1->0 mask transition as
-                 * the source ACK so stale data-ready bits do not fire
-                 * again when the driver re-enables the mask for the
-                 * next calibration tap. */
-                d->piu_regs[1] &= (uint16_t)~(acked & PIU_PENDING_ANY);
+                 * masks delivered GIRQ0-9 sources by clearing high-byte
+                 * bits before returning SYSINTR. touch.dll later ACKs
+                 * pending status with read/OR/write W1C stores: bit 0 at
+                 * 0x01A41C6C..0x01A41C78 and page bits 3/4 at
+                 * 0x01A42000..0x01A42008. */
+                d->piu_regs[1] &= (uint16_t)~
+                    (pending_ack & PIU_PENDING_ANY);
                 d->piu_regs[1] = (d->piu_regs[1] & 0x00FF)
                     | (uint16_t)(new_mask << 8);
+                if (data_acked && m->touch_down && d->piu_padstate >= 5)
+                    d->piu_data_armed = true;
                 piu_refresh_irq(d);
             } else {
                 d->piu_regs[idx] = (uint16_t)val;
@@ -1867,6 +1908,8 @@ void be300_touch_tick(machine_t *m)
     } else if (d->piu_padstate >= 4 && !now && prev) {
         /* Pen release */
         piu_signal_pen_up(d);
+    } else if (now) {
+        piu_queue_coordinate_sample(d);
     }
 }
 
