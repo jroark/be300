@@ -875,6 +875,7 @@ void be300_set_touch(machine_t *m, bool down, uint16_t x, uint16_t y)
     m->touch_x = x;
     m->touch_y = y;
     __sync_synchronize();
+    be300_touch_tick(m);
 }
 
 void be300_set_buttons(machine_t *m, uint8_t btn_set1, uint8_t btn_set2)
