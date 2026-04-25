@@ -13,9 +13,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 
 #include "cpu.h"
+#include "cop0.h"
 #include "cpu_mips.h"   /* mips_cpu_cold_reset() for KjCMU warm-reset trigger */
 #include "machine.h"
 #include "memory.h"
@@ -1591,7 +1591,7 @@ struct be300_input_device {
     uint16_t   piu_padstate;       /* PADSTATE(2:0) scan sequencer state */
     bool       piu_prev_touch;     /* previous touch_down for edge detect */
     bool       piu_data_armed;     /* PenDataScan has a coordinate sample due */
-    uint64_t   piu_data_ready_us;
+    uint32_t   piu_data_ready_count;
     uint8_t    piu_next_page;      /* next coordinate page buffer interrupt */
     uint16_t   piu_adc[4];         /* y+, y-, x-, x+ */
     uint16_t   piu_page_adc[2][4]; /* page 0/page 1 coordinate buffers */
@@ -1602,6 +1602,8 @@ struct be300_input_device {
 };
 
 #define PIU_PENDING_PENCHG      0x01u
+/* VRC4173 UM §9.7: PADDLOSTINTR is bit 2 in PIUINTREG. */
+#define PIU_PENDING_DATALOST    0x04u
 #define PIU_PENDING_PAGE0       0x08u
 #define PIU_PENDING_PAGE1       0x10u
 #define PIU_PENDING_TOUCH_DATA  (PIU_PENDING_PAGE0 | PIU_PENDING_PAGE1)
@@ -1679,14 +1681,43 @@ static void piu_store_page_sample(struct be300_input_device *d, unsigned page)
     d->piu_page_valid[page] = true;
 }
 
-static uint64_t piu_now_us(void)
+static uint64_t piu_emulated_hz(const struct be300_input_device *d)
 {
-    struct timeval tv;
+    uint64_t hz = 0;
 
-    if (gettimeofday(&tv, NULL) != 0)
+    if (d && d->m && d->m->gxe_machine)
+        hz = (uint64_t)d->m->gxe_machine->emulated_hz;
+    if (hz == 0)
+        hz = 131072000ULL;
+
+    return hz;
+}
+
+static uint32_t piu_now_count(const struct be300_input_device *d)
+{
+    if (!d || !d->m || !d->m->cpu || !d->m->cpu->cd.mips.coproc[0])
         return 0;
 
-    return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+    return (uint32_t)d->m->cpu->cd.mips.coproc[0]->reg[COP0_COUNT];
+}
+
+static uint32_t piu_delay_cycles(const struct be300_input_device *d,
+    uint64_t delay_us)
+{
+    uint64_t cycles = (delay_us * piu_emulated_hz(d) + 999999ULL) /
+        1000000ULL;
+
+    if (cycles == 0)
+        cycles = 1;
+    if (cycles > 0x7FFFFFFFULL)
+        cycles = 0x7FFFFFFFULL;
+
+    return (uint32_t)cycles;
+}
+
+static bool piu_count_reached(uint32_t now, uint32_t due)
+{
+    return (int32_t)(now - due) >= 0;
 }
 
 static uint64_t piu_conversion_delay_us(const struct be300_input_device *d)
@@ -1721,7 +1752,15 @@ static void piu_arm_coordinate_sample(struct be300_input_device *d,
     uint64_t delay_us)
 {
     d->piu_data_armed = true;
-    d->piu_data_ready_us = piu_now_us() + delay_us;
+    d->piu_data_ready_count = piu_now_count(d) +
+        piu_delay_cycles(d, delay_us);
+}
+
+static void piu_arm_coordinate_sample_from(struct be300_input_device *d,
+    uint32_t now_count, uint64_t delay_us)
+{
+    d->piu_data_armed = true;
+    d->piu_data_ready_count = now_count + piu_delay_cycles(d, delay_us);
 }
 
 static void piu_signal_pen_down(struct be300_input_device *d)
@@ -1748,15 +1787,31 @@ static void piu_signal_pen_up(struct be300_input_device *d)
         d->piu_padstate = 4;
 
     d->piu_data_armed = false;
-    d->piu_data_ready_us = 0;
+    d->piu_data_ready_count = 0;
     d->piu_regs[1] |= PIU_PENDING_PENCHG;
     piu_refresh_irq(d);
+}
+
+static int piu_select_coordinate_page(struct be300_input_device *d)
+{
+    unsigned page = d->piu_next_page & 1u;
+    unsigned other = page ^ 1u;
+    uint16_t page_bit = page ? PIU_PENDING_PAGE1 : PIU_PENDING_PAGE0;
+    uint16_t other_bit = other ? PIU_PENDING_PAGE1 : PIU_PENDING_PAGE0;
+
+    if (!(d->piu_regs[1] & page_bit))
+        return (int)page;
+    if (!(d->piu_regs[1] & other_bit))
+        return (int)other;
+
+    return -1;
 }
 
 static void piu_queue_coordinate_sample(struct be300_input_device *d)
 {
     uint16_t page_bit;
-    unsigned page;
+    uint32_t now_count;
+    int page;
 
     /*
      * VRC4173 UM section 9.2: with PADATSTART active, WaitPenTouch
@@ -1769,35 +1824,37 @@ static void piu_queue_coordinate_sample(struct be300_input_device *d)
         return;
     if (d->piu_padstate < 5 || !d->piu_data_armed)
         return;
-    if (piu_now_us() < d->piu_data_ready_us)
+    now_count = piu_now_count(d);
+    if (!piu_count_reached(now_count, d->piu_data_ready_count))
         return;
-    if ((d->piu_regs[1] & PIU_PENDING_PENCHG) &&
-        ((d->piu_regs[1] >> 8) & PIU_PENDING_PENCHG))
-        return;
-
     /*
      * VRC4173 UM sections 9.1 and 9.3.2: coordinate data is stored in two
      * page buffers, with independent page 0/page 1 valid interrupts. Do not
      * block a fresh conversion merely because the other page is still pending.
      */
-    page = d->piu_next_page & 1u;
-    page_bit = page ? PIU_PENDING_PAGE1 : PIU_PENDING_PAGE0;
-    if (d->piu_regs[1] & page_bit) {
-        piu_arm_coordinate_sample(d, piu_interval_delay_us(d));
+    page = piu_select_coordinate_page(d);
+    if (page < 0) {
+        d->piu_regs[1] |= PIU_PENDING_DATALOST;
+        d->piu_padstate = 1;
+        d->piu_data_armed = false;
+        d->piu_data_ready_count = 0;
+        piu_refresh_irq(d);
         return;
     }
 
     piu_latch_sample(d);
-    piu_store_page_sample(d, page);
+    piu_store_page_sample(d, (unsigned)page);
     d->piu_padstate = 5;
-    d->piu_next_page ^= 1u;
+    d->piu_next_page = (uint8_t)(((unsigned)page ^ 1u) & 1u);
+    page_bit = page ? PIU_PENDING_PAGE1 : PIU_PENDING_PAGE0;
     d->piu_regs[1] |= page_bit;
     if (d->m->touch_down) {
         d->piu_padstate = 6;  /* IntervalNextScan after one coordinate pair. */
-        piu_arm_coordinate_sample(d, piu_interval_delay_us(d));
+        piu_arm_coordinate_sample_from(d, now_count,
+            piu_interval_delay_us(d));
     } else {
         d->piu_data_armed = false;
-        d->piu_data_ready_us = 0;
+        d->piu_data_ready_count = 0;
     }
     piu_refresh_irq(d);
 }
@@ -1836,7 +1893,7 @@ static void piu_update_state(struct be300_input_device *d)
         d->piu_padstate = 0;  /* Disable */
         d->piu_prev_touch = false;
         d->piu_data_armed = false;
-        d->piu_data_ready_us = 0;
+        d->piu_data_ready_count = 0;
         d->piu_next_page = 0;
         piu_irq_update(d, false);
         return;
@@ -1920,7 +1977,7 @@ DEVICE_ACCESS(be300_touch)
                 uint16_t new_mask = (uint16_t)((val >> 8) & 0xFFu);
                 uint16_t pending_ack = (uint16_t)(val & 0xFFu);
                 bool data_acked = (old_pending & pending_ack &
-                    PIU_PENDING_TOUCH_DATA) != 0;
+                    (PIU_PENDING_TOUCH_DATA | PIU_PENDING_DATALOST)) != 0;
 
                 /* PIUINTREG: mask/status byte pair.
                  * Byte 0 (bits 7:0) = pending status (set by HW, W1C)

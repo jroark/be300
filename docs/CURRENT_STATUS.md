@@ -23,10 +23,14 @@ Secondary implemented paths, used for targeted investigation only:
 
 - Cold boot reaches the WinCE shell / first-boot UI path.
 - User-mode display rendering is known to reach the VRC4173 framebuffer mapping.
-- Touch calibration is the active validation area. The PIU model now follows
-  the VRC4173 two-page coordinate buffer model, uses hardware-captured timing
-  defaults from `docs/hardware/hw_dump_vrc4173.txt`, and scans continuously
-  during a held touch.
+- Touch calibration is being validated against the WinCE touch.dll interrupt
+  path. The PIU model follows the VRC4173 two-page coordinate buffer model,
+  uses hardware-captured timing defaults from
+  `docs/hardware/hw_dump_vrc4173.txt`, and schedules conversion completion
+  against emulated CP0 Count cycles instead of host wall-clock time.
+- GXemul CP0 Compare delivery is now driven by emulated instruction progress,
+  not host SIGALRM cadence. This removes the trace/logging dependency where
+  WinCE scheduler ticks arrived only when diagnostics slowed the emulator.
 
 ## Current Investigation Focus
 
@@ -34,9 +38,11 @@ If touch calibration still needs multiple clicks or long presses per target,
 focus on PIU hardware behavior and the WinCE touch driver handshake:
 
 - PIUINTREG pending/mask/W1C semantics
-- page 0/page 1 buffer validity and ordering
+- page 0/page 1 buffer validity, ordering, and data-lost behavior when both
+  page buffers remain valid
 - PADSTATE transitions in WaitPenTouch, PenDataScan, and IntervalNextScan
-- data-lost behavior only when both page buffers remain valid
+- whether touch.dll consumes at least three stable coordinate pages per held
+  calibration press
 
 Do not revisit older Welcome.exe, launcher dependency, VirtualCopy, or
 framebuffer-alias hypotheses unless a new trace contradicts the current PIU
