@@ -578,12 +578,13 @@ machine_t *be300_create(const machine_config_t *cfg)
          * 0x208, 0x520, 0x524 in this window. Without a backing device
          * the emulator logs "non-existant paddr" and drops the writes,
          * so any readback (e.g., a card-presence status poll) fails and
-         * the driver stalls. A RAM-backed stub remembers writes so at
-         * least readback of just-written values behaves sensibly; exact
-         * semantics per offset are TBD from card_ex.dll reverse-eng.
+         * the driver stalls. The device preserves guest-written latches
+         * and overlays the known PCMCIA no-media status bytes when no CF
+         * image is attached.
          */
-        dev_ram_init(gxm, 0x0B000000ULL, 0x10000ULL,
-            DEV_RAM_RAM, 0, "be300_companion_ab_window");
+        extern void be300_register_companion_ab_window(struct machine *,
+            machine_t *, bool);
+        be300_register_companion_ab_window(gxm, m, cfg->log_mmio);
 
         /*
          * PCMCIA "no card" stub at PA 0x0B400000-0x0B700000.

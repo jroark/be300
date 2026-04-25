@@ -68,6 +68,12 @@ struct be300_cf_window_device {
     bool        log_mmio;
 };
 
+struct be300_companion_ab_device {
+    cf_state_t *cf;
+    bool        log_mmio;
+    uint8_t     bytes[0x10000];
+};
+
 DEVICE_ACCESS(be300_nand)
 {
     struct be300_nand_device *d = (struct be300_nand_device *)extra;
@@ -187,6 +193,75 @@ DEVICE_ACCESS(be300_cf_window)
     } else {
         uint64_t val = cf_window_read(d->cf, offset, (unsigned)len);
         memory_writemax64(cpu, data, len, val);
+    }
+
+    return 1;
+}
+
+static bool companion_ab_no_card_status_byte(uint32_t off)
+{
+    switch (off) {
+    case 0x0108u:
+    case 0x010Cu:
+    case 0x0110u:
+    case 0x0114u:
+    case 0x0118u:
+    case 0x0150u:
+        return true;
+    default:
+        return false;
+    }
+}
+
+DEVICE_ACCESS(be300_companion_ab)
+{
+    struct be300_companion_ab_device *d =
+        (struct be300_companion_ab_device *)extra;
+    uint32_t off = (uint32_t)relative_addr;
+
+    if (!d || off + len > sizeof(d->bytes))
+        return 0;
+
+    if (d->log_mmio)
+        be300_log_mmio("be300_companion_ab", writeflag, off,
+            (unsigned)len, data, (uint32_t)cpu->pc);
+
+    if (writeflag == MEM_WRITE) {
+        be300_probe_note_mmio("vrc4173-companion-ab", off, 'W',
+            (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+            BE300_MMIO_CLASS_LATCHED);
+        memcpy(&d->bytes[off], data, len);
+    } else {
+        uint8_t buf[8];
+
+        if (len > sizeof(buf))
+            return 0;
+
+        memcpy(buf, &d->bytes[off], len);
+
+        /*
+         * pcmcia.dll maps PA 0x0B000100 as its socket status block.  The
+         * card-type path treats bit 6 clear in these status bytes as card
+         * media present.  The former RAM stub returned zero after reset, so
+         * COShell saw a synthetic "Other" card even without --cf.  No-card
+         * reads expose bit 6 set here while 0xaa001044 preserves the
+         * adapter/unit-present state observed on real hardware.
+         *
+         * TODO(2026-04-25): replace the status overlay with named
+         * VRC4173/BE-300 PCMCIA bridge semantics once the secondary
+         * companion register map is identified.
+         */
+        if (!cf_present(d->cf)) {
+            for (size_t i = 0; i < len; i++) {
+                if (companion_ab_no_card_status_byte(off + (uint32_t)i))
+                    buf[i] |= 0x40u;
+            }
+        }
+
+        be300_probe_note_mmio("vrc4173-companion-ab", off, 'R',
+            (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+            BE300_MMIO_CLASS_STUBBED);
+        memcpy(data, buf, len);
     }
 
     return 1;
@@ -910,8 +985,16 @@ DEVICE_ACCESS(be300_vrc4173)
             be300_probe_note_mmio("vrc4173-giu-src", off, 'R',
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
                 BE300_MMIO_CLASS_KNOWN);
-            uint64_t val = be300_latch_peek_u32(d, off)
-                | cf_giu_source_bits(&g_be300_machine->cf)
+            uint64_t val = be300_latch_peek_u32(d, off);
+
+            /*
+             * hardware.txt:32 identifies bit 0 here as the cascaded PCMCIA
+             * source.  If no CF image is attached, there is no card-backed
+             * source to report even if a guest write left bit 0 latched.
+             */
+            if (!cf_present(&g_be300_machine->cf))
+                val &= ~(uint64_t)1u;
+            val |= cf_giu_source_bits(&g_be300_machine->cf)
                 | piu_girq0_source_bits(
                     (const struct be300_input_device *)
                     g_be300_machine->touch_device);
@@ -1672,6 +1755,21 @@ void be300_register_cf_window(struct machine *gxm, machine_t *m, bool log_mmio)
     memory_device_register(gxm->memory, "be300_cf_window",
         PA_ROM_BASE, CF_WINDOW_SIZE,
         dev_be300_cf_window_access, (void *)d, DM_DEFAULT, NULL);
+}
+
+void be300_register_companion_ab_window(struct machine *gxm, machine_t *m,
+    bool log_mmio)
+{
+    struct be300_companion_ab_device *d;
+
+    CHECK_ALLOCATION(d = calloc(1, sizeof(*d)));
+    d->cf = &m->cf;
+    d->log_mmio = log_mmio;
+
+    memory_device_register(gxm->memory, "be300_companion_ab_window",
+        0x0B000000ULL, sizeof(d->bytes),
+        dev_be300_companion_ab_access, (void *)d,
+        DM_DEFAULT, NULL);
 }
 
 /*

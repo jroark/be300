@@ -1,6 +1,9 @@
 ##############################################################################
 # VRC4173 Companion Chip Register Dumps
 # Source: BEDiag dumps from real Casio BE-300 hardware
+# Capture condition: a CF memory card was inserted.  Values in the
+# 0x0A001000 CF/PCMCIA companion page are inserted-card state and should
+# not be used as no-card defaults without a separate no-card capture.
 ##############################################################################
 
 --- Broad Scan of 0x0A00xxxx ---
@@ -1185,4 +1188,3 @@
 0x0A000EB0: 00000E0C 00001110 00001413 00001615
 0x0A000EC0: 00001817 00001B1A 00001F1D 00002120
 0x0A000ED0: 00002423 00002726 00002A29 00000000
-

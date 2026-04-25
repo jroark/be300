@@ -23,6 +23,12 @@ Secondary implemented paths, used for targeted investigation only:
 
 - Cold boot reaches the WinCE shell / first-boot UI path.
 - User-mode display rendering is known to reach the VRC4173 framebuffer mapping.
+- Without `--cf`, the PCMCIA/CF socket model matches real hardware with the
+  adapter/socket present but no media inserted: the CF icon can be present, CF
+  Slot Information reports `Card type: None` / `Card unit: Set`, and the
+  pulled-up card-memory window is not detected as an unknown PCCard. The
+  VRC4173 hardware dump was captured with a CF memory card inserted, so
+  inserted-card CF companion values are not no-card defaults.
 - Touch calibration is being validated against the WinCE touch.dll interrupt
   path. The PIU model follows the VRC4173 two-page coordinate buffer model,
   uses hardware-captured timing defaults from
