@@ -31,6 +31,11 @@ static bool sdl_video_initialized = false;
 static bool sdl_audio_initialized = false;
 static SDL_AudioDeviceID audio_device = 0;
 
+/* Frame rate limiting */
+#define FRAME_INTERVAL_MS 33  /* ~30 fps */
+#define TOUCH_MIN_DWELL_DEFAULT_MS 120
+#define TOUCH_MIN_DWELL_MAX_MS 5000
+
 /* Mouse button held state for touch drag tracking */
 static bool mouse_button_held = false;
 static bool touch_active = false;
@@ -39,20 +44,19 @@ static uint16_t touch_release_x = 0;
 static uint16_t touch_release_y = 0;
 static uint32_t touch_down_tick = 0;
 static uint32_t touch_release_due_tick = 0;
+static uint32_t touch_min_dwell_ms = TOUCH_MIN_DWELL_DEFAULT_MS;
 
-/* Frame rate limiting */
 static uint32_t last_frame_tick = 0;
-#define FRAME_INTERVAL_MS 33  /* ~30 fps */
-/* touch.dll's calibration filter needs multiple PIU data pages per tap. */
-#define TOUCH_MIN_DWELL_MS 500
 
 /* Staging buffer for visible rectangle extraction */
 static uint16_t *staging_buf = NULL;
 
 #define BUZZER_SAMPLE_RATE      44100
 #define BUZZER_MAX_QUEUE_MS       250
+#define BUZZER_RETRIGGER_GAP_MS   120
 #define BUZZER_DEFAULT_HZ        1200
 #define BUZZER_DEFAULT_MS          60
+static uint32_t last_buzzer_tick = 0;
 
 static bool ui_audio_env_enabled(void)
 {
@@ -137,6 +141,23 @@ static void ui_video_destroy(machine_t *m)
     }
 }
 
+static uint32_t ui_ms_from_env(const char *name, uint32_t default_ms,
+    uint32_t max_ms)
+{
+    const char *v = getenv(name);
+    char *end = NULL;
+    unsigned long ms;
+
+    if (!v || !*v)
+        return default_ms;
+
+    ms = strtoul(v, &end, 10);
+    if (end == v || (end && *end != '\0') || ms > max_ms)
+        return default_ms;
+
+    return (uint32_t)ms;
+}
+
 static void ui_window_to_touch(machine_t *m, int win_x, int win_y,
     uint16_t *x_out, uint16_t *y_out)
 {
@@ -164,13 +185,48 @@ static void ui_window_to_touch(machine_t *m, int win_x, int win_y,
     *y_out = (uint16_t)ty;
 }
 
-static void ui_set_touch_from_window(machine_t *m, bool down, int win_x,
-    int win_y)
+static bool ui_tick_reached(uint32_t now, uint32_t due)
+{
+    return (int32_t)(now - due) >= 0;
+}
+
+static uint32_t ui_later_tick(uint32_t a, uint32_t b)
+{
+    return ui_tick_reached(a, b) ? a : b;
+}
+
+static void ui_latch_touch_position(machine_t *m, uint16_t tx, uint16_t ty)
+{
+    touch_release_x = tx;
+    touch_release_y = ty;
+
+    if (touch_active && m->touch_down) {
+        m->touch_x = tx;
+        m->touch_y = ty;
+        __sync_synchronize();
+    }
+}
+
+static void ui_coalesce_touch_position(machine_t *m, int win_x, int win_y)
 {
     uint16_t tx, ty;
 
     ui_window_to_touch(m, win_x, win_y, &tx, &ty);
-    be300_set_touch(m, down, tx, ty);
+    ui_latch_touch_position(m, tx, ty);
+}
+
+static void ui_begin_touch(machine_t *m, int win_x, int win_y,
+    uint32_t now)
+{
+    uint16_t tx, ty;
+
+    ui_window_to_touch(m, win_x, win_y, &tx, &ty);
+    touch_active = true;
+    touch_release_pending = false;
+    touch_down_tick = now;
+    touch_release_x = tx;
+    touch_release_y = ty;
+    be300_set_touch(m, true, tx, ty);
 }
 
 static void ui_release_touch(machine_t *m)
@@ -180,16 +236,13 @@ static void ui_release_touch(machine_t *m)
     touch_active = false;
 }
 
-static bool ui_tick_reached(uint32_t now, uint32_t due)
-{
-    return (int32_t)(now - due) >= 0;
-}
-
 static void ui_schedule_touch_release(machine_t *m, int win_x, int win_y,
     uint32_t now)
 {
-    ui_window_to_touch(m, win_x, win_y, &touch_release_x, &touch_release_y);
-    touch_release_due_tick = touch_down_tick + TOUCH_MIN_DWELL_MS;
+    uint32_t dwell_due = touch_down_tick + touch_min_dwell_ms;
+
+    ui_coalesce_touch_position(m, win_x, win_y);
+    touch_release_due_tick = ui_later_tick(dwell_due, now);
 
     if (!touch_active || ui_tick_reached(now, touch_release_due_tick)) {
         ui_release_touch(m);
@@ -209,7 +262,11 @@ int ui_init(machine_t *m)
     touch_active = false;
     touch_release_pending = false;
     touch_down_tick = 0;
+    touch_release_due_tick = 0;
+    touch_min_dwell_ms = ui_ms_from_env("BE300_TOUCH_MIN_DWELL_MS",
+        TOUCH_MIN_DWELL_DEFAULT_MS, TOUCH_MIN_DWELL_MAX_MS);
     last_frame_tick = 0;
+    last_buzzer_tick = 0;
 
     ui_audio_init();
 
@@ -355,26 +412,39 @@ void ui_update(machine_t *m)
 
         case SDL_MOUSEBUTTONDOWN:
             if (ev.button.button == SDL_BUTTON_LEFT) {
+                uint32_t ev_tick = ev.button.timestamp ?
+                    ev.button.timestamp : now;
+
                 mouse_button_held = true;
-                touch_active = true;
-                touch_down_tick = now;
-                touch_release_pending = false;
-                ui_set_touch_from_window(m, true, ev.button.x, ev.button.y);
+                if (touch_active) {
+                    ui_coalesce_touch_position(m, ev.button.x, ev.button.y);
+                    touch_release_pending = false;
+                } else {
+                    ui_begin_touch(m, ev.button.x, ev.button.y, ev_tick);
+                }
                 SDL_CaptureMouse(SDL_TRUE);
             }
             break;
 
         case SDL_MOUSEBUTTONUP:
             if (ev.button.button == SDL_BUTTON_LEFT) {
+                uint32_t ev_tick = ev.button.timestamp ?
+                    ev.button.timestamp : now;
+
                 mouse_button_held = false;
-                ui_schedule_touch_release(m, ev.button.x, ev.button.y, now);
+                if (touch_active) {
+                    ui_schedule_touch_release(m, ev.button.x, ev.button.y,
+                        ev_tick);
+                }
                 SDL_CaptureMouse(SDL_FALSE);
             }
             break;
 
         case SDL_MOUSEMOTION:
             if (mouse_button_held) {
-                ui_set_touch_from_window(m, true, ev.motion.x, ev.motion.y);
+                if (touch_active) {
+                    ui_coalesce_touch_position(m, ev.motion.x, ev.motion.y);
+                }
             }
             break;
 
@@ -470,12 +540,20 @@ void ui_destroy(machine_t *m)
 void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
 {
     uint32_t queued_max;
+    uint32_t now;
     uint32_t period;
     uint32_t samples;
     int16_t *pcm;
 
     if (!audio_device)
         return;
+
+    now = SDL_GetTicks();
+    if (SDL_GetQueuedAudioSize(audio_device) > 0 ||
+        (last_buzzer_tick != 0 &&
+         !ui_tick_reached(now, last_buzzer_tick + BUZZER_RETRIGGER_GAP_MS)))
+        return;
+    last_buzzer_tick = now;
 
     if (frequency_hz == 0)
         frequency_hz = BUZZER_DEFAULT_HZ;
