@@ -28,6 +28,67 @@
 #define CF_BOOT_TF_END  0xC178u
 #define CF_BOOT_ALT_REG 0xC376u
 
+static const uint16_t cf_no_card_owned_offsets[] = {
+    0x0000, 0x0008, 0x0044, 0x004C,
+};
+
+static bool cf_is_no_card_owned_offset(uint32_t offset)
+{
+    for (size_t i = 0;
+         i < sizeof(cf_no_card_owned_offsets) / sizeof(cf_no_card_owned_offsets[0]);
+         i++) {
+        if (offset == cf_no_card_owned_offsets[i])
+            return true;
+    }
+    return false;
+}
+
+static void cf_put_companion_u32(cf_state_t *s, uint16_t off, uint32_t val)
+{
+    memcpy(&s->companion_page[off], &val, sizeof(val));
+}
+
+static void cf_refresh_socket_status(cf_state_t *s)
+{
+    uint32_t val;
+
+    if (!s)
+        return;
+
+    /*
+     * docs/hardware/hardware.txt identifies 0xaa001000 as CF status:
+     * 0x04 = card inserted, 0x0c = card removed.  The hardware dumps were
+     * captured with a CF memory card inserted, so do not mirror the broad
+     * inserted-card table for no-card boots.
+     */
+    val = s->attached ? CF_COMPANION_PRESENT : CF_COMPANION_REMOVED;
+    cf_put_companion_u32(s, 0x0000, val);
+    cf_put_companion_u32(s, 0x0008, val);
+
+    /* Card-state summary used by pcmcia/card_ex probing. */
+    cf_put_companion_u32(s, 0x0040, s->attached ? 0x00000001u : 0x00000000u);
+    if (!s->attached) {
+        /*
+         * pcmcia.dll uses 0xaa001044 both as a socket/media probe and as
+         * part of CardGetStatus.  Real hardware with the PCMCIA adapter
+         * present and no card inserted reports "Card type: None" and
+         * "Card unit: Set"; bit 6 clear here preserves the unit-present
+         * result while the 0x0B000100 status block reports no media.
+         *
+         * The socket-refresh path at 0x0198b46c also tests bit 6 in the
+         * OR of 0xaa001044/0xaa00104c/0xaa001b10 before it scans CIS
+         * attribute memory.  Keep the companion bit at 0xaa00104c set so
+         * no-card boots do not discover unknown cards in the pulled-up
+         * window.
+         *
+         * TODO(2026-04-25): replace this with named VRC4173/BE-300 PCMCIA
+         * bridge semantics once the companion PCMCIA register map is known.
+         */
+        cf_put_companion_u32(s, 0x0044, 0x00000000u);
+        cf_put_companion_u32(s, 0x004C, 0x00000040u);
+    }
+}
+
 static void cf_seed_cis(cf_state_t *s)
 {
     static const uint8_t cis[] = {
@@ -52,60 +113,27 @@ static void cf_seed_cis(cf_state_t *s)
 
 static void cf_seed_companion_page(cf_state_t *s)
 {
-    static const struct {
-        uint16_t off;
-        uint32_t val;
-    } regs[] = {
-        { 0x0000, 0x00000004u },
+    struct seed_entry { uint16_t off; uint32_t val; };
+    static const struct seed_entry regs[] = {
         { 0x0004, 0x00000000u },
-        { 0x0008, 0x00000004u },
         { 0x000C, 0x00000000u },
         { 0x0010, 0x0000000Du },
-        { 0x0014, 0x00000004u },
-        { 0x0018, 0x00000004u },
-        { 0x001C, 0x00000004u },
-        { 0x0020, 0x00000004u },
-        { 0x0024, 0x00000004u },
-        { 0x0028, 0x00000004u },
-        { 0x002C, 0x00000004u },
-        { 0x0030, 0x00000004u },
-        { 0x0034, 0x00000004u },
-        { 0x0038, 0x00000004u },
-        { 0x003C, 0x00000004u },
         { 0x0050, 0x00000000u },
         { 0x0054, 0x00000043u },
         { 0x0058, 0x00000000u },
         { 0x005C, 0x00000040u },
         { 0x0060, 0x00000040u },
-        { 0x0064, 0x00000004u },
-        { 0x0068, 0x00000004u },
-        { 0x006C, 0x00000004u },
-        { 0x0070, 0x00000004u },
-        { 0x0074, 0x00000004u },
-        { 0x0078, 0x00000004u },
-        { 0x007C, 0x00000004u },
         { 0x00A0, 0x00000000u },
         { 0x00A4, 0x00000000u },
-        { 0x00A8, 0x00000004u },
-        { 0x00AC, 0x00000004u },
-        { 0x00B0, 0x00000004u },
-        { 0x00B4, 0x00000004u },
-        { 0x00B8, 0x00000004u },
-        { 0x00BC, 0x00000004u },
         { 0x00E0, 0x00000000u },
         { 0x00E4, 0x00000000u },
-        { 0x00E8, 0x00000004u },
-        { 0x00EC, 0x00000004u },
-        { 0x00F0, 0x00000004u },
-        { 0x00F4, 0x00000004u },
-        { 0x00F8, 0x00000004u },
-        { 0x00FC, 0x00000004u },
     };
     size_t i;
 
     memset(s->companion_page, 0, sizeof(s->companion_page));
     for (i = 0; i < sizeof(regs) / sizeof(regs[0]); i++)
         memcpy(&s->companion_page[regs[i].off], &regs[i].val, sizeof(uint32_t));
+    cf_refresh_socket_status(s);
 }
 
 static void cf_reset_taskfile(cf_state_t *s)
@@ -725,14 +753,9 @@ uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size)
     if (!s || size == 0)
         return 0;
 
-    if (offset == 0x0000u) {
-        val = s->attached ? CF_COMPANION_PRESENT : CF_COMPANION_REMOVED;
-    } else if (offset == 0x0040u) {
-        val = s->attached ? 0x00000001u : 0x00000000u;
-    } else {
-        for (i = 0; i < size && (offset + i) < sizeof(s->companion_page); i++)
-            val |= (uint64_t)s->companion_page[offset + i] << (8u * i);
-    }
+    cf_refresh_socket_status(s);
+    for (i = 0; i < size && (offset + i) < sizeof(s->companion_page); i++)
+        val |= (uint64_t)s->companion_page[offset + i] << (8u * i);
 
     return val;
 }
@@ -746,11 +769,20 @@ void cf_companion_write(cf_state_t *s, uint32_t offset, unsigned size,
         return;
 
 
-    for (i = 0; i < size && (offset + i) < sizeof(s->companion_page); i++)
-        s->companion_page[offset + i] = (uint8_t)((value >> (8u * i)) & 0xFFu);
+    for (i = 0; i < size && (offset + i) < sizeof(s->companion_page); i++) {
+        uint32_t byte_off = offset + i;
+        uint32_t word_off = byte_off & ~3u;
+
+        if (!s->attached && cf_is_no_card_owned_offset(word_off))
+            continue;
+
+        s->companion_page[byte_off] =
+            (uint8_t)((value >> (8u * i)) & 0xFFu);
+    }
 
     if (offset == 0x0040u || offset == 0x0050u)
         cf_clear_irq(s);
+    cf_refresh_socket_status(s);
 }
 
 uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size)

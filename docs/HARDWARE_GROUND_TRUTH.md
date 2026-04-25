@@ -69,6 +69,15 @@ Partial dump of the VR4131 TLB (32 entries) revealed critical mapping patterns:
 *   **Interpretation:** The chip labeled `NEC D89041F1001` is functionally a VRC4173. WinCE checks this ID during boot to decide which drivers to load.
 *   **Revision ID (`0x0A000002`):** `0x0000` (Note: some revisions return 0 here).
 
+### PCMCIA / CompactFlash Adapter State
+*   **Observation date:** 2026-04-25, real BE-300 hardware.
+*   **Adapter present, no card inserted:** the taskbar still shows the CF icon.
+    The CF Slot Information dialog reports `Card type: None` and `Card unit:
+    Set`.
+*   **Implication:** The no-media state is not the same as an absent socket.
+    The emulator should keep the socket/unit-present path alive while making
+    the card-media and CIS/attribute-memory probes report no inserted card.
+
 ---
 
 ## 5. Exception Handling (from `introspection.txt`)
