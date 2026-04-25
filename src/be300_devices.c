@@ -2041,15 +2041,15 @@ static bool piu_count_reached(uint32_t now, uint32_t due)
 
 static uint64_t piu_conversion_delay_us(const struct be300_input_device *d)
 {
-    uint64_t stable_units = d ? (uint64_t)d->piu_regs[3] :
-        PIU_DEFAULT_STABLE;
+    uint64_t stable_units = d ? (uint64_t)(d->piu_regs[3] & 0x003Fu) :
+        (PIU_DEFAULT_STABLE & 0x003Fu);
     uint64_t conversions = d && (d->piu_regs[0] & 0x0020u) ? 5u : 4u;
 
     /*
      * VRC4173 UM sections 9.2, 9.3.4, and Figure 9-5: PenDataScan waits
-     * the PIUSTBLREG stabilization interval in 30 us units, then performs
-     * four coordinate A/D conversions at about 10 us each. PADSCANTYPE adds
-     * a pressure conversion.
+     * the PIUSTBLREG STABLE(5:0) stabilization interval in 30 us units,
+     * then performs four coordinate A/D conversions at about 10 us each.
+     * PADSCANTYPE adds a pressure conversion.
      */
     return stable_units * 30ULL + conversions * 10ULL;
 }
