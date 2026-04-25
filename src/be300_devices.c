@@ -11,7 +11,9 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include "cpu.h"
 #include "cpu_mips.h"   /* mips_cpu_cold_reset() for KjCMU warm-reset trigger */
@@ -1588,10 +1590,12 @@ struct be300_input_device {
     uint16_t   piu_regs[16];       /* register file: index = offset / 4 */
     uint16_t   piu_padstate;       /* PADSTATE(2:0) scan sequencer state */
     bool       piu_prev_touch;     /* previous touch_down for edge detect */
-    bool       piu_sample_valid;   /* latched ADC sample for pending touch */
     bool       piu_data_armed;     /* PenDataScan has a coordinate sample due */
+    uint64_t   piu_data_ready_us;
     uint8_t    piu_next_page;      /* next coordinate page buffer interrupt */
     uint16_t   piu_adc[4];         /* y+, y-, x-, x+ */
+    uint16_t   piu_page_adc[2][4]; /* page 0/page 1 coordinate buffers */
+    bool       piu_page_valid[2];
     struct interrupt piu_irq;      /* BE-300 GIRQ0 cascaded interrupt */
     bool       piu_irq_connected;
     bool       piu_irq_asserted;
@@ -1605,6 +1609,9 @@ struct be300_input_device {
 #define PIU_PENDING_ANY         (PIU_PENDING_PENCHG | PIU_PENDING_TOUCH_GROUP)
 #define TOUCH_PANEL_W           240u
 #define TOUCH_PANEL_H           (319u + 40u)
+/* Real-hardware quiescent PIU timing: docs/hardware/hw_dump_vrc4173.txt:983. */
+#define PIU_DEFAULT_SCAN_INTERVAL   0x05DCu
+#define PIU_DEFAULT_STABLE          0x00C8u
 
 /*
  *  PIU interrupt helper — idempotent assert/deassert through BE-300's
@@ -1661,7 +1668,60 @@ static void piu_latch_sample(struct be300_input_device *d)
         (x * (0x8D1Bu - 0x8300u)) / (TOUCH_PANEL_W - 1u));
     d->piu_adc[3] = (uint16_t)(0x8300u +
         (x * (0x8D1Bu - 0x8300u)) / (TOUCH_PANEL_W - 1u));
-    d->piu_sample_valid = true;
+}
+
+static void piu_store_page_sample(struct be300_input_device *d, unsigned page)
+{
+    if (!d || page >= 2)
+        return;
+
+    memcpy(d->piu_page_adc[page], d->piu_adc, sizeof(d->piu_adc));
+    d->piu_page_valid[page] = true;
+}
+
+static uint64_t piu_now_us(void)
+{
+    struct timeval tv;
+
+    if (gettimeofday(&tv, NULL) != 0)
+        return 0;
+
+    return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+}
+
+static uint64_t piu_conversion_delay_us(const struct be300_input_device *d)
+{
+    uint64_t stable_units = d ? (uint64_t)d->piu_regs[3] :
+        PIU_DEFAULT_STABLE;
+    uint64_t conversions = d && (d->piu_regs[0] & 0x0020u) ? 5u : 4u;
+
+    /*
+     * VRC4173 UM sections 9.2, 9.3.4, and Figure 9-5: PenDataScan waits
+     * the PIUSTBLREG stabilization interval in 30 us units, then performs
+     * four coordinate A/D conversions at about 10 us each. PADSCANTYPE adds
+     * a pressure conversion.
+     */
+    return stable_units * 30ULL + conversions * 10ULL;
+}
+
+static uint64_t piu_interval_delay_us(const struct be300_input_device *d)
+{
+    uint64_t scan_units = d ? (uint64_t)(d->piu_regs[2] & 0x07FFu) :
+        PIU_DEFAULT_SCAN_INTERVAL;
+
+    /*
+     * VRC4173 UM section 9.3.3: PIUSIVLREG's SCANINTVAL(10:0) is the
+     * interval between coordinate pairs in 30 us units. The next interrupt
+     * occurs after that interval and the following PenDataScan conversion.
+     */
+    return scan_units * 30ULL + piu_conversion_delay_us(d);
+}
+
+static void piu_arm_coordinate_sample(struct be300_input_device *d,
+    uint64_t delay_us)
+{
+    d->piu_data_armed = true;
+    d->piu_data_ready_us = piu_now_us() + delay_us;
 }
 
 static void piu_signal_pen_down(struct be300_input_device *d)
@@ -1671,7 +1731,7 @@ static void piu_signal_pen_down(struct be300_input_device *d)
 
     if (d->piu_padstate == 4 && (d->piu_regs[0] & 0x100)) {
         d->piu_padstate = 5;
-        d->piu_data_armed = true;
+        piu_arm_coordinate_sample(d, piu_conversion_delay_us(d));
     }
 
     piu_latch_sample(d);
@@ -1688,6 +1748,7 @@ static void piu_signal_pen_up(struct be300_input_device *d)
         d->piu_padstate = 4;
 
     d->piu_data_armed = false;
+    d->piu_data_ready_us = 0;
     d->piu_regs[1] |= PIU_PENDING_PENCHG;
     piu_refresh_irq(d);
 }
@@ -1695,6 +1756,7 @@ static void piu_signal_pen_up(struct be300_input_device *d)
 static void piu_queue_coordinate_sample(struct be300_input_device *d)
 {
     uint16_t page_bit;
+    unsigned page;
 
     /*
      * VRC4173 UM section 9.2: with PADATSTART active, WaitPenTouch
@@ -1707,15 +1769,52 @@ static void piu_queue_coordinate_sample(struct be300_input_device *d)
         return;
     if (d->piu_padstate < 5 || !d->piu_data_armed)
         return;
-    if (d->piu_regs[1] & (PIU_PENDING_PENCHG | PIU_PENDING_TOUCH_GROUP))
+    if (piu_now_us() < d->piu_data_ready_us)
+        return;
+    if ((d->piu_regs[1] & PIU_PENDING_PENCHG) &&
+        ((d->piu_regs[1] >> 8) & PIU_PENDING_PENCHG))
         return;
 
+    /*
+     * VRC4173 UM sections 9.1 and 9.3.2: coordinate data is stored in two
+     * page buffers, with independent page 0/page 1 valid interrupts. Do not
+     * block a fresh conversion merely because the other page is still pending.
+     */
+    page = d->piu_next_page & 1u;
+    page_bit = page ? PIU_PENDING_PAGE1 : PIU_PENDING_PAGE0;
+    if (d->piu_regs[1] & page_bit) {
+        piu_arm_coordinate_sample(d, piu_interval_delay_us(d));
+        return;
+    }
+
     piu_latch_sample(d);
-    page_bit = d->piu_next_page ? PIU_PENDING_PAGE1 : PIU_PENDING_PAGE0;
+    piu_store_page_sample(d, page);
+    d->piu_padstate = 5;
     d->piu_next_page ^= 1u;
     d->piu_regs[1] |= page_bit;
-    d->piu_data_armed = false;
+    if (d->m->touch_down) {
+        d->piu_padstate = 6;  /* IntervalNextScan after one coordinate pair. */
+        piu_arm_coordinate_sample(d, piu_interval_delay_us(d));
+    } else {
+        d->piu_data_armed = false;
+        d->piu_data_ready_us = 0;
+    }
     piu_refresh_irq(d);
+}
+
+static void piu_maybe_queue_coordinate_sample(struct be300_input_device *d)
+{
+    if (d && d->m && d->m->touch_down)
+        piu_queue_coordinate_sample(d);
+}
+
+static void piu_reset_regs(struct be300_input_device *d)
+{
+    memset(d->piu_regs, 0, sizeof(d->piu_regs));
+    d->piu_regs[2] = PIU_DEFAULT_SCAN_INTERVAL;
+    d->piu_regs[3] = PIU_DEFAULT_STABLE;
+    memset(d->piu_page_adc, 0, sizeof(d->piu_page_adc));
+    memset(d->piu_page_valid, 0, sizeof(d->piu_page_valid));
 }
 
 /*
@@ -1733,11 +1832,11 @@ static void piu_update_state(struct be300_input_device *d)
 
     if (ctl & 0x0001) {
         /* PADRST: reset everything */
-        memset(d->piu_regs, 0, sizeof(d->piu_regs));
+        piu_reset_regs(d);
         d->piu_padstate = 0;  /* Disable */
         d->piu_prev_touch = false;
-        d->piu_sample_valid = false;
         d->piu_data_armed = false;
+        d->piu_data_ready_us = 0;
         d->piu_next_page = 0;
         piu_irq_update(d, false);
         return;
@@ -1836,8 +1935,13 @@ DEVICE_ACCESS(be300_touch)
                     (pending_ack & PIU_PENDING_ANY);
                 d->piu_regs[1] = (d->piu_regs[1] & 0x00FF)
                     | (uint16_t)(new_mask << 8);
-                if (data_acked && m->touch_down && d->piu_padstate >= 5)
-                    d->piu_data_armed = true;
+                if (pending_ack & PIU_PENDING_PAGE0)
+                    d->piu_page_valid[0] = false;
+                if (pending_ack & PIU_PENDING_PAGE1)
+                    d->piu_page_valid[1] = false;
+                if (data_acked && m->touch_down && d->piu_padstate >= 5 &&
+                    !d->piu_data_armed)
+                    piu_arm_coordinate_sample(d, piu_interval_delay_us(d));
                 piu_refresh_irq(d);
             } else {
                 d->piu_regs[idx] = (uint16_t)val;
@@ -1850,25 +1954,31 @@ DEVICE_ACCESS(be300_touch)
     val = 0;
 
     if (off == 0x00) {
+        piu_maybe_queue_coordinate_sample(d);
         /* PIUCNTREG: compose from stored bits + dynamic state */
         val = (d->piu_regs[0] & 0x03FFu)
             | ((uint16_t)(d->piu_padstate & 7) << 10)
             | (m->touch_down ? 0x2000u : 0);
     } else if (off == 0x04) {
+        piu_maybe_queue_coordinate_sample(d);
         /* Return (mask << 8) | pending; ISR does pending & mask */
         val = d->piu_regs[1];
     } else if (off <= 0x18 && (off & 3) == 0) {
+        piu_maybe_queue_coordinate_sample(d);
         val = d->piu_regs[off / 4];
     } else if ((off >= 0x20 && off <= 0x2C) || (off >= 0x50 && off <= 0x5C)) {
-        /* ADC buffer registers — return the latest latched conversion.
+        unsigned page = off >= 0x50 ? 1u : 0u;
+        piu_maybe_queue_coordinate_sample(d);
+        /* ADC buffer registers — return the requested page's conversion.
          * docs/hardware/hardware.txt:225-235 identifies these registers
-         * as touch-panel y+/y-/x-/x+ sample buffers. */
-        if (d->piu_sample_valid) {
+         * as touch-panel y+/y-/x-/x+ sample buffers; VRC4173 UM section
+         * 9.3.2 exposes page 0 and page 1 as distinct valid buffers. */
+        if (d->piu_page_valid[page]) {
             switch (off & 0x0F) {
-            case 0x00: val = d->piu_adc[0]; break;
-            case 0x04: val = d->piu_adc[1]; break;
-            case 0x08: val = d->piu_adc[2]; break;
-            case 0x0C: val = d->piu_adc[3]; break;
+            case 0x00: val = d->piu_page_adc[page][0]; break;
+            case 0x04: val = d->piu_page_adc[page][1]; break;
+            case 0x08: val = d->piu_page_adc[page][2]; break;
+            case 0x0C: val = d->piu_page_adc[page][3]; break;
             }
         } else {
             switch (off & 0x0F) {
@@ -1956,6 +2066,7 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
     CHECK_ALLOCATION(touch_d = calloc(1, sizeof(struct be300_input_device)));
     touch_d->m = m;
     touch_d->log_mmio = log_mmio;
+    piu_reset_regs(touch_d);
 
     /* Connect BE-300 touch through the cascaded GIU route documented in
      * docs/hardware/hardware.txt:15-19, :65-89, and :132-145:
