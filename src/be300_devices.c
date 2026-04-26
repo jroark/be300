@@ -28,8 +28,19 @@
 #include "hw/cf.h"
 #include "hw/nand.h"
 #include "hw/siu.h"
+#include "pcconnect.h"
 #include "ppsh.h"
 #include "ui.h"
+
+#define BE300_NS_PER_MS 1000000ULL
+
+static uint64_t be300_host_monotonic_ns(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
 
 /*
  * --log-mmio: print one line per dispatched access. Volume-heavy by design
@@ -74,6 +85,11 @@ struct be300_companion_ab_device {
     bool        log_mmio;
     uint8_t     bytes[0x10000];
 };
+
+struct be300_vrc4173_latch;
+static struct be300_vrc4173_latch *g_be300_vrc4173_latch;
+static void be300_pcconnect_reset_for_cpu_reset(
+    struct be300_vrc4173_latch *d);
 
 DEVICE_ACCESS(be300_nand)
 {
@@ -131,6 +147,7 @@ DEVICE_ACCESS(be300_nand)
                 "[KjCMU] warm reset triggered at pc=%08x "
                 "(PA 0x0A00A0C4<=7, PA 0x0A00A0C8<=10)\n",
                 pc);
+            be300_pcconnect_reset_for_cpu_reset(g_be300_vrc4173_latch);
             mips_cpu_cold_reset(cpu);
             return 1;
         } else {
@@ -372,9 +389,19 @@ struct be300_vrc4173_latch {
     uint8_t  bytes[0x20000];
     bool     log_mmio;
     struct be300_buzzer_state buzzer;
+    uint32_t usb_intr_status;
+    uint32_t usb_intr_enable;
+    uint32_t usb_port_status[2];
+    struct interrupt pcconnect_irq;
+    bool     pcconnect_irq_connected;
+    bool     pcconnect_irq_asserted;
+    bool     pcconnect_dock_connected;
+    uint16_t pcconnect_commmode_pending;
+    bool     pcconnect_insert_armed;
+    uint32_t pcconnect_insert_delay_ms;
+    uint64_t pcconnect_insert_deadline_ns;
 };
 
-static struct be300_vrc4173_latch *g_be300_vrc4173_latch = NULL;
 static machine_t *g_be300_machine = NULL;  /* for PIU cross-device callback */
 
 static uint32_t be300_latch_peek_u32(struct be300_vrc4173_latch *d,
@@ -387,6 +414,18 @@ static uint32_t be300_latch_peek_u32(struct be300_vrc4173_latch *d,
          | ((uint32_t)d->bytes[off + 1u] << 8)
          | ((uint32_t)d->bytes[off + 2u] << 16)
          | ((uint32_t)d->bytes[off + 3u] << 24);
+}
+
+static void be300_latch_poke_u32(struct be300_vrc4173_latch *d,
+    uint32_t off, uint32_t val)
+{
+    if (!d || off + 4u > VRC4173_LATCH_SIZE)
+        return;
+
+    d->bytes[off + 0u] = (uint8_t)(val >> 0);
+    d->bytes[off + 1u] = (uint8_t)(val >> 8);
+    d->bytes[off + 2u] = (uint8_t)(val >> 16);
+    d->bytes[off + 3u] = (uint8_t)(val >> 24);
 }
 
 static uint32_t be300_buzzer_peek_le32(const uint8_t *p)
@@ -474,6 +513,611 @@ static uint32_t be300_buzzer_tone_ms(const struct be300_buzzer_state *b)
     if (ms > 220)
         ms = 220;
     return ms;
+}
+
+#define VRC4173_USB_OP_BASE       0x1440u
+#define VRC4173_USB_OP_END        0x14A0u
+#define VRC4173_USB_HC_REVISION   0x0010u
+#define VRC4173_USB_INTR_RHSC     0x00000040u
+#define VRC4173_USB_INTR_MIE      0x80000000u
+#define VRC4173_USB_PORT_CCS      0x00000001u
+#define VRC4173_USB_PORT_PES      0x00000002u
+#define VRC4173_USB_PORT_PSS      0x00000004u
+#define VRC4173_USB_PORT_POCI     0x00000008u
+#define VRC4173_USB_PORT_PRS      0x00000010u
+#define VRC4173_USB_PORT_PPS      0x00000100u
+#define VRC4173_USB_PORT_LSDA     0x00000200u
+#define VRC4173_USB_PORT_CSC      0x00010000u
+#define VRC4173_USB_PORT_PESC     0x00020000u
+#define VRC4173_USB_PORT_PSSC     0x00040000u
+#define VRC4173_USB_PORT_POCIC    0x00080000u
+#define VRC4173_USB_PORT_PRSC     0x00100000u
+#define VRC4173_USB_PORT_CHANGE_MASK \
+    (VRC4173_USB_PORT_CSC | VRC4173_USB_PORT_PESC | \
+     VRC4173_USB_PORT_PSSC | VRC4173_USB_PORT_POCIC | \
+     VRC4173_USB_PORT_PRSC)
+#define BE300_GIRQ0_COMMMODE       0x00000010u
+#define BE300_COMMMODE_STATUS_OFF  0x8004u
+#define BE300_COMMMODE_SOCKET_OFF  0x8010u
+#define BE300_COMMSIU_CTRL_OFF     0x8684u
+#define BE300_PCCARD_STATUS_OFF    0x1B50u
+#define BE300_PCCARD_SOCKET_READY  0x00000008u
+#define BE300_COMMMODE_SOCKET_PENDING 0x0001u
+#define BE300_COMMMODE_MODEM_PENDING  0x0010u
+#define BE300_COMMMODE_PENDING_MASK \
+    (BE300_COMMMODE_SOCKET_PENDING | BE300_COMMMODE_MODEM_PENDING)
+#define BE300_COMMMODE_SOCKET_IRQ_MASK 0x0100u
+#define BE300_COMMMODE_MODEM_IRQ_MASK  0x1000u
+#define BE300_COMMMODE_IRQ_MASK \
+    (BE300_COMMMODE_SOCKET_IRQ_MASK | BE300_COMMMODE_MODEM_IRQ_MASK)
+#define BE300_COMMMODE_SOCKET_VALUE_MASK 0x001Fu
+#define BE300_COMMMODE_SOCKET_NONE  0x0007u
+#define BE300_COMMMODE_SOCKET_RS232 0x0008u
+#define BE300_COMMSIU_CTRL_RS232   0x0008u
+
+static bool be300_pcconnect_cable_enabled(void)
+{
+    return g_be300_machine &&
+        g_be300_machine->cfg.enable_pcconnect_time_sync;
+}
+
+static uint32_t be300_pcconnect_connect_delay_ms(void)
+{
+    const char *v = getenv("BE300_PCC_CONNECT_DELAY_MS");
+    char *end = NULL;
+    unsigned long n;
+
+    if (!v || !*v)
+        return 60000u;
+
+    n = strtoul(v, &end, 10);
+    if (end == v || *end != '\0' || n > 600000ul)
+        return 60000u;
+
+    return (uint32_t)n;
+}
+
+static bool be300_pcconnect_time_reached(uint64_t now_ns, uint64_t due_ns)
+{
+    return (int64_t)(now_ns - due_ns) >= 0;
+}
+
+static bool be300_pcconnect_insert_ready(
+    const struct be300_vrc4173_latch *d)
+{
+    if (!d || !be300_pcconnect_cable_enabled() || !d->pcconnect_insert_armed)
+        return false;
+
+    return be300_pcconnect_time_reached(be300_host_monotonic_ns(),
+        d->pcconnect_insert_deadline_ns);
+}
+
+static uint16_t be300_pcconnect_commmode_raw(
+    const struct be300_vrc4173_latch *d)
+{
+    if (!d)
+        return 0;
+
+    return (uint16_t)d->bytes[BE300_COMMMODE_STATUS_OFF]
+      | ((uint16_t)d->bytes[BE300_COMMMODE_STATUS_OFF + 1u] << 8);
+}
+
+static uint16_t be300_pcconnect_commmode_read(
+    const struct be300_vrc4173_latch *d);
+static uint16_t be300_pcconnect_socket_read(
+    const struct be300_vrc4173_latch *d);
+
+static bool be300_pcconnect_trace_enabled(void)
+{
+    const char *v = getenv("BE300_PCC_TRACE");
+
+    return v && *v && strcmp(v, "0") != 0;
+}
+
+static void be300_pcconnect_trace(const struct be300_vrc4173_latch *d,
+    const char *what, uint32_t off, uint32_t len, uint64_t val, uint32_t pc)
+{
+    if (!be300_pcconnect_trace_enabled())
+        return;
+
+    fprintf(stderr,
+        "[PCC_DOCK_TRACE] %s off=0x%04x len=%u val=0x%04" PRIx64
+        " pc=0x%08x raw=0x%04x read=0x%04x socket=0x%04x "
+        "dock=%d pending=0x%02x armed=%d irq=%d\n",
+        what, off, len, val, pc, be300_pcconnect_commmode_raw(d),
+        d ? be300_pcconnect_commmode_read(d) : 0,
+        d ? be300_pcconnect_socket_read(d) : 0,
+        d ? d->pcconnect_dock_connected : 0,
+        d ? d->pcconnect_commmode_pending : 0,
+        d ? d->pcconnect_insert_armed : 0,
+        d ? d->pcconnect_irq_asserted : 0);
+}
+
+static uint16_t be300_pcconnect_commmode_read(
+    const struct be300_vrc4173_latch *d)
+{
+    uint16_t v = be300_pcconnect_commmode_raw(d);
+
+    v &= (uint16_t)~BE300_COMMMODE_PENDING_MASK;
+    v |= d->pcconnect_commmode_pending & BE300_COMMMODE_PENDING_MASK;
+    return v;
+}
+
+static uint16_t be300_pcconnect_socket_read(
+    const struct be300_vrc4173_latch *d)
+{
+    uint16_t v;
+
+    if (!d)
+        return 0;
+
+    v = (uint16_t)d->bytes[BE300_COMMMODE_SOCKET_OFF]
+      | ((uint16_t)d->bytes[BE300_COMMMODE_SOCKET_OFF + 1u] << 8);
+
+    if (be300_pcconnect_cable_enabled()) {
+        /*
+         * socket.dll maps the Vic/CommMode page, then reads
+         * ReadPortDataEx(0, 2, 0x1f) from AA008010.  The WinCE 3.0
+         * socket table maps raw 0x0007 to an empty no-driver entry,
+         * raw 0x0008 to serial.dll, and raw 0x000c/0x000d to USB/VCom
+         * entries.  hardware.txt:88-102 documents AA008004 as the
+         * CommMode GIRQ0-4 pending/mask register, and hardware.txt:189-191
+         * places this page next to the companion SIU.  For the serial
+         * PC Connect option, do not expose a socket until the emulated
+         * cable edge; after that edge, expose the RS-232 socket.  Preserve
+         * the other latched bits.
+         */
+        v &= (uint16_t)~BE300_COMMMODE_SOCKET_VALUE_MASK;
+        v |= d->pcconnect_dock_connected ?
+            BE300_COMMMODE_SOCKET_RS232 : BE300_COMMMODE_SOCKET_NONE;
+    }
+
+    return v;
+}
+
+static uint64_t be300_pcconnect_pccard_status_read(
+    const struct be300_vrc4173_latch *d, uint32_t off, unsigned len,
+    uint64_t val)
+{
+    unsigned shift;
+
+    if (!d || !be300_pcconnect_cable_enabled() ||
+        !d->pcconnect_dock_connected || len == 0 ||
+        off > BE300_PCCARD_STATUS_OFF ||
+        off + len <= BE300_PCCARD_STATUS_OFF)
+        return val;
+
+    /*
+     * pcmcia.dll maps AA001B00 and waits for AA001B50 bit 3 after
+     * enabling the socket path via AA000144 bit 5.  The 0x1000-0x1fff
+     * VRC4173 range is currently backed by the CF companion model, so
+     * expose the PC Connect dock-ready level at the actual read boundary
+     * instead of seeding the generic latch byte array.
+     */
+    shift = (unsigned)((BE300_PCCARD_STATUS_OFF - off) * 8u);
+    return val | ((uint64_t)BE300_PCCARD_SOCKET_READY << shift);
+}
+
+static bool be300_pcconnect_commmode_unmasked(
+    const struct be300_vrc4173_latch *d)
+{
+    uint16_t v = be300_pcconnect_commmode_read(d);
+
+    return (v & (v >> 8) & BE300_COMMMODE_PENDING_MASK) != 0;
+}
+
+static void be300_pcconnect_irq_update(struct be300_vrc4173_latch *d)
+{
+    bool want;
+
+    if (!d || !d->pcconnect_irq_connected)
+        return;
+
+    want = be300_pcconnect_cable_enabled() &&
+        be300_pcconnect_commmode_unmasked(d);
+    if (want && !d->pcconnect_irq_asserted) {
+        INTERRUPT_ASSERT(d->pcconnect_irq);
+        d->pcconnect_irq_asserted = true;
+    } else if (!want && d->pcconnect_irq_asserted) {
+        INTERRUPT_DEASSERT(d->pcconnect_irq);
+        d->pcconnect_irq_asserted = false;
+    }
+}
+
+static void be300_pcconnect_irq_reedge(struct be300_vrc4173_latch *d)
+{
+    if (!d || !d->pcconnect_irq_connected || !d->pcconnect_irq_asserted)
+        return;
+    if (!be300_pcconnect_cable_enabled() ||
+        !be300_pcconnect_commmode_unmasked(d))
+        return;
+
+    INTERRUPT_DEASSERT(d->pcconnect_irq);
+    INTERRUPT_ASSERT(d->pcconnect_irq);
+}
+
+static void be300_pcconnect_arm_insert_after_reset(
+    struct be300_vrc4173_latch *d)
+{
+    if (!d || !be300_pcconnect_cable_enabled())
+        return;
+
+    d->pcconnect_insert_armed = true;
+    d->pcconnect_insert_deadline_ns = be300_host_monotonic_ns() +
+        (uint64_t)d->pcconnect_insert_delay_ms * BE300_NS_PER_MS;
+}
+
+static void be300_pcconnect_reset_for_cpu_reset(
+    struct be300_vrc4173_latch *d)
+{
+    if (!d)
+        return;
+    if (!be300_pcconnect_cable_enabled())
+        return;
+
+    /*
+     * KjCMU resets the CPU while the VRC4173-side latch state remains in
+     * host memory.  The PC Connect option represents a host-side cable
+     * insertion, so keep the reboot path as "not docked" and schedule the
+     * cable edge after the normal Boot.exe reset.  This avoids presenting
+     * an already-docked CommMode state to the second-boot OAL, which takes
+     * the software-shutdown/HIBERNATE path before user PC Connect monitors
+     * exist.
+    */
+    d->pcconnect_dock_connected = false;
+    d->pcconnect_commmode_pending = 0;
+    pcconnect_set_cable_connected(false);
+    d->usb_intr_status = 0;
+    d->usb_port_status[0] &= ~VRC4173_USB_PORT_CHANGE_MASK;
+    d->usb_port_status[1] &= ~VRC4173_USB_PORT_CHANGE_MASK;
+    be300_pcconnect_arm_insert_after_reset(d);
+
+    if (d->pcconnect_irq_connected && d->pcconnect_irq_asserted) {
+        INTERRUPT_DEASSERT(d->pcconnect_irq);
+        d->pcconnect_irq_asserted = false;
+    }
+}
+
+static void be300_pcconnect_raise_dock_edge(struct be300_vrc4173_latch *d,
+    bool force)
+{
+    if (!d || !be300_pcconnect_cable_enabled() ||
+        (!force && !be300_pcconnect_insert_ready(d)) ||
+        d->pcconnect_commmode_pending || d->pcconnect_dock_connected)
+        return;
+
+    /*
+     * PC Connect is launched by the guest's cradle/RS-232 detection path,
+     * not by serial bytes appearing spontaneously.  hardware.txt:74-130
+     * documents the route as GIU0 -> AA000004 bit 4 -> AA008004
+     * pending/mask bits.  NK disassembly at 0x800b6db4 dispatches
+     * AA008004 sub-bit 0 through the CommMode socket SYSINTR, while
+     * sub-bit 4 returns SYSINTR 0x23 for cedmbltin.dll's modem-warning
+     * event thread.  The option models the
+     * host plugging in the cable after the first Boot.exe reset and after
+     * the guest has enabled the detect source, producing a real insertion
+     * transition instead of a reset-time static level.
+    */
+    d->pcconnect_dock_connected = true;
+    d->pcconnect_commmode_pending |= BE300_COMMMODE_PENDING_MASK;
+    pcconnect_set_cable_connected(true);
+    be300_pcconnect_irq_update(d);
+    be300_pcconnect_trace(d, force ? "dock-edge-uart" : "dock-edge",
+        BE300_COMMMODE_STATUS_OFF, 2, be300_pcconnect_commmode_read(d), 0);
+}
+
+static void be300_pcconnect_maybe_raise_dock_edge(
+    struct be300_vrc4173_latch *d)
+{
+    if (!d || d->pcconnect_dock_connected)
+        return;
+
+    be300_pcconnect_raise_dock_edge(d, pcconnect_guest_uart_ready());
+}
+
+void be300_pcconnect_poll(void)
+{
+    if (!be300_pcconnect_cable_enabled())
+        return;
+
+    be300_pcconnect_maybe_raise_dock_edge(g_be300_vrc4173_latch);
+}
+
+static void be300_pcconnect_uart_rx_ready(void *opaque)
+{
+    struct be300_vrc4173_latch *d = opaque;
+
+    if (!d || !be300_pcconnect_cable_enabled() ||
+        !d->pcconnect_dock_connected)
+        return;
+
+    /*
+     * The companion serial path is not the VR4131 internal SIU path:
+     * hardware.txt:8 notes serial is handled by the custom companion, and
+     * hardware.txt:122-130 routes the Vic/CommMode page through GIRQ0-4.
+     * Raise a CommMode edge when host RX data becomes available so the
+     * guest's serial-side waiters get a companion interrupt after the
+     * initial dock-detect edge.
+     */
+    d->pcconnect_commmode_pending |= BE300_COMMMODE_MODEM_PENDING;
+    be300_pcconnect_trace(d, "uart-rx-edge",
+        BE300_COMMMODE_STATUS_OFF, 2,
+        be300_pcconnect_commmode_read(d), 0);
+    be300_pcconnect_irq_update(d);
+    be300_pcconnect_irq_reedge(d);
+}
+
+static uint16_t be300_pcconnect_write_u16_at(uint32_t off, unsigned len,
+    uint64_t val, uint32_t target, uint16_t fallback)
+{
+    if (off <= target && target + 2u <= off + len) {
+        unsigned shift = (unsigned)((target - off) * 8u);
+        return (uint16_t)((val >> shift) & 0xffffu);
+    }
+
+    return fallback;
+}
+
+static void be300_pcconnect_note_comm_write(struct be300_vrc4173_latch *d,
+    uint32_t off, unsigned len, uint64_t val, uint32_t pc)
+{
+    uint16_t commmode;
+    uint16_t old_pending;
+    bool reedge = false;
+    uint32_t commsiu;
+
+    if (!d || len == 0)
+        return;
+    if (!be300_pcconnect_cable_enabled())
+        return;
+
+    old_pending = d->pcconnect_commmode_pending;
+
+    if ((off <= BE300_COMMMODE_STATUS_OFF &&
+         off + len > BE300_COMMMODE_STATUS_OFF) ||
+        (off <= BE300_COMMMODE_SOCKET_OFF &&
+         off + len > BE300_COMMMODE_SOCKET_OFF) ||
+        (off <= BE300_COMMSIU_CTRL_OFF &&
+         off + len > BE300_COMMSIU_CTRL_OFF))
+        be300_pcconnect_trace(d, "pre-write", off, len, val, pc);
+
+    if (off <= BE300_COMMMODE_STATUS_OFF &&
+        off + len > BE300_COMMMODE_STATUS_OFF) {
+        commmode = be300_pcconnect_write_u16_at(off, len, val,
+            BE300_COMMMODE_STATUS_OFF, be300_pcconnect_commmode_raw(d));
+        /*
+         * AA008004 is a pending/mask pair like the PIU interrupt register
+         * described in hardware.txt:132-145.  The low byte is interrupt
+         * status, and the guest acknowledges observed status bits by
+         * writing them back as 1s while preserving the high-byte mask.
+         */
+        d->pcconnect_commmode_pending &=
+            (uint16_t)~(commmode & BE300_COMMMODE_PENDING_MASK);
+        reedge =
+            (old_pending & BE300_COMMMODE_SOCKET_PENDING) != 0 &&
+            (d->pcconnect_commmode_pending &
+                BE300_COMMMODE_SOCKET_PENDING) == 0 &&
+            be300_pcconnect_commmode_unmasked(d);
+        d->bytes[BE300_COMMMODE_STATUS_OFF] &=
+            (uint8_t)~BE300_COMMMODE_PENDING_MASK;
+        if ((commmode & BE300_COMMMODE_IRQ_MASK) != 0)
+            be300_pcconnect_maybe_raise_dock_edge(d);
+    }
+
+    if (off <= BE300_COMMSIU_CTRL_OFF &&
+        off + len > BE300_COMMSIU_CTRL_OFF) {
+        commsiu = be300_latch_peek_u32(d, BE300_COMMSIU_CTRL_OFF);
+        if ((commsiu & BE300_COMMSIU_CTRL_RS232) != 0)
+            be300_pcconnect_maybe_raise_dock_edge(d);
+    }
+
+    be300_pcconnect_irq_update(d);
+    if (reedge) {
+        be300_pcconnect_trace(d, "commmode-reedge",
+            BE300_COMMMODE_STATUS_OFF, 2,
+            be300_pcconnect_commmode_read(d), pc);
+        be300_pcconnect_irq_reedge(d);
+    }
+
+    if ((off <= BE300_COMMMODE_STATUS_OFF &&
+         off + len > BE300_COMMMODE_STATUS_OFF) ||
+        (off <= BE300_COMMMODE_SOCKET_OFF &&
+         off + len > BE300_COMMMODE_SOCKET_OFF) ||
+        (off <= BE300_COMMSIU_CTRL_OFF &&
+         off + len > BE300_COMMSIU_CTRL_OFF))
+        be300_pcconnect_trace(d, "post-write", off, len, val, pc);
+}
+
+static void be300_pcconnect_note_comm_read(struct be300_vrc4173_latch *d,
+    uint16_t val, uint32_t pc)
+{
+    uint16_t active;
+
+    if (!d)
+        return;
+
+    active = val & (uint16_t)(val >> 8) & BE300_COMMMODE_PENDING_MASK;
+
+    /*
+     * The NK GIRQ0-4 dispatcher at 0x800b6db4 selects the lowest active
+     * AA008004 sub-bit.  Sub-bit 4's handler returns SYSINTR 0x23 without
+     * writing AA008004, so consume the latched modem-detect bit when the
+     * dispatcher observes it as the selected source.  Sub-bit 0 has an
+     * explicit writeback in its handler and is cleared in the write path.
+     */
+    if (pc == 0x800b6db4u &&
+        (active & BE300_COMMMODE_SOCKET_PENDING) == 0 &&
+        (active & BE300_COMMMODE_MODEM_PENDING) != 0) {
+        d->pcconnect_commmode_pending &=
+            (uint16_t)~BE300_COMMMODE_MODEM_PENDING;
+        be300_pcconnect_trace(d, "commmode-modem-dispatch",
+            BE300_COMMMODE_STATUS_OFF, 2, val, pc);
+        be300_pcconnect_irq_update(d);
+    }
+}
+
+static uint32_t be300_pcconnect_girq0_source_bits(
+    const struct be300_vrc4173_latch *d)
+{
+    if (!be300_pcconnect_cable_enabled())
+        return 0;
+
+    return be300_pcconnect_commmode_unmasked(d) ?
+        BE300_GIRQ0_COMMMODE : 0;
+}
+
+static bool be300_vrc4173_usb_op_offset(uint32_t off)
+{
+    return off >= VRC4173_USB_OP_BASE && off < VRC4173_USB_OP_END;
+}
+
+static unsigned be300_vrc4173_usb_op_index(uint32_t off)
+{
+    return (unsigned)((off - VRC4173_USB_OP_BASE) >> 2);
+}
+
+static uint32_t be300_vrc4173_usb_port_read(
+    struct be300_vrc4173_latch *d, unsigned port)
+{
+    uint32_t status;
+
+    if (!d || port >= 2)
+        return 0;
+
+    status = d->usb_port_status[port];
+    status &= ~(VRC4173_USB_PORT_CCS | VRC4173_USB_PORT_PES |
+        VRC4173_USB_PORT_PSS | VRC4173_USB_PORT_PRS |
+        VRC4173_USB_PORT_PPS | VRC4173_USB_PORT_LSDA);
+
+    return status;
+}
+
+static void be300_vrc4173_usb_refresh_intr(struct be300_vrc4173_latch *d)
+{
+    if (!d)
+        return;
+
+    if ((be300_vrc4173_usb_port_read(d, 0) & VRC4173_USB_PORT_CHANGE_MASK) ||
+        (be300_vrc4173_usb_port_read(d, 1) & VRC4173_USB_PORT_CHANGE_MASK))
+        d->usb_intr_status |= VRC4173_USB_INTR_RHSC;
+    else
+        d->usb_intr_status &= ~VRC4173_USB_INTR_RHSC;
+
+    be300_latch_poke_u32(d, VRC4173_USB_OP_BASE + 0x0Cu,
+        d->usb_intr_status);
+    be300_latch_poke_u32(d, VRC4173_USB_OP_BASE + 0x10u,
+        d->usb_intr_enable);
+    be300_latch_poke_u32(d, VRC4173_USB_OP_BASE + 0x14u,
+        d->usb_intr_enable);
+    be300_latch_poke_u32(d, VRC4173_USB_OP_BASE + 0x54u,
+        be300_vrc4173_usb_port_read(d, 0));
+    be300_latch_poke_u32(d, VRC4173_USB_OP_BASE + 0x58u,
+        be300_vrc4173_usb_port_read(d, 1));
+}
+
+static uint32_t be300_vrc4173_usb_read(struct be300_vrc4173_latch *d,
+    uint32_t off)
+{
+    unsigned idx = be300_vrc4173_usb_op_index(off);
+
+    be300_vrc4173_usb_refresh_intr(d);
+
+    switch (idx) {
+    case 0x00 / 4:
+        return VRC4173_USB_HC_REVISION;
+    case 0x0C / 4:
+        return d->usb_intr_status;
+    case 0x10 / 4:
+    case 0x14 / 4:
+        return d->usb_intr_enable;
+    case 0x50 / 4:
+        return be300_latch_peek_u32(d, off);
+    case 0x54 / 4:
+        return be300_vrc4173_usb_port_read(d, 0);
+    case 0x58 / 4:
+        return be300_vrc4173_usb_port_read(d, 1);
+    default:
+        return be300_latch_peek_u32(d, off);
+    }
+}
+
+static void be300_vrc4173_usb_write(struct be300_vrc4173_latch *d,
+    uint32_t off, uint32_t val)
+{
+    unsigned idx = be300_vrc4173_usb_op_index(off);
+
+    /*
+     * VRC4173 UM §14.3 exposes an OpenHCI 1.0 operational-register
+     * window. usb.dll maps it at 0x0A001440. Serial PC Connect is routed
+     * through the Vic/CommMode page and companion SIU, so the OHCI root hub
+     * remains disconnected unless a separate USB-device model is added.
+     */
+    switch (idx) {
+    case 0x00 / 4:
+        /* HcRevision is read-only on the HC side. */
+        break;
+    case 0x08 / 4:
+        be300_latch_poke_u32(d, off, val & ~1u);
+        break;
+    case 0x0C / 4:
+        /*
+         * VRC4173 UM §14.3.5 says HcInterruptStatus bits clear when 0 is
+         * written. Also accept write-1-to-clear for driver compatibility.
+         */
+        if (val == 0)
+            d->usb_intr_status = 0;
+        else
+            d->usb_intr_status &= ~val;
+        break;
+    case 0x10 / 4:
+        d->usb_intr_enable |= val;
+        break;
+    case 0x14 / 4:
+        d->usb_intr_enable &= ~val;
+        break;
+    case 0x50 / 4:
+        if (val & 0x00010000u) {
+            d->usb_port_status[0] |= VRC4173_USB_PORT_PPS;
+            d->usb_port_status[1] |= VRC4173_USB_PORT_PPS;
+        }
+        if (val & 0x00000001u) {
+            d->usb_port_status[0] &= ~VRC4173_USB_PORT_PPS;
+            d->usb_port_status[1] &= ~VRC4173_USB_PORT_PPS;
+        }
+        be300_latch_poke_u32(d, off, val);
+        break;
+    case 0x54 / 4:
+    case 0x58 / 4: {
+        unsigned port = idx == (0x54 / 4) ? 0u : 1u;
+        uint32_t status = d->usb_port_status[port];
+
+        status &= ~(val & VRC4173_USB_PORT_CHANGE_MASK);
+        if (val & VRC4173_USB_PORT_PPS)
+            status |= VRC4173_USB_PORT_PPS;
+        if (val & VRC4173_USB_PORT_LSDA)
+            status &= ~VRC4173_USB_PORT_PPS;
+        if ((val & VRC4173_USB_PORT_PES) &&
+            (be300_vrc4173_usb_port_read(d, port) & VRC4173_USB_PORT_CCS))
+            status |= VRC4173_USB_PORT_PES;
+        if (val & VRC4173_USB_PORT_CCS)
+            status &= ~VRC4173_USB_PORT_PES;
+        if ((val & VRC4173_USB_PORT_PRS) &&
+            (be300_vrc4173_usb_port_read(d, port) & VRC4173_USB_PORT_CCS))
+            status |= VRC4173_USB_PORT_PES | VRC4173_USB_PORT_PRSC;
+        if (val & VRC4173_USB_PORT_PSS)
+            status |= VRC4173_USB_PORT_PSS;
+        if (val & VRC4173_USB_PORT_POCI)
+            status &= ~VRC4173_USB_PORT_PSS;
+
+        d->usb_port_status[port] = status;
+        break;
+    }
+    default:
+        be300_latch_poke_u32(d, off, val);
+        break;
+    }
+
+    be300_vrc4173_usb_refresh_intr(d);
 }
 
 static void be300_buzzer_note_write(struct be300_vrc4173_latch *d,
@@ -989,6 +1633,15 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
+        if (be300_pcconnect_cable_enabled() &&
+            be300_vrc4173_usb_op_offset(off)) {
+            be300_probe_note_mmio("vrc4173-usbu-ohci", off, 'W',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
+            be300_vrc4173_usb_write(d, off, (uint32_t)val);
+            return 1;
+        }
+
         if (g_be300_machine && off >= 0x1000u && off < 0x2000u) {
             be300_probe_note_mmio("vrc4173-cf-companion", off, 'W',
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
@@ -1047,6 +1700,8 @@ DEVICE_ACCESS(be300_vrc4173)
                 BE300_MMIO_CLASS_LATCHED);
             memcpy(&d->bytes[off], data, len);
         }
+        be300_pcconnect_note_comm_write(d, off, (unsigned)len, val,
+            (uint32_t)cpu->pc);
         if (off <= 0x0A00u && off + len > 0x0A00u)
             be300_vrc4173_a00_blit_maybe(cpu, d);
         if (off <= 0x0234u && off + len > 0x0234u)
@@ -1071,9 +1726,43 @@ DEVICE_ACCESS(be300_vrc4173)
             if (!cf_present(&g_be300_machine->cf))
                 val &= ~(uint64_t)1u;
             val |= cf_giu_source_bits(&g_be300_machine->cf)
+                | be300_pcconnect_girq0_source_bits(d)
                 | piu_girq0_source_bits(
                     (const struct be300_input_device *)
                     g_be300_machine->touch_device);
+            be300_pcconnect_trace(d, "read-girq0", off, (uint32_t)len,
+                val, (uint32_t)cpu->pc);
+            memory_writemax64(cpu, data, len, val);
+            return 1;
+        }
+
+        if (be300_pcconnect_cable_enabled() &&
+            off == BE300_COMMMODE_STATUS_OFF) {
+            uint16_t val;
+
+            be300_pcconnect_maybe_raise_dock_edge(d);
+            val = be300_pcconnect_commmode_read(d);
+            be300_pcconnect_trace(d, "read-commmode", off, (uint32_t)len,
+                val, (uint32_t)cpu->pc);
+            be300_probe_note_mmio("vrc4173-commmode", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
+            memory_writemax64(cpu, data, len, val);
+            be300_pcconnect_note_comm_read(d, val, (uint32_t)cpu->pc);
+            return 1;
+        }
+
+        if (be300_pcconnect_cable_enabled() &&
+            off == BE300_COMMMODE_SOCKET_OFF) {
+            uint16_t val;
+
+            be300_pcconnect_maybe_raise_dock_edge(d);
+            val = be300_pcconnect_socket_read(d);
+            be300_pcconnect_trace(d, "read-socket", off, (uint32_t)len,
+                val, (uint32_t)cpu->pc);
+            be300_probe_note_mmio("vrc4173-commmode-socket", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
             memory_writemax64(cpu, data, len, val);
             return 1;
         }
@@ -1089,9 +1778,21 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
+        if (be300_pcconnect_cable_enabled() &&
+            be300_vrc4173_usb_op_offset(off)) {
+            uint32_t val = be300_vrc4173_usb_read(d, off);
+            be300_probe_note_mmio("vrc4173-usbu-ohci", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
+            memory_writemax64(cpu, data, len, (uint64_t)val);
+            return 1;
+        }
+
         if (g_be300_machine && off >= 0x1000u && off < 0x2000u) {
             uint64_t val = cf_companion_read(&g_be300_machine->cf,
                 off - 0x1000u, (unsigned)len);
+            val = be300_pcconnect_pccard_status_read(d, off,
+                (unsigned)len, val);
             /*
              * Pass 18/19 (2026-04-19): offset 0x1CD0 is the VRC4173
              * DMA-pending status bit that nanddisk.dll's CheckDMAEnd at
@@ -1611,6 +2312,10 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
     g_be300_wince_aux = aux;
     ppsh_refresh_status(aux);
     be300_buzzer_seed(latch);
+    latch->pcconnect_insert_delay_ms = be300_pcconnect_connect_delay_ms();
+    if (m->cfg.enable_pcconnect_time_sync)
+        be300_latch_poke_u32(latch, VRC4173_USB_OP_BASE + 0x00u,
+            VRC4173_USB_HC_REVISION);
 
     /*
      * Pre-populate latch with real hardware register values from
@@ -1798,6 +2503,17 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         memory_device_register(gxm->memory, segs[i].name,
             segs[i].base, segs[i].size,
             dev_be300_vrc4173_access, (void *)seg, DM_DEFAULT, NULL);
+    }
+
+    if (m->cfg.enable_pcconnect_time_sync) {
+        char tmps[200];
+
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 0);
+        INTERRUPT_CONNECT(tmps, latch->pcconnect_irq);
+        latch->pcconnect_irq_connected = true;
+        latch->pcconnect_irq_asserted = false;
+        pcconnect_set_rx_ready_callback(be300_pcconnect_uart_rx_ready, latch);
     }
 
     if (enable_ppsh) {
