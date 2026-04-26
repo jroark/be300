@@ -14,8 +14,12 @@ typedef struct {
     bool     attached;
     bool     dirty;
     bool     irq_pending;
+    bool     state_change_pending;
     bool     boot_visible;
     bool     boot_status_floating;
+    bool     cis_funcid_seen;
+    bool     insert_event_pending;
+    bool     card_windows_enabled;
 
     uint8_t  companion_page[0x1000];
     uint8_t  cis[256];
@@ -48,6 +52,7 @@ bool     cf_present(const cf_state_t *s);
 void     cf_set_boot_visibility(cf_state_t *s, bool visible);
 bool     cf_boot_handles_rom_offset(const cf_state_t *s, uint32_t offset);
 void     cf_clear_irq(cf_state_t *s);
+void     cf_consume_state_change(cf_state_t *s);
 uint32_t cf_giu_source_bits(const cf_state_t *s);
 uint16_t cf_card_state_bits(const cf_state_t *s);
 uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size);
@@ -59,4 +64,6 @@ void     cf_boot_write(cf_state_t *s, uint32_t offset, unsigned size,
 uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size);
 void     cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
                          uint64_t value);
-uint64_t cf_cis_read(const cf_state_t *s, uint32_t offset, unsigned size);
+bool     cf_pcmcia_windows_enabled(const cf_state_t *s);
+uint8_t  cf_cis_read_byte(cf_state_t *s, uint32_t cis_idx);
+uint64_t cf_cis_read(cf_state_t *s, uint32_t offset, unsigned size);

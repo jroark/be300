@@ -147,6 +147,79 @@ DEVICE_ACCESS(be300_nand)
         } else {
             uint64_t val = cf_card_state_bits(d->cf);
             memory_writemax64(cpu, data, len, val);
+            /*
+             * The GIRQ0-0 dispatcher (hardware.txt:91-101) inspects bits
+             * 0x22 once to dispatch SYSINTR_PCMCIA_STATE; the edge cause
+             * does not persist across reads on real hardware (only the
+             * card-present level bit 0 stays set).  Clear the
+             * state-change pending flag after the cause has been read so
+             * subsequent dispatcher passes see level-only and the GIU
+             * source bit deasserts via cf_giu_source_bits.
+             */
+            cf_consume_state_change(d->cf);
+        }
+        return 1;
+    }
+
+    /*
+     * PCMCIA card attribute-memory alias at PA 0x0A00D000.
+     *
+     * The real inserted-card VRC4173 survey calls out a detailed dump at
+     * PA 0x0A00D000 (docs/hardware/hw_dump_vrc4173.txt:13), and WinCE
+     * pcmcia.dll programs socket 0's first 4 KB card window to
+     * 0x0A00D000-0x0A00DFFF (runtime PC 0x0198C5D8..0x0198C618).
+     * CardGetFirstTuple then reads it through the byte-wide
+     * attribute-memory helper, which applies the PC Card every-other-byte
+     * stride before looking for CISTPL_FUNCID.
+     *
+     * The same physical page is also the ROM-era NAND direct-I/O window
+     * during cold boot, so keep NAND ownership until pcmcia.dll has
+     * initialized the CF companion block.  Once that happens, the bridge
+     * decode belongs to the card window and reads expose the CF CIS; writes
+     * are ignored because the seeded CIS is ROM-like attribute memory.
+     *
+     * TODO(2026-04-26): replace this decode handoff with a named model of
+     * the BE-300/VRC4173 PCMCIA window-translation registers once the
+     * companion bridge map is identified.
+     */
+    if (d->cf && cf_pcmcia_windows_enabled(d->cf) &&
+        offset >= 0xD000u && offset < 0xD800u) {
+        if (writeflag == MEM_READ) {
+            uint64_t val = cf_cis_read(d->cf, offset - 0xD000u,
+                (unsigned)len);
+            memory_writemax64(cpu, data, len, val);
+        }
+        return 1;
+    }
+
+    /*
+     * PCMCIA card I/O window at PA 0x0A00C000.
+     *
+     * Real-hardware diffs show activity at PA 0x0A00C170 on the VRC4173
+     * C000 page (docs/hardware/hw_dump_diffs.txt:1538), and the ROM restore
+     * path already uses 0x0A00C170/0x0A00C376 as the CF ATA taskfile window.
+     * WinCE pcmcia.dll maps the same host page with VirtualCopy during
+     * CardMapWindow; atadisk.dll then polls the secondary ATA status byte at
+     * mapped offset 0x177 and the alternate-status byte at 0x376.
+     *
+     * Do this only after pcmcia.dll has enabled card windows so cold-boot
+     * NAND direct-I/O and restore-boot CF visibility keep their existing
+     * semantics.  The restore path's boot-visible gate intentionally models
+     * ROM/NANDWRITER discovery; the runtime PCMCIA card I/O window must
+     * expose the inserted CF taskfile directly.
+     *
+     * TODO(2026-04-26): fold this into a named BE-300/VRC4173 PCMCIA bridge
+     * model once the socket window-translation register layout is identified.
+     */
+    if (d->cf && cf_pcmcia_windows_enabled(d->cf) &&
+        ((offset >= 0xC170u && offset < 0xC178u) ||
+         offset == 0xC376u)) {
+        if (writeflag == MEM_WRITE) {
+            uint64_t val = memory_readmax64(cpu, data, len);
+            cf_window_write(d->cf, offset, (unsigned)len, val);
+        } else {
+            uint64_t val = cf_window_read(d->cf, offset, (unsigned)len);
+            memory_writemax64(cpu, data, len, val);
         }
         return 1;
     }
@@ -241,22 +314,24 @@ DEVICE_ACCESS(be300_companion_ab)
         memcpy(buf, &d->bytes[off], len);
 
         /*
-         * pcmcia.dll maps PA 0x0B000100 as its socket status block.  The
-         * card-type path treats bit 6 clear in these status bytes as card
-         * media present.  The former RAM stub returned zero after reset, so
-         * COShell saw a synthetic "Other" card even without --cf.  No-card
-         * reads expose bit 6 set here while 0xaa001044 preserves the
-         * adapter/unit-present state observed on real hardware.
+         * The attached CF card is reported by the primary companion CF
+         * status page at 0x0A001000 and by the card attribute window.
+         * pcmcia.dll also maps PA 0x0B000100 as another socket status
+         * block, and card_ex.dll treats bit 6 clear in these status bytes
+         * as card media present.  Keep this secondary block in settled
+         * no-card state even when --cf is attached; otherwise the guest
+         * sees a second synthetic card and opens the "Unidentified PCCard
+         * Adapter" prompt for Socket 1.  Bits 4 and 5 are state-change
+         * bits in pcmcia.dll's socket worker, so clear them instead of
+         * preserving the guest-written latch value.
          *
-         * TODO(2026-04-25): replace the status overlay with named
-         * VRC4173/BE-300 PCMCIA bridge semantics once the secondary
-         * companion register map is identified.
+         * TODO(2026-04-25): replace this with named VRC4173/BE-300
+         * PCMCIA bridge semantics once the secondary companion socket map
+         * is identified.
          */
-        if (!cf_present(d->cf)) {
-            for (size_t i = 0; i < len; i++) {
-                if (companion_ab_no_card_status_byte(off + (uint32_t)i))
-                    buf[i] |= 0x40u;
-            }
+        for (size_t i = 0; i < len; i++) {
+            if (companion_ab_no_card_status_byte(off + (uint32_t)i))
+                buf[i] = (uint8_t)((buf[i] & ~(uint8_t)0x30u) | 0x40u);
         }
 
         be300_probe_note_mmio("vrc4173-companion-ab", off, 'R',
@@ -1848,8 +1923,7 @@ DEVICE_ACCESS(be300_pcmcia_attr)
             } else {
                 cis_idx = off;
             }
-            data[i] = (cis_idx < sizeof(d->cf->cis))
-                ? d->cf->cis[cis_idx] : 0xFFu;
+            data[i] = cf_cis_read_byte(d->cf, cis_idx);
         }
     } else {
         memset(data, 0xFF, len);
@@ -1865,16 +1939,14 @@ void be300_register_pcmcia_attr_window(struct machine *gxm, machine_t *m)
     d->cf = m ? &m->cf : NULL;
 
     /*
-     * DM_READS_HAVE_NO_SIDE_EFFECTS: both branches (CIS bytes and the
-     * 0xFF pull-up) are pure functions of the offset for the lifetime
-     * of a boot, so dyntrans is free to cache reads. The CF image is
-     * attached before any guest code runs, so the cache always sees a
-     * stable cf_present() decision.
+     * The CIS window is a read-only view of the card's attribute memory, but
+     * the CF socket status settles after the guest reaches the FUNCID tuple.
+     * Keep reads dispatched so that transition cannot be optimized away.
      */
     memory_device_register(gxm->memory, "be300_pcmcia_attr",
         0x0B400000ULL, 0x300000ULL,
         dev_be300_pcmcia_attr_access, (void *)d,
-        DM_DEFAULT | DM_READS_HAVE_NO_SIDE_EFFECTS, NULL);
+        DM_DEFAULT, NULL);
 }
 
 

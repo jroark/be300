@@ -7,6 +7,8 @@
 
 #define CF_COMPANION_PRESENT UINT32_C(0x00000004)
 #define CF_COMPANION_REMOVED UINT32_C(0x0000000C)
+#define CF_SOCKET_NO_MEDIA UINT32_C(0x00000040)
+#define CF_INSERT_EVENT UINT8_C(0x08)
 
 #define CF_ST_ERR  0x01u
 #define CF_ST_DRQ  0x08u
@@ -15,6 +17,9 @@
 #define CF_ST_BSY  0x80u
 
 #define CF_DH_LBA  0x40u
+
+#define CF_CISTPL_FUNCID UINT8_C(0x21)
+#define CF_FUNCID_FIXED_DISK UINT8_C(0x04)
 
 #define CF_CMD_RECAL        0x10u
 #define CF_CMD_READ_SECTORS 0x20u
@@ -67,7 +72,16 @@ static void cf_refresh_socket_status(cf_state_t *s)
 
     /* Card-state summary used by pcmcia/card_ex probing. */
     cf_put_companion_u32(s, 0x0040, s->attached ? 0x00000001u : 0x00000000u);
-    if (!s->attached) {
+    if (s->attached) {
+        /*
+         * Do not refresh 0x0044/0x004C for attached media.  pcmcia.dll
+         * treats those words as live state latches and writes values such
+         * as 0x23 and 0x08 while running the socket state machine.  The
+         * inserted-card hardware dump does not list non-zero values for
+         * 0x0A001044/0x0A00104C, so preserving the guest-written latch
+         * state is closer to hardware than synthesising fixed status bits.
+         */
+    } else {
         /*
          * pcmcia.dll uses 0xaa001044 both as a socket/media probe and as
          * part of CardGetStatus.  Real hardware with the PCMCIA adapter
@@ -85,7 +99,7 @@ static void cf_refresh_socket_status(cf_state_t *s)
          * bridge semantics once the companion PCMCIA register map is known.
          */
         cf_put_companion_u32(s, 0x0044, 0x00000000u);
-        cf_put_companion_u32(s, 0x004C, 0x00000040u);
+        cf_put_companion_u32(s, 0x004C, CF_SOCKET_NO_MEDIA);
     }
 }
 
@@ -125,7 +139,7 @@ static void cf_seed_cis(cf_state_t *s)
         0x1A, 0x05, 0x01, 0x23, 0x00, 0x02, 0x03,
         0x1B, 0x15,
         0xE1, 0x01, 0x3D, 0x11, 0x55, 0x1E, 0xFC, 0x23,
-        0xF0, 0x61, 0x80, 0x01, 0x07, 0x86, 0x03, 0x01,
+        0xF0, 0x61, 0x70, 0x01, 0x07, 0x76, 0x03, 0x01,
         0x30, 0x68, 0xD0, 0x10, 0x00,
         0x14, 0x00,
         0xFF, 0x00,
@@ -152,11 +166,34 @@ static void cf_seed_companion_page(cf_state_t *s)
         { 0x00E0, 0x00000000u },
         { 0x00E4, 0x00000000u },
     };
+    static const struct seed_entry inserted_regs[] = {
+        /*
+         * Inserted-CF steady-state companion words from the real-hardware
+         * VRC4173 dump (docs/hardware/hw_dump_vrc4173.txt:170-176).  These
+         * are socket/status fields, not ATA taskfile data; keeping them
+         * hardware-seeded lets the guest classify --cf as a storage card
+         * without inventing a PCMCIA jacket accessory.
+         */
+        { 0x0B10, 0x00000048u },
+        { 0x0B14, 0x00000001u },
+        { 0x0B20, 0x00000001u },
+        { 0x0B2C, 0x00000001u },
+        { 0x0B34, 0x000000FFu },
+        { 0x0B58, 0x0000000Fu },
+        { 0x0B64, 0x00000001u },
+        { 0x0B74, 0x00000004u },
+        { 0x0B90, 0x00000008u },
+    };
     size_t i;
 
     memset(s->companion_page, 0, sizeof(s->companion_page));
     for (i = 0; i < sizeof(regs) / sizeof(regs[0]); i++)
         memcpy(&s->companion_page[regs[i].off], &regs[i].val, sizeof(uint32_t));
+    if (s->attached) {
+        for (i = 0; i < sizeof(inserted_regs) / sizeof(inserted_regs[0]); i++)
+            memcpy(&s->companion_page[inserted_regs[i].off],
+                &inserted_regs[i].val, sizeof(uint32_t));
+    }
     cf_refresh_socket_status(s);
 }
 
@@ -281,7 +318,11 @@ int cf_load_image(cf_state_t *s, const char *path)
     s->attached = true;
     s->dirty = false;
     s->irq_pending = true;
+    s->state_change_pending = true;
     s->boot_visible = false;
+    s->cis_funcid_seen = false;
+    s->insert_event_pending = true;
+    s->card_windows_enabled = false;
 
     free(s->image_path);
     s->image_path = strdup(path);
@@ -346,16 +387,45 @@ void cf_clear_irq(cf_state_t *s)
         s->irq_pending = false;
 }
 
+void cf_consume_state_change(cf_state_t *s)
+{
+    if (s)
+        s->state_change_pending = false;
+}
+
 uint32_t cf_giu_source_bits(const cf_state_t *s)
 {
-    return (s && s->attached && s->irq_pending) ? 0x00000001u : 0u;
+    /*
+     * GIRQ0-0 source bit (PA 0xAA000004 bit 0).  hardware.txt:32
+     * documents this bit as the cascaded PCMCIA interrupt.  Keep the
+     * source asserted while either the legacy boot-restore path has set
+     * irq_pending or a card-state change is pending delivery.
+     *
+     * state_change_pending survives the early-NK clears that hit
+     * cf_clear_irq via writes to PA 0x0A000010/0x0A000014 (cc590ba5
+     * "Implement ROM restore CF path"), so the SYSINTR_PCMCIA_STATE
+     * dispatch path (NK FUN_8007aff8 / FUN_8007b134 / FUN_8007b1f8 in
+     * the verified WinCE 3.0 NK dump) still sees bit 0 once the kernel
+     * unmasks GIU GIRQ0-0 after init.  Clearing happens via the
+     * existing GIRQ0-0 ack path at PA 0xAA00A03C (be300_devices.c
+     * dev_be300_nand_access offset 0xA03C-0xA040) and via the
+     * cf_companion_write IRQ-clear at 0x40/0x50.
+     */
+    return (s && s->attached &&
+            (s->irq_pending || s->state_change_pending)) ? 0x00000001u : 0u;
 }
 
 uint16_t cf_card_state_bits(const cf_state_t *s)
 {
     if (!s || !s->attached)
         return 0x0000u;
-    return s->irq_pending ? 0x0023u : 0x0001u;
+    /*
+     * 0xAA00A03C cause bits read by NK GIRQ0-0 dispatcher
+     * (hardware.txt:91-101): bits 0x22 -> SYSINTR_PCMCIA_STATE,
+     * bit 0x01 -> SYSINTR_PCMCIA_LEVEL.  Report state-change cause while
+     * a state_change is pending delivery; otherwise level-only.
+     */
+    return (s->irq_pending || s->state_change_pending) ? 0x0023u : 0x0001u;
 }
 
 static uint32_t cf_current_lba(const cf_state_t *s)
@@ -660,9 +730,11 @@ static int cf_decode_taskfile_offset(uint32_t offset, bool *is_alt)
     *is_alt = false;
     if (page_off >= 0x1F0u && page_off <= 0x1F7u)
         return (int)(page_off - 0x1F0u);
+    if (page_off >= 0x170u && page_off <= 0x177u)
+        return (int)(page_off - 0x170u);
     if (page_off >= 0x180u && page_off <= 0x187u)
         return (int)(page_off - 0x180u);
-    if (page_off == 0x206u || page_off == 0x3F6u) {
+    if (page_off == 0x206u || page_off == 0x376u || page_off == 0x3F6u) {
         *is_alt = true;
         return 0;
     }
@@ -751,8 +823,27 @@ static void cf_write_reg8(cf_state_t *s, int reg, bool is_alt, bool boot_path,
     }
 }
 
-uint64_t cf_cis_read(const cf_state_t *s, uint32_t offset,
-                     unsigned size)
+static void cf_note_cis_read(cf_state_t *s, uint32_t cis_idx)
+{
+    if (!s || s->cis_funcid_seen || cis_idx + 2 >= sizeof(s->cis))
+        return;
+
+    if (s->cis[cis_idx] == CF_CISTPL_FUNCID &&
+        s->cis[cis_idx + 1] >= 2 &&
+        s->cis[cis_idx + 2] == CF_FUNCID_FIXED_DISK)
+        s->cis_funcid_seen = true;
+}
+
+uint8_t cf_cis_read_byte(cf_state_t *s, uint32_t cis_idx)
+{
+    if (!s || cis_idx >= sizeof(s->cis))
+        return 0xFFu;
+
+    cf_note_cis_read(s, cis_idx);
+    return s->cis[cis_idx];
+}
+
+uint64_t cf_cis_read(cf_state_t *s, uint32_t offset, unsigned size)
 {
     uint64_t val = 0;
     unsigned i;
@@ -761,25 +852,63 @@ uint64_t cf_cis_read(const cf_state_t *s, uint32_t offset,
         uint32_t off = offset + i;
         uint8_t byte = 0xFFu;
 
-        if ((off & 1u) == 0u && (off >> 1) < sizeof(s->cis))
-            byte = s->cis[off >> 1];
+        if ((off & 1u) == 0u)
+            byte = cf_cis_read_byte(s, off >> 1);
         val |= (uint64_t)byte << (8u * i);
     }
 
     return val;
 }
 
+bool cf_pcmcia_windows_enabled(const cf_state_t *s)
+{
+    return s && s->attached && s->card_windows_enabled;
+}
+
 uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size)
 {
     uint64_t val = 0;
     unsigned i;
+    bool consumed_insert_event = false;
 
     if (!s || size == 0)
         return 0;
 
     cf_refresh_socket_status(s);
-    for (i = 0; i < size && (offset + i) < sizeof(s->companion_page); i++)
-        val |= (uint64_t)s->companion_page[offset + i] << (8u * i);
+    for (i = 0; i < size && (offset + i) < sizeof(s->companion_page); i++) {
+        uint8_t byte = s->companion_page[offset + i];
+
+        /*
+         * The real inserted-CF dump has VRC4173 offset 0x1B10 = 0x48
+         * (docs/hardware/hw_dump_vrc4173.txt, 0x0A001B10 row).  During
+         * early pcmcia.dll socket init, bit 6 also gates whether the CIS is
+         * scanned; expose only the card-state edge bit until the CF FUNCID
+         * tuple has been read, then report the settled inserted-card value.
+         */
+        if (s->attached && offset + i == 0x0B10u)
+            byte = (uint8_t)((byte & ~(uint8_t)0x48u) |
+                (s->cis_funcid_seen ? 0x48u : 0x08u));
+
+        /*
+         * VRC4173 offset 0x1B50 is observed as zero in the real inserted-CF
+         * steady-state dump (docs/hardware/hw_dump_vrc4173.txt, 0x0A001B50
+         * row), but pcmcia.dll's SYSINTR_PCMCIA_STATE thread uses bit 3 as
+         * the insertion edge that triggers the initial CIS scan.  Expose the
+         * edge once after host attachment, then return to the dumped steady
+         * value so later card-unit/battery queries do not see a PCMCIA jacket
+         * accessory event.
+         */
+        if (s->attached && s->insert_event_pending &&
+            offset + i == 0x0B50u) {
+            byte |= CF_INSERT_EVENT;
+            consumed_insert_event = true;
+        }
+
+        val |= (uint64_t)byte << (8u * i);
+    }
+
+    if (consumed_insert_event)
+        s->insert_event_pending = false;
 
     return val;
 }
@@ -799,6 +928,11 @@ void cf_companion_write(cf_state_t *s, uint32_t offset, unsigned size,
 
         if (!s->attached && cf_is_no_card_owned_offset(word_off))
             continue;
+        if (s->attached && word_off >= 0x0B00u && word_off < 0x0BA0u)
+            s->card_windows_enabled = true;
+        if (word_off == 0x0B50u &&
+            ((value >> (8u * i)) & CF_INSERT_EVENT) != 0)
+            s->insert_event_pending = false;
 
         s->companion_page[byte_off] =
             (uint8_t)((value >> (8u * i)) & 0xFFu);
