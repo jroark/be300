@@ -91,6 +91,27 @@ static void cf_refresh_socket_status(cf_state_t *s)
 
 static void cf_seed_cis(cf_state_t *s)
 {
+    /*
+     * Minimal CIS for a CompactFlash ATA storage card. The order and
+     * tuple set are what WinCE 3.0 pcmcia.dll matches against to
+     * dispatch to atadisk.dll instead of opening the "Unidentified
+     * PCCard Adapter" prompt:
+     *
+     *   CISTPL_DEVICE       — generic device descriptor (FUNCSPEC, 250 ns).
+     *   CISTPL_VERS_1       — vendor / product strings.
+     *   CISTPL_MANFID       — manufacturer + product code (used by the
+     *                          HKLM\Drivers\PCMCIA\Detect\NN registry
+     *                          match path, falls through to FUNCID class
+     *                          match if no entry matches).
+     *   CISTPL_FUNCID       — function code 0x04 (FIXED_DISK), SYSINIT 0x01.
+     *                          PC Card Standard Vol 4 (Metaformat) §7.1.
+     *   CISTPL_FUNCE        — fixed-disk interface = 0x01 (IDE).
+     *                          PC Card Standard Vol 4 §7.2.2.
+     *   CISTPL_CONFIG       — configuration register base + last index.
+     *   CISTPL_CFTABLE_ENTRY — single 8-bit I/O entry.
+     *   CISTPL_NO_LINK      — no MFC link table.
+     *   CISTPL_END          — terminate tuple chain (PC Card §3.2.10).
+     */
     static const uint8_t cis[] = {
         0x01, 0x03, 0xDC, 0x00, 0xFF,
         0x15, 0x1A,
@@ -98,6 +119,9 @@ static void cf_seed_cis(cf_state_t *s)
         'N', 'i', 'n', 'j', 'a', 'A', 'T', 'A', '-', 0x00,
         'V', '1', '.', '0', 0x00,
         'A', 'P', '0', '0', ' ', 0x00, 0xFF,
+        0x20, 0x04, 0x23, 0x01, 0x02, 0x00,
+        0x21, 0x02, 0x04, 0x01,
+        0x22, 0x02, 0x01, 0x01,
         0x1A, 0x05, 0x01, 0x23, 0x00, 0x02, 0x03,
         0x1B, 0x15,
         0xE1, 0x01, 0x3D, 0x11, 0x55, 0x1E, 0xFC, 0x23,
@@ -727,8 +751,8 @@ static void cf_write_reg8(cf_state_t *s, int reg, bool is_alt, bool boot_path,
     }
 }
 
-static uint64_t cf_cis_read(const cf_state_t *s, uint32_t offset,
-                            unsigned size)
+uint64_t cf_cis_read(const cf_state_t *s, uint32_t offset,
+                     unsigned size)
 {
     uint64_t val = 0;
     unsigned i;
