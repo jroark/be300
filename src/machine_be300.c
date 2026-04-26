@@ -15,6 +15,7 @@
 #include "be300.h"
 #include "be300_probe.h"
 #include "host_io.h"
+#include "pcconnect.h"
 #include "ppsh.h"
 #include "ui.h"
 
@@ -353,6 +354,7 @@ machine_t *be300_create(const machine_config_t *cfg)
     const char *autostop_env;
     if (!m) return NULL;
     m->cfg = *cfg;
+    pcconnect_configure(cfg->enable_pcconnect_time_sync);
     m->boot_mode = BE300_BOOT_NONE;
     m->use_builtin_ui = true;
     m->save_exit_screenshot = true;
@@ -756,6 +758,8 @@ static bool be300_run_batch(machine_t *m)
         ui_update(m);
 
     be300_touch_tick(m);
+    if (m->cfg.enable_pcconnect_time_sync)
+        be300_pcconnect_poll();
 
     if (m->use_builtin_ui && ui_should_quit(m))
         return false;
@@ -918,6 +922,7 @@ void be300_destroy(machine_t *m)
         m->nk_override_path = NULL;
     }
     cf_destroy(&m->cf);
+    pcconnect_configure(false);
 
     free(m);
 

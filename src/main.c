@@ -21,6 +21,7 @@ static void usage(const char *prog)
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
+        "  --pcconnect-time-sync Enable experimental Casio PC Connect time-sync peer\n"
         "  --speed <mhz>         Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
         "  --mmio-coverage       First-hit log per (device, offset, op) + shutdown coverage table\n"
         "  --detect-stall        Emit [BE300_STALL] when guest spins on a tight PC set\n"
@@ -44,6 +45,7 @@ int main(int argc, char *argv[])
         .log_mmio        = false,
         .log_nand_legacy = false,
         .enable_ppsh     = false,
+        .enable_pcconnect_time_sync = false,
         .restore         = false,
         .mmio_coverage   = false,
         .detect_stall    = false,
@@ -69,6 +71,8 @@ int main(int argc, char *argv[])
             cfg.log_mmio = true;
         } else if (strcmp(argv[i], "--ppsh") == 0) {
             cfg.enable_ppsh = true;
+        } else if (strcmp(argv[i], "--pcconnect-time-sync") == 0) {
+            cfg.enable_pcconnect_time_sync = true;
         } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {
             cfg.nand_path = argv[++i];
         } else if (strcmp(argv[i], "--cf") == 0 && i + 1 < argc) {
