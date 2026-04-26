@@ -59,3 +59,4 @@ void     cf_boot_write(cf_state_t *s, uint32_t offset, unsigned size,
 uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size);
 void     cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
                          uint64_t value);
+uint64_t cf_cis_read(const cf_state_t *s, uint32_t offset, unsigned size);
