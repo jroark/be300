@@ -808,8 +808,40 @@ uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size)
         return 0;
 
     cf_refresh_socket_status(s);
-    for (i = 0; i < size && (offset + i) < sizeof(s->companion_page); i++)
-        val |= (uint64_t)s->companion_page[offset + i] << (8u * i);
+    for (i = 0; i < size && (offset + i) < sizeof(s->companion_page); i++) {
+        uint8_t byte = s->companion_page[offset + i];
+
+        /*
+         * VRC4173 companion latch interrupt-pending status at PA
+         * 0x0A001B50 bit 3.  pcmcia.dll's SYSINTR_PCMCIA_STATE worker
+         * thread (FUN_0198cfd4 in ce/restore_images/pcmcia.dll, runtime
+         * load base 0x01980000) wakes from
+         * WaitForSingleObject(InterruptInitialize-bound event) and
+         * dispatches via FUN_0198ce38 at runtime PC 0x0198ce38, which
+         * tests:
+         *   if (((*(uint *)(DAT_0198e134 + 0x50) & 8) != 0) &&
+         *       (*DAT_0198e148 == '\0'))
+         *     return 3;            -- card-accepted dispatch
+         * DAT_0198e134 maps PA 0x0A001B00; +0x50 is therefore PA
+         * 0x0A001B50.  *DAT_0198e148 is the "card already processed"
+         * flag, set to 1 by the caller (FUN_0198cfd4) after the first
+         * return-3, so the bit-3 check only matters on the first
+         * post-insert wake.  The level-true synthesis here is safe
+         * across subsequent polls because the caller's flag short-
+         * circuits this branch.  hw_dump_vrc4173.txt:173 shows
+         * 0x0A001B50 = 0 in steady (no event) state on real hardware,
+         * matching the auto-clear edge behaviour that we approximate
+         * with "while card attached".
+         *
+         * NK FUN_8007aff8 at 0x8007aff8 also tests
+         * (DAT_aa001b50 & DAT_aa001b58 & 8) != 0 with 0x1B58 (the
+         * mask) pre-programmed to 8 in FUN_8007b2ac, so the same bit
+         * also gates the kernel's PCMCIA-state confirmation.
+         */
+        if (offset + i == 0x0B50u && s->attached)
+            byte |= 0x08u;
+        val |= (uint64_t)byte << (8u * i);
+    }
 
     return val;
 }
