@@ -281,6 +281,7 @@ int cf_load_image(cf_state_t *s, const char *path)
     s->attached = true;
     s->dirty = false;
     s->irq_pending = true;
+    s->state_change_pending = true;
     s->boot_visible = false;
 
     free(s->image_path);
@@ -346,16 +347,45 @@ void cf_clear_irq(cf_state_t *s)
         s->irq_pending = false;
 }
 
+void cf_consume_state_change(cf_state_t *s)
+{
+    if (s)
+        s->state_change_pending = false;
+}
+
 uint32_t cf_giu_source_bits(const cf_state_t *s)
 {
-    return (s && s->attached && s->irq_pending) ? 0x00000001u : 0u;
+    /*
+     * GIRQ0-0 source bit (PA 0xAA000004 bit 0).  hardware.txt:32
+     * documents this bit as the cascaded PCMCIA interrupt.  Keep the
+     * source asserted while either the legacy boot-restore path has set
+     * irq_pending or a card-state change is pending delivery.
+     *
+     * state_change_pending survives the early-NK clears that hit
+     * cf_clear_irq via writes to PA 0x0A000010/0x0A000014 (cc590ba5
+     * "Implement ROM restore CF path"), so the SYSINTR_PCMCIA_STATE
+     * dispatch path (NK FUN_8007aff8 / FUN_8007b134 / FUN_8007b1f8 in
+     * the verified WinCE 3.0 NK dump) still sees bit 0 once the kernel
+     * unmasks GIU GIRQ0-0 after init.  Clearing happens via the
+     * existing GIRQ0-0 ack path at PA 0xAA00A03C (be300_devices.c
+     * dev_be300_nand_access offset 0xA03C-0xA040) and via the
+     * cf_companion_write IRQ-clear at 0x40/0x50.
+     */
+    return (s && s->attached &&
+            (s->irq_pending || s->state_change_pending)) ? 0x00000001u : 0u;
 }
 
 uint16_t cf_card_state_bits(const cf_state_t *s)
 {
     if (!s || !s->attached)
         return 0x0000u;
-    return s->irq_pending ? 0x0023u : 0x0001u;
+    /*
+     * 0xAA00A03C cause bits read by NK GIRQ0-0 dispatcher
+     * (hardware.txt:91-101): bits 0x22 -> SYSINTR_PCMCIA_STATE,
+     * bit 0x01 -> SYSINTR_PCMCIA_LEVEL.  Report state-change cause while
+     * a state_change is pending delivery; otherwise level-only.
+     */
+    return (s->irq_pending || s->state_change_pending) ? 0x0023u : 0x0001u;
 }
 
 static uint32_t cf_current_lba(const cf_state_t *s)
