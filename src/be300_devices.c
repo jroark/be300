@@ -146,6 +146,16 @@ DEVICE_ACCESS(be300_nand)
         } else {
             uint64_t val = cf_card_state_bits(d->cf);
             memory_writemax64(cpu, data, len, val);
+            /*
+             * The GIRQ0-0 dispatcher (hardware.txt:91-101) inspects bits
+             * 0x22 once to dispatch SYSINTR_PCMCIA_STATE; the edge cause
+             * does not persist across reads on real hardware (only the
+             * card-present level bit 0 stays set).  Clear the
+             * state-change pending flag after the cause has been read so
+             * subsequent dispatcher passes see level-only and the GIU
+             * source bit deasserts via cf_giu_source_bits.
+             */
+            cf_consume_state_change(d->cf);
         }
         return 1;
     }
