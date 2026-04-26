@@ -877,8 +877,25 @@ size_t be300_drain_serial(machine_t *m, char *dst, size_t dst_len)
 
 void be300_set_touch(machine_t *m, bool down, uint16_t x, uint16_t y)
 {
+    bool was_down;
+
     if (!m)
         return;
+
+    was_down = m->touch_down;
+    if (was_down && !down) {
+        /*
+         * Host input can deliver a short click only at an emulator batch
+         * boundary. Give the PIU one final tick in the old pen-down state
+         * so any matured coordinate conversion is queued before release
+         * stops the scan sequencer.
+         */
+        m->touch_x = x;
+        m->touch_y = y;
+        __sync_synchronize();
+        be300_touch_tick(m);
+    }
+
     m->touch_down = down;
     m->touch_x = x;
     m->touch_y = y;

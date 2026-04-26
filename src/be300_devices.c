@@ -2687,6 +2687,8 @@ struct be300_input_device {
     uint16_t   piu_padstate;       /* PADSTATE(2:0) scan sequencer state */
     bool       piu_prev_touch;     /* previous touch_down for edge detect */
     bool       piu_penstc;         /* PENSTC latched while PENCHGINTR is set */
+    bool       piu_queued_penchg;  /* one contact-state change after latched PENCHGINTR */
+    bool       piu_queued_penstc;
     bool       piu_data_armed;     /* PenDataScan has a coordinate sample due */
     uint64_t   piu_clock_ns;       /* VRC4173 PIU peripheral timebase */
     uint64_t   piu_last_host_ns;
@@ -2760,8 +2762,18 @@ static void piu_raise_penchg(struct be300_input_device *d, bool down)
      * disappear if WinCE services the interrupt after the host button has
      * already lifted.
      */
-    if (!(d->piu_regs[1] & PIU_PENDING_PENCHG))
-        d->piu_penstc = down;
+    if (d->piu_regs[1] & PIU_PENDING_PENCHG) {
+        /*
+         * PENSTC deliberately does not change while PENCHGINTR is pending.
+         * Preserve one later edge and expose it after the guest W1C, so a
+         * short down/up host tap cannot collapse into a permanent down.
+         */
+        d->piu_queued_penchg = true;
+        d->piu_queued_penstc = down;
+        return;
+    }
+
+    d->piu_penstc = down;
     d->piu_regs[1] |= PIU_PENDING_PENCHG;
 }
 
@@ -2829,6 +2841,21 @@ static void piu_clear_coordinate_state(struct be300_input_device *d)
     d->piu_next_page = 0;
 }
 
+static void piu_stop_coordinate_scan(struct be300_input_device *d)
+{
+    if (!d)
+        return;
+
+    /*
+     * VRC4173 UM §9.2 moves IntervalNextScan back to WaitPenTouch on
+     * release, but §9.3.6 keeps page-buffer VALID set until the matching
+     * PADPAGE interrupt source is cleared. Do not discard unread coordinate
+     * pages just because the pen lifted.
+     */
+    d->piu_data_armed = false;
+    d->piu_data_ready_ns = 0;
+}
+
 static bool piu_wait_pen_touch_enabled(const struct be300_input_device *d)
 {
     uint16_t ctl;
@@ -2842,10 +2869,7 @@ static bool piu_wait_pen_touch_enabled(const struct be300_input_device *d)
 
 static uint64_t piu_host_monotonic_ns(void)
 {
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    return be300_host_monotonic_ns();
 }
 
 static uint64_t piu_now_ns(struct be300_input_device *d)
@@ -2952,7 +2976,7 @@ static void piu_signal_pen_up(struct be300_input_device *d)
 
     wait_enabled = piu_wait_pen_touch_enabled(d);
     should_signal = wait_enabled || d->piu_padstate >= 4;
-    piu_clear_coordinate_state(d);
+    piu_stop_coordinate_scan(d);
     if (wait_enabled)
         d->piu_padstate = 4;
     else if (d->piu_padstate > 1)
@@ -3042,6 +3066,8 @@ static void piu_reset_regs(struct be300_input_device *d)
     d->piu_regs[3] = PIU_DEFAULT_STABLE;
     memset(d->piu_page_adc, 0, sizeof(d->piu_page_adc));
     memset(d->piu_page_valid, 0, sizeof(d->piu_page_valid));
+    d->piu_queued_penchg = false;
+    d->piu_queued_penstc = false;
 }
 
 /*
@@ -3170,8 +3196,15 @@ DEVICE_ACCESS(be300_touch)
                     d->piu_page_valid[0] = false;
                 if (pending_ack & PIU_PENDING_PAGE1)
                     d->piu_page_valid[1] = false;
-                if (pending_ack & PIU_PENDING_PENCHG)
-                    d->piu_penstc = m->touch_down;
+                if (pending_ack & PIU_PENDING_PENCHG) {
+                    if (d->piu_queued_penchg) {
+                        d->piu_penstc = d->piu_queued_penstc;
+                        d->piu_queued_penchg = false;
+                        d->piu_regs[1] |= PIU_PENDING_PENCHG;
+                    } else {
+                        d->piu_penstc = m->touch_down;
+                    }
+                }
                 if (lost_acked && m->touch_down &&
                     piu_wait_pen_touch_enabled(d) &&
                     (d->piu_regs[1] & PIU_PENDING_COORDINATE) == 0) {
