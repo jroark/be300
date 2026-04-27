@@ -480,7 +480,8 @@ machine_t *be300_create(const machine_config_t *cfg)
     rtc_init(&m->rtc);
     gpio_init(&m->gpio);
     nand_init(&m->nand, NULL, 0, 0);
-    cf_init(&m->cf);
+    for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
+        cf_init(&m->cf[i]);
 
     if (cfg->restore)
         m->btn_set2 = 0x80u;
@@ -501,17 +502,29 @@ machine_t *be300_create(const machine_config_t *cfg)
             return NULL;
         }
 
-        if (cfg->cf_path && cf_load_image(&m->cf, cfg->cf_path) != 0) {
-            fprintf(stderr, "[BE300] Failed to load CF image\n");
-            free(m);
-            return NULL;
+        for (unsigned i = 0; i < cfg->cf_count; i++) {
+            if (cf_load_image(&m->cf[i], cfg->cf_paths[i]) != 0) {
+                fprintf(stderr, "[BE300] Failed to load CF image %u\n",
+                    i + 1);
+                free(m);
+                return NULL;
+            }
         }
 
-        if (cfg->cf_path) {
+        if (cfg->cf_count > 0) {
             bool nand_bootable = be300_nand_image_looks_bootable(m);
             bool cf_boot_visible = cfg->restore || !nand_bootable;
 
-            cf_set_boot_visibility(&m->cf, cf_boot_visible);
+            cf_set_boot_visibility(&m->cf[BE300_PRIMARY_CF_SLOT],
+                cf_boot_visible);
+            for (unsigned i = 1; i < cfg->cf_count; i++)
+                cf_set_boot_visibility(&m->cf[i], false);
+            if (cfg->cf_count > 1) {
+                fprintf(stderr,
+                    "[BE300] Secondary CF image loaded; secondary socket "
+                    "MMIO is not decoded yet, so only slot 0 is "
+                    "guest-visible\n");
+            }
         }
 
         /* True cold boot: start at ROM reset vector.
@@ -604,7 +617,8 @@ machine_t *be300_create(const machine_config_t *cfg)
         /* Register NAND flash; pre-split to leave gap at 0x0A00A040 for input device */
         extern void be300_register_nand(struct machine *, nand_state_t *,
             cf_state_t *, bool);
-        be300_register_nand(gxm, &m->nand, &m->cf, cfg->log_mmio);
+        be300_register_nand(gxm, &m->nand,
+            &m->cf[BE300_PRIMARY_CF_SLOT], cfg->log_mmio);
 
         /* Register input devices AFTER latch/NAND (fills pre-carved gaps) */
         extern void be300_register_input(struct machine *, machine_t *, bool);
@@ -937,7 +951,8 @@ void be300_destroy(machine_t *m)
     be300_runtime_finalize(m);
 
     be300_sync_nand_image(m);
-    cf_save_image(&m->cf);
+    for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
+        cf_save_image(&m->cf[i]);
 
     if (m->nand_data) {
         free(m->nand_data);
@@ -947,7 +962,8 @@ void be300_destroy(machine_t *m)
         free(m->nk_override_path);
         m->nk_override_path = NULL;
     }
-    cf_destroy(&m->cf);
+    for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
+        cf_destroy(&m->cf[i]);
     pcconnect_configure(false);
 
     free(m);

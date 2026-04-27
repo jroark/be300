@@ -48,6 +48,9 @@ struct emul;
 /* VR4131 CP0 PRId */
 #define VR4131_PRID      UINT32_C(0x00000C80)
 
+#define BE300_MAX_CF_SLOTS 2u
+#define BE300_PRIMARY_CF_SLOT 0u
+
 /*
  * CLI configuration — parsed from command line, passed to machine setup.
  */
@@ -70,7 +73,8 @@ typedef struct {
 
     const char *rom_path;
     const char *nand_path;
-    const char *cf_path;
+    const char *cf_paths[BE300_MAX_CF_SLOTS];
+    unsigned    cf_count;
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* target CPU speed in MHz; 0 = unthrottled (default: 166) */
     double      frame_lcd_scale; /* framed SDL LCD scale; 0 = default/env */
@@ -107,7 +111,7 @@ typedef struct be300_state {
 
     /* NAND flash controller (VRC4173) */
     nand_state_t nand;
-    cf_state_t   cf;
+    cf_state_t   cf[BE300_MAX_CF_SLOTS];
 
     /* NAND image data (loaded from file) */
     uint8_t     *nand_data;
