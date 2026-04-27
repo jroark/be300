@@ -30,6 +30,7 @@
 #include "machine.h"
 #include "memory.h"
 #include "misc.h"
+#include "net.h"
 #include "console.h"
 #include "timer.h"
 #include "settings.h"
@@ -511,6 +512,24 @@ machine_t *be300_create(const machine_config_t *cfg)
             }
         }
 
+        if (cfg->enable_ne2000) {
+            m->emul->net = net_init(m->emul, NET_INIT_FLAG_GATEWAY,
+                NULL, NET_DEFAULT_IPV4_MASK, NET_DEFAULT_IPV4_LEN,
+                NULL, 0, 0, NULL);
+            if (!m->emul->net) {
+                fprintf(stderr, "[BE300] Failed to initialize emulated network\n");
+                free(m);
+                return NULL;
+            }
+            if (cf_attach_ne2000(&m->cf[BE300_PRIMARY_CF_SLOT], gxm,
+                    m->emul->net,
+                    cfg->net_mac_set ? cfg->net_mac : NULL) != 0) {
+                fprintf(stderr, "[BE300] Failed to attach NE2000 card\n");
+                free(m);
+                return NULL;
+            }
+        }
+
         if (cfg->cf_count > 0) {
             bool nand_bootable = be300_nand_image_looks_bootable(m);
             bool cf_boot_visible = cfg->restore || !nand_bootable;
@@ -772,6 +791,7 @@ static bool be300_run_batch(machine_t *m)
         ui_update(m);
 
     be300_touch_tick(m);
+    cf_ne2000_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     if (m->cfg.enable_pcconnect_time_sync)
         be300_pcconnect_poll();
 

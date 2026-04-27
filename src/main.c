@@ -28,6 +28,27 @@ static bool parse_frame_scale(const char *arg, double *scale_out)
     return true;
 }
 
+static bool parse_mac(const char *arg, uint8_t mac[6])
+{
+    unsigned vals[6];
+    char tail;
+
+    if (!arg || !mac)
+        return false;
+    if (sscanf(arg, "%x:%x:%x:%x:%x:%x%c",
+        &vals[0], &vals[1], &vals[2],
+        &vals[3], &vals[4], &vals[5], &tail) != 6)
+        return false;
+    for (unsigned i = 0; i < 6; i++) {
+        if (vals[i] > 0xFFu)
+            return false;
+        mac[i] = (uint8_t)vals[i];
+    }
+    if ((mac[0] & 1u) != 0)
+        return false;
+    return true;
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -38,6 +59,8 @@ static void usage(const char *prog)
         "  --log-mmio            Log all MMIO register reads/writes to stderr\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
         "  --cf <image>          Attach a FAT16 CF image (may be specified twice)\n"
+        "  --ne2000              Attach a PCMCIA NE2000 Ethernet card\n"
+        "  --net-mac <mac>       Override NE2000 MAC address (aa:bb:cc:dd:ee:ff)\n"
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
@@ -68,6 +91,8 @@ int main(int argc, char *argv[])
         .log_nand_legacy = false,
         .enable_ppsh     = false,
         .enable_pcconnect_time_sync = false,
+        .enable_ne2000   = false,
+        .net_mac_set     = false,
         .restore         = false,
         .mmio_coverage   = false,
         .detect_stall    = false,
@@ -83,6 +108,7 @@ int main(int argc, char *argv[])
         .nand_path      = NULL,
         .cf_paths       = { NULL },
         .cf_count       = 0,
+        .net_mac        = { 0 },
         .sdram_size     = 16u * 1024u * 1024u,
         .target_mhz     = 166u,
         .frame_lcd_scale = 0.0,
@@ -97,6 +123,15 @@ int main(int argc, char *argv[])
             cfg.enable_ppsh = true;
         } else if (strcmp(argv[i], "--pcconnect-time-sync") == 0) {
             cfg.enable_pcconnect_time_sync = true;
+        } else if (strcmp(argv[i], "--ne2000") == 0) {
+            cfg.enable_ne2000 = true;
+        } else if (strcmp(argv[i], "--net-mac") == 0 && i + 1 < argc) {
+            if (!parse_mac(argv[++i], cfg.net_mac)) {
+                fprintf(stderr,
+                    "Error: --net-mac must be an unicast MAC like 10:20:30:00:00:10\n");
+                return 1;
+            }
+            cfg.net_mac_set = true;
         } else if (strcmp(argv[i], "--frame-2x") == 0) {
             cfg.frame_lcd_scale = 2.0;
         } else if (strcmp(argv[i], "--frame-scale") == 0 && i + 1 < argc) {
@@ -155,6 +190,21 @@ int main(int argc, char *argv[])
     }
     if (cfg.restore && cfg.cf_count == 0) {
         fprintf(stderr, "Error: --restore requires --cf <image>\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (cfg.enable_ne2000 && cfg.cf_count > 0) {
+        fprintf(stderr, "Error: --ne2000 and --cf both use the primary PCMCIA socket in this build\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (cfg.enable_ne2000 && cfg.rom_path) {
+        fprintf(stderr, "Error: --ne2000 is supported only with --nand boots\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (cfg.net_mac_set && !cfg.enable_ne2000) {
+        fprintf(stderr, "Error: --net-mac requires --ne2000\n");
         usage(argv[0]);
         return 1;
     }

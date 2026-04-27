@@ -60,6 +60,8 @@ typedef struct {
     bool        log_nand_legacy;
     bool        enable_ppsh;
     bool        enable_pcconnect_time_sync;
+    bool        enable_ne2000;
+    bool        net_mac_set;
     bool        restore;
 
     /* Default-off coverage instrumentation.
@@ -75,6 +77,7 @@ typedef struct {
     const char *nand_path;
     const char *cf_paths[BE300_MAX_CF_SLOTS];
     unsigned    cf_count;
+    uint8_t     net_mac[6];
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* target CPU speed in MHz; 0 = unthrottled (default: 166) */
     double      frame_lcd_scale; /* framed SDL LCD scale; 0 = default/env */

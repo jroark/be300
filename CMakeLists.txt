@@ -93,6 +93,13 @@ set(GXEMUL_SOURCES
     gxemul/src/core/debugmsg.c
     gxemul/src/core/float_emul.c
 
+    # Networking backend used by the BE-300 PCMCIA NE2000 card.
+    gxemul/src/net/net.c
+    gxemul/src/net/net_ether.c
+    gxemul/src/net/net_ip.c
+    gxemul/src/net/net_misc.c
+    gxemul/src/net/net_tap.c
+
     # Console (serial I/O via stdin/stdout)
     gxemul/src/console/console.c
 
