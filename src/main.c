@@ -8,6 +8,26 @@
 extern int verbose;
 extern int quiet_mode;
 
+static bool parse_frame_scale(const char *arg, double *scale_out)
+{
+    char *end = NULL;
+    double scale;
+
+    if (!arg || !*arg)
+        return false;
+
+    scale = strtod(arg, &end);
+    if (end == arg)
+        return false;
+    if (*end == 'x' || *end == 'X')
+        end++;
+    if (*end != '\0' || !(scale >= 1.0 && scale <= 4.0))
+        return false;
+
+    *scale_out = scale;
+    return true;
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -23,7 +43,7 @@ static void usage(const char *prog)
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
         "  --pcconnect-time-sync Enable experimental Casio PC Connect time-sync peer\n"
         "  --frame-2x            Show framed SDL display with a 480x640 LCD area\n"
-        "  --frame-scale <N>     Framed SDL LCD scale, 1-4 (default: 1)\n"
+        "  --frame-scale <N>     Framed SDL LCD scale, 1.0-4.0 (default: 1.0)\n"
         "  --speed <mhz>         Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
         "  --mmio-coverage       First-hit log per (device, offset, op) + shutdown coverage table\n"
         "  --detect-stall        Emit [BE300_STALL] when guest spins on a tight PC set\n"
@@ -64,7 +84,7 @@ int main(int argc, char *argv[])
         .cf_path        = NULL,
         .sdram_size     = 16u * 1024u * 1024u,
         .target_mhz     = 166u,
-        .frame_lcd_scale = 0u,
+        .frame_lcd_scale = 0.0,
     };
 
     for (int i = 1; i < argc; i++) {
@@ -77,14 +97,12 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[i], "--pcconnect-time-sync") == 0) {
             cfg.enable_pcconnect_time_sync = true;
         } else if (strcmp(argv[i], "--frame-2x") == 0) {
-            cfg.frame_lcd_scale = 2u;
+            cfg.frame_lcd_scale = 2.0;
         } else if (strcmp(argv[i], "--frame-scale") == 0 && i + 1 < argc) {
-            unsigned scale = (unsigned)atoi(argv[++i]);
-            if (scale < 1 || scale > 4) {
-                fprintf(stderr, "Error: --frame-scale must be 1-4\n");
+            if (!parse_frame_scale(argv[++i], &cfg.frame_lcd_scale)) {
+                fprintf(stderr, "Error: --frame-scale must be 1.0-4.0\n");
                 return 1;
             }
-            cfg.frame_lcd_scale = (uint32_t)scale;
         } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {
             cfg.nand_path = argv[++i];
         } else if (strcmp(argv[i], "--cf") == 0 && i + 1 < argc) {
