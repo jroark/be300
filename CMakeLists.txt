@@ -140,7 +140,7 @@ add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HD
 target_compile_definitions(be300 PRIVATE BE300_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(be300 m ${SDL2_LIBRARIES} ${PNG_LIBRARIES})
 if(APPLE)
-    target_link_libraries(be300 "-framework Cocoa" objc)
+    target_link_libraries(be300 "-framework Cocoa" "-framework CoreGraphics" "-framework QuartzCore" objc)
 endif()
 
 # Tests
