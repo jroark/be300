@@ -905,11 +905,20 @@ void be300_set_touch(machine_t *m, bool down, uint16_t x, uint16_t y)
 
 void be300_set_buttons(machine_t *m, uint8_t btn_set1, uint8_t btn_set2)
 {
+    uint8_t old_set1, old_set2;
+
     if (!m)
         return;
+
+    old_set1 = m->btn_set1;
+    old_set2 = m->btn_set2;
+    if (old_set1 == btn_set1 && old_set2 == btn_set2)
+        return;
+
     m->btn_set1 = btn_set1;
     m->btn_set2 = btn_set2;
     __sync_synchronize();
+    be300_buttons_host_update(m, old_set1, old_set2);
 }
 
 void be300_stop(machine_t *m)

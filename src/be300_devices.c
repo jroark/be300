@@ -1458,6 +1458,9 @@ struct be300_vrc4173_segment {
 struct be300_input_device;
 static uint32_t piu_girq0_source_bits(const struct be300_input_device *d);
 static void piu_update_state(struct be300_input_device *d);
+static uint32_t button_girq0_source_bits(const struct be300_input_device *d);
+static void button_ack_keyboard_source(struct be300_input_device *d);
+#define BUTTON_GIRQ0_SOURCE     0x00000002u
 
 #define WINCE_AUX_BASE  0x0C000120ULL
 #define WINCE_AUX_SIZE  0x00000500u
@@ -1654,6 +1657,11 @@ DEVICE_ACCESS(be300_vrc4173)
 
         if (g_be300_machine && (off == 0x0010u || off == 0x0014u))
             cf_clear_irq(&g_be300_machine->cf);
+        /* GIRQ0-1 keyboard dispatcher acknowledges through AA000014;
+         * see docs/hardware/hardware.txt:107-112. */
+        if (g_be300_machine && off <= 0x0014u && off + len > 0x0014u)
+            button_ack_keyboard_source(
+                (struct be300_input_device *)g_be300_machine->button_device);
 
         if ((off <= 0x1120 && off + len > 0x1120) ||
             (off <= 0x112C && off + len > 0x112C) ||
@@ -1725,8 +1733,12 @@ DEVICE_ACCESS(be300_vrc4173)
              */
             if (!cf_present(&g_be300_machine->cf))
                 val &= ~(uint64_t)1u;
+            val &= ~(uint64_t)BUTTON_GIRQ0_SOURCE;
             val |= cf_giu_source_bits(&g_be300_machine->cf)
                 | be300_pcconnect_girq0_source_bits(d)
+                | button_girq0_source_bits(
+                    (const struct be300_input_device *)
+                    g_be300_machine->button_device)
                 | piu_girq0_source_bits(
                     (const struct be300_input_device *)
                     g_be300_machine->touch_device);
@@ -2682,6 +2694,11 @@ void be300_register_pcmcia_attr_window(struct machine *gxm, machine_t *m)
 struct be300_input_device {
     machine_t *m;
     bool       log_mmio;
+    /* Button device state. */
+    bool       button_irq_pending;
+    struct interrupt button_irq;  /* BE-300 GIRQ0 cascaded interrupt */
+    bool       button_irq_connected;
+    bool       button_irq_asserted;
     /* PIU state (touch device only) */
     uint16_t   piu_regs[16];       /* register file: index = offset / 4 */
     uint16_t   piu_padstate;       /* PADSTATE(2:0) scan sequencer state */
@@ -2735,6 +2752,56 @@ static void piu_irq_update(struct be300_input_device *d, bool want)
         INTERRUPT_DEASSERT(d->piu_irq);
         d->piu_irq_asserted = false;
     }
+}
+
+static void button_irq_update(struct be300_input_device *d, bool want)
+{
+    if (!d || !d->button_irq_connected)
+        return;
+    if (want && !d->button_irq_asserted) {
+        INTERRUPT_ASSERT(d->button_irq);
+        d->button_irq_asserted = true;
+    } else if (!want && d->button_irq_asserted) {
+        INTERRUPT_DEASSERT(d->button_irq);
+        d->button_irq_asserted = false;
+    }
+}
+
+static uint32_t button_girq0_source_bits(const struct be300_input_device *d)
+{
+    /*
+     * docs/hardware/hardware.txt:107-112 identifies GIRQ0-1 as the
+     * keyboard SYSINTR source, and the real hardware idle dump keeps the
+     * button block at 0x0A00A040 distinct from the generic NAND/latch
+     * range (docs/hardware/hw_dump_vrc4173.txt:520).  Host button state
+     * changes latch this cascaded source until the OAL writes the GIRQ0-1
+     * acknowledge path at AA000014.
+     */
+    return (d && d->button_irq_pending) ? BUTTON_GIRQ0_SOURCE : 0;
+}
+
+static void button_ack_keyboard_source(struct be300_input_device *d)
+{
+    if (!d || !d->button_irq_pending)
+        return;
+
+    d->button_irq_pending = false;
+    button_irq_update(d, false);
+}
+
+void be300_buttons_host_update(machine_t *m, uint8_t old_set1,
+    uint8_t old_set2)
+{
+    struct be300_input_device *d;
+
+    if (!m || !m->button_device)
+        return;
+    if (m->btn_set1 == old_set1 && m->btn_set2 == old_set2)
+        return;
+
+    d = (struct be300_input_device *)m->button_device;
+    d->button_irq_pending = true;
+    button_irq_update(d, true);
 }
 
 static uint32_t piu_girq0_source_bits(const struct be300_input_device *d)
@@ -3301,6 +3368,8 @@ DEVICE_ACCESS(be300_buttons)
 {
     struct be300_input_device *d = (struct be300_input_device *)extra;
     machine_t *m = d->m;
+    uint8_t reg[0x10] = { 0 };
+    uint64_t val = 0;
 
     if (d->log_mmio)
         be300_log_mmio("be300_buttons", writeflag, (uint32_t)relative_addr,
@@ -3314,12 +3383,28 @@ DEVICE_ACCESS(be300_buttons)
     if (writeflag == MEM_WRITE)
         return 1;
 
-    uint64_t val = 0;
-    switch ((uint32_t)relative_addr) {
-    case 0x02: val = m->btn_set1; break;   /* 0x0A00A042 */
-    case 0x03: val = m->btn_set2; break;   /* 0x0A00A043 */
-    default:   val = 0;
-           break;
+    /*
+     * Real-hardware idle dump:
+     *   docs/hardware/hw_dump_vrc4173.txt:520
+     *   0x0A00A040: 00009EFF ...
+     * Keep the low halfword at its quiescent value and expose the live
+     * host button bitmap in bytes 2/3, which are the bytes used by the
+     * existing BE-300 input mapping.
+     */
+    reg[0x00] = 0xffu;
+    reg[0x01] = 0x9eu;
+    reg[0x02] = m->btn_set1;
+    reg[0x03] = m->btn_set2;
+
+    if ((uint32_t)relative_addr >= sizeof(reg))
+        val = 0;
+    else {
+        uint32_t off = (uint32_t)relative_addr;
+        unsigned n = (unsigned)len;
+        if (n > 8)
+            n = 8;
+        for (unsigned i = 0; i < n && off + i < sizeof(reg); i++)
+            val |= (uint64_t)reg[off + i] << (8u * i);
     }
 
     memory_writemax64(cpu, data, len, val);
@@ -3361,9 +3446,21 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
         0x0A000300ULL, 0x60,
         dev_be300_touch_access, (void *)touch_d, DM_DEFAULT, NULL);
 
-    CHECK_ALLOCATION(btn_d = malloc(sizeof(struct be300_input_device)));
+    CHECK_ALLOCATION(btn_d = calloc(1, sizeof(struct be300_input_device)));
     btn_d->m = m;
     btn_d->log_mmio = log_mmio;
+    /* docs/hardware/hardware.txt:65-112 routes keyboard buttons as
+     * SYSINT1 bit 8 (GIU) -> GIUINTLREG bit 0 (GIRQ0) ->
+     * VRC4173 offset 0x0004 bit 1 (GIRQ0-1). */
+    {
+        char tmps[300];
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 0);
+        INTERRUPT_CONNECT(tmps, btn_d->button_irq);
+        btn_d->button_irq_connected = true;
+        btn_d->button_irq_asserted = false;
+    }
+    m->button_device = btn_d;
     memory_device_register(gxm->memory, "be300_buttons",
         0x0A00A040ULL, 0x10,
         dev_be300_buttons_access, (void *)btn_d, DM_DEFAULT, NULL);
