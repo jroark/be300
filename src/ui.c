@@ -141,6 +141,110 @@ static void ui_video_destroy(machine_t *m)
     }
 }
 
+static bool ui_resolve_framebuffer(machine_t *m)
+{
+    if (m->fb_data)
+        return true;
+    if (!m->gxe_machine || !m->gxe_machine->fb ||
+        !m->gxe_machine->fb->framebuffer)
+        return false;
+
+    m->fb_data = m->gxe_machine->fb->framebuffer;
+    return true;
+}
+
+static void ui_copy_visible_frame(machine_t *m, uint16_t *dst)
+{
+    const uint16_t *src = (const uint16_t *)m->fb_data;
+
+    for (uint32_t y = 0; y < m->fb_height; y++) {
+        memcpy(dst + y * m->fb_width,
+               src + y * m->fb_stride,
+               m->fb_width * sizeof(uint16_t));
+    }
+}
+
+static void ui_put_le16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v & 0xffu);
+    p[1] = (uint8_t)(v >> 8);
+}
+
+static void ui_put_le32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xffu);
+    p[1] = (uint8_t)((v >> 8) & 0xffu);
+    p[2] = (uint8_t)((v >> 16) & 0xffu);
+    p[3] = (uint8_t)((v >> 24) & 0xffu);
+}
+
+static bool ui_write_rgb565_bmp(const char *fname, const uint16_t *pixels,
+    uint32_t width, uint32_t height)
+{
+    enum {
+        BMP_FILE_HEADER_SIZE = 14,
+        BMP_INFO_HEADER_SIZE = 40,
+        BMP_MASK_BYTES = 12,
+        BMP_OFF_BITS = BMP_FILE_HEADER_SIZE + BMP_INFO_HEADER_SIZE +
+            BMP_MASK_BYTES
+    };
+    uint32_t row_bytes = ((width * 16u + 31u) / 32u) * 4u;
+    uint32_t image_bytes = row_bytes * height;
+    uint32_t file_bytes = BMP_OFF_BITS + image_bytes;
+    uint8_t header[BMP_OFF_BITS];
+    uint8_t pad[3] = { 0, 0, 0 };
+    FILE *f;
+
+    memset(header, 0, sizeof(header));
+    header[0] = 'B';
+    header[1] = 'M';
+    ui_put_le32(header + 2, file_bytes);
+    ui_put_le32(header + 10, BMP_OFF_BITS);
+    ui_put_le32(header + 14, BMP_INFO_HEADER_SIZE);
+    ui_put_le32(header + 18, width);
+    ui_put_le32(header + 22, height);
+    ui_put_le16(header + 26, 1);
+    ui_put_le16(header + 28, 16);
+    ui_put_le32(header + 30, 3);  /* BI_BITFIELDS */
+    ui_put_le32(header + 34, image_bytes);
+    ui_put_le32(header + 54, 0xf800u);
+    ui_put_le32(header + 58, 0x07e0u);
+    ui_put_le32(header + 62, 0x001fu);
+
+    f = fopen(fname, "wb");
+    if (!f)
+        return false;
+
+    if (fwrite(header, 1, sizeof(header), f) != sizeof(header)) {
+        fclose(f);
+        return false;
+    }
+
+    for (uint32_t y = height; y > 0; y--) {
+        const uint16_t *row = pixels + (y - 1u) * width;
+        for (uint32_t x = 0; x < width; x++) {
+            uint8_t px[2];
+            ui_put_le16(px, row[x]);
+            if (fwrite(px, 1, sizeof(px), f) != sizeof(px)) {
+                fclose(f);
+                return false;
+            }
+        }
+        if (row_bytes > width * sizeof(uint16_t)) {
+            size_t n_pad = row_bytes - width * sizeof(uint16_t);
+            if (fwrite(pad, 1, n_pad, f) != n_pad) {
+                fclose(f);
+                return false;
+            }
+        }
+    }
+
+    if (fclose(f) != 0)
+        return false;
+
+    return true;
+}
+
 static uint32_t ui_ms_from_env(const char *name, uint32_t default_ms,
     uint32_t max_ms)
 {
@@ -453,21 +557,10 @@ void ui_update(machine_t *m)
         return;
     last_frame_tick = now;
 
-    /* Lazy-resolve framebuffer host pointer from GXemul's vfb_data */
-    if (!m->fb_data) {
-        if (!m->gxe_machine->fb || !m->gxe_machine->fb->framebuffer)
-            return;  /* dev_fb not yet initialized */
-        m->fb_data = m->gxe_machine->fb->framebuffer;
-    }
+    if (!ui_resolve_framebuffer(m))
+        return;  /* dev_fb not yet initialized */
 
-    const uint16_t *src = (const uint16_t *)m->fb_data;
-
-    /* Copy visible rectangle from stride-256 buffer into staging (RGB565). */
-    for (uint32_t y = 0; y < m->fb_height; y++) {
-        memcpy(staging_buf + y * m->fb_width,
-               src + y * m->fb_stride,
-               m->fb_width * sizeof(uint16_t));
-    }
+    ui_copy_visible_frame(m, staging_buf);
 
     /* Upload to texture and render */
     SDL_UpdateTexture((SDL_Texture *)m->sdl_texture, NULL,
@@ -492,24 +585,24 @@ bool ui_should_quit(machine_t *m)
 
 void ui_save_screenshot(machine_t *m)
 {
-    if (!m->sdl_window || !staging_buf || !m->fb_data) {
+    uint16_t *pixels = staging_buf;
+    uint16_t *scratch = NULL;
+
+    if (!ui_resolve_framebuffer(m)) {
         fprintf(stderr, "[UI] No valid frame — cannot save screenshot\n");
         return;
     }
 
-    /* Create surface from staging buffer (RGB565) */
-    Uint32 fmt = SDL_PIXELFORMAT_RGB565;
-
-    SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormatFrom(
-        staging_buf,
-        m->fb_width, m->fb_height,
-        16, m->fb_width * sizeof(uint16_t),
-        fmt);
-    if (!surf) {
-        fprintf(stderr, "[UI] SDL_CreateRGBSurfaceWithFormatFrom failed: %s\n",
-                SDL_GetError());
-        return;
+    if (!pixels) {
+        scratch = malloc(m->fb_width * m->fb_height * sizeof(uint16_t));
+        if (!scratch) {
+            fprintf(stderr, "[UI] Screenshot buffer alloc failed\n");
+            return;
+        }
+        pixels = scratch;
     }
+
+    ui_copy_visible_frame(m, pixels);
 
     /* Generate timestamped filename */
     time_t t = time(NULL);
@@ -520,13 +613,13 @@ void ui_save_screenshot(machine_t *m)
              tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
              tm->tm_hour, tm->tm_min, tm->tm_sec);
 
-    if (SDL_SaveBMP(surf, fname) == 0) {
+    if (ui_write_rgb565_bmp(fname, pixels, m->fb_width, m->fb_height)) {
         fprintf(stderr, "[UI] Screenshot saved: %s\n", fname);
     } else {
-        fprintf(stderr, "[UI] SDL_SaveBMP failed: %s\n", SDL_GetError());
+        fprintf(stderr, "[UI] Screenshot save failed: %s\n", fname);
     }
 
-    SDL_FreeSurface(surf);
+    free(scratch);
 }
 
 void ui_destroy(machine_t *m)
