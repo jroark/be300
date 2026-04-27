@@ -193,6 +193,7 @@ void       be300_buttons_host_update(machine_t *m, uint8_t old_set1,
                                      uint8_t old_set2);
 void       be300_touch_tick(machine_t *m);
 void       be300_pcconnect_poll(void);
+void       be300_vrc4173_update_cf_irq(void);
 void       be300_stop(machine_t *m);
 void       be300_run(machine_t *m);
 void       be300_destroy(machine_t *m);

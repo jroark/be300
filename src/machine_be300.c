@@ -792,6 +792,7 @@ static bool be300_run_batch(machine_t *m)
 
     be300_touch_tick(m);
     cf_ne2000_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
+    be300_vrc4173_update_cf_irq();
     if (m->cfg.enable_pcconnect_time_sync)
         be300_pcconnect_poll();
 

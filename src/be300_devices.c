@@ -90,6 +90,7 @@ struct be300_companion_ab_device {
 
 struct be300_vrc4173_latch;
 static struct be300_vrc4173_latch *g_be300_vrc4173_latch;
+static void be300_cf_irq_update(struct be300_vrc4173_latch *d);
 static void be300_pcconnect_reset_for_cpu_reset(
     struct be300_vrc4173_latch *d);
 
@@ -183,6 +184,7 @@ DEVICE_ACCESS(be300_nand)
             uint64_t val = memory_readmax64(cpu, data, len);
             if (val == 0 || (val & 0x22u) == 0)
                 cf_clear_irq(d->cf);
+            be300_cf_irq_update(g_be300_vrc4173_latch);
         } else {
             uint64_t val = cf_card_state_bits(d->cf);
             memory_writemax64(cpu, data, len, val);
@@ -196,6 +198,7 @@ DEVICE_ACCESS(be300_nand)
              * source bit deasserts via cf_giu_source_bits.
              */
             cf_consume_state_change(d->cf);
+            be300_cf_irq_update(g_be300_vrc4173_latch);
         }
         return 1;
     }
@@ -456,6 +459,9 @@ struct be300_vrc4173_latch {
     struct interrupt pcconnect_irq;
     bool     pcconnect_irq_connected;
     bool     pcconnect_irq_asserted;
+    struct interrupt cf_irq;
+    bool     cf_irq_connected;
+    bool     cf_irq_asserted;
     bool     pcconnect_dock_connected;
     uint16_t pcconnect_commmode_pending;
     bool     pcconnect_insert_armed;
@@ -487,6 +493,35 @@ static void be300_latch_poke_u32(struct be300_vrc4173_latch *d,
     d->bytes[off + 1u] = (uint8_t)(val >> 8);
     d->bytes[off + 2u] = (uint8_t)(val >> 16);
     d->bytes[off + 3u] = (uint8_t)(val >> 24);
+}
+
+static void be300_cf_irq_update(struct be300_vrc4173_latch *d)
+{
+    bool want;
+
+    if (!d || !d->cf_irq_connected || !g_be300_machine)
+        return;
+
+    /*
+     * hardware.txt:15-32 and :65-101 route PCMCIA as
+     * SYSINT1.GIU -> GIUINTLREG.GIRQ0 -> AA000004 bit 0 -> AA00A03C.
+     * cf_giu_source_bits() supplies the AA000004 bit; this drives the
+     * corresponding level into the VR4131 GIU interrupt line.
+     */
+    want = cf_giu_source_bits(
+        &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]) != 0;
+    if (want && !d->cf_irq_asserted) {
+        INTERRUPT_ASSERT(d->cf_irq);
+        d->cf_irq_asserted = true;
+    } else if (!want && d->cf_irq_asserted) {
+        INTERRUPT_DEASSERT(d->cf_irq);
+        d->cf_irq_asserted = false;
+    }
+}
+
+void be300_vrc4173_update_cf_irq(void)
+{
+    be300_cf_irq_update(g_be300_vrc4173_latch);
 }
 
 static uint32_t be300_buzzer_peek_le32(const uint8_t *p)
@@ -1721,8 +1756,10 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
-        if (g_be300_machine && (off == 0x0010u || off == 0x0014u))
+        if (g_be300_machine && (off == 0x0010u || off == 0x0014u)) {
             cf_clear_irq(&g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]);
+            be300_cf_irq_update(d);
+        }
         /* GIRQ0-1 keyboard dispatcher acknowledges through AA000014;
          * see docs/hardware/hardware.txt:107-112. */
         if (g_be300_machine && off <= 0x0014u && off + len > 0x0014u)
@@ -2603,6 +2640,16 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         memory_device_register(gxm->memory, segs[i].name,
             segs[i].base, segs[i].size,
             dev_be300_vrc4173_access, (void *)seg, DM_DEFAULT, NULL);
+    }
+
+    {
+        char tmps[200];
+
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 0);
+        INTERRUPT_CONNECT(tmps, latch->cf_irq);
+        latch->cf_irq_connected = true;
+        latch->cf_irq_asserted = false;
     }
 
     if (m->cfg.enable_pcconnect_time_sync) {
