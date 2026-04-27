@@ -725,13 +725,13 @@ static uint16_t be300_pcconnect_socket_read(
 }
 
 static uint64_t be300_pcconnect_pccard_status_read(
-    const struct be300_vrc4173_latch *d, uint32_t off, unsigned len,
-    uint64_t val)
+    const struct be300_vrc4173_latch *d, bool cf_attached, uint32_t off,
+    unsigned len, uint64_t val)
 {
     unsigned shift;
 
     if (!d || !be300_pcconnect_cable_enabled() ||
-        !d->pcconnect_dock_connected || len == 0 ||
+        cf_attached || !d->pcconnect_dock_connected || len == 0 ||
         off > BE300_PCCARD_STATUS_OFF ||
         off + len <= BE300_PCCARD_STATUS_OFF)
         return val;
@@ -741,7 +741,11 @@ static uint64_t be300_pcconnect_pccard_status_read(
      * enabling the socket path via AA000144 bit 5.  The 0x1000-0x1fff
      * VRC4173 range is currently backed by the CF companion model, so
      * expose the PC Connect dock-ready level at the actual read boundary
-     * instead of seeding the generic latch byte array.
+     * instead of seeding the generic latch byte array.  When --cf is
+     * attached, the CF model owns this status byte and intentionally
+     * returns the inserted-card edge only once before settling back to the
+     * real inserted-CF dump's zero value; do not keep reasserting it from
+     * the PC Connect dock path.
      */
     shift = (unsigned)((BE300_PCCARD_STATUS_OFF - off) * 8u);
     return val | ((uint64_t)BE300_PCCARD_SOCKET_READY << shift);
@@ -1850,8 +1854,8 @@ DEVICE_ACCESS(be300_vrc4173)
         if (g_be300_machine && off >= 0x1000u && off < 0x2000u) {
             uint64_t val = cf_companion_read(&g_be300_machine->cf,
                 off - 0x1000u, (unsigned)len);
-            val = be300_pcconnect_pccard_status_read(d, off,
-                (unsigned)len, val);
+            val = be300_pcconnect_pccard_status_read(d,
+                cf_present(&g_be300_machine->cf), off, (unsigned)len, val);
             /*
              * Pass 18/19 (2026-04-19): offset 0x1CD0 is the VRC4173
              * DMA-pending status bit that nanddisk.dll's CheckDMAEnd at
