@@ -35,6 +35,8 @@
 
 static const uint16_t cf_no_card_owned_offsets[] = {
     0x0000, 0x0008, 0x0044, 0x004C,
+    0x0444, 0x044C,
+    0x0B10, 0x0B50,
 };
 
 static bool cf_is_no_card_owned_offset(uint32_t offset)
@@ -72,6 +74,24 @@ static void cf_refresh_socket_status(cf_state_t *s)
 
     /* Card-state summary used by pcmcia/card_ex probing. */
     cf_put_companion_u32(s, 0x0040, s->attached ? 0x00000001u : 0x00000000u);
+
+    /*
+     * Socket-1 status aliases inside the CARDU page must stay in no-media
+     * state.  The active CF adapter is modeled as socket 0; real no-card
+     * hardware shows the adapter/unit as present but reports no inserted
+     * media (docs/HARDWARE_GROUND_TRUTH.md:72-79).  The VRC4173 dump's
+     * 0x0A001000 CF/PCMCIA page is explicitly inserted-card state, not a
+     * no-card default source (docs/hardware/hw_dump_vrc4173.txt:4-6).
+     * card_ex.dll reads PA 0x0A001444 at PC 0x019235A8; if bit 6 is clear,
+     * it programs socket 1 and opens the "Unidentified PCCard Adapter"
+     * prompt.
+     *
+     * TODO(2026-04-26): replace these aliases with named VRC4173 CARDU
+     * socket register fields once the PCMCIA bridge map is identified.
+     */
+    cf_put_companion_u32(s, 0x0444, CF_SOCKET_NO_MEDIA);
+    cf_put_companion_u32(s, 0x044C, CF_SOCKET_NO_MEDIA);
+
     if (s->attached) {
         /*
          * Do not refresh 0x0044/0x004C for attached media.  pcmcia.dll
@@ -100,6 +120,8 @@ static void cf_refresh_socket_status(cf_state_t *s)
          */
         cf_put_companion_u32(s, 0x0044, 0x00000000u);
         cf_put_companion_u32(s, 0x004C, CF_SOCKET_NO_MEDIA);
+        cf_put_companion_u32(s, 0x0B10, CF_SOCKET_NO_MEDIA);
+        cf_put_companion_u32(s, 0x0B50, 0x00000000u);
     }
 }
 
@@ -379,6 +401,12 @@ bool cf_boot_handles_rom_offset(const cf_state_t *s, uint32_t offset)
     return s && s->attached &&
         ((offset >= CF_BOOT_TF_BASE && offset < CF_BOOT_TF_END) ||
          offset == CF_BOOT_ALT_REG);
+}
+
+void cf_note_pcmcia_window_enable(cf_state_t *s)
+{
+    if (s)
+        s->card_windows_enabled = true;
 }
 
 void cf_clear_irq(cf_state_t *s)
@@ -836,7 +864,7 @@ static void cf_note_cis_read(cf_state_t *s, uint32_t cis_idx)
 
 uint8_t cf_cis_read_byte(cf_state_t *s, uint32_t cis_idx)
 {
-    if (!s || cis_idx >= sizeof(s->cis))
+    if (!s || !s->attached || cis_idx >= sizeof(s->cis))
         return 0xFFu;
 
     cf_note_cis_read(s, cis_idx);
@@ -862,7 +890,7 @@ uint64_t cf_cis_read(cf_state_t *s, uint32_t offset, unsigned size)
 
 bool cf_pcmcia_windows_enabled(const cf_state_t *s)
 {
-    return s && s->attached && s->card_windows_enabled;
+    return s && s->card_windows_enabled;
 }
 
 uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size)
@@ -952,8 +980,12 @@ uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size)
 
     if (!s || size == 0)
         return 0;
-    if (!s->attached)
-        return size >= 4 ? UINT32_C(0xFFFFFFFF) : UINT64_C(0xFF);
+    if (!s->attached) {
+        uint64_t val = UINT64_MAX;
+        if (size < sizeof(val))
+            val >>= (unsigned)((sizeof(val) - size) * 8u);
+        return val;
+    }
 
     reg = cf_decode_taskfile_offset(offset, &is_alt);
     if (reg == 0 && !is_alt) {
