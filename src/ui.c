@@ -21,6 +21,7 @@ static void *frame_cb_data = NULL;
 #ifdef HAVE_SDL2
 
 #include <SDL.h>
+#include <SDL_shape.h>
 #ifdef HAVE_PNG
 #include <png.h>
 #endif
@@ -484,6 +485,62 @@ static void ui_configure_frame_layout(machine_t *m, uint32_t lcd_scale,
     *window_h_out = (int)ceil(frame_dst_y + frame_dst_h);
 }
 
+static bool ui_apply_frame_window_shape(SDL_Window *win,
+    const uint8_t *frame_pixels, int win_w, int win_h)
+{
+    SDL_Surface *shape;
+    SDL_WindowShapeMode mode;
+    uint32_t transparent;
+    uint32_t opaque;
+    bool ok = false;
+
+    if (!win || !frame_pixels || !SDL_IsShapedWindow(win))
+        return false;
+
+    shape = SDL_CreateRGBSurfaceWithFormat(0, win_w, win_h, 32,
+        SDL_PIXELFORMAT_RGBA32);
+    if (!shape)
+        return false;
+
+    transparent = SDL_MapRGBA(shape->format, 0, 0, 0, 0);
+    opaque = SDL_MapRGBA(shape->format, 255, 255, 255, 255);
+
+    if (SDL_LockSurface(shape) == 0) {
+        for (int y = 0; y < win_h; y++) {
+            uint32_t *dst = (uint32_t *)((uint8_t *)shape->pixels +
+                (size_t)y * (size_t)shape->pitch);
+
+            for (int x = 0; x < win_w; x++) {
+                double fx = ((double)x - frame_dst_x) / frame_scale_x;
+                double fy = ((double)y - frame_dst_y) / frame_scale_y;
+                int sx = (int)floor(fx);
+                int sy = (int)floor(fy);
+                uint8_t alpha = 0;
+
+                if (sx >= 0 && sy >= 0 &&
+                    (uint32_t)sx < frame_width &&
+                    (uint32_t)sy < frame_height) {
+                    size_t off = ((size_t)sy * (size_t)frame_width +
+                        (size_t)sx) * 4u;
+                    alpha = frame_pixels[off + 3u];
+                }
+                dst[x] = alpha >= 16 ? opaque : transparent;
+            }
+        }
+        SDL_UnlockSurface(shape);
+
+        mode.mode = ShapeModeBinarizeAlpha;
+        mode.parameters.binarizationCutoff = 1;
+        ok = SDL_SetWindowShape(win, shape, &mode) == 0;
+    }
+
+    SDL_FreeSurface(shape);
+    if (!ok)
+        fprintf(stderr, "[UI] SDL window shape failed: %s\n",
+            SDL_GetError());
+    return ok;
+}
+
 static bool ui_window_to_frame(machine_t *m, int win_x, int win_y,
     double *frame_x_out, double *frame_y_out)
 {
@@ -643,6 +700,12 @@ static bool ui_point_in_ellipse(double x, double y, double cx, double cy,
     return dx * dx + dy * dy <= 1.0;
 }
 
+static bool ui_frame_point_in_rect(double fx, double fy, int x, int y,
+    int w, int h)
+{
+    return fx >= x && fy >= y && fx < x + w && fy < y + h;
+}
+
 static bool ui_frame_hit_button(machine_t *m, int win_x, int win_y,
     uint8_t *btn_set1_out, uint8_t *btn_set2_out)
 {
@@ -690,6 +753,38 @@ static bool ui_frame_hit_button(machine_t *m, int win_x, int win_y,
     }
 
     return false;
+}
+
+static bool ui_frame_hit_interactive(machine_t *m, int win_x, int win_y)
+{
+    double fx, fy;
+    uint8_t btn_set1 = 0;
+    uint8_t btn_set2 = 0;
+
+    if (!ui_window_to_frame(m, win_x, win_y, &fx, &fy))
+        return false;
+
+    if (ui_frame_point_in_rect(fx, fy, BE300_FRAME_LCD_X,
+        BE300_FRAME_LCD_Y, BE300_FRAME_LCD_W, BE300_FRAME_LCD_H))
+        return true;
+    if (ui_frame_point_in_rect(fx, fy, BE300_FRAME_ICON_X,
+        BE300_FRAME_ICON_Y, BE300_FRAME_ICON_W, BE300_FRAME_ICON_H))
+        return true;
+
+    return ui_frame_hit_button(m, win_x, win_y, &btn_set1, &btn_set2);
+}
+
+static SDL_HitTestResult SDLCALL ui_window_hit_test(SDL_Window *win,
+    const SDL_Point *area, void *data)
+{
+    machine_t *m = (machine_t *)data;
+
+    (void)win;
+    if (!frame_enabled)
+        return SDL_HITTEST_NORMAL;
+    if (ui_frame_hit_interactive(m, area->x, area->y))
+        return SDL_HITTEST_NORMAL;
+    return SDL_HITTEST_DRAGGABLE;
 }
 
 static void ui_press_pointer_button(machine_t *m, uint8_t btn_set1,
@@ -777,12 +872,24 @@ int ui_init(machine_t *m)
         frame_height = loaded_frame_height;
         ui_configure_frame_layout(m, ui_frame_lcd_scale_from_env(),
             &win_w, &win_h);
+        win_flags = SDL_WINDOW_BORDERLESS;
     }
 
-    SDL_Window *win = SDL_CreateWindow(
-        "BE-300 Emulator",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        win_w, win_h, win_flags);
+    SDL_Window *win = have_frame_pixels ?
+        SDL_CreateShapedWindow("BE-300 Emulator",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            (unsigned int)win_w, (unsigned int)win_h, win_flags) :
+        SDL_CreateWindow("BE-300 Emulator",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            win_w, win_h, win_flags);
+    if (!win && have_frame_pixels) {
+        fprintf(stderr,
+            "[UI] SDL_CreateShapedWindow failed: %s - using borderless rectangle\n",
+            SDL_GetError());
+        win = SDL_CreateWindow("BE-300 Emulator",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            win_w, win_h, win_flags);
+    }
     if (!win) {
         fprintf(stderr, "[UI] SDL_CreateWindow failed: %s — continuing headless\n",
                 SDL_GetError());
@@ -791,6 +898,14 @@ int ui_init(machine_t *m)
         return 0;
     }
     m->sdl_window = win;
+
+    if (have_frame_pixels) {
+        ui_apply_frame_window_shape(win, frame_pixels, win_w, win_h);
+        if (SDL_SetWindowHitTest(win, ui_window_hit_test, m) != 0) {
+            fprintf(stderr, "[UI] SDL window drag hit-test failed: %s\n",
+                SDL_GetError());
+        }
+    }
 
     SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
     if (!ren) {
