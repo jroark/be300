@@ -51,6 +51,7 @@ int      cf_save_image(cf_state_t *s);
 bool     cf_present(const cf_state_t *s);
 void     cf_set_boot_visibility(cf_state_t *s, bool visible);
 bool     cf_boot_handles_rom_offset(const cf_state_t *s, uint32_t offset);
+void     cf_note_pcmcia_window_enable(cf_state_t *s);
 void     cf_clear_irq(cf_state_t *s);
 void     cf_consume_state_change(cf_state_t *s);
 uint32_t cf_giu_source_bits(const cf_state_t *s);

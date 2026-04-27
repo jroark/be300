@@ -105,6 +105,26 @@ DEVICE_ACCESS(be300_nand)
         (uint32_t)len, (uint64_t)pc, BE300_MMIO_CLASS_KNOWN);
 
     /*
+     * pcmcia.dll enables a runtime card-memory window by writing bit 2 to
+     * PA 0x0A00A01C immediately before scanning PA 0x0A00D000 for CIS
+     * tuples (observed at PC 0x0198C048).  The bridge register name is
+     * still unknown, but once this bit is set the D000/C000 pages decode
+     * as PCMCIA card windows rather than ROM-era NAND direct-I/O.  This
+     * must happen even with no CF image attached so the no-media path sees
+     * the real pulled-up card bus documented in
+     * docs/HARDWARE_GROUND_TRUTH.md:72-79.
+     *
+     * TODO(2026-04-26): replace this with named BE-300/VRC4173 PCMCIA
+     * bridge registers when the map is identified.
+     */
+    if (writeflag == MEM_WRITE && d->cf &&
+        offset == 0xA01Cu && len == 4) {
+        uint64_t val = memory_readmax64(cpu, data, len);
+        if (val & 0x04u)
+            cf_note_pcmcia_window_enable(d->cf);
+    }
+
+    /*
      * KjCMU warm-reset trigger at PA 0x0A00A0C4 + 0x0A00A0C8.
      *
      * Citation chain (TODO 2026-04-20: confirm via VRC4173 UM once the
@@ -1846,6 +1866,26 @@ DEVICE_ACCESS(be300_vrc4173)
                     (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
                     BE300_MMIO_CLASS_KNOWN);
             }
+            memory_writemax64(cpu, data, len, val);
+            return 1;
+        }
+
+        /*
+         * Runtime PCMCIA scans also probe PA 0x0A00E000 through this
+         * generic companion latch path (PC 0x0198A490).  That page is a
+         * card-memory alias, not ordinary latch RAM; once the PCMCIA
+         * bridge has enabled card windows, no-media reads must see the
+         * pulled-up attribute bus instead of latch zeroes.
+         */
+        if (g_be300_machine &&
+            cf_pcmcia_windows_enabled(&g_be300_machine->cf) &&
+            off >= 0xE000u && off < 0xE800u) {
+            uint64_t val = UINT64_MAX;
+            if ((unsigned)len < sizeof(val))
+                val >>= (unsigned)((sizeof(val) - (unsigned)len) * 8u);
+            be300_probe_note_mmio("vrc4173-pcmcia-empty-attr", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
             memory_writemax64(cpu, data, len, val);
             return 1;
         }
