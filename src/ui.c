@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 static ui_frame_callback_t frame_cb = NULL;
 static void *frame_cb_data = NULL;
@@ -37,12 +38,20 @@ static SDL_Texture *frame_texture = NULL;
 static bool frame_enabled = false;
 static uint32_t frame_width = 0;
 static uint32_t frame_height = 0;
+static double frame_scale_x = 1.0;
+static double frame_scale_y = 1.0;
+static double frame_dst_x = 0.0;
+static double frame_dst_y = 0.0;
+static double frame_dst_w = 0.0;
+static double frame_dst_h = 0.0;
+static SDL_Rect lcd_dst_rect;
 
 /* Frame rate limiting */
 #define FRAME_INTERVAL_MS 33  /* ~30 fps */
 #define TOUCH_MIN_DWELL_DEFAULT_MS 120
 #define TOUCH_MIN_DWELL_MAX_MS 5000
-#define BE300_FRAME_DEFAULT_SCALE 0.5
+#define BE300_FRAME_LCD_SCALE_DEFAULT 2u
+#define BE300_FRAME_LCD_SCALE_MAX 4u
 
 enum {
     BE300_FRAME_LCD_X = 187,
@@ -158,6 +167,13 @@ static void ui_video_destroy(machine_t *m)
     frame_enabled = false;
     frame_width = 0;
     frame_height = 0;
+    frame_scale_x = 1.0;
+    frame_scale_y = 1.0;
+    frame_dst_x = 0.0;
+    frame_dst_y = 0.0;
+    frame_dst_w = 0.0;
+    frame_dst_h = 0.0;
+    memset(&lcd_dst_rect, 0, sizeof(lcd_dst_rect));
     if (m->sdl_texture) {
         SDL_DestroyTexture((SDL_Texture *)m->sdl_texture);
         m->sdl_texture = NULL;
@@ -301,6 +317,14 @@ static uint32_t ui_ms_from_env(const char *name, uint32_t default_ms,
     return (uint32_t)ms;
 }
 
+static uint32_t ui_frame_lcd_scale_from_env(void)
+{
+    uint32_t scale = ui_ms_from_env("BE300_FRAME_LCD_SCALE",
+        BE300_FRAME_LCD_SCALE_DEFAULT, BE300_FRAME_LCD_SCALE_MAX);
+
+    return scale == 0 ? BE300_FRAME_LCD_SCALE_DEFAULT : scale;
+}
+
 #ifdef HAVE_PNG
 static bool ui_load_png_rgba(const char *path, uint8_t **pixels_out,
     uint32_t *width_out, uint32_t *height_out)
@@ -435,23 +459,40 @@ static bool ui_load_frame_pixels(uint8_t **pixels_out, uint32_t *width_out,
 }
 #endif
 
+static void ui_configure_frame_layout(machine_t *m, uint32_t lcd_scale,
+    int *window_w_out, int *window_h_out)
+{
+    uint32_t lcd_w = m->fb_width * lcd_scale;
+    uint32_t lcd_h = m->fb_height * lcd_scale;
+
+    frame_scale_x = (double)lcd_w / (double)BE300_FRAME_LCD_W;
+    frame_scale_y = (double)lcd_h / (double)BE300_FRAME_LCD_H;
+
+    lcd_dst_rect.x = (int)ceil((double)BE300_FRAME_LCD_X * frame_scale_x);
+    lcd_dst_rect.y = (int)ceil((double)BE300_FRAME_LCD_Y * frame_scale_y);
+    lcd_dst_rect.w = (int)lcd_w;
+    lcd_dst_rect.h = (int)lcd_h;
+
+    frame_dst_x = (double)lcd_dst_rect.x -
+        (double)BE300_FRAME_LCD_X * frame_scale_x;
+    frame_dst_y = (double)lcd_dst_rect.y -
+        (double)BE300_FRAME_LCD_Y * frame_scale_y;
+    frame_dst_w = (double)frame_width * frame_scale_x;
+    frame_dst_h = (double)frame_height * frame_scale_y;
+
+    *window_w_out = (int)ceil(frame_dst_x + frame_dst_w);
+    *window_h_out = (int)ceil(frame_dst_y + frame_dst_h);
+}
+
 static bool ui_window_to_frame(machine_t *m, int win_x, int win_y,
     double *frame_x_out, double *frame_y_out)
 {
-    SDL_Renderer *ren = (SDL_Renderer *)m->sdl_renderer;
-    SDL_Rect vp;
-    float sx = 1.0f, sy = 1.0f;
-
-    if (!frame_enabled || !ren)
+    (void)m;
+    if (!frame_enabled || frame_scale_x <= 0.0 || frame_scale_y <= 0.0)
         return false;
 
-    SDL_RenderGetViewport(ren, &vp);
-    SDL_RenderGetScale(ren, &sx, &sy);
-    if (sx <= 0.0f || sy <= 0.0f)
-        return false;
-
-    *frame_x_out = ((double)win_x - (double)vp.x) / (double)sx;
-    *frame_y_out = ((double)win_y - (double)vp.y) / (double)sy;
+    *frame_x_out = ((double)win_x - frame_dst_x) / frame_scale_x;
+    *frame_y_out = ((double)win_y - frame_dst_y) / frame_scale_y;
     return true;
 }
 
@@ -727,13 +768,16 @@ int ui_init(machine_t *m)
             "[UI] BE-300 frame unavailable - using LCD-only SDL window\n");
     }
 
-    int win_w = have_frame_pixels ?
-        (int)(loaded_frame_width * BE300_FRAME_DEFAULT_SCALE) :
-        (int)m->fb_width * 2;
-    int win_h = have_frame_pixels ?
-        (int)(loaded_frame_height * BE300_FRAME_DEFAULT_SCALE) :
-        (int)m->fb_height * 2;
-    Uint32 win_flags = have_frame_pixels ? SDL_WINDOW_RESIZABLE : 0;
+    int win_w = (int)m->fb_width * 2;
+    int win_h = (int)m->fb_height * 2;
+    Uint32 win_flags = 0;
+
+    if (have_frame_pixels) {
+        frame_width = loaded_frame_width;
+        frame_height = loaded_frame_height;
+        ui_configure_frame_layout(m, ui_frame_lcd_scale_from_env(),
+            &win_w, &win_h);
+    }
 
     SDL_Window *win = SDL_CreateWindow(
         "BE-300 Emulator",
@@ -771,10 +815,6 @@ int ui_init(machine_t *m)
                 (int)loaded_frame_width * 4) == 0) {
             SDL_SetTextureBlendMode(frame_texture, SDL_BLENDMODE_BLEND);
             frame_enabled = true;
-            frame_width = loaded_frame_width;
-            frame_height = loaded_frame_height;
-            SDL_RenderSetLogicalSize(ren, (int)frame_width,
-                (int)frame_height);
         } else {
             fprintf(stderr,
                 "[UI] SDL frame texture failed: %s - using LCD-only window\n",
@@ -783,6 +823,15 @@ int ui_init(machine_t *m)
                 SDL_DestroyTexture(frame_texture);
                 frame_texture = NULL;
             }
+            frame_width = 0;
+            frame_height = 0;
+            frame_scale_x = 1.0;
+            frame_scale_y = 1.0;
+            frame_dst_x = 0.0;
+            frame_dst_y = 0.0;
+            frame_dst_w = 0.0;
+            frame_dst_h = 0.0;
+            memset(&lcd_dst_rect, 0, sizeof(lcd_dst_rect));
             SDL_SetWindowResizable(win, SDL_FALSE);
             SDL_SetWindowSize(win, (int)m->fb_width * 2,
                 (int)m->fb_height * 2);
@@ -958,15 +1007,17 @@ void ui_update(machine_t *m)
                       staging_buf, m->fb_width * sizeof(uint16_t));
     SDL_RenderClear((SDL_Renderer *)m->sdl_renderer);
     if (frame_enabled && frame_texture) {
-        SDL_Rect lcd_dst = {
-            BE300_FRAME_LCD_X, BE300_FRAME_LCD_Y,
-            BE300_FRAME_LCD_W, BE300_FRAME_LCD_H
+        SDL_FRect frame_dst = {
+            (float)frame_dst_x,
+            (float)frame_dst_y,
+            (float)frame_dst_w,
+            (float)frame_dst_h
         };
 
         SDL_RenderCopy((SDL_Renderer *)m->sdl_renderer,
-                       (SDL_Texture *)m->sdl_texture, NULL, &lcd_dst);
-        SDL_RenderCopy((SDL_Renderer *)m->sdl_renderer,
-                       frame_texture, NULL, NULL);
+                       (SDL_Texture *)m->sdl_texture, NULL, &lcd_dst_rect);
+        SDL_RenderCopyF((SDL_Renderer *)m->sdl_renderer,
+                        frame_texture, NULL, &frame_dst);
     } else {
         SDL_RenderCopy((SDL_Renderer *)m->sdl_renderer,
                        (SDL_Texture *)m->sdl_texture, NULL, NULL);
