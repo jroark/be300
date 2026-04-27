@@ -2,7 +2,7 @@
  *  ui.c — SDL2 display frontend for BE-300 framebuffer.
  *
  *  Reads the GXemul dev_fb backing buffer via memory_paddr_to_hostaddr()
- *  and blits it to an SDL2 window at 2× scale (~30 fps).
+ *  and blits it to an SDL2 window at the configured scale (~30 fps).
  *
  *  When HAVE_SDL2 is not defined, all functions are safe no-ops (headless).
  */
@@ -60,8 +60,8 @@ static SDL_Rect lcd_dst_rect;
 #define FRAME_INTERVAL_MS 33  /* ~30 fps */
 #define TOUCH_MIN_DWELL_DEFAULT_MS 120
 #define TOUCH_MIN_DWELL_MAX_MS 5000
-#define BE300_FRAME_LCD_SCALE_DEFAULT 1u
-#define BE300_FRAME_LCD_SCALE_MAX 4u
+#define BE300_FRAME_LCD_SCALE_DEFAULT 1.0
+#define BE300_FRAME_LCD_SCALE_MAX 4.0
 
 static const SDL_Rect fallback_frame_lcd_rect = { 187, 218, 644, 859 };
 
@@ -320,17 +320,39 @@ static uint32_t ui_ms_from_env(const char *name, uint32_t default_ms,
     return (uint32_t)ms;
 }
 
-static uint32_t ui_frame_lcd_scale_from_env(void)
+static double ui_double_from_env(const char *name, double default_value,
+    double min_value, double max_value)
 {
-    uint32_t scale = ui_ms_from_env("BE300_FRAME_LCD_SCALE",
-        BE300_FRAME_LCD_SCALE_DEFAULT, BE300_FRAME_LCD_SCALE_MAX);
+    const char *v = getenv(name);
+    char *end = NULL;
+    double value;
 
-    return scale == 0 ? BE300_FRAME_LCD_SCALE_DEFAULT : scale;
+    if (!v || !*v)
+        return default_value;
+
+    value = strtod(v, &end);
+    if (end == v)
+        return default_value;
+    if (*end == 'x' || *end == 'X')
+        end++;
+    if ((end && *end != '\0') ||
+        !(value >= min_value && value <= max_value))
+        return default_value;
+
+    return value;
 }
 
-static uint32_t ui_frame_lcd_scale(machine_t *m)
+static double ui_frame_lcd_scale_from_env(void)
 {
-    if (m->cfg.frame_lcd_scale >= 1u &&
+    double scale = ui_double_from_env("BE300_FRAME_LCD_SCALE",
+        BE300_FRAME_LCD_SCALE_DEFAULT, 1.0, BE300_FRAME_LCD_SCALE_MAX);
+
+    return scale == 0.0 ? BE300_FRAME_LCD_SCALE_DEFAULT : scale;
+}
+
+static double ui_frame_lcd_scale(machine_t *m)
+{
+    if (m->cfg.frame_lcd_scale >= 1.0 &&
         m->cfg.frame_lcd_scale <= BE300_FRAME_LCD_SCALE_MAX)
         return m->cfg.frame_lcd_scale;
 
@@ -641,11 +663,16 @@ static bool ui_detect_frame_lcd_rect(const uint8_t *pixels, uint32_t width,
     return true;
 }
 
-static void ui_configure_frame_layout(machine_t *m, uint32_t lcd_scale,
+static void ui_configure_frame_layout(machine_t *m, double lcd_scale,
     int *window_w_out, int *window_h_out)
 {
-    uint32_t lcd_w = m->fb_width * lcd_scale;
-    uint32_t lcd_h = m->fb_height * lcd_scale;
+    uint32_t lcd_w = (uint32_t)floor((double)m->fb_width * lcd_scale + 0.5);
+    uint32_t lcd_h = (uint32_t)floor((double)m->fb_height * lcd_scale + 0.5);
+
+    if (lcd_w == 0)
+        lcd_w = 1;
+    if (lcd_h == 0)
+        lcd_h = 1;
 
     frame_scale_x = (double)lcd_w / (double)frame_lcd_rect.w;
     frame_scale_y = (double)lcd_h / (double)frame_lcd_rect.h;
@@ -1252,7 +1279,7 @@ int ui_init(machine_t *m)
     Uint32 win_flags = 0;
 
     if (have_frame_pixels) {
-        uint32_t frame_lcd_scale = ui_frame_lcd_scale(m);
+        double frame_lcd_scale = ui_frame_lcd_scale(m);
         frame_width = loaded_frame_width;
         frame_height = loaded_frame_height;
         if (!ui_detect_frame_lcd_rect(frame_pixels, frame_width,
@@ -1264,7 +1291,7 @@ int ui_init(machine_t *m)
                 frame_lcd_rect.w, frame_lcd_rect.h);
         }
         ui_configure_frame_layout(m, frame_lcd_scale, &win_w, &win_h);
-        fprintf(stderr, "[UI] Frame LCD scale: %ux (window %dx%d)\n",
+        fprintf(stderr, "[UI] Frame LCD scale: %.3gx (window %dx%d)\n",
             frame_lcd_scale, win_w, win_h);
         window_mask = ui_create_frame_window_mask(frame_pixels, win_w,
             win_h);
