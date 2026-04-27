@@ -1126,12 +1126,13 @@ static bool ui_frame_point_in_rect(double fx, double fy, int x, int y,
 }
 
 static bool ui_frame_hit_button(machine_t *m, int win_x, int win_y,
-    uint8_t *btn_set1_out, uint8_t *btn_set2_out)
+    uint8_t *btn_set1_out, uint8_t *btn_set2_out, bool *power_out)
 {
     double fx, fy, bx, by;
 
     *btn_set1_out = 0;
     *btn_set2_out = 0;
+    *power_out = false;
 
     if (!ui_window_to_frame(m, win_x, win_y, &fx, &fy))
         return false;
@@ -1162,7 +1163,7 @@ static bool ui_frame_hit_button(machine_t *m, int win_x, int win_y,
         return true;
     }
     if (ui_point_in_ellipse(bx, by, 848.0, 1329.0, 105.0, 55.0)) {
-        *btn_set2_out = 0x80u;      /* power */
+        *power_out = true;
         return true;
     }
     if (ui_point_in_ellipse(bx, by, 343.0, 1447.0, 85.0, 50.0)) {
@@ -1182,6 +1183,7 @@ static bool ui_frame_hit_interactive(machine_t *m, int win_x, int win_y)
     double fx, fy;
     uint8_t btn_set1 = 0;
     uint8_t btn_set2 = 0;
+    bool power = false;
 
     if (!ui_window_to_frame(m, win_x, win_y, &fx, &fy))
         return false;
@@ -1193,7 +1195,8 @@ static bool ui_frame_hit_interactive(machine_t *m, int win_x, int win_y)
         frame_icon_rect.y, frame_icon_rect.w, frame_icon_rect.h))
         return true;
 
-    return ui_frame_hit_button(m, win_x, win_y, &btn_set1, &btn_set2);
+    return ui_frame_hit_button(m, win_x, win_y, &btn_set1, &btn_set2,
+        &power);
 }
 
 static SDL_HitTestResult SDLCALL ui_window_hit_test(SDL_Window *win,
@@ -1462,8 +1465,7 @@ void ui_update(machine_t *m)
             case SDLK_m:
                 fprintf(stderr,
                     "[UI] Keys: Q=quit  S=screenshot  M=this help\n"
-                    "[UI]       Arrows=d-pad  Enter=ok(Enter)  Tab=esc(Tab)\n"
-                    "[UI]       LShift/RShift=rocket modifier\n"
+                    "[UI]       Arrows=d-pad  Enter=ok  Esc=esc  Tab=rocket\n"
                     "[UI]       Mouse click/drag=touchpanel; framed buttons click hardware keys\n");
                 break;
             /* D-pad */
@@ -1473,10 +1475,8 @@ void ui_update(machine_t *m)
             case SDLK_LEFT:   be300_set_buttons(m, m->btn_set1 | 0x80u, m->btn_set2); break;
             /* Function buttons */
             case SDLK_RETURN: be300_set_buttons(m, m->btn_set1 | 0x04u, m->btn_set2); break;  /* ok/enter */
-            case SDLK_TAB:    be300_set_buttons(m, m->btn_set1 | 0x08u, m->btn_set2); break;  /* esc/tab */
-            /* Rocket modifier (either shift key) */
-            case SDLK_LSHIFT:
-            case SDLK_RSHIFT: be300_set_buttons(m, m->btn_set1, m->btn_set2 | 0x10u); break;
+            case SDLK_ESCAPE: be300_set_buttons(m, m->btn_set1 | 0x08u, m->btn_set2); break;  /* esc */
+            case SDLK_TAB:    be300_set_buttons(m, m->btn_set1, m->btn_set2 | 0x10u); break;  /* rocket */
             /* Power/reboot (btn_set2 0x80) intentionally not mapped */
             default:
                 break;
@@ -1490,9 +1490,8 @@ void ui_update(machine_t *m)
             case SDLK_RIGHT:  be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x40u, m->btn_set2); break;
             case SDLK_LEFT:   be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x80u, m->btn_set2); break;
             case SDLK_RETURN: be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x04u, m->btn_set2); break;
-            case SDLK_TAB:    be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x08u, m->btn_set2); break;
-            case SDLK_LSHIFT:
-            case SDLK_RSHIFT: be300_set_buttons(m, m->btn_set1, m->btn_set2 & (uint8_t)~0x10u); break;
+            case SDLK_ESCAPE: be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x08u, m->btn_set2); break;
+            case SDLK_TAB:    be300_set_buttons(m, m->btn_set1, m->btn_set2 & (uint8_t)~0x10u); break;
             default:
                 break;
             }
@@ -1504,13 +1503,19 @@ void ui_update(machine_t *m)
                     ev.button.timestamp : now;
                 uint8_t btn_set1 = 0;
                 uint8_t btn_set2 = 0;
+                bool power = false;
 
                 if (frame_enabled &&
                     ui_frame_hit_button(m, ev.button.x, ev.button.y,
-                        &btn_set1, &btn_set2)) {
-                    mouse_button_held = true;
-                    ui_press_pointer_button(m, btn_set1, btn_set2);
-                    SDL_CaptureMouse(SDL_TRUE);
+                        &btn_set1, &btn_set2, &power)) {
+                    if (power) {
+                        be300_stop(m);
+                        SDL_CaptureMouse(SDL_FALSE);
+                    } else {
+                        mouse_button_held = true;
+                        ui_press_pointer_button(m, btn_set1, btn_set2);
+                        SDL_CaptureMouse(SDL_TRUE);
+                    }
                     break;
                 }
 
