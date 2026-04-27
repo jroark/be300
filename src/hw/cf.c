@@ -21,6 +21,7 @@
 
 #define CF_CISTPL_FUNCID UINT8_C(0x21)
 #define CF_FUNCID_FIXED_DISK UINT8_C(0x04)
+#define CF_FUNCID_NETWORK UINT8_C(0x06)
 
 #define CF_CMD_RECAL        0x10u
 #define CF_CMD_READ_SECTORS 0x20u
@@ -33,6 +34,33 @@
 #define CF_BOOT_TF_BASE 0xC170u
 #define CF_BOOT_TF_END  0xC178u
 #define CF_BOOT_ALT_REG 0xC376u
+
+#define NE_CR_STP 0x01u
+#define NE_CR_STA 0x02u
+#define NE_CR_TXP 0x04u
+#define NE_CR_RD_MASK 0x38u
+#define NE_CR_RD0 0x08u
+#define NE_CR_RD1 0x10u
+#define NE_CR_RD2 0x20u
+#define NE_CR_PS_MASK 0xC0u
+#define NE_ISR_PRX 0x01u
+#define NE_ISR_PTX 0x02u
+#define NE_ISR_RXE 0x04u
+#define NE_ISR_TXE 0x08u
+#define NE_ISR_OVW 0x10u
+#define NE_ISR_CNT 0x20u
+#define NE_ISR_RDC 0x40u
+#define NE_ISR_RST 0x80u
+#define NE_RSR_PRX 0x01u
+#define NE_RSR_PHY 0x20u
+#define NE_TSR_PTX 0x01u
+#define NE_DCR_WTS 0x01u
+#define NE_RCR_SEP 0x01u
+#define NE_RCR_AB  0x04u
+#define NE_RCR_AM  0x08u
+#define NE_RCR_PRO 0x10u
+#define NE_RCR_MON 0x20u
+#define NE_RESET_PORT 0x1Fu
 
 static const uint16_t cf_no_card_owned_offsets[] = {
     0x0000, 0x0008, 0x0044, 0x004C,
@@ -105,7 +133,7 @@ static void cf_refresh_socket_status(cf_state_t *s)
     }
 }
 
-static void cf_seed_cis(cf_state_t *s)
+static void cf_seed_ata_cis(cf_state_t *s)
 {
     /*
      * Minimal CIS for a CompactFlash ATA storage card. The order and
@@ -143,6 +171,38 @@ static void cf_seed_cis(cf_state_t *s)
         0xE1, 0x01, 0x3D, 0x11, 0x55, 0x1E, 0xFC, 0x23,
         0xF0, 0x61, 0x70, 0x01, 0x07, 0x76, 0x03, 0x01,
         0x30, 0x68, 0xD0, 0x10, 0x00,
+        0x14, 0x00,
+        0xFF, 0x00,
+    };
+
+    memset(s->cis, 0xFF, sizeof(s->cis));
+    memcpy(s->cis, cis, sizeof(cis));
+}
+
+static void cf_seed_ne2000_cis(cf_state_t *s)
+{
+    /*
+     * Minimal PCMCIA Ethernet CIS for the WinCE 3.0 NE2000 miniport.
+     * build-host/modules/30_ne2000.dll.bin:DetectNE2000 (VA 0x01CF1A18)
+     * only accepts FUNCID=network cards whose parsed CFTABLE advertises an
+     * I/O range at 0x300, 0x320, 0x340, or 0x360.  Expose the conventional
+     * 0x300..0x31F NE2000 range; the BE-300 bridge shim maps the guest's
+     * requested I/O window onto the emulated NE2000 registers.
+     */
+    static const uint8_t cis[] = {
+        0x01, 0x03, 0xD9, 0x01, 0xFF,
+        0x15, 0x1F,
+        0x04, 0x01,
+        'B', 'E', '3', '0', '0', '-', 'E', 'm', 'u', 0x00,
+        'N', 'E', '2', '0', '0', '0', '-', 'C', 'o', 'm', 'p', 'a', 't', 0x00,
+        '1', '.', '0', 0x00,
+        0xFF,
+        0x20, 0x04, 0x49, 0x01, 0x00, 0x02,
+        0x21, 0x02, 0x06, 0x00,
+        0x1A, 0x05, 0x01, 0x20, 0x00, 0x02, 0x0F,
+        0x1B, 0x09,
+        0xC1, 0x01, 0x18, 0xF0, 0x60, 0x00, 0x03, 0x1F,
+        0x20,
         0x14, 0x00,
         0xFF, 0x00,
     };
@@ -232,7 +292,8 @@ void cf_init(cf_state_t *s)
         return;
 
     memset(s, 0, sizeof(*s));
-    cf_seed_cis(s);
+    s->card_kind = CF_CARD_NONE;
+    memset(s->cis, 0xFF, sizeof(s->cis));
     cf_seed_companion_page(s);
     cf_reset_taskfile(s);
     cf_arm_boot_status(s);
@@ -251,6 +312,7 @@ void cf_destroy(cf_state_t *s)
     s->image_path = NULL;
     s->image_size = 0;
     s->attached = false;
+    s->card_kind = CF_CARD_NONE;
 }
 
 static int cf_reserve_buffer(cf_state_t *s, size_t size)
@@ -317,6 +379,7 @@ int cf_load_image(cf_state_t *s, const char *path)
     free(s->image);
     s->image = data;
     s->image_size = (size_t)fsize;
+    s->card_kind = CF_CARD_ATA;
     s->attached = true;
     s->dirty = false;
     s->irq_pending = true;
@@ -331,6 +394,7 @@ int cf_load_image(cf_state_t *s, const char *path)
     if (!s->image_path)
         return -1;
 
+    cf_seed_ata_cis(s);
     cf_seed_companion_page(s);
     cf_reset_taskfile(s);
     cf_arm_boot_status(s);
@@ -361,9 +425,107 @@ int cf_save_image(cf_state_t *s)
     return 0;
 }
 
+static void ne2000_seed_prom(cf_state_t *s)
+{
+    uint8_t prom[16];
+
+    memset(prom, 0, sizeof(prom));
+    memcpy(prom, s->ne2000.par, sizeof(s->ne2000.par));
+    prom[14] = 0x57u;
+    prom[15] = 0x57u;
+
+    memset(s->ne2000.mem, 0, sizeof(s->ne2000.mem));
+    for (size_t i = 0; i < sizeof(prom); i++) {
+        s->ne2000.mem[i * 2u + 0u] = prom[i];
+        s->ne2000.mem[i * 2u + 1u] = prom[i];
+    }
+}
+
+static void ne2000_reset(cf_state_t *s)
+{
+    s->ne2000.cr = NE_CR_STP | NE_CR_RD2;
+    s->ne2000.pstart = 0x40u;
+    s->ne2000.pstop = 0x80u;
+    s->ne2000.bnry = 0x40u;
+    s->ne2000.tpsr = 0x20u;
+    s->ne2000.tbcr0 = 0;
+    s->ne2000.tbcr1 = 0;
+    s->ne2000.isr = NE_ISR_RST;
+    s->ne2000.rsar0 = 0;
+    s->ne2000.rsar1 = 0;
+    s->ne2000.rbcr0 = 0;
+    s->ne2000.rbcr1 = 0;
+    s->ne2000.rcr = 0;
+    s->ne2000.tcr = 0;
+    s->ne2000.dcr = NE_DCR_WTS;
+    s->ne2000.imr = 0;
+    s->ne2000.curr = 0x41u;
+    s->ne2000.rsr = 0;
+    s->ne2000.tsr = 0;
+    s->ne2000.reset_latch = 0;
+    s->ne2000.remote_cmd = NE_CR_RD2;
+    s->ne2000.remote_addr = 0;
+    s->ne2000.remote_count = 0;
+    ne2000_seed_prom(s);
+}
+
+int cf_attach_ne2000(cf_state_t *s, struct machine *machine,
+                     struct net *net, const uint8_t *mac)
+{
+    if (!s)
+        return -1;
+
+    free(s->image);
+    s->image = NULL;
+    s->image_size = 0;
+    free(s->image_path);
+    s->image_path = NULL;
+
+    memset(&s->ne2000, 0, sizeof(s->ne2000));
+    if (mac) {
+        memcpy(s->ne2000.par, mac, sizeof(s->ne2000.par));
+    } else if (machine) {
+        net_generate_unique_mac(machine, s->ne2000.par);
+    } else {
+        static const uint8_t fallback_mac[6] =
+            { 0x10, 0x20, 0x30, 0x00, 0x00, 0x10 };
+        memcpy(s->ne2000.par, fallback_mac, sizeof(s->ne2000.par));
+    }
+    memcpy(s->ne2000.nic.mac_address, s->ne2000.par,
+        sizeof(s->ne2000.nic.mac_address));
+    s->ne2000.net = net;
+    if (net)
+        net_add_nic(net, &s->ne2000.nic);
+
+    s->card_kind = CF_CARD_NE2000;
+    s->attached = true;
+    s->dirty = false;
+    s->irq_pending = true;
+    s->state_change_pending = true;
+    s->boot_visible = false;
+    s->cis_funcid_seen = false;
+    s->insert_event_pending = true;
+    s->card_windows_enabled = false;
+
+    cf_seed_ne2000_cis(s);
+    cf_seed_companion_page(s);
+    cf_reset_taskfile(s);
+    ne2000_reset(s);
+    cf_arm_boot_status(s);
+    fprintf(stderr, "[NE2000] PCMCIA card attached MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+        s->ne2000.par[0], s->ne2000.par[1], s->ne2000.par[2],
+        s->ne2000.par[3], s->ne2000.par[4], s->ne2000.par[5]);
+    return 0;
+}
+
 bool cf_present(const cf_state_t *s)
 {
     return s && s->attached;
+}
+
+bool cf_is_ne2000(const cf_state_t *s)
+{
+    return s && s->attached && s->card_kind == CF_CARD_NE2000;
 }
 
 void cf_set_boot_visibility(cf_state_t *s, bool visible)
@@ -371,14 +533,14 @@ void cf_set_boot_visibility(cf_state_t *s, bool visible)
     if (!s)
         return;
 
-    s->boot_visible = visible && s->attached;
+    s->boot_visible = visible && s->attached && s->card_kind == CF_CARD_ATA;
     cf_reset_taskfile(s);
     cf_arm_boot_status(s);
 }
 
 bool cf_boot_handles_rom_offset(const cf_state_t *s, uint32_t offset)
 {
-    return s && s->attached &&
+    return s && s->attached && s->card_kind == CF_CARD_ATA &&
         ((offset >= CF_BOOT_TF_BASE && offset < CF_BOOT_TF_END) ||
          offset == CF_BOOT_ALT_REG);
 }
@@ -420,7 +582,9 @@ uint32_t cf_giu_source_bits(const cf_state_t *s)
      * cf_companion_write IRQ-clear at 0x40/0x50.
      */
     return (s && s->attached &&
-            (s->irq_pending || s->state_change_pending)) ? 0x00000001u : 0u;
+            (s->irq_pending || s->state_change_pending ||
+             (s->card_kind == CF_CARD_NE2000 &&
+              (s->ne2000.isr & s->ne2000.imr) != 0))) ? 0x00000001u : 0u;
 }
 
 uint16_t cf_card_state_bits(const cf_state_t *s)
@@ -433,7 +597,12 @@ uint16_t cf_card_state_bits(const cf_state_t *s)
      * bit 0x01 -> SYSINTR_PCMCIA_LEVEL.  Report state-change cause while
      * a state_change is pending delivery; otherwise level-only.
      */
-    return (s->irq_pending || s->state_change_pending) ? 0x0023u : 0x0001u;
+    if (s->irq_pending || s->state_change_pending)
+        return 0x0023u;
+    if (s->card_kind == CF_CARD_NE2000 &&
+        (s->ne2000.isr & s->ne2000.imr) != 0)
+        return 0x0001u;
+    return 0x0001u;
 }
 
 static uint32_t cf_current_lba(const cf_state_t *s)
@@ -838,7 +1007,8 @@ static void cf_note_cis_read(cf_state_t *s, uint32_t cis_idx)
 
     if (s->cis[cis_idx] == CF_CISTPL_FUNCID &&
         s->cis[cis_idx + 1] >= 2 &&
-        s->cis[cis_idx + 2] == CF_FUNCID_FIXED_DISK)
+        (s->cis[cis_idx + 2] == CF_FUNCID_FIXED_DISK ||
+         s->cis[cis_idx + 2] == CF_FUNCID_NETWORK))
         s->cis_funcid_seen = true;
 }
 
@@ -871,6 +1041,362 @@ uint64_t cf_cis_read(cf_state_t *s, uint32_t offset, unsigned size)
 bool cf_pcmcia_windows_enabled(const cf_state_t *s)
 {
     return s && s->card_windows_enabled;
+}
+
+static uint8_t ne2000_mem_read(const cf_state_t *s, uint16_t addr)
+{
+    return s->ne2000.mem[addr % CF_NE2000_MEM_SIZE];
+}
+
+static void ne2000_mem_write(cf_state_t *s, uint16_t addr, uint8_t value)
+{
+    if (addr < CF_NE2000_MEM_SIZE)
+        s->ne2000.mem[addr] = value;
+}
+
+static uint16_t ne2000_remote_count(const cf_state_t *s)
+{
+    return (uint16_t)s->ne2000.rbcr0 | ((uint16_t)s->ne2000.rbcr1 << 8);
+}
+
+static void ne2000_remote_done_if_needed(cf_state_t *s)
+{
+    if (s->ne2000.remote_count == 0 &&
+        s->ne2000.remote_cmd != NE_CR_RD2)
+        s->ne2000.isr |= NE_ISR_RDC;
+}
+
+static void ne2000_update_mac(cf_state_t *s)
+{
+    memcpy(s->ne2000.nic.mac_address, s->ne2000.par,
+        sizeof(s->ne2000.nic.mac_address));
+}
+
+static void ne2000_transmit(cf_state_t *s)
+{
+    uint16_t len = (uint16_t)s->ne2000.tbcr0 |
+        ((uint16_t)s->ne2000.tbcr1 << 8);
+    uint16_t addr = (uint16_t)s->ne2000.tpsr << 8;
+    uint8_t packet[1600];
+
+    if (len > sizeof(packet))
+        len = sizeof(packet);
+    for (uint16_t i = 0; i < len; i++)
+        packet[i] = ne2000_mem_read(s, (uint16_t)(addr + i));
+
+    if (s->ne2000.net && len >= 14)
+        net_ethernet_tx(s->ne2000.net, &s->ne2000.nic, packet, len);
+
+    s->ne2000.tsr = NE_TSR_PTX;
+    s->ne2000.isr |= NE_ISR_PTX;
+    s->ne2000.cr &= (uint8_t)~NE_CR_TXP;
+}
+
+static bool ne2000_accept_packet(const cf_state_t *s, const uint8_t *packet,
+                                 int len)
+{
+    if (!s || !packet || len < 14)
+        return false;
+    if (!(s->ne2000.cr & NE_CR_STA) || (s->ne2000.cr & NE_CR_STP))
+        return false;
+    if (s->ne2000.rcr & NE_RCR_MON)
+        return false;
+    if (net_ether_broadcast(packet))
+        return (s->ne2000.rcr & NE_RCR_AB) != 0;
+    if (net_ether_multicast(packet))
+        return (s->ne2000.rcr & (NE_RCR_AM | NE_RCR_PRO)) != 0;
+    return (s->ne2000.rcr & NE_RCR_PRO) ||
+        net_ether_eq(packet, s->ne2000.par);
+}
+
+static uint8_t ne2000_next_page(const cf_state_t *s, uint8_t page,
+                                uint8_t pages)
+{
+    uint8_t pstart = s->ne2000.pstart ? s->ne2000.pstart : 0x40u;
+    uint8_t pstop = s->ne2000.pstop > pstart ? s->ne2000.pstop : 0x80u;
+    unsigned next = (unsigned)page + pages;
+
+    while (next >= pstop)
+        next = (unsigned)pstart + (next - pstop);
+    return (uint8_t)next;
+}
+
+static bool ne2000_ring_has_space(const cf_state_t *s, uint8_t pages)
+{
+    uint8_t pstart = s->ne2000.pstart ? s->ne2000.pstart : 0x40u;
+    uint8_t pstop = s->ne2000.pstop > pstart ? s->ne2000.pstop : 0x80u;
+    uint8_t curr = s->ne2000.curr;
+    uint8_t bnry = s->ne2000.bnry;
+    unsigned free_pages;
+
+    if (curr < pstart || curr >= pstop)
+        curr = pstart;
+    if (bnry < pstart || bnry >= pstop)
+        bnry = pstart;
+
+    if (curr <= bnry)
+        free_pages = (unsigned)(bnry - curr);
+    else
+        free_pages = (unsigned)(pstop - curr) + (unsigned)(bnry - pstart);
+
+    return free_pages > pages;
+}
+
+static void ne2000_ring_write(cf_state_t *s, uint16_t off, uint8_t value)
+{
+    uint16_t pstart = (uint16_t)(s->ne2000.pstart ? s->ne2000.pstart : 0x40u) << 8;
+    uint16_t pstop = (uint16_t)(s->ne2000.pstop > s->ne2000.pstart ?
+        s->ne2000.pstop : 0x80u) << 8;
+    uint16_t addr = off;
+
+    if (addr < pstart || addr >= pstop)
+        addr = (uint16_t)(pstart + ((addr - pstart) % (pstop - pstart)));
+    ne2000_mem_write(s, addr, value);
+}
+
+static void ne2000_receive_packet(cf_state_t *s, const uint8_t *packet, int len)
+{
+    uint16_t wire_len;
+    uint16_t total;
+    uint8_t pages;
+    uint8_t curr;
+    uint8_t next;
+    uint16_t base;
+
+    if (!ne2000_accept_packet(s, packet, len))
+        return;
+
+    wire_len = (uint16_t)len + 4u;
+    total = (uint16_t)(wire_len + 4u);
+    pages = (uint8_t)((total + 255u) >> 8);
+    if (pages == 0)
+        pages = 1;
+    if (!ne2000_ring_has_space(s, pages)) {
+        s->ne2000.isr |= NE_ISR_OVW;
+        return;
+    }
+
+    curr = s->ne2000.curr;
+    if (curr < s->ne2000.pstart || curr >= s->ne2000.pstop)
+        curr = s->ne2000.pstart;
+    next = ne2000_next_page(s, curr, pages);
+    base = (uint16_t)curr << 8;
+
+    ne2000_ring_write(s, base + 0u, NE_RSR_PRX |
+        (net_ether_eq(packet, s->ne2000.par) ? NE_RSR_PHY : 0u));
+    ne2000_ring_write(s, base + 1u, next);
+    ne2000_ring_write(s, base + 2u, (uint8_t)(wire_len & 0xFFu));
+    ne2000_ring_write(s, base + 3u, (uint8_t)(wire_len >> 8));
+    for (int i = 0; i < len; i++)
+        ne2000_ring_write(s, (uint16_t)(base + 4u + (uint16_t)i), packet[i]);
+    for (uint16_t i = 0; i < 4u; i++)
+        ne2000_ring_write(s, (uint16_t)(base + 4u + (uint16_t)len + i), 0);
+
+    s->ne2000.curr = next;
+    s->ne2000.rsr = NE_RSR_PRX;
+    s->ne2000.isr |= NE_ISR_PRX;
+}
+
+void cf_ne2000_tick(cf_state_t *s)
+{
+    if (!cf_is_ne2000(s) || !s->ne2000.net)
+        return;
+
+    for (unsigned i = 0; i < 4; i++) {
+        unsigned char *packet = NULL;
+        int len = 0;
+
+        if (!net_ethernet_rx_avail(s->ne2000.net, &s->ne2000.nic))
+            break;
+        if (!net_ethernet_rx(s->ne2000.net, &s->ne2000.nic, &packet, &len))
+            break;
+        ne2000_receive_packet(s, packet, len);
+        free(packet);
+    }
+}
+
+static uint8_t ne2000_read_reg(cf_state_t *s, uint8_t reg)
+{
+    uint8_t page = (uint8_t)((s->ne2000.cr & NE_CR_PS_MASK) >> 6);
+
+    reg &= 0x0Fu;
+    if (reg == 0)
+        return s->ne2000.cr;
+
+    if (page == 1) {
+        if (reg >= 1 && reg <= 6)
+            return s->ne2000.par[reg - 1u];
+        if (reg == 7)
+            return s->ne2000.curr;
+        if (reg >= 8)
+            return s->ne2000.mar[reg - 8u];
+        return 0;
+    }
+
+    if (page == 2) {
+        switch (reg) {
+        case 1: return s->ne2000.pstart;
+        case 2: return s->ne2000.pstop;
+        case 3: return s->ne2000.remote_addr & 0xFFu;
+        case 4: return s->ne2000.tpsr;
+        case 5: return s->ne2000.remote_count & 0xFFu;
+        case 6: return s->ne2000.remote_count >> 8;
+        case 7: return s->ne2000.curr;
+        default: return 0;
+        }
+    }
+
+    switch (reg) {
+    case 3: return s->ne2000.bnry;
+    case 4: return s->ne2000.tsr;
+    case 7: return s->ne2000.isr;
+    case 8: return s->ne2000.remote_addr & 0xFFu;
+    case 9: return s->ne2000.remote_addr >> 8;
+    case 12: return s->ne2000.rsr;
+    case 13:
+    case 14:
+    case 15:
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+static uint64_t ne2000_data_read(cf_state_t *s, unsigned size)
+{
+    uint64_t val = 0;
+
+    for (unsigned i = 0; i < size; i++) {
+        uint8_t byte = ne2000_mem_read(s, s->ne2000.remote_addr);
+        val |= (uint64_t)byte << (8u * i);
+        s->ne2000.remote_addr++;
+        if (s->ne2000.remote_count > 0)
+            s->ne2000.remote_count--;
+    }
+    ne2000_remote_done_if_needed(s);
+    return val;
+}
+
+static void ne2000_data_write(cf_state_t *s, unsigned size, uint64_t value)
+{
+    for (unsigned i = 0; i < size; i++) {
+        ne2000_mem_write(s, s->ne2000.remote_addr,
+            (uint8_t)((value >> (8u * i)) & 0xFFu));
+        s->ne2000.remote_addr++;
+        if (s->ne2000.remote_count > 0)
+            s->ne2000.remote_count--;
+    }
+    ne2000_remote_done_if_needed(s);
+}
+
+static void ne2000_write_cr(cf_state_t *s, uint8_t value)
+{
+    uint8_t old_page = s->ne2000.cr & NE_CR_PS_MASK;
+
+    s->ne2000.cr = value;
+    s->ne2000.remote_cmd = value & NE_CR_RD_MASK;
+    if (value & NE_CR_STP)
+        s->ne2000.isr |= NE_ISR_RST;
+    if (value & NE_CR_STA)
+        s->ne2000.isr &= (uint8_t)~NE_ISR_RST;
+    if ((value & NE_CR_RD_MASK) == NE_CR_RD0 ||
+        (value & NE_CR_RD_MASK) == NE_CR_RD1) {
+        s->ne2000.remote_addr = (uint16_t)s->ne2000.rsar0 |
+            ((uint16_t)s->ne2000.rsar1 << 8);
+        s->ne2000.remote_count = ne2000_remote_count(s);
+        ne2000_remote_done_if_needed(s);
+    }
+    if (value & NE_CR_TXP)
+        ne2000_transmit(s);
+    s->ne2000.cr = (s->ne2000.cr & (uint8_t)~NE_CR_PS_MASK) |
+        (value & NE_CR_PS_MASK);
+    (void)old_page;
+}
+
+static void ne2000_write_reg(cf_state_t *s, uint8_t reg, uint8_t value)
+{
+    uint8_t page = (uint8_t)((s->ne2000.cr & NE_CR_PS_MASK) >> 6);
+
+    reg &= 0x0Fu;
+    if (reg == 0) {
+        ne2000_write_cr(s, value);
+        return;
+    }
+
+    if (page == 1) {
+        if (reg >= 1 && reg <= 6) {
+            s->ne2000.par[reg - 1u] = value;
+            ne2000_update_mac(s);
+        } else if (reg == 7) {
+            s->ne2000.curr = value;
+        } else if (reg >= 8) {
+            s->ne2000.mar[reg - 8u] = value;
+        }
+        return;
+    }
+
+    switch (reg) {
+    case 1: s->ne2000.pstart = value; break;
+    case 2: s->ne2000.pstop = value; break;
+    case 3: s->ne2000.bnry = value; break;
+    case 4: s->ne2000.tpsr = value; break;
+    case 5: s->ne2000.tbcr0 = value; break;
+    case 6: s->ne2000.tbcr1 = value; break;
+    case 7: s->ne2000.isr &= (uint8_t)~value; break;
+    case 8: s->ne2000.rsar0 = value; break;
+    case 9: s->ne2000.rsar1 = value; break;
+    case 10: s->ne2000.rbcr0 = value; break;
+    case 11: s->ne2000.rbcr1 = value; break;
+    case 12:
+        s->ne2000.rcr = value;
+        s->ne2000.nic.promiscuous_mode = (value & NE_RCR_PRO) != 0;
+        break;
+    case 13: s->ne2000.tcr = value; break;
+    case 14: s->ne2000.dcr = value; break;
+    case 15: s->ne2000.imr = value; break;
+    default: break;
+    }
+}
+
+static uint64_t ne2000_window_read(cf_state_t *s, uint32_t offset,
+                                   unsigned size)
+{
+    uint64_t val = 0;
+    uint8_t port = (uint8_t)(offset & 0x1Fu);
+
+    if (port == 0x10u)
+        return ne2000_data_read(s, size);
+    if (port == NE_RESET_PORT) {
+        s->ne2000.reset_latch = 1;
+        s->ne2000.isr |= NE_ISR_RST;
+        return size >= 4 ? UINT32_C(0xFFFFFFFF) : UINT64_C(0xFF);
+    }
+
+    for (unsigned i = 0; i < size; i++) {
+        uint8_t b = ne2000_read_reg(s, (uint8_t)(port + i));
+        val |= (uint64_t)b << (8u * i);
+    }
+    return val;
+}
+
+static void ne2000_window_write(cf_state_t *s, uint32_t offset, unsigned size,
+                                uint64_t value)
+{
+    uint8_t port = (uint8_t)(offset & 0x1Fu);
+
+    if (port == 0x10u) {
+        ne2000_data_write(s, size, value);
+        return;
+    }
+    if (port == NE_RESET_PORT) {
+        s->ne2000.reset_latch = 0;
+        s->ne2000.isr |= NE_ISR_RST;
+        return;
+    }
+
+    for (unsigned i = 0; i < size; i++)
+        ne2000_write_reg(s, (uint8_t)(port + i),
+            (uint8_t)((value >> (8u * i)) & 0xFFu));
 }
 
 uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size)
@@ -966,6 +1492,8 @@ uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size)
             val >>= (unsigned)((sizeof(val) - size) * 8u);
         return val;
     }
+    if (s->card_kind == CF_CARD_NE2000)
+        return ne2000_window_read(s, offset, size);
 
     reg = cf_decode_taskfile_offset(offset, &is_alt);
     if (reg == 0 && !is_alt) {
@@ -991,6 +1519,10 @@ void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
 
     if (!s || size == 0 || !s->attached)
         return;
+    if (s->card_kind == CF_CARD_NE2000) {
+        ne2000_window_write(s, offset, size, value);
+        return;
+    }
 
     reg = cf_decode_taskfile_offset(offset, &is_alt);
     if (reg == 0 && !is_alt) {

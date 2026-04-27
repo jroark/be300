@@ -251,6 +251,19 @@ DEVICE_ACCESS(be300_nand)
      * model once the socket window-translation register layout is identified.
      */
     if (d->cf && cf_pcmcia_windows_enabled(d->cf) &&
+        cf_is_ne2000(d->cf) &&
+        offset >= 0xC000u && offset < 0xC400u) {
+        if (writeflag == MEM_WRITE) {
+            uint64_t val = memory_readmax64(cpu, data, len);
+            cf_window_write(d->cf, offset, (unsigned)len, val);
+        } else {
+            uint64_t val = cf_window_read(d->cf, offset, (unsigned)len);
+            memory_writemax64(cpu, data, len, val);
+        }
+        return 1;
+    }
+
+    if (d->cf && cf_pcmcia_windows_enabled(d->cf) &&
         ((offset >= 0xC170u && offset < 0xC178u) ||
          offset == 0xC376u)) {
         if (writeflag == MEM_WRITE) {
