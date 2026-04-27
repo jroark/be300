@@ -25,16 +25,22 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#else
-/* Allow IDE/host clang to index this file without the emcc sysroot. The
- * BUILD_WEB CMake block only ever compiles main_web.c with emcmake, so this
- * fallback never reaches a real binary. */
-#define EMSCRIPTEN_KEEPALIVE
+/* Use __has_include so IDE/LSP indexers without the emcc sysroot don't choke
+ * on the missing header. Real BUILD_WEB compiles always go through emcmake
+ * and pick up the real <emscripten.h>. */
+#if defined(__has_include)
+#  if __has_include(<emscripten.h>)
+#    include <emscripten.h>
+#  endif
+#endif
+#ifndef EMSCRIPTEN_KEEPALIVE
+#  define EMSCRIPTEN_KEEPALIVE
 #endif
 
-#include "be300.h"
+/* Relative path so IDE/LSP indexers without `-Isrc` still resolve the header.
+ * The emcmake build adds `src/` via include_directories() in CMakeLists.txt
+ * so a bare "be300.h" would also work, but the relative form is unambiguous. */
+#include "../src/be300.h"
 
 static const char *NAND_PATH = "/All_nand_300.bin";
 
