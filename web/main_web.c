@@ -24,7 +24,15 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+
+#ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#else
+/* Allow IDE/host clang to index this file without the emcc sysroot. The
+ * BUILD_WEB CMake block only ever compiles main_web.c with emcmake, so this
+ * fallback never reaches a real binary. */
+#define EMSCRIPTEN_KEEPALIVE
+#endif
 
 #include "be300.h"
 
