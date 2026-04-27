@@ -37,7 +37,7 @@ static void usage(const char *prog)
         "  --trace               Print each executed instruction to stderr\n"
         "  --log-mmio            Log all MMIO register reads/writes to stderr\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
-        "  --cf <image>          Attach a FAT16 CF image\n"
+        "  --cf <image>          Attach a FAT16 CF image (may be specified twice)\n"
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
@@ -81,7 +81,8 @@ int main(int argc, char *argv[])
         .stall_wall_secs         = 5u,
         .rom_path       = NULL,
         .nand_path      = NULL,
-        .cf_path        = NULL,
+        .cf_paths       = { NULL },
+        .cf_count       = 0,
         .sdram_size     = 16u * 1024u * 1024u,
         .target_mhz     = 166u,
         .frame_lcd_scale = 0.0,
@@ -106,7 +107,12 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {
             cfg.nand_path = argv[++i];
         } else if (strcmp(argv[i], "--cf") == 0 && i + 1 < argc) {
-            cfg.cf_path = argv[++i];
+            if (cfg.cf_count >= BE300_MAX_CF_SLOTS) {
+                fprintf(stderr, "Error: at most %u --cf images are supported\n",
+                    (unsigned)BE300_MAX_CF_SLOTS);
+                return 1;
+            }
+            cfg.cf_paths[cfg.cf_count++] = argv[++i];
         } else if (strcmp(argv[i], "--restore") == 0) {
             cfg.restore = true;
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
@@ -147,7 +153,7 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    if (cfg.restore && !cfg.cf_path) {
+    if (cfg.restore && cfg.cf_count == 0) {
         fprintf(stderr, "Error: --restore requires --cf <image>\n");
         usage(argv[0]);
         return 1;

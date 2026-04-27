@@ -1701,14 +1701,15 @@ DEVICE_ACCESS(be300_vrc4173)
             be300_probe_note_mmio("vrc4173-cf-companion", off, 'W',
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
                 BE300_MMIO_CLASS_KNOWN);
-            cf_companion_write(&g_be300_machine->cf, off - 0x1000u,
-                (unsigned)len, val);
+            cf_companion_write(
+                &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT],
+                off - 0x1000u, (unsigned)len, val);
             memcpy(&d->bytes[off], data, len);
             return 1;
         }
 
         if (g_be300_machine && (off == 0x0010u || off == 0x0014u))
-            cf_clear_irq(&g_be300_machine->cf);
+            cf_clear_irq(&g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]);
         /* GIRQ0-1 keyboard dispatcher acknowledges through AA000014;
          * see docs/hardware/hardware.txt:107-112. */
         if (g_be300_machine && off <= 0x0014u && off + len > 0x0014u)
@@ -1783,10 +1784,11 @@ DEVICE_ACCESS(be300_vrc4173)
              * source.  If no CF image is attached, there is no card-backed
              * source to report even if a guest write left bit 0 latched.
              */
-            if (!cf_present(&g_be300_machine->cf))
+            if (!cf_present(&g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]))
                 val &= ~(uint64_t)1u;
             val &= ~(uint64_t)BUTTON_GIRQ0_SOURCE;
-            val |= cf_giu_source_bits(&g_be300_machine->cf)
+            val |= cf_giu_source_bits(
+                    &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT])
                 | be300_pcconnect_girq0_source_bits(d)
                 | button_girq0_source_bits(
                     (const struct be300_input_device *)
@@ -1852,10 +1854,12 @@ DEVICE_ACCESS(be300_vrc4173)
         }
 
         if (g_be300_machine && off >= 0x1000u && off < 0x2000u) {
-            uint64_t val = cf_companion_read(&g_be300_machine->cf,
+            uint64_t val = cf_companion_read(
+                &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT],
                 off - 0x1000u, (unsigned)len);
             val = be300_pcconnect_pccard_status_read(d,
-                cf_present(&g_be300_machine->cf), off, (unsigned)len, val);
+                cf_present(&g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]),
+                off, (unsigned)len, val);
             /*
              * Pass 18/19 (2026-04-19): offset 0x1CD0 is the VRC4173
              * DMA-pending status bit that nanddisk.dll's CheckDMAEnd at
@@ -1909,7 +1913,8 @@ DEVICE_ACCESS(be300_vrc4173)
          * pulled-up attribute bus instead of latch zeroes.
          */
         if (g_be300_machine &&
-            cf_pcmcia_windows_enabled(&g_be300_machine->cf) &&
+            cf_pcmcia_windows_enabled(
+                &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]) &&
             off >= 0xE000u && off < 0xE800u) {
             uint64_t val = UINT64_MAX;
             if ((unsigned)len < sizeof(val))
@@ -2623,7 +2628,7 @@ void be300_register_cf_window(struct machine *gxm, machine_t *m, bool log_mmio)
     struct be300_cf_window_device *d;
 
     CHECK_ALLOCATION(d = calloc(1, sizeof(*d)));
-    d->cf = &m->cf;
+    d->cf = &m->cf[BE300_PRIMARY_CF_SLOT];
     d->log_mmio = log_mmio;
 
     memory_device_register(gxm->memory, "be300_cf_window",
@@ -2637,7 +2642,7 @@ void be300_register_companion_ab_window(struct machine *gxm, machine_t *m,
     struct be300_companion_ab_device *d;
 
     CHECK_ALLOCATION(d = calloc(1, sizeof(*d)));
-    d->cf = &m->cf;
+    d->cf = &m->cf[BE300_PRIMARY_CF_SLOT];
     d->log_mmio = log_mmio;
 
     memory_device_register(gxm->memory, "be300_companion_ab_window",
@@ -2734,7 +2739,7 @@ void be300_register_pcmcia_attr_window(struct machine *gxm, machine_t *m)
     struct be300_pcmcia_attr_device *d;
 
     CHECK_ALLOCATION(d = calloc(1, sizeof(*d)));
-    d->cf = m ? &m->cf : NULL;
+    d->cf = m ? &m->cf[BE300_PRIMARY_CF_SLOT] : NULL;
 
     /*
      * The CIS window is a read-only view of the card's attribute memory, but
