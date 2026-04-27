@@ -27,10 +27,26 @@ if(PKG_CONFIG_FOUND)
     pkg_check_modules(SDL2 QUIET sdl2)
 endif()
 find_package(SDL2 QUIET)
+if(APPLE AND CMAKE_OSX_ARCHITECTURES MATCHES "arm64"
+        AND EXISTS "/opt/homebrew/include/png.h"
+        AND EXISTS "/opt/homebrew/lib/libpng.dylib")
+    set(PNG_PNG_INCLUDE_DIR "/opt/homebrew/include" CACHE PATH
+        "Path to arm64 libpng headers" FORCE)
+    set(PNG_LIBRARY_RELEASE "/opt/homebrew/lib/libpng.dylib" CACHE FILEPATH
+        "Path to arm64 libpng library" FORCE)
+endif()
+find_package(PNG QUIET)
 if(SDL2_FOUND OR SDL2_LIBRARIES)
     include_directories(${SDL2_INCLUDE_DIRS})
     add_compile_definitions(HAVE_SDL2)
     message(STATUS "SDL2 found — building with display support")
+    if(PNG_FOUND)
+        include_directories(${PNG_INCLUDE_DIRS})
+        add_compile_definitions(HAVE_PNG)
+        message(STATUS "PNG found — building with SDL frame support")
+    else()
+        message(STATUS "PNG not found — SDL frame support disabled")
+    endif()
 else()
     message(STATUS "SDL2 not found — building headless (no display)")
 endif()
@@ -121,7 +137,8 @@ set(BE300_SOURCES
 
 # Main executable
 add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
-target_link_libraries(be300 m ${SDL2_LIBRARIES})
+target_compile_definitions(be300 PRIVATE BE300_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(be300 m ${SDL2_LIBRARIES} ${PNG_LIBRARIES})
 
 # Tests
 enable_testing()

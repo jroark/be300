@@ -20,6 +20,9 @@ static void *frame_cb_data = NULL;
 #ifdef HAVE_SDL2
 
 #include <SDL.h>
+#ifdef HAVE_PNG
+#include <png.h>
+#endif
 
 /* GXemul headers for framebuffer access */
 #include "machine.h"
@@ -30,14 +33,39 @@ static bool quit_requested = false;
 static bool sdl_video_initialized = false;
 static bool sdl_audio_initialized = false;
 static SDL_AudioDeviceID audio_device = 0;
+static SDL_Texture *frame_texture = NULL;
+static bool frame_enabled = false;
+static uint32_t frame_width = 0;
+static uint32_t frame_height = 0;
 
 /* Frame rate limiting */
 #define FRAME_INTERVAL_MS 33  /* ~30 fps */
 #define TOUCH_MIN_DWELL_DEFAULT_MS 120
 #define TOUCH_MIN_DWELL_MAX_MS 5000
+#define BE300_FRAME_DEFAULT_SCALE 0.5
+
+enum {
+    BE300_FRAME_LCD_X = 187,
+    BE300_FRAME_LCD_Y = 218,
+    BE300_FRAME_LCD_W = 644,
+    BE300_FRAME_LCD_H = 859,
+    BE300_FRAME_ICON_X = 187,
+    BE300_FRAME_ICON_Y = 1077,
+    BE300_FRAME_ICON_W = 644,
+    BE300_FRAME_ICON_H = 107
+};
+
+typedef enum {
+    UI_POINTER_NONE = 0,
+    UI_POINTER_TOUCH,
+    UI_POINTER_BUTTON
+} ui_pointer_mode_t;
 
 /* Mouse button held state for touch drag tracking */
 static bool mouse_button_held = false;
+static ui_pointer_mode_t pointer_mode = UI_POINTER_NONE;
+static uint8_t pointer_btn_set1 = 0;
+static uint8_t pointer_btn_set2 = 0;
 static bool touch_active = false;
 static bool touch_release_pending = false;
 static uint16_t touch_release_x = 0;
@@ -57,6 +85,10 @@ static uint16_t *staging_buf = NULL;
 #define BUZZER_DEFAULT_HZ        1200
 #define BUZZER_DEFAULT_MS          60
 static uint32_t last_buzzer_tick = 0;
+
+#ifndef BE300_SOURCE_DIR
+#define BE300_SOURCE_DIR "."
+#endif
 
 static bool ui_audio_env_enabled(void)
 {
@@ -119,6 +151,13 @@ static void ui_audio_destroy(void)
 
 static void ui_video_destroy(machine_t *m)
 {
+    if (frame_texture) {
+        SDL_DestroyTexture(frame_texture);
+        frame_texture = NULL;
+    }
+    frame_enabled = false;
+    frame_width = 0;
+    frame_height = 0;
     if (m->sdl_texture) {
         SDL_DestroyTexture((SDL_Texture *)m->sdl_texture);
         m->sdl_texture = NULL;
@@ -262,11 +301,206 @@ static uint32_t ui_ms_from_env(const char *name, uint32_t default_ms,
     return (uint32_t)ms;
 }
 
-static void ui_window_to_touch(machine_t *m, int win_x, int win_y,
+#ifdef HAVE_PNG
+static bool ui_load_png_rgba(const char *path, uint8_t **pixels_out,
+    uint32_t *width_out, uint32_t *height_out)
+{
+    FILE *f;
+    png_structp png = NULL;
+    png_infop info = NULL;
+    png_bytep *rows = NULL;
+    uint8_t *pixels = NULL;
+    uint8_t sig[8];
+    png_uint_32 width, height;
+    int bit_depth, color_type;
+    size_t rowbytes;
+    bool ok = false;
+
+    f = fopen(path, "rb");
+    if (!f)
+        return false;
+
+    if (fread(sig, 1, sizeof(sig), f) != sizeof(sig) ||
+        png_sig_cmp(sig, 0, sizeof(sig)) != 0)
+        goto out;
+
+    png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png)
+        goto out;
+    info = png_create_info_struct(png);
+    if (!info)
+        goto out;
+
+    if (setjmp(png_jmpbuf(png)))
+        goto out;
+
+    png_init_io(png, f);
+    png_set_sig_bytes(png, sizeof(sig));
+    png_read_info(png, info);
+
+    width = png_get_image_width(png, info);
+    height = png_get_image_height(png, info);
+    bit_depth = png_get_bit_depth(png, info);
+    color_type = png_get_color_type(png, info);
+
+    if (bit_depth == 16)
+        png_set_strip_16(png);
+    if (color_type == PNG_COLOR_TYPE_PALETTE)
+        png_set_palette_to_rgb(png);
+    if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8)
+        png_set_expand_gray_1_2_4_to_8(png);
+    if (png_get_valid(png, info, PNG_INFO_tRNS))
+        png_set_tRNS_to_alpha(png);
+    if (color_type == PNG_COLOR_TYPE_GRAY ||
+        color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
+        png_set_gray_to_rgb(png);
+    if (!(color_type & PNG_COLOR_MASK_ALPHA))
+        png_set_filler(png, 0xff, PNG_FILLER_AFTER);
+
+    png_read_update_info(png, info);
+    rowbytes = png_get_rowbytes(png, info);
+    if (width == 0 || height == 0 || rowbytes < width * 4u)
+        goto out;
+
+    pixels = malloc((size_t)width * (size_t)height * 4u);
+    rows = malloc((size_t)height * sizeof(*rows));
+    if (!pixels || !rows)
+        goto out;
+
+    for (png_uint_32 y = 0; y < height; y++)
+        rows[y] = pixels + (size_t)y * (size_t)width * 4u;
+
+    if (rowbytes == width * 4u) {
+        png_read_image(png, rows);
+    } else {
+        uint8_t *tmp = malloc(rowbytes * (size_t)height);
+        if (!tmp)
+            goto out;
+        for (png_uint_32 y = 0; y < height; y++)
+            rows[y] = tmp + (size_t)y * rowbytes;
+        png_read_image(png, rows);
+        for (png_uint_32 y = 0; y < height; y++) {
+            memcpy(pixels + (size_t)y * (size_t)width * 4u,
+                   tmp + (size_t)y * rowbytes,
+                   (size_t)width * 4u);
+        }
+        free(tmp);
+    }
+    png_read_end(png, NULL);
+
+    *pixels_out = pixels;
+    *width_out = (uint32_t)width;
+    *height_out = (uint32_t)height;
+    pixels = NULL;
+    ok = true;
+
+out:
+    free(rows);
+    free(pixels);
+    if (png || info)
+        png_destroy_read_struct(&png, &info, NULL);
+    fclose(f);
+    return ok;
+}
+
+static bool ui_load_frame_pixels(uint8_t **pixels_out, uint32_t *width_out,
+    uint32_t *height_out)
+{
+    const char *names[] = { "be300_frame.png", "be300_fram.png" };
+    char path[1024];
+
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (ui_load_png_rgba(names[i], pixels_out, width_out, height_out)) {
+            fprintf(stderr, "[UI] Loaded frame asset: %s\n", names[i]);
+            return true;
+        }
+
+        snprintf(path, sizeof(path), "%s/%s", BE300_SOURCE_DIR, names[i]);
+        if (ui_load_png_rgba(path, pixels_out, width_out, height_out)) {
+            fprintf(stderr, "[UI] Loaded frame asset: %s\n", path);
+            return true;
+        }
+    }
+
+    return false;
+}
+#else
+static bool ui_load_frame_pixels(uint8_t **pixels_out, uint32_t *width_out,
+    uint32_t *height_out)
+{
+    (void)pixels_out;
+    (void)width_out;
+    (void)height_out;
+    return false;
+}
+#endif
+
+static bool ui_window_to_frame(machine_t *m, int win_x, int win_y,
+    double *frame_x_out, double *frame_y_out)
+{
+    SDL_Renderer *ren = (SDL_Renderer *)m->sdl_renderer;
+    SDL_Rect vp;
+    float sx = 1.0f, sy = 1.0f;
+
+    if (!frame_enabled || !ren)
+        return false;
+
+    SDL_RenderGetViewport(ren, &vp);
+    SDL_RenderGetScale(ren, &sx, &sy);
+    if (sx <= 0.0f || sy <= 0.0f)
+        return false;
+
+    *frame_x_out = ((double)win_x - (double)vp.x) / (double)sx;
+    *frame_y_out = ((double)win_y - (double)vp.y) / (double)sy;
+    return true;
+}
+
+static bool ui_frame_rect_to_touch(double fx, double fy, const SDL_Rect *rect,
+    uint32_t y_base, uint32_t y_span, uint16_t *x_out, uint16_t *y_out)
+{
+    int tx, ty;
+
+    if (fx < rect->x || fy < rect->y ||
+        fx >= rect->x + rect->w || fy >= rect->y + rect->h)
+        return false;
+
+    tx = (int)(((fx - rect->x) * 240.0) / rect->w);
+    ty = (int)(y_base + (((fy - rect->y) * (double)y_span) / rect->h));
+    if (tx < 0) tx = 0;
+    if (ty < 0) ty = 0;
+    if (tx > 239) tx = 239;
+    if (ty > 359) ty = 359;
+
+    *x_out = (uint16_t)tx;
+    *y_out = (uint16_t)ty;
+    return true;
+}
+
+static bool ui_window_to_touch(machine_t *m, int win_x, int win_y,
     uint16_t *x_out, uint16_t *y_out)
 {
     int win_w, win_h;
     int tx, ty;
+
+    if (frame_enabled) {
+        double fx, fy;
+        SDL_Rect lcd = {
+            BE300_FRAME_LCD_X, BE300_FRAME_LCD_Y,
+            BE300_FRAME_LCD_W, BE300_FRAME_LCD_H
+        };
+        SDL_Rect icons = {
+            BE300_FRAME_ICON_X, BE300_FRAME_ICON_Y,
+            BE300_FRAME_ICON_W, BE300_FRAME_ICON_H
+        };
+
+        if (!ui_window_to_frame(m, win_x, win_y, &fx, &fy))
+            return false;
+        if (ui_frame_rect_to_touch(fx, fy, &lcd, 0, 320, x_out, y_out))
+            return true;
+        if (ui_frame_rect_to_touch(fx, fy, &icons, 320, 40, x_out, y_out))
+            return true;
+        return false;
+    }
 
     win_w = 0;
     win_h = 0;
@@ -287,6 +521,7 @@ static void ui_window_to_touch(machine_t *m, int win_x, int win_y,
 
     *x_out = (uint16_t)tx;
     *y_out = (uint16_t)ty;
+    return true;
 }
 
 static bool ui_tick_reached(uint32_t now, uint32_t due)
@@ -315,22 +550,25 @@ static void ui_coalesce_touch_position(machine_t *m, int win_x, int win_y)
 {
     uint16_t tx, ty;
 
-    ui_window_to_touch(m, win_x, win_y, &tx, &ty);
-    ui_latch_touch_position(m, tx, ty);
+    if (ui_window_to_touch(m, win_x, win_y, &tx, &ty))
+        ui_latch_touch_position(m, tx, ty);
 }
 
-static void ui_begin_touch(machine_t *m, int win_x, int win_y,
+static bool ui_begin_touch(machine_t *m, int win_x, int win_y,
     uint32_t now)
 {
     uint16_t tx, ty;
 
-    ui_window_to_touch(m, win_x, win_y, &tx, &ty);
+    if (!ui_window_to_touch(m, win_x, win_y, &tx, &ty))
+        return false;
+
     touch_active = true;
     touch_release_pending = false;
     touch_down_tick = now;
     touch_release_x = tx;
     touch_release_y = ty;
     be300_set_touch(m, true, tx, ty);
+    return true;
 }
 
 static void ui_release_touch(machine_t *m)
@@ -355,14 +593,107 @@ static void ui_schedule_touch_release(machine_t *m, int win_x, int win_y,
     }
 }
 
+static bool ui_point_in_ellipse(double x, double y, double cx, double cy,
+    double rx, double ry)
+{
+    double dx = (x - cx) / rx;
+    double dy = (y - cy) / ry;
+
+    return dx * dx + dy * dy <= 1.0;
+}
+
+static bool ui_frame_hit_button(machine_t *m, int win_x, int win_y,
+    uint8_t *btn_set1_out, uint8_t *btn_set2_out)
+{
+    double fx, fy;
+
+    *btn_set1_out = 0;
+    *btn_set2_out = 0;
+
+    if (!ui_window_to_frame(m, win_x, win_y, &fx, &fy))
+        return false;
+
+    if (ui_point_in_ellipse(fx, fy, 512.0, 1335.0, 150.0, 115.0)) {
+        double dx = (fx - 512.0) / 150.0;
+        double dy = (fy - 1335.0) / 115.0;
+
+        if (dx * dx + dy * dy < 0.18) {
+            *btn_set1_out = 0x04u;  /* ok */
+        } else if (dy < -0.35 && -dy >= (dx < 0 ? -dx : dx)) {
+            *btn_set1_out = 0x10u;  /* up */
+        } else if (dy > 0.35 && dy >= (dx < 0 ? -dx : dx)) {
+            *btn_set1_out = 0x20u;  /* down */
+        } else if (dx > 0.0) {
+            *btn_set1_out = 0x40u;  /* right */
+        } else {
+            *btn_set1_out = 0x80u;  /* left */
+        }
+        return true;
+    }
+
+    if (ui_point_in_ellipse(fx, fy, 176.0, 1329.0, 105.0, 55.0)) {
+        *btn_set2_out = 0x10u;      /* rocket/modifier */
+        return true;
+    }
+    if (ui_point_in_ellipse(fx, fy, 848.0, 1329.0, 105.0, 55.0)) {
+        *btn_set2_out = 0x80u;      /* power */
+        return true;
+    }
+    if (ui_point_in_ellipse(fx, fy, 343.0, 1447.0, 85.0, 50.0)) {
+        *btn_set1_out = 0x04u;      /* ok */
+        return true;
+    }
+    if (ui_point_in_ellipse(fx, fy, 681.0, 1447.0, 95.0, 55.0)) {
+        *btn_set1_out = 0x08u;      /* esc */
+        return true;
+    }
+
+    return false;
+}
+
+static void ui_press_pointer_button(machine_t *m, uint8_t btn_set1,
+    uint8_t btn_set2)
+{
+    pointer_btn_set1 = btn_set1;
+    pointer_btn_set2 = btn_set2;
+    pointer_mode = UI_POINTER_BUTTON;
+    m->btn_set1 |= btn_set1;
+    m->btn_set2 |= btn_set2;
+    __sync_synchronize();
+}
+
+static void ui_release_pointer_button(machine_t *m)
+{
+    if (pointer_mode != UI_POINTER_BUTTON)
+        return;
+
+    m->btn_set1 &= (uint8_t)~pointer_btn_set1;
+    m->btn_set2 &= (uint8_t)~pointer_btn_set2;
+    __sync_synchronize();
+    pointer_btn_set1 = 0;
+    pointer_btn_set2 = 0;
+    pointer_mode = UI_POINTER_NONE;
+}
+
 int ui_init(machine_t *m)
 {
+    uint8_t *frame_pixels = NULL;
+    uint32_t loaded_frame_width = 0;
+    uint32_t loaded_frame_height = 0;
+    bool have_frame_pixels = false;
+
     m->fb_width  = 240;
     m->fb_height = 320;
     m->fb_stride = 256;
 
     quit_requested = false;
+    frame_enabled = false;
+    frame_width = 0;
+    frame_height = 0;
     mouse_button_held = false;
+    pointer_mode = UI_POINTER_NONE;
+    pointer_btn_set1 = 0;
+    pointer_btn_set2 = 0;
     touch_active = false;
     touch_release_pending = false;
     touch_down_tick = 0;
@@ -389,17 +720,29 @@ int ui_init(machine_t *m)
     }
     sdl_video_initialized = true;
 
-    /* 2× scaled window */
-    int win_w = m->fb_width  * 2;
-    int win_h = m->fb_height * 2;
+    have_frame_pixels = ui_load_frame_pixels(&frame_pixels,
+        &loaded_frame_width, &loaded_frame_height);
+    if (!have_frame_pixels) {
+        fprintf(stderr,
+            "[UI] BE-300 frame unavailable - using LCD-only SDL window\n");
+    }
+
+    int win_w = have_frame_pixels ?
+        (int)(loaded_frame_width * BE300_FRAME_DEFAULT_SCALE) :
+        (int)m->fb_width * 2;
+    int win_h = have_frame_pixels ?
+        (int)(loaded_frame_height * BE300_FRAME_DEFAULT_SCALE) :
+        (int)m->fb_height * 2;
+    Uint32 win_flags = have_frame_pixels ? SDL_WINDOW_RESIZABLE : 0;
 
     SDL_Window *win = SDL_CreateWindow(
         "BE-300 Emulator",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        win_w, win_h, 0);
+        win_w, win_h, win_flags);
     if (!win) {
         fprintf(stderr, "[UI] SDL_CreateWindow failed: %s — continuing headless\n",
                 SDL_GetError());
+        free(frame_pixels);
         ui_video_destroy(m);
         return 0;
     }
@@ -413,10 +756,40 @@ int ui_init(machine_t *m)
     if (!ren) {
         fprintf(stderr, "[UI] SDL_CreateRenderer failed: %s — continuing headless\n",
                 SDL_GetError());
+        free(frame_pixels);
         ui_video_destroy(m);
         return 0;
     }
     m->sdl_renderer = ren;
+
+    if (have_frame_pixels) {
+        frame_texture = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32,
+            SDL_TEXTUREACCESS_STATIC,
+            (int)loaded_frame_width, (int)loaded_frame_height);
+        if (frame_texture &&
+            SDL_UpdateTexture(frame_texture, NULL, frame_pixels,
+                (int)loaded_frame_width * 4) == 0) {
+            SDL_SetTextureBlendMode(frame_texture, SDL_BLENDMODE_BLEND);
+            frame_enabled = true;
+            frame_width = loaded_frame_width;
+            frame_height = loaded_frame_height;
+            SDL_RenderSetLogicalSize(ren, (int)frame_width,
+                (int)frame_height);
+        } else {
+            fprintf(stderr,
+                "[UI] SDL frame texture failed: %s - using LCD-only window\n",
+                SDL_GetError());
+            if (frame_texture) {
+                SDL_DestroyTexture(frame_texture);
+                frame_texture = NULL;
+            }
+            SDL_SetWindowResizable(win, SDL_FALSE);
+            SDL_SetWindowSize(win, (int)m->fb_width * 2,
+                (int)m->fb_height * 2);
+        }
+        free(frame_pixels);
+        frame_pixels = NULL;
+    }
 
     /* BE-300 hardware uses RGB565 (R=15:11, G=10:5, B=4:0) */
     Uint32 fmt = SDL_PIXELFORMAT_RGB565;
@@ -476,7 +849,7 @@ void ui_update(machine_t *m)
                     "[UI] Keys: Q=quit  S=screenshot  M=this help\n"
                     "[UI]       Arrows=d-pad  Enter=ok(Enter)  Tab=esc(Tab)\n"
                     "[UI]       LShift/RShift=rocket modifier\n"
-                    "[UI]       Mouse click/drag=touchpanel\n");
+                    "[UI]       Mouse click/drag=touchpanel; framed buttons click hardware keys\n");
                 break;
             /* D-pad */
             case SDLK_UP:     m->btn_set1 |= 0x10u; break;
@@ -514,15 +887,30 @@ void ui_update(machine_t *m)
             if (ev.button.button == SDL_BUTTON_LEFT) {
                 uint32_t ev_tick = ev.button.timestamp ?
                     ev.button.timestamp : now;
+                uint8_t btn_set1 = 0;
+                uint8_t btn_set2 = 0;
 
-                mouse_button_held = true;
+                if (frame_enabled &&
+                    ui_frame_hit_button(m, ev.button.x, ev.button.y,
+                        &btn_set1, &btn_set2)) {
+                    mouse_button_held = true;
+                    ui_press_pointer_button(m, btn_set1, btn_set2);
+                    SDL_CaptureMouse(SDL_TRUE);
+                    break;
+                }
+
                 if (touch_active) {
+                    mouse_button_held = true;
+                    pointer_mode = UI_POINTER_TOUCH;
                     ui_coalesce_touch_position(m, ev.button.x, ev.button.y);
                     touch_release_pending = false;
-                } else {
-                    ui_begin_touch(m, ev.button.x, ev.button.y, ev_tick);
+                    SDL_CaptureMouse(SDL_TRUE);
+                } else if (ui_begin_touch(m, ev.button.x, ev.button.y,
+                    ev_tick)) {
+                    mouse_button_held = true;
+                    pointer_mode = UI_POINTER_TOUCH;
+                    SDL_CaptureMouse(SDL_TRUE);
                 }
-                SDL_CaptureMouse(SDL_TRUE);
             }
             break;
 
@@ -532,16 +920,19 @@ void ui_update(machine_t *m)
                     ev.button.timestamp : now;
 
                 mouse_button_held = false;
-                if (touch_active) {
+                if (pointer_mode == UI_POINTER_BUTTON) {
+                    ui_release_pointer_button(m);
+                } else if (touch_active) {
                     ui_schedule_touch_release(m, ev.button.x, ev.button.y,
                         ev_tick);
+                    pointer_mode = UI_POINTER_NONE;
                 }
                 SDL_CaptureMouse(SDL_FALSE);
             }
             break;
 
         case SDL_MOUSEMOTION:
-            if (mouse_button_held) {
+            if (mouse_button_held && pointer_mode == UI_POINTER_TOUCH) {
                 if (touch_active) {
                     ui_coalesce_touch_position(m, ev.motion.x, ev.motion.y);
                 }
@@ -566,8 +957,20 @@ void ui_update(machine_t *m)
     SDL_UpdateTexture((SDL_Texture *)m->sdl_texture, NULL,
                       staging_buf, m->fb_width * sizeof(uint16_t));
     SDL_RenderClear((SDL_Renderer *)m->sdl_renderer);
-    SDL_RenderCopy((SDL_Renderer *)m->sdl_renderer,
-                   (SDL_Texture *)m->sdl_texture, NULL, NULL);
+    if (frame_enabled && frame_texture) {
+        SDL_Rect lcd_dst = {
+            BE300_FRAME_LCD_X, BE300_FRAME_LCD_Y,
+            BE300_FRAME_LCD_W, BE300_FRAME_LCD_H
+        };
+
+        SDL_RenderCopy((SDL_Renderer *)m->sdl_renderer,
+                       (SDL_Texture *)m->sdl_texture, NULL, &lcd_dst);
+        SDL_RenderCopy((SDL_Renderer *)m->sdl_renderer,
+                       frame_texture, NULL, NULL);
+    } else {
+        SDL_RenderCopy((SDL_Renderer *)m->sdl_renderer,
+                       (SDL_Texture *)m->sdl_texture, NULL, NULL);
+    }
     SDL_RenderPresent((SDL_Renderer *)m->sdl_renderer);
 
     /* Invoke frame callback if set */
