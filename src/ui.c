@@ -23,6 +23,7 @@ static void *frame_cb_data = NULL;
 #include <SDL.h>
 #include <SDL_shape.h>
 #ifdef __APPLE__
+#include <CoreGraphics/CoreGraphics.h>
 #include <SDL_syswm.h>
 #include <objc/message.h>
 #include <objc/objc.h>
@@ -59,7 +60,7 @@ static SDL_Rect lcd_dst_rect;
 #define FRAME_INTERVAL_MS 33  /* ~30 fps */
 #define TOUCH_MIN_DWELL_DEFAULT_MS 120
 #define TOUCH_MIN_DWELL_MAX_MS 5000
-#define BE300_FRAME_LCD_SCALE_DEFAULT 2u
+#define BE300_FRAME_LCD_SCALE_DEFAULT 1u
 #define BE300_FRAME_LCD_SCALE_MAX 4u
 
 static const SDL_Rect fallback_frame_lcd_rect = { 187, 218, 644, 859 };
@@ -327,6 +328,56 @@ static uint32_t ui_frame_lcd_scale_from_env(void)
     return scale == 0 ? BE300_FRAME_LCD_SCALE_DEFAULT : scale;
 }
 
+static void ui_trim_frame_transparent_edges(uint8_t **pixels_io,
+    uint32_t *width_io, uint32_t *height_io)
+{
+    uint8_t *src = *pixels_io;
+    uint32_t width = *width_io;
+    uint32_t height = *height_io;
+    uint32_t min_x = width, min_y = height, max_x = 0, max_y = 0;
+    bool found = false;
+
+    if (!src || width == 0 || height == 0)
+        return;
+
+    for (uint32_t y = 0; y < height; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            uint8_t alpha = src[((size_t)y * width + x) * 4u + 3u];
+            if (alpha == 0)
+                continue;
+            if (x < min_x) min_x = x;
+            if (y < min_y) min_y = y;
+            if (x > max_x) max_x = x;
+            if (y > max_y) max_y = y;
+            found = true;
+        }
+    }
+
+    if (!found || (min_x == 0 && min_y == 0 &&
+        max_x + 1u == width && max_y + 1u == height))
+        return;
+
+    uint32_t new_w = max_x - min_x + 1u;
+    uint32_t new_h = max_y - min_y + 1u;
+    uint8_t *dst = malloc((size_t)new_w * new_h * 4u);
+    if (!dst)
+        return;
+
+    for (uint32_t y = 0; y < new_h; y++) {
+        memcpy(dst + (size_t)y * new_w * 4u,
+               src + ((size_t)(min_y + y) * width + min_x) * 4u,
+               (size_t)new_w * 4u);
+    }
+
+    free(src);
+    *pixels_io = dst;
+    *width_io = new_w;
+    *height_io = new_h;
+    fprintf(stderr,
+        "[UI] Trimmed transparent frame margins: x=%u y=%u w=%u h=%u\n",
+        min_x, min_y, new_w, new_h);
+}
+
 #ifdef HAVE_PNG
 static bool ui_load_png_rgba(const char *path, uint8_t **pixels_out,
     uint32_t *width_out, uint32_t *height_out)
@@ -437,12 +488,16 @@ static bool ui_load_frame_pixels(uint8_t **pixels_out, uint32_t *width_out,
 
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         if (ui_load_png_rgba(names[i], pixels_out, width_out, height_out)) {
+            ui_trim_frame_transparent_edges(pixels_out, width_out,
+                height_out);
             fprintf(stderr, "[UI] Loaded frame asset: %s\n", names[i]);
             return true;
         }
 
         snprintf(path, sizeof(path), "%s/%s", BE300_SOURCE_DIR, names[i]);
         if (ui_load_png_rgba(path, pixels_out, width_out, height_out)) {
+            ui_trim_frame_transparent_edges(pixels_out, width_out,
+                height_out);
             fprintf(stderr, "[UI] Loaded frame asset: %s\n", path);
             return true;
         }
@@ -602,8 +657,52 @@ static void ui_configure_frame_layout(machine_t *m, uint32_t lcd_scale,
     *window_h_out = (int)ceil(frame_dst_y + frame_dst_h);
 }
 
+static uint8_t *ui_create_frame_window_mask(const uint8_t *frame_pixels,
+    int win_w, int win_h)
+{
+    uint8_t *mask;
+
+    if (!frame_pixels || win_w <= 0 || win_h <= 0)
+        return NULL;
+
+    mask = malloc((size_t)win_w * (size_t)win_h);
+    if (!mask)
+        return NULL;
+
+    for (int y = 0; y < win_h; y++) {
+        for (int x = 0; x < win_w; x++) {
+            uint8_t alpha = 0;
+
+            if (x >= lcd_dst_rect.x && y >= lcd_dst_rect.y &&
+                x < lcd_dst_rect.x + lcd_dst_rect.w &&
+                y < lcd_dst_rect.y + lcd_dst_rect.h) {
+                mask[(size_t)y * (size_t)win_w + (size_t)x] = 255;
+                continue;
+            }
+
+            double fx = ((double)x - frame_dst_x) / frame_scale_x;
+            double fy = ((double)y - frame_dst_y) / frame_scale_y;
+            int sx = (int)floor(fx);
+            int sy = (int)floor(fy);
+
+            if (sx >= 0 && sy >= 0 &&
+                (uint32_t)sx < frame_width &&
+                (uint32_t)sy < frame_height) {
+                size_t off = ((size_t)sy * (size_t)frame_width +
+                    (size_t)sx) * 4u;
+                alpha = frame_pixels[off + 3u];
+            }
+
+            mask[(size_t)y * (size_t)win_w + (size_t)x] =
+                alpha >= 16 ? 255 : 0;
+        }
+    }
+
+    return mask;
+}
+
 static bool ui_apply_frame_window_shape(SDL_Window *win,
-    const uint8_t *frame_pixels, int win_w, int win_h)
+    const uint8_t *window_mask, int win_w, int win_h)
 {
     SDL_Surface *shape;
     SDL_WindowShapeMode mode;
@@ -611,7 +710,7 @@ static bool ui_apply_frame_window_shape(SDL_Window *win,
     uint32_t opaque;
     bool ok = false;
 
-    if (!win || !frame_pixels || !SDL_IsShapedWindow(win))
+    if (!win || !window_mask || !SDL_IsShapedWindow(win))
         return false;
 
     shape = SDL_CreateRGBSurfaceWithFormat(0, win_w, win_h, 32,
@@ -628,20 +727,9 @@ static bool ui_apply_frame_window_shape(SDL_Window *win,
                 (size_t)y * (size_t)shape->pitch);
 
             for (int x = 0; x < win_w; x++) {
-                double fx = ((double)x - frame_dst_x) / frame_scale_x;
-                double fy = ((double)y - frame_dst_y) / frame_scale_y;
-                int sx = (int)floor(fx);
-                int sy = (int)floor(fy);
-                uint8_t alpha = 0;
-
-                if (sx >= 0 && sy >= 0 &&
-                    (uint32_t)sx < frame_width &&
-                    (uint32_t)sy < frame_height) {
-                    size_t off = ((size_t)sy * (size_t)frame_width +
-                        (size_t)sx) * 4u;
-                    alpha = frame_pixels[off + 3u];
-                }
-                dst[x] = alpha >= 16 ? opaque : transparent;
+                uint8_t alpha = window_mask[(size_t)y * (size_t)win_w +
+                    (size_t)x];
+                dst[x] = alpha ? opaque : transparent;
             }
         }
         SDL_UnlockSurface(shape);
@@ -659,6 +747,14 @@ static bool ui_apply_frame_window_shape(SDL_Window *win,
 }
 
 #ifdef __APPLE__
+static void ui_macos_release_cg_data(void *info, const void *data,
+    size_t size)
+{
+    (void)info;
+    (void)size;
+    free((void *)data);
+}
+
 static void ui_macos_make_window_transparent(SDL_Window *win)
 {
     SDL_SysWMinfo info;
@@ -715,10 +811,114 @@ static void ui_macos_make_window_transparent(SDL_Window *win)
             sel_registerName("setBackgroundColor:"), clear_cg_color);
     }
 }
+
+static void ui_macos_apply_window_mask(SDL_Window *win,
+    const uint8_t *window_mask, int win_w, int win_h)
+{
+    SDL_SysWMinfo info;
+    Class ca_layer_class;
+    id ns_window;
+    id content_view;
+    id layer;
+    id mask_layer;
+    CGColorSpaceRef color_space = NULL;
+    CGDataProviderRef provider = NULL;
+    CGImageRef image = NULL;
+    uint8_t *rgba = NULL;
+    size_t pixels;
+    CGRect bounds;
+
+    if (!win || !window_mask || win_w <= 0 || win_h <= 0)
+        return;
+
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(win, &info) ||
+        info.subsystem != SDL_SYSWM_COCOA)
+        return;
+
+    ns_window = (id)info.info.cocoa.window;
+    if (!ns_window)
+        return;
+
+    content_view = ((id (*)(id, SEL))objc_msgSend)(ns_window,
+        sel_registerName("contentView"));
+    if (!content_view)
+        return;
+
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(content_view,
+        sel_registerName("setWantsLayer:"), (BOOL)1);
+    layer = ((id (*)(id, SEL))objc_msgSend)(content_view,
+        sel_registerName("layer"));
+    if (!layer)
+        return;
+
+    pixels = (size_t)win_w * (size_t)win_h;
+    rgba = malloc(pixels * 4u);
+    if (!rgba)
+        return;
+    for (size_t i = 0; i < pixels; i++) {
+        rgba[i * 4u + 0u] = 255;
+        rgba[i * 4u + 1u] = 255;
+        rgba[i * 4u + 2u] = 255;
+        rgba[i * 4u + 3u] = window_mask[i];
+    }
+
+    color_space = CGColorSpaceCreateDeviceRGB();
+    if (!color_space)
+        goto out;
+    provider = CGDataProviderCreateWithData(NULL, rgba, pixels * 4u,
+        ui_macos_release_cg_data);
+    if (!provider)
+        goto out;
+    rgba = NULL;  /* owned by provider */
+
+    image = CGImageCreate((size_t)win_w, (size_t)win_h, 8, 32,
+        (size_t)win_w * 4u, color_space,
+        kCGBitmapByteOrder32Big | kCGImageAlphaLast,
+        provider, NULL, false, kCGRenderingIntentDefault);
+    if (!image)
+        goto out;
+
+    ca_layer_class = (Class)objc_getClass("CALayer");
+    if (!ca_layer_class)
+        goto out;
+    mask_layer = ((id (*)(Class, SEL))objc_msgSend)(ca_layer_class,
+        sel_registerName("layer"));
+    if (!mask_layer)
+        goto out;
+
+    bounds = CGRectMake(0.0, 0.0, (CGFloat)win_w, (CGFloat)win_h);
+    ((void (*)(id, SEL, CGRect))objc_msgSend)(mask_layer,
+        sel_registerName("setFrame:"), bounds);
+    ((void (*)(id, SEL, id))objc_msgSend)(mask_layer,
+        sel_registerName("setContents:"), (id)image);
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(layer,
+        sel_registerName("setMasksToBounds:"), (BOOL)1);
+    ((void (*)(id, SEL, id))objc_msgSend)(layer,
+        sel_registerName("setMask:"), mask_layer);
+
+out:
+    free(rgba);
+    if (image)
+        CGImageRelease(image);
+    if (provider)
+        CGDataProviderRelease(provider);
+    if (color_space)
+        CGColorSpaceRelease(color_space);
+}
 #else
 static void ui_macos_make_window_transparent(SDL_Window *win)
 {
     (void)win;
+}
+
+static void ui_macos_apply_window_mask(SDL_Window *win,
+    const uint8_t *window_mask, int win_w, int win_h)
+{
+    (void)win;
+    (void)window_mask;
+    (void)win_w;
+    (void)win_h;
 }
 #endif
 
@@ -990,6 +1190,7 @@ int ui_init(machine_t *m)
     uint8_t *frame_pixels = NULL;
     uint32_t loaded_frame_width = 0;
     uint32_t loaded_frame_height = 0;
+    uint8_t *window_mask = NULL;
     bool have_frame_pixels = false;
 
     m->fb_width  = 240;
@@ -1054,6 +1255,11 @@ int ui_init(machine_t *m)
         }
         ui_configure_frame_layout(m, ui_frame_lcd_scale_from_env(),
             &win_w, &win_h);
+        window_mask = ui_create_frame_window_mask(frame_pixels, win_w,
+            win_h);
+        if (!window_mask)
+            fprintf(stderr,
+                "[UI] Frame window mask unavailable - transparent edges may show\n");
         win_flags = SDL_WINDOW_BORDERLESS;
     }
 
@@ -1075,6 +1281,7 @@ int ui_init(machine_t *m)
     if (!win) {
         fprintf(stderr, "[UI] SDL_CreateWindow failed: %s — continuing headless\n",
                 SDL_GetError());
+        free(window_mask);
         free(frame_pixels);
         ui_video_destroy(m);
         return 0;
@@ -1083,7 +1290,8 @@ int ui_init(machine_t *m)
 
     if (have_frame_pixels) {
         ui_macos_make_window_transparent(win);
-        ui_apply_frame_window_shape(win, frame_pixels, win_w, win_h);
+        ui_apply_frame_window_shape(win, window_mask, win_w, win_h);
+        ui_macos_apply_window_mask(win, window_mask, win_w, win_h);
         if (SDL_SetWindowHitTest(win, ui_window_hit_test, m) != 0) {
             fprintf(stderr, "[UI] SDL window drag hit-test failed: %s\n",
                 SDL_GetError());
@@ -1102,13 +1310,16 @@ int ui_init(machine_t *m)
     if (!ren) {
         fprintf(stderr, "[UI] SDL_CreateRenderer failed: %s — continuing headless\n",
                 SDL_GetError());
+        free(window_mask);
         free(frame_pixels);
         ui_video_destroy(m);
         return 0;
     }
     m->sdl_renderer = ren;
-    if (have_frame_pixels)
+    if (have_frame_pixels) {
         ui_macos_make_window_transparent(win);
+        ui_macos_apply_window_mask(win, window_mask, win_w, win_h);
+    }
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 0);
 
@@ -1144,6 +1355,8 @@ int ui_init(machine_t *m)
         }
         free(frame_pixels);
         frame_pixels = NULL;
+        free(window_mask);
+        window_mask = NULL;
     }
 
     /* BE-300 hardware uses RGB565 (R=15:11, G=10:5, B=4:0) */
