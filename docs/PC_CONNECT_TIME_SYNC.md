@@ -98,6 +98,10 @@ the Boot.exe reset; `BE300_PCC_CONNECT_DELAY_MS` controls that delay. For
 manual guest-side PC Connect testing, the edge can also be raised when the
 claimed UART is in 8N1 mode and the guest asserts DTR/RTS.
 
+The default post-reset cable edge delay is 1000 ms. Larger values are useful
+for diagnostics, but make no-CF PC Connect boots appear stalled while the
+guest waits for the dock insertion path.
+
 The peer currently:
 
 - claims only the selected ns16550 instance
