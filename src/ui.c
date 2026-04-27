@@ -52,6 +52,8 @@ static double frame_dst_x = 0.0;
 static double frame_dst_y = 0.0;
 static double frame_dst_w = 0.0;
 static double frame_dst_h = 0.0;
+static uint32_t frame_trim_x = 0;
+static uint32_t frame_trim_y = 0;
 static SDL_Rect frame_lcd_rect;
 static SDL_Rect frame_icon_rect;
 static SDL_Rect lcd_dst_rect;
@@ -174,6 +176,8 @@ static void ui_video_destroy(machine_t *m)
     frame_dst_y = 0.0;
     frame_dst_w = 0.0;
     frame_dst_h = 0.0;
+    frame_trim_x = 0;
+    frame_trim_y = 0;
     memset(&frame_lcd_rect, 0, sizeof(frame_lcd_rect));
     memset(&frame_icon_rect, 0, sizeof(frame_icon_rect));
     memset(&lcd_dst_rect, 0, sizeof(lcd_dst_rect));
@@ -368,6 +372,9 @@ static void ui_trim_frame_transparent_edges(uint8_t **pixels_io,
     uint32_t min_x = width, min_y = height, max_x = 0, max_y = 0;
     bool found = false;
 
+    frame_trim_x = 0;
+    frame_trim_y = 0;
+
     if (!src || width == 0 || height == 0)
         return;
 
@@ -401,6 +408,8 @@ static void ui_trim_frame_transparent_edges(uint8_t **pixels_io,
     }
 
     free(src);
+    frame_trim_x = min_x;
+    frame_trim_y = min_y;
     *pixels_io = dst;
     *width_io = new_w;
     *height_io = new_h;
@@ -1119,7 +1128,7 @@ static bool ui_frame_point_in_rect(double fx, double fy, int x, int y,
 static bool ui_frame_hit_button(machine_t *m, int win_x, int win_y,
     uint8_t *btn_set1_out, uint8_t *btn_set2_out)
 {
-    double fx, fy;
+    double fx, fy, bx, by;
 
     *btn_set1_out = 0;
     *btn_set2_out = 0;
@@ -1127,9 +1136,12 @@ static bool ui_frame_hit_button(machine_t *m, int win_x, int win_y,
     if (!ui_window_to_frame(m, win_x, win_y, &fx, &fy))
         return false;
 
-    if (ui_point_in_ellipse(fx, fy, 512.0, 1335.0, 150.0, 115.0)) {
-        double dx = (fx - 512.0) / 150.0;
-        double dy = (fy - 1335.0) / 115.0;
+    bx = fx + (double)frame_trim_x;
+    by = fy + (double)frame_trim_y;
+
+    if (ui_point_in_ellipse(bx, by, 512.0, 1335.0, 150.0, 115.0)) {
+        double dx = (bx - 512.0) / 150.0;
+        double dy = (by - 1335.0) / 115.0;
 
         if (dx * dx + dy * dy < 0.18) {
             *btn_set1_out = 0x04u;  /* ok */
@@ -1145,19 +1157,19 @@ static bool ui_frame_hit_button(machine_t *m, int win_x, int win_y,
         return true;
     }
 
-    if (ui_point_in_ellipse(fx, fy, 176.0, 1329.0, 105.0, 55.0)) {
+    if (ui_point_in_ellipse(bx, by, 176.0, 1329.0, 105.0, 55.0)) {
         *btn_set2_out = 0x10u;      /* rocket/modifier */
         return true;
     }
-    if (ui_point_in_ellipse(fx, fy, 848.0, 1329.0, 105.0, 55.0)) {
+    if (ui_point_in_ellipse(bx, by, 848.0, 1329.0, 105.0, 55.0)) {
         *btn_set2_out = 0x80u;      /* power */
         return true;
     }
-    if (ui_point_in_ellipse(fx, fy, 343.0, 1447.0, 85.0, 50.0)) {
+    if (ui_point_in_ellipse(bx, by, 343.0, 1447.0, 85.0, 50.0)) {
         *btn_set1_out = 0x04u;      /* ok */
         return true;
     }
-    if (ui_point_in_ellipse(fx, fy, 681.0, 1447.0, 95.0, 55.0)) {
+    if (ui_point_in_ellipse(bx, by, 681.0, 1447.0, 95.0, 55.0)) {
         *btn_set1_out = 0x08u;      /* esc */
         return true;
     }
@@ -1203,9 +1215,7 @@ static void ui_press_pointer_button(machine_t *m, uint8_t btn_set1,
     pointer_btn_set1 = btn_set1;
     pointer_btn_set2 = btn_set2;
     pointer_mode = UI_POINTER_BUTTON;
-    m->btn_set1 |= btn_set1;
-    m->btn_set2 |= btn_set2;
-    __sync_synchronize();
+    be300_set_buttons(m, m->btn_set1 | btn_set1, m->btn_set2 | btn_set2);
 }
 
 static void ui_release_pointer_button(machine_t *m)
@@ -1213,9 +1223,8 @@ static void ui_release_pointer_button(machine_t *m)
     if (pointer_mode != UI_POINTER_BUTTON)
         return;
 
-    m->btn_set1 &= (uint8_t)~pointer_btn_set1;
-    m->btn_set2 &= (uint8_t)~pointer_btn_set2;
-    __sync_synchronize();
+    be300_set_buttons(m, m->btn_set1 & (uint8_t)~pointer_btn_set1,
+        m->btn_set2 & (uint8_t)~pointer_btn_set2);
     pointer_btn_set1 = 0;
     pointer_btn_set2 = 0;
     pointer_mode = UI_POINTER_NONE;
@@ -1458,16 +1467,16 @@ void ui_update(machine_t *m)
                     "[UI]       Mouse click/drag=touchpanel; framed buttons click hardware keys\n");
                 break;
             /* D-pad */
-            case SDLK_UP:     m->btn_set1 |= 0x10u; break;
-            case SDLK_DOWN:   m->btn_set1 |= 0x20u; break;
-            case SDLK_RIGHT:  m->btn_set1 |= 0x40u; break;
-            case SDLK_LEFT:   m->btn_set1 |= 0x80u; break;
+            case SDLK_UP:     be300_set_buttons(m, m->btn_set1 | 0x10u, m->btn_set2); break;
+            case SDLK_DOWN:   be300_set_buttons(m, m->btn_set1 | 0x20u, m->btn_set2); break;
+            case SDLK_RIGHT:  be300_set_buttons(m, m->btn_set1 | 0x40u, m->btn_set2); break;
+            case SDLK_LEFT:   be300_set_buttons(m, m->btn_set1 | 0x80u, m->btn_set2); break;
             /* Function buttons */
-            case SDLK_RETURN: m->btn_set1 |= 0x04u; break;  /* ok/enter */
-            case SDLK_TAB:    m->btn_set1 |= 0x08u; break;  /* esc/tab */
+            case SDLK_RETURN: be300_set_buttons(m, m->btn_set1 | 0x04u, m->btn_set2); break;  /* ok/enter */
+            case SDLK_TAB:    be300_set_buttons(m, m->btn_set1 | 0x08u, m->btn_set2); break;  /* esc/tab */
             /* Rocket modifier (either shift key) */
             case SDLK_LSHIFT:
-            case SDLK_RSHIFT: m->btn_set2 |= 0x10u; break;
+            case SDLK_RSHIFT: be300_set_buttons(m, m->btn_set1, m->btn_set2 | 0x10u); break;
             /* Power/reboot (btn_set2 0x80) intentionally not mapped */
             default:
                 break;
@@ -1476,14 +1485,14 @@ void ui_update(machine_t *m)
 
         case SDL_KEYUP:
             switch (ev.key.keysym.sym) {
-            case SDLK_UP:     m->btn_set1 &= ~0x10u; break;
-            case SDLK_DOWN:   m->btn_set1 &= ~0x20u; break;
-            case SDLK_RIGHT:  m->btn_set1 &= ~0x40u; break;
-            case SDLK_LEFT:   m->btn_set1 &= ~0x80u; break;
-            case SDLK_RETURN: m->btn_set1 &= ~0x04u; break;
-            case SDLK_TAB:    m->btn_set1 &= ~0x08u; break;
+            case SDLK_UP:     be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x10u, m->btn_set2); break;
+            case SDLK_DOWN:   be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x20u, m->btn_set2); break;
+            case SDLK_RIGHT:  be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x40u, m->btn_set2); break;
+            case SDLK_LEFT:   be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x80u, m->btn_set2); break;
+            case SDLK_RETURN: be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x04u, m->btn_set2); break;
+            case SDLK_TAB:    be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x08u, m->btn_set2); break;
             case SDLK_LSHIFT:
-            case SDLK_RSHIFT: m->btn_set2 &= ~0x10u; break;
+            case SDLK_RSHIFT: be300_set_buttons(m, m->btn_set1, m->btn_set2 & (uint8_t)~0x10u); break;
             default:
                 break;
             }

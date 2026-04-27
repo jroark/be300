@@ -124,6 +124,7 @@ typedef struct be300_state {
 
     /* PIU touch device (for tick callback interrupt generation) */
     void        *touch_device;
+    void        *button_device;
 
     /* Input state (written by SDL event loop, read by be300_input MMIO device) */
     uint8_t      btn_set1;       /* PA 0x0A00A042: bits 0x04=ok 0x08=esc 0x10=up 0x20=down 0x40=right 0x80=left */
@@ -181,6 +182,8 @@ int        be300_copy_frame_rgba8888(machine_t *m, uint8_t *dst,
 size_t     be300_drain_serial(machine_t *m, char *dst, size_t dst_len);
 void       be300_set_touch(machine_t *m, bool down, uint16_t x, uint16_t y);
 void       be300_set_buttons(machine_t *m, uint8_t btn_set1, uint8_t btn_set2);
+void       be300_buttons_host_update(machine_t *m, uint8_t old_set1,
+                                     uint8_t old_set2);
 void       be300_touch_tick(machine_t *m);
 void       be300_pcconnect_poll(void);
 void       be300_stop(machine_t *m);
