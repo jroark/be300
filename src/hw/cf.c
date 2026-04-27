@@ -6,8 +6,9 @@
 #include "cf.h"
 
 #define CF_COMPANION_PRESENT UINT32_C(0x00000004)
-#define CF_COMPANION_REMOVED UINT32_C(0x0000000C)
+#define CF_COMPANION_ABSENT UINT32_C(0x00000000)
 #define CF_SOCKET_NO_MEDIA UINT32_C(0x00000040)
+#define CF_SOCKET_DETECT_INACTIVE UINT32_C(0x00000004)
 #define CF_INSERT_EVENT UINT8_C(0x08)
 
 #define CF_ST_ERR  0x01u
@@ -35,7 +36,6 @@
 
 static const uint16_t cf_no_card_owned_offsets[] = {
     0x0000, 0x0008, 0x0044, 0x004C,
-    0x0444, 0x044C,
     0x0B10, 0x0B50,
 };
 
@@ -63,34 +63,17 @@ static void cf_refresh_socket_status(cf_state_t *s)
         return;
 
     /*
-     * docs/hardware/hardware.txt identifies 0xaa001000 as CF status:
-     * 0x04 = card inserted, 0x0c = card removed.  The hardware dumps were
-     * captured with a CF memory card inserted, so do not mirror the broad
-     * inserted-card table for no-card boots.
+     * docs/hardware/hardware.txt identifies 0xaa001000 as CF status for the
+     * optional CF adapter path: 0x04 = card inserted, 0x0c = adapter present
+     * with card removed.  A no --cf boot models an absent adapter, not an
+     * empty adapter, so keep the primary detect bit clear.
      */
-    val = s->attached ? CF_COMPANION_PRESENT : CF_COMPANION_REMOVED;
+    val = s->attached ? CF_COMPANION_PRESENT : CF_COMPANION_ABSENT;
     cf_put_companion_u32(s, 0x0000, val);
     cf_put_companion_u32(s, 0x0008, val);
 
     /* Card-state summary used by pcmcia/card_ex probing. */
     cf_put_companion_u32(s, 0x0040, s->attached ? 0x00000001u : 0x00000000u);
-
-    /*
-     * Socket-1 status aliases inside the CARDU page must stay in no-media
-     * state.  The active CF adapter is modeled as socket 0; real no-card
-     * hardware shows the adapter/unit as present but reports no inserted
-     * media (docs/HARDWARE_GROUND_TRUTH.md:72-79).  The VRC4173 dump's
-     * 0x0A001000 CF/PCMCIA page is explicitly inserted-card state, not a
-     * no-card default source (docs/hardware/hw_dump_vrc4173.txt:4-6).
-     * card_ex.dll reads PA 0x0A001444 at PC 0x019235A8; if bit 6 is clear,
-     * it programs socket 1 and opens the "Unidentified PCCard Adapter"
-     * prompt.
-     *
-     * TODO(2026-04-26): replace these aliases with named VRC4173 CARDU
-     * socket register fields once the PCMCIA bridge map is identified.
-     */
-    cf_put_companion_u32(s, 0x0444, CF_SOCKET_NO_MEDIA);
-    cf_put_companion_u32(s, 0x044C, CF_SOCKET_NO_MEDIA);
 
     if (s->attached) {
         /*
@@ -103,24 +86,21 @@ static void cf_refresh_socket_status(cf_state_t *s)
          */
     } else {
         /*
-         * pcmcia.dll uses 0xaa001044 both as a socket/media probe and as
-         * part of CardGetStatus.  Real hardware with the PCMCIA adapter
-         * present and no card inserted reports "Card type: None" and
-         * "Card unit: Set"; bit 6 clear here preserves the unit-present
-         * result while the 0x0B000100 status block reports no media.
-         *
-         * The socket-refresh path at 0x0198b46c also tests bit 6 in the
-         * OR of 0xaa001044/0xaa00104c/0xaa001b10 before it scans CIS
-         * attribute memory.  Keep the companion bit at 0xaa00104c set so
-         * no-card boots do not discover unknown cards in the pulled-up
-         * window.
+         * No --cf means the optional CF adapter is absent, not an inserted
+         * adapter with no media.  pcmcia.dll's socket-refresh path at
+         * 0x0198B46C tests bit 6 here before scanning CIS memory, while the
+         * CardGetStatus callback at 0x0198B694 tests bit 2 in 0xaa00104c as
+         * the inactive card-detect line.  Keep both high so card_ex.dll sees
+         * no inserted card and the driver does not probe the floating CIS
+         * window as an unknown card in socket 2.
          *
          * TODO(2026-04-25): replace this with named VRC4173/BE-300 PCMCIA
          * bridge semantics once the companion PCMCIA register map is known.
          */
-        cf_put_companion_u32(s, 0x0044, 0x00000000u);
-        cf_put_companion_u32(s, 0x004C, CF_SOCKET_NO_MEDIA);
-        cf_put_companion_u32(s, 0x0B10, CF_SOCKET_NO_MEDIA);
+        cf_put_companion_u32(s, 0x0044, CF_SOCKET_NO_MEDIA);
+        cf_put_companion_u32(s, 0x004C,
+            CF_SOCKET_NO_MEDIA | CF_SOCKET_DETECT_INACTIVE);
+        cf_put_companion_u32(s, 0x0B10, 0x00000000u);
         cf_put_companion_u32(s, 0x0B50, 0x00000000u);
     }
 }

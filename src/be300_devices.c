@@ -33,6 +33,8 @@
 #include "ui.h"
 
 #define BE300_NS_PER_MS 1000000ULL
+#define BE300_KJGPIO_CARD_DETECT_OFF UINT32_C(0xA008)
+#define BE300_KJGPIO_CARD_DETECT_INACTIVE UINT64_C(0x00000006)
 
 static uint64_t be300_host_monotonic_ns(void)
 {
@@ -277,6 +279,21 @@ DEVICE_ACCESS(be300_nand)
         nand_write(d->nand, offset, (unsigned)len, val, pc);
     } else {
         uint64_t val = nand_read(d->nand, offset, (unsigned)len, pc);
+        /*
+         * PA 0x0A00A008 is also sampled by pcmcia.dll's socket-0
+         * CardGetStatus callback at UM 0x0198C3C8.  The inserted-card
+         * hardware dump shows 0x2F9 here, with detect bits 1/2 clear
+         * (docs/hardware/hw_dump_vrc4173.txt:516).  With no host CF image,
+         * those active-low detect inputs must read inactive so card_ex.dll
+         * does not publish a card-present status-bar notification.
+         */
+        if (d->cf && !cf_present(d->cf) && len > 0 &&
+            offset <= BE300_KJGPIO_CARD_DETECT_OFF &&
+            offset + (uint32_t)len > BE300_KJGPIO_CARD_DETECT_OFF) {
+            unsigned shift =
+                (unsigned)((BE300_KJGPIO_CARD_DETECT_OFF - offset) * 8u);
+            val |= BE300_KJGPIO_CARD_DETECT_INACTIVE << shift;
+        }
         memory_writemax64(cpu, data, len, val);
     }
 
@@ -317,11 +334,15 @@ static bool companion_ab_no_card_status_byte(uint32_t off)
     case 0x0110u:
     case 0x0114u:
     case 0x0118u:
-    case 0x0150u:
         return true;
     default:
         return false;
     }
+}
+
+static bool companion_ab_no_card_jacket_present_byte(uint32_t off)
+{
+    return off == 0x0150u;
 }
 
 DEVICE_ACCESS(be300_companion_ab)
@@ -362,6 +383,11 @@ DEVICE_ACCESS(be300_companion_ab)
          * bits in pcmcia.dll's socket worker, so clear them instead of
          * preserving the guest-written latch value.
          *
+         * PA 0x0B000150 is the exception: pcmcia.dll's PDJacketGetState
+         * path at UM 0x0198ACF0 treats bit 6 set there as jacket/card
+         * state bit 0x4.  Keep that bit clear so no --cf boots model an
+         * absent secondary adapter, not an unknown card insertion.
+         *
          * TODO(2026-04-25): replace this with named VRC4173/BE-300
          * PCMCIA bridge semantics once the secondary companion socket map
          * is identified.
@@ -369,6 +395,8 @@ DEVICE_ACCESS(be300_companion_ab)
         for (size_t i = 0; i < len; i++) {
             if (companion_ab_no_card_status_byte(off + (uint32_t)i))
                 buf[i] = (uint8_t)((buf[i] & ~(uint8_t)0x30u) | 0x40u);
+            if (companion_ab_no_card_jacket_present_byte(off + (uint32_t)i))
+                buf[i] &= ~(uint8_t)0x70u;
         }
 
         be300_probe_note_mmio("vrc4173-companion-ab", off, 'R',
@@ -574,6 +602,7 @@ static uint32_t be300_buzzer_tone_ms(const struct be300_buzzer_state *b)
 #define BE300_COMMMODE_SOCKET_NONE  0x0007u
 #define BE300_COMMMODE_SOCKET_RS232 0x0008u
 #define BE300_COMMSIU_CTRL_RS232   0x0008u
+#define BE300_PCC_CONNECT_DELAY_DEFAULT_MS 1000u
 
 static bool be300_pcconnect_cable_enabled(void)
 {
@@ -588,11 +617,11 @@ static uint32_t be300_pcconnect_connect_delay_ms(void)
     unsigned long n;
 
     if (!v || !*v)
-        return 60000u;
+        return BE300_PCC_CONNECT_DELAY_DEFAULT_MS;
 
     n = strtoul(v, &end, 10);
     if (end == v || *end != '\0' || n > 600000ul)
-        return 60000u;
+        return BE300_PCC_CONNECT_DELAY_DEFAULT_MS;
 
     return (uint32_t)n;
 }
@@ -1656,8 +1685,7 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
-        if (be300_pcconnect_cable_enabled() &&
-            be300_vrc4173_usb_op_offset(off)) {
+        if (be300_vrc4173_usb_op_offset(off)) {
             be300_probe_note_mmio("vrc4173-usbu-ohci", off, 'W',
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
                 BE300_MMIO_CLASS_KNOWN);
@@ -1810,8 +1838,7 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
-        if (be300_pcconnect_cable_enabled() &&
-            be300_vrc4173_usb_op_offset(off)) {
+        if (be300_vrc4173_usb_op_offset(off)) {
             uint32_t val = be300_vrc4173_usb_read(d, off);
             be300_probe_note_mmio("vrc4173-usbu-ohci", off, 'R',
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
@@ -2365,9 +2392,8 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
     ppsh_refresh_status(aux);
     be300_buzzer_seed(latch);
     latch->pcconnect_insert_delay_ms = be300_pcconnect_connect_delay_ms();
-    if (m->cfg.enable_pcconnect_time_sync)
-        be300_latch_poke_u32(latch, VRC4173_USB_OP_BASE + 0x00u,
-            VRC4173_USB_HC_REVISION);
+    be300_latch_poke_u32(latch, VRC4173_USB_OP_BASE + 0x00u,
+        VRC4173_USB_HC_REVISION);
 
     /*
      * Pre-populate latch with real hardware register values from
