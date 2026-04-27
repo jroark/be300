@@ -65,6 +65,7 @@ static void usage(const char *prog)
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
         "  --pcconnect-time-sync Enable experimental Casio PC Connect time-sync peer\n"
+        "  --stowaway-keyboard   Feed host key events to the Stowaway serial dock on COM1:\n"
         "  --frame-2x            Show framed SDL display with a 480x640 LCD area\n"
         "  --frame-scale <N>     Framed SDL LCD scale, 1.0-4.0 (default: 1.0)\n"
         "  --speed <mhz>         Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
@@ -91,6 +92,7 @@ int main(int argc, char *argv[])
         .log_nand_legacy = false,
         .enable_ppsh     = false,
         .enable_pcconnect_time_sync = false,
+        .enable_stowaway_keyboard = false,
         .enable_ne2000   = false,
         .net_mac_set     = false,
         .restore         = false,
@@ -123,6 +125,8 @@ int main(int argc, char *argv[])
             cfg.enable_ppsh = true;
         } else if (strcmp(argv[i], "--pcconnect-time-sync") == 0) {
             cfg.enable_pcconnect_time_sync = true;
+        } else if (strcmp(argv[i], "--stowaway-keyboard") == 0) {
+            cfg.enable_stowaway_keyboard = true;
         } else if (strcmp(argv[i], "--ne2000") == 0) {
             cfg.enable_ne2000 = true;
         } else if (strcmp(argv[i], "--net-mac") == 0 && i + 1 < argc) {
@@ -205,6 +209,12 @@ int main(int argc, char *argv[])
     }
     if (cfg.net_mac_set && !cfg.enable_ne2000) {
         fprintf(stderr, "Error: --net-mac requires --ne2000\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (cfg.enable_pcconnect_time_sync && cfg.enable_stowaway_keyboard) {
+        fprintf(stderr,
+            "Error: --pcconnect-time-sync and --stowaway-keyboard both use COM1:\n");
         usage(argv[0]);
         return 1;
     }

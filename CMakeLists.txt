@@ -130,6 +130,7 @@ set(BE300_SOURCES
     src/be300_devices.c
     src/host_io.c
     src/pcconnect.c
+    src/stowaway.c
     src/ui.c
     src/hw/bcu.c
     src/hw/cmu.c

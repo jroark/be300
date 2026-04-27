@@ -17,6 +17,7 @@
 #include "host_io.h"
 #include "pcconnect.h"
 #include "ppsh.h"
+#include "stowaway.h"
 #include "ui.h"
 
 /* GXemul headers */
@@ -356,6 +357,7 @@ machine_t *be300_create(const machine_config_t *cfg)
     if (!m) return NULL;
     m->cfg = *cfg;
     pcconnect_configure(cfg->enable_pcconnect_time_sync);
+    stowaway_configure(cfg->enable_stowaway_keyboard);
     m->boot_mode = BE300_BOOT_NONE;
     m->use_builtin_ui = true;
     m->save_exit_screenshot = true;
@@ -986,6 +988,7 @@ void be300_destroy(machine_t *m)
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_destroy(&m->cf[i]);
     pcconnect_configure(false);
+    stowaway_configure(false);
 
     free(m);
 

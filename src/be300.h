@@ -60,6 +60,7 @@ typedef struct {
     bool        log_nand_legacy;
     bool        enable_ppsh;
     bool        enable_pcconnect_time_sync;
+    bool        enable_stowaway_keyboard;
     bool        enable_ne2000;
     bool        net_mac_set;
     bool        restore;
