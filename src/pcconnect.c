@@ -11,6 +11,7 @@
 #define PCC_NS_PER_MS 1000000ull
 #define PCC_DEFAULT_POST_READY_DELAY_MS 4u
 #define PCC_MAX_POST_READY_DELAY_MS 5000u
+#define PCC_DEFAULT_UART_NAME "vrc4173siu"
 typedef enum {
     PCC_PENDING_NONE = 0,
     PCC_PENDING_SYNC_ECHO,
@@ -122,7 +123,7 @@ static void queue_host_byte(uint8_t byte)
     g_pcc.count++;
     trace_byte("host->guest", byte);
 
-    if (was_empty && g_pcc.guest_ready_seen && g_pcc.rx_ready_cb)
+    if (was_empty && g_pcc.rx_ready_cb)
         g_pcc.rx_ready_cb(g_pcc.rx_ready_opaque);
 }
 
@@ -403,7 +404,7 @@ void pcconnect_configure(bool enabled)
     g_pcc.post_ready_delay_ms = env_uint("BE300_PCC_POST_READY_DELAY_MS",
         PCC_DEFAULT_POST_READY_DELAY_MS, PCC_MAX_POST_READY_DELAY_MS);
     if (!g_pcc.uart_name)
-        g_pcc.uart_name = "siu";
+        g_pcc.uart_name = PCC_DEFAULT_UART_NAME;
 
     if (!enabled)
         return;
@@ -497,11 +498,12 @@ void pcconnect_note_uart_config(const char *name, uint8_t lcr, uint8_t mcr,
     /*
      * The PC-side PortMon captures open the link at 115200 8N1, then send
      * the AT/0x55 wake train.  The guest-side driver programs a board-specific
-     * divisor, so don't infer host baud from the generic ns16550 divisor math;
-     * mark the link ready once the selected dock UART is in 8N1 data mode and
-     * the guest asserts DTR/RTS.  This also lets a manually launched guest
-     * PC Connect app trigger the emulated host cable edge instead of waiting
-     * for the delayed auto-insert timer.
+     * divisor, so don't infer host baud from the generic ns16550 divisor math.
+     * The real BE-300 PC Connect serial path is the custom VRC4173 companion
+     * SIU (hardware.txt:8, 190-191).  serial.dll first touches that UART in
+     * 8N1 with MCR clear during driver initialization, then the later COM
+     * open path asserts DTR/RTS.  Wait for DTR/RTS so the host wake sequence
+     * is not injected while the driver is still only probing the port.
      */
     if (dlab || (lcr & 0x7f) != 0x03 || (mcr & 0x03) == 0)
         return;
@@ -574,7 +576,13 @@ void pcconnect_uart_tx_byte(uint8_t byte)
             g_pcc.guest_sync_seen++;
             if (g_pcc.guest_sync_seen <= 32u)
                 queue_host_byte(0x55);
-        } else if (byte == 0x20) {
+        /*
+         * The guest also emits printable serial status text on this UART
+         * (for example "Serial port open").  The captured PC Connect ready
+         * byte appears only after the wake phase has produced sync bytes, so
+         * require at least one 0x55 before treating 0x20 as protocol state.
+         */
+        } else if (byte == 0x20 && g_pcc.guest_sync_seen != 0) {
             trace_message(
                 "guest ready byte 0x20 received; waiting for post-ready sync");
             g_pcc.guest_ready_seen = true;

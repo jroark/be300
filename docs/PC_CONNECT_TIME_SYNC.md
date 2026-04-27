@@ -74,10 +74,9 @@ truncation state without treating truncated PortMon rows as complete frames.
 
 ## Emulator Integration
 
-`--pcconnect-time-sync` enables an experimental peer on the VR4131 SIU by
-default. Set `BE300_PCC_UART=vrc4173siu` for the companion SIU at
-`0xaa008680`, or `BE300_PCC_UART=auto` to claim both candidate UARTs during
-short diagnostics.
+`--pcconnect-time-sync` enables an experimental peer on the companion SIU at
+`0xaa008680` by default. Set `BE300_PCC_UART=siu` for the VR4131 SIU, or
+`BE300_PCC_UART=auto` to claim both candidate UARTs during short diagnostics.
 
 The guest-visible cable insertion path is the VRC4173 Vic/CommMode page:
 
@@ -95,7 +94,7 @@ For serial PC Connect, the emulator masks the `AA008010` socket selector to
 the stale hardware-dump seed value `0x000c` from launching `StartingUSB.exe`
 before any emulated cable is inserted. The edge is normally delayed until after
 the Boot.exe reset; `BE300_PCC_CONNECT_DELAY_MS` controls that delay. For
-manual guest-side PC Connect testing, the edge can also be raised when the
+manual guest-side PC Connect testing, the edge can also be raised once the
 claimed UART is in 8N1 mode and the guest asserts DTR/RTS.
 
 The default post-reset cable edge delay is 1000 ms. Larger values are useful
@@ -109,16 +108,21 @@ The peer currently:
 - waits for a cable edge and a guest-ready UART before queueing the captured
   `AT\0\0\r\0\0\0UU` wake sequence twice
 - mirrors early `0x55` sync bytes until the guest emits the `0x20` ready byte
+- treats `0x20` as the PC Connect ready byte only after at least one sync
+  `0x55`, so ordinary serial status text such as `Serial port open` does not
+  advance the protocol parser
 - clears stale sync echo bytes, mirrors two post-ready `0x55` sync bytes, then
   sends a captured `0x2D` probe frame
 - delays each post-ready host response by about 4 ms to match the captured
   serial cadence and avoid presenting receive data while the guest is still
   inside its transmit path
-- raises the CommMode sub-bit 4 edge whenever post-ready host RX data becomes
-  available. The BE-300 serial port lives on the VRC4173 companion
-  (`hardware.txt`: Vic/CommMode at `0xaa008000`, companion SIU at
+- raises the CommMode sub-bit 4 edge whenever host RX data becomes available.
+  This includes the initial wake sequence; without that edge the guest can
+  leave the queued bytes unread. The BE-300 serial port lives on the VRC4173
+  companion (`hardware.txt`: Vic/CommMode at `0xaa008000`, companion SIU at
   `0xaa008680`), and NK dispatches `AA008004` through GIRQ0-4, so the guest
-  does not reliably drain the `0x2D` and `0x49` frames from UART status alone.
+  does not reliably drain the `0x2D` and `0x49` frames from UART status
+  alone.
 - waits for the guest `0x2D` response before sending a generated `0x49`
   `WilSetSystemTime` frame using current host UTC
 - optionally traces raw guest/host bytes with `BE300_PCC_TRACE=1`
