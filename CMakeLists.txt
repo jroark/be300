@@ -139,6 +139,9 @@ set(BE300_SOURCES
 add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
 target_compile_definitions(be300 PRIVATE BE300_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(be300 m ${SDL2_LIBRARIES} ${PNG_LIBRARIES})
+if(APPLE)
+    target_link_libraries(be300 "-framework Cocoa" objc)
+endif()
 
 # Tests
 enable_testing()
