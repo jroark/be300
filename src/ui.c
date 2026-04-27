@@ -328,6 +328,15 @@ static uint32_t ui_frame_lcd_scale_from_env(void)
     return scale == 0 ? BE300_FRAME_LCD_SCALE_DEFAULT : scale;
 }
 
+static uint32_t ui_frame_lcd_scale(machine_t *m)
+{
+    if (m->cfg.frame_lcd_scale >= 1u &&
+        m->cfg.frame_lcd_scale <= BE300_FRAME_LCD_SCALE_MAX)
+        return m->cfg.frame_lcd_scale;
+
+    return ui_frame_lcd_scale_from_env();
+}
+
 static void ui_trim_frame_transparent_edges(uint8_t **pixels_io,
     uint32_t *width_io, uint32_t *height_io)
 {
@@ -1243,6 +1252,7 @@ int ui_init(machine_t *m)
     Uint32 win_flags = 0;
 
     if (have_frame_pixels) {
+        uint32_t frame_lcd_scale = ui_frame_lcd_scale(m);
         frame_width = loaded_frame_width;
         frame_height = loaded_frame_height;
         if (!ui_detect_frame_lcd_rect(frame_pixels, frame_width,
@@ -1253,8 +1263,9 @@ int ui_init(machine_t *m)
                 frame_lcd_rect.x, frame_lcd_rect.y,
                 frame_lcd_rect.w, frame_lcd_rect.h);
         }
-        ui_configure_frame_layout(m, ui_frame_lcd_scale_from_env(),
-            &win_w, &win_h);
+        ui_configure_frame_layout(m, frame_lcd_scale, &win_w, &win_h);
+        fprintf(stderr, "[UI] Frame LCD scale: %ux (window %dx%d)\n",
+            frame_lcd_scale, win_w, win_h);
         window_mask = ui_create_frame_window_mask(frame_pixels, win_w,
             win_h);
         if (!window_mask)

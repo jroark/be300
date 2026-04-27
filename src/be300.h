@@ -73,6 +73,7 @@ typedef struct {
     const char *cf_path;
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* target CPU speed in MHz; 0 = unthrottled (default: 166) */
+    uint32_t    frame_lcd_scale; /* framed SDL LCD scale; 0 = default/env */
 } machine_config_t;
 
 typedef enum {
