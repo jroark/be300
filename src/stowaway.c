@@ -167,7 +167,7 @@ bool stowaway_queue_key(unsigned scancode, bool release)
 {
     uint8_t byte;
 
-    if (!g_stowaway.enabled)
+    if (!g_stowaway.enabled || !g_stowaway.connected)
         return false;
     if (scancode > STOWAWAY_KEY_MASK)
         return false;
