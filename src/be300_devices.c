@@ -30,6 +30,7 @@
 #include "hw/siu.h"
 #include "pcconnect.h"
 #include "ppsh.h"
+#include "stowaway.h"
 #include "ui.h"
 
 #define BE300_NS_PER_MS 1000000ULL
@@ -464,6 +465,7 @@ struct be300_vrc4173_latch {
     bool     cf_irq_asserted;
     bool     pcconnect_dock_connected;
     uint16_t pcconnect_commmode_pending;
+    uint16_t stowaway_commmode_events;
     bool     pcconnect_insert_armed;
     uint32_t pcconnect_insert_delay_ms;
     uint64_t pcconnect_insert_deadline_ns;
@@ -481,6 +483,16 @@ static uint32_t be300_latch_peek_u32(struct be300_vrc4173_latch *d,
          | ((uint32_t)d->bytes[off + 1u] << 8)
          | ((uint32_t)d->bytes[off + 2u] << 16)
          | ((uint32_t)d->bytes[off + 3u] << 24);
+}
+
+static uint16_t be300_latch_peek_u16(const struct be300_vrc4173_latch *d,
+    uint32_t off)
+{
+    if (!d || off + 2u > VRC4173_LATCH_SIZE)
+        return 0;
+
+    return (uint16_t)d->bytes[off + 0u]
+         | ((uint16_t)d->bytes[off + 1u] << 8);
 }
 
 static void be300_latch_poke_u32(struct be300_vrc4173_latch *d,
@@ -635,6 +647,8 @@ static uint32_t be300_buzzer_tone_ms(const struct be300_buzzer_state *b)
 #define BE300_GIRQ0_COMMMODE       0x00000010u
 #define BE300_COMMMODE_STATUS_OFF  0x8004u
 #define BE300_COMMMODE_SOCKET_OFF  0x8010u
+#define BE300_COMMMODE_MODEM_EVENT_OFF 0x1054u
+#define BE300_COMMMODE_SERIAL_SOCKET_OFF 0x1010u
 #define BE300_COMMSIU_CTRL_OFF     0x8684u
 #define BE300_PCCARD_STATUS_OFF    0x1B50u
 #define BE300_PCCARD_SOCKET_READY  0x00000008u
@@ -649,6 +663,7 @@ static uint32_t be300_buzzer_tone_ms(const struct be300_buzzer_state *b)
 #define BE300_COMMMODE_SOCKET_VALUE_MASK 0x001Fu
 #define BE300_COMMMODE_SOCKET_NONE  0x0007u
 #define BE300_COMMMODE_SOCKET_RS232 0x0008u
+#define BE300_COMMMODE_MODEM_EVENT_BITS 0x0030u
 #define BE300_COMMSIU_CTRL_RS232   0x0008u
 #define BE300_PCC_CONNECT_DELAY_DEFAULT_MS 1000u
 
@@ -656,6 +671,33 @@ static bool be300_pcconnect_cable_enabled(void)
 {
     return g_be300_machine &&
         g_be300_machine->cfg.enable_pcconnect_time_sync;
+}
+
+static bool be300_stowaway_keyboard_enabled(void)
+{
+    return g_be300_machine &&
+        g_be300_machine->cfg.enable_stowaway_keyboard;
+}
+
+static bool be300_serial_dock_socket_enabled(void)
+{
+    return be300_pcconnect_cable_enabled() ||
+        be300_stowaway_keyboard_enabled();
+}
+
+static bool be300_serial_dock_socket_connected(
+    const struct be300_vrc4173_latch *d)
+{
+    if (be300_serial_dock_socket_enabled())
+        return d && d->pcconnect_dock_connected;
+
+    return false;
+}
+
+static bool be300_commmode_interrupt_enabled(void)
+{
+    return be300_pcconnect_cable_enabled() ||
+        be300_stowaway_keyboard_enabled();
 }
 
 static uint32_t be300_pcconnect_connect_delay_ms(void)
@@ -682,7 +724,8 @@ static bool be300_pcconnect_time_reached(uint64_t now_ns, uint64_t due_ns)
 static bool be300_pcconnect_insert_ready(
     const struct be300_vrc4173_latch *d)
 {
-    if (!d || !be300_pcconnect_cable_enabled() || !d->pcconnect_insert_armed)
+    if (!d || !be300_serial_dock_socket_enabled() ||
+        !d->pcconnect_insert_armed)
         return false;
 
     return be300_pcconnect_time_reached(be300_host_monotonic_ns(),
@@ -751,7 +794,7 @@ static uint16_t be300_pcconnect_socket_read(
     v = (uint16_t)d->bytes[BE300_COMMMODE_SOCKET_OFF]
       | ((uint16_t)d->bytes[BE300_COMMMODE_SOCKET_OFF + 1u] << 8);
 
-    if (be300_pcconnect_cable_enabled()) {
+    if (be300_serial_dock_socket_enabled()) {
         /*
          * socket.dll maps the Vic/CommMode page, then reads
          * ReadPortDataEx(0, 2, 0x1f) from AA008010.  The WinCE 3.0
@@ -761,13 +804,27 @@ static uint16_t be300_pcconnect_socket_read(
          * CommMode GIRQ0-4 pending/mask register, and hardware.txt:189-191
          * places this page next to the companion SIU.  For the serial
          * PC Connect option, do not expose a socket until the emulated
-         * cable edge; after that edge, expose the RS-232 socket.  Preserve
+         * cable edge; after that edge, expose the RS-232 socket.  The
+         * Stowaway keyboard dock is already physically inserted when
+         * --stowaway-keyboard is selected, and its driver uses this same
+         * socket.dll path before accepting the UART DCD level.  Preserve
          * the other latched bits.
          */
         v &= (uint16_t)~BE300_COMMMODE_SOCKET_VALUE_MASK;
-        v |= d->pcconnect_dock_connected ?
+        v |= be300_serial_dock_socket_connected(d) ?
             BE300_COMMMODE_SOCKET_RS232 : BE300_COMMMODE_SOCKET_NONE;
     }
+
+    return v;
+}
+
+static uint16_t be300_stowaway_commmode_event_read(
+    const struct be300_vrc4173_latch *d)
+{
+    uint16_t v = be300_latch_peek_u16(d, BE300_COMMMODE_MODEM_EVENT_OFF);
+
+    if (d && be300_stowaway_keyboard_enabled())
+        v |= d->stowaway_commmode_events;
 
     return v;
 }
@@ -778,8 +835,8 @@ static uint64_t be300_pcconnect_pccard_status_read(
 {
     unsigned shift;
 
-    if (!d || !be300_pcconnect_cable_enabled() ||
-        cf_attached || !d->pcconnect_dock_connected || len == 0 ||
+    if (!d || !be300_serial_dock_socket_enabled() ||
+        cf_attached || !be300_serial_dock_socket_connected(d) || len == 0 ||
         off > BE300_PCCARD_STATUS_OFF ||
         off + len <= BE300_PCCARD_STATUS_OFF)
         return val;
@@ -814,7 +871,7 @@ static void be300_pcconnect_irq_update(struct be300_vrc4173_latch *d)
     if (!d || !d->pcconnect_irq_connected)
         return;
 
-    want = be300_pcconnect_cable_enabled() &&
+    want = be300_commmode_interrupt_enabled() &&
         be300_pcconnect_commmode_unmasked(d);
     if (want && !d->pcconnect_irq_asserted) {
         INTERRUPT_ASSERT(d->pcconnect_irq);
@@ -829,7 +886,7 @@ static void be300_pcconnect_irq_reedge(struct be300_vrc4173_latch *d)
 {
     if (!d || !d->pcconnect_irq_connected || !d->pcconnect_irq_asserted)
         return;
-    if (!be300_pcconnect_cable_enabled() ||
+    if (!be300_commmode_interrupt_enabled() ||
         !be300_pcconnect_commmode_unmasked(d))
         return;
 
@@ -840,7 +897,7 @@ static void be300_pcconnect_irq_reedge(struct be300_vrc4173_latch *d)
 static void be300_pcconnect_arm_insert_after_reset(
     struct be300_vrc4173_latch *d)
 {
-    if (!d || !be300_pcconnect_cable_enabled())
+    if (!d || !be300_serial_dock_socket_enabled())
         return;
 
     d->pcconnect_insert_armed = true;
@@ -853,6 +910,20 @@ static void be300_pcconnect_reset_for_cpu_reset(
 {
     if (!d)
         return;
+
+    if (be300_stowaway_keyboard_enabled()) {
+        d->pcconnect_dock_connected = true;
+        d->pcconnect_commmode_pending = 0;
+        d->stowaway_commmode_events = 0;
+        d->pcconnect_insert_armed = false;
+        stowaway_uart_reset();
+        if (d->pcconnect_irq_connected && d->pcconnect_irq_asserted) {
+            INTERRUPT_DEASSERT(d->pcconnect_irq);
+            d->pcconnect_irq_asserted = false;
+        }
+        return;
+    }
+
     if (!be300_pcconnect_cable_enabled())
         return;
 
@@ -882,7 +953,10 @@ static void be300_pcconnect_reset_for_cpu_reset(
 static void be300_pcconnect_raise_dock_edge(struct be300_vrc4173_latch *d,
     bool force)
 {
-    if (!d || !be300_pcconnect_cable_enabled() ||
+    if (be300_stowaway_keyboard_enabled() && !force)
+        return;
+
+    if (!d || !be300_serial_dock_socket_enabled() ||
         (!force && !be300_pcconnect_insert_ready(d)) ||
         d->pcconnect_commmode_pending || d->pcconnect_dock_connected)
         return;
@@ -901,27 +975,73 @@ static void be300_pcconnect_raise_dock_edge(struct be300_vrc4173_latch *d,
     */
     d->pcconnect_dock_connected = true;
     d->pcconnect_commmode_pending |= BE300_COMMMODE_PENDING_MASK;
-    pcconnect_set_cable_connected(true);
+    if (be300_pcconnect_cable_enabled())
+        pcconnect_set_cable_connected(true);
+    if (be300_stowaway_keyboard_enabled())
+        d->stowaway_commmode_events |= BE300_COMMMODE_MODEM_EVENT_BITS;
     be300_pcconnect_irq_update(d);
     be300_pcconnect_trace(d, force ? "dock-edge-uart" : "dock-edge",
         BE300_COMMMODE_STATUS_OFF, 2, be300_pcconnect_commmode_read(d), 0);
 }
 
+static void be300_stowaway_raise_modem_event(struct be300_vrc4173_latch *d)
+{
+    if (!d || !be300_stowaway_keyboard_enabled())
+        return;
+
+    /*
+     * The Stowaway dock is physically inserted for the whole boot, but
+     * serial.dll does not accept the UART DCD level until its companion-side
+     * modem-event path observes AA001054 bits 0x30 and AA001010 reads
+     * connected. hardware.txt:189-191 identifies 0xaa001000 as a separate
+     * companion block, and hw_dump_vrc4173.txt:39-42 shows real data at
+     * 0x0A001010 and 0x0A001054. Raise only the modem sub-event here so the
+     * socket can remain present while the DCD transition is delivered when
+     * the COM driver enables modem-status interrupts.
+     */
+    d->pcconnect_dock_connected = true;
+    d->pcconnect_commmode_pending |= BE300_COMMMODE_MODEM_PENDING;
+    d->stowaway_commmode_events |= BE300_COMMMODE_MODEM_EVENT_BITS;
+    be300_pcconnect_irq_update(d);
+    be300_pcconnect_trace(d, "stowaway-modem-edge",
+        BE300_COMMMODE_STATUS_OFF, 2, be300_pcconnect_commmode_read(d), 0);
+    be300_pcconnect_irq_reedge(d);
+}
+
 static void be300_pcconnect_maybe_raise_dock_edge(
     struct be300_vrc4173_latch *d)
 {
-    if (!d || d->pcconnect_dock_connected)
+    if (!d)
         return;
 
-    be300_pcconnect_raise_dock_edge(d, pcconnect_guest_uart_ready());
+    if (be300_stowaway_keyboard_enabled()) {
+        if ((d->pcconnect_commmode_pending & BE300_COMMMODE_MODEM_PENDING)
+            == 0 && d->stowaway_commmode_events == 0 &&
+            stowaway_uart_take_modem_wait_request())
+            be300_stowaway_raise_modem_event(d);
+        return;
+    }
+
+    if (d->pcconnect_dock_connected)
+        return;
+
+    be300_pcconnect_raise_dock_edge(d,
+        be300_pcconnect_cable_enabled() ? pcconnect_guest_uart_ready() :
+        false);
 }
 
 void be300_pcconnect_poll(void)
 {
-    if (!be300_pcconnect_cable_enabled())
+    if (be300_pcconnect_cable_enabled()) {
+        be300_pcconnect_maybe_raise_dock_edge(g_be300_vrc4173_latch);
         return;
+    }
 
-    be300_pcconnect_maybe_raise_dock_edge(g_be300_vrc4173_latch);
+    if (be300_stowaway_keyboard_enabled()) {
+        be300_pcconnect_maybe_raise_dock_edge(g_be300_vrc4173_latch);
+        be300_pcconnect_irq_update(g_be300_vrc4173_latch);
+        be300_pcconnect_irq_reedge(g_be300_vrc4173_latch);
+    }
 }
 
 static void be300_pcconnect_uart_rx_ready(void *opaque)
@@ -969,7 +1089,7 @@ static void be300_pcconnect_note_comm_write(struct be300_vrc4173_latch *d,
 
     if (!d || len == 0)
         return;
-    if (!be300_pcconnect_cable_enabled())
+    if (!be300_commmode_interrupt_enabled())
         return;
 
     old_pending = d->pcconnect_commmode_pending;
@@ -1049,6 +1169,11 @@ static void be300_pcconnect_note_comm_read(struct be300_vrc4173_latch *d,
     if (pc == 0x800b6db4u &&
         (active & BE300_COMMMODE_SOCKET_PENDING) == 0 &&
         (active & BE300_COMMMODE_MODEM_PENDING) != 0) {
+        if (be300_stowaway_keyboard_enabled()) {
+            be300_pcconnect_trace(d, "commmode-modem-dispatch",
+                BE300_COMMMODE_STATUS_OFF, 2, val, pc);
+            return;
+        }
         d->pcconnect_commmode_pending &=
             (uint16_t)~BE300_COMMMODE_MODEM_PENDING;
         be300_pcconnect_trace(d, "commmode-modem-dispatch",
@@ -1060,7 +1185,7 @@ static void be300_pcconnect_note_comm_read(struct be300_vrc4173_latch *d,
 static uint32_t be300_pcconnect_girq0_source_bits(
     const struct be300_vrc4173_latch *d)
 {
-    if (!be300_pcconnect_cable_enabled())
+    if (!be300_commmode_interrupt_enabled())
         return 0;
 
     return be300_pcconnect_commmode_unmasked(d) ?
@@ -1813,6 +1938,19 @@ DEVICE_ACCESS(be300_vrc4173)
         }
         be300_pcconnect_note_comm_write(d, off, (unsigned)len, val,
             (uint32_t)cpu->pc);
+        if (be300_stowaway_keyboard_enabled() &&
+            off <= BE300_COMMMODE_MODEM_EVENT_OFF &&
+            off + len > BE300_COMMMODE_MODEM_EVENT_OFF) {
+            uint16_t written = be300_pcconnect_write_u16_at(off,
+                (unsigned)len, val, BE300_COMMMODE_MODEM_EVENT_OFF, 0);
+            d->stowaway_commmode_events &=
+                (uint16_t)~(written & BE300_COMMMODE_MODEM_EVENT_BITS);
+            if ((written & BE300_COMMMODE_MODEM_EVENT_BITS) != 0) {
+                d->pcconnect_commmode_pending &=
+                    (uint16_t)~BE300_COMMMODE_MODEM_PENDING;
+                be300_pcconnect_irq_update(d);
+            }
+        }
         if (off <= 0x0A00u && off + len > 0x0A00u)
             be300_vrc4173_a00_blit_maybe(cpu, d);
         if (off <= 0x0234u && off + len > 0x0234u)
@@ -1852,11 +1990,12 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
-        if (be300_pcconnect_cable_enabled() &&
+        if (be300_commmode_interrupt_enabled() &&
             off == BE300_COMMMODE_STATUS_OFF) {
             uint16_t val;
 
-            be300_pcconnect_maybe_raise_dock_edge(d);
+            if (be300_pcconnect_cable_enabled())
+                be300_pcconnect_maybe_raise_dock_edge(d);
             val = be300_pcconnect_commmode_read(d);
             be300_pcconnect_trace(d, "read-commmode", off, (uint32_t)len,
                 val, (uint32_t)cpu->pc);
@@ -1868,15 +2007,45 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
-        if (be300_pcconnect_cable_enabled() &&
+        if (be300_serial_dock_socket_enabled() &&
             off == BE300_COMMMODE_SOCKET_OFF) {
             uint16_t val;
 
-            be300_pcconnect_maybe_raise_dock_edge(d);
+            if (be300_pcconnect_cable_enabled())
+                be300_pcconnect_maybe_raise_dock_edge(d);
             val = be300_pcconnect_socket_read(d);
             be300_pcconnect_trace(d, "read-socket", off, (uint32_t)len,
                 val, (uint32_t)cpu->pc);
             be300_probe_note_mmio("vrc4173-commmode-socket", off, 'R',
+                (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
+            memory_writemax64(cpu, data, len, val);
+            return 1;
+        }
+
+        if (be300_stowaway_keyboard_enabled() &&
+            off == BE300_COMMMODE_SERIAL_SOCKET_OFF) {
+            uint16_t val = be300_serial_dock_socket_connected(d) ? 0u : 1u;
+
+            be300_probe_note_mmio("vrc4173-commmode-serial-socket",
+                off, 'R', (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
+                BE300_MMIO_CLASS_KNOWN);
+            memory_writemax64(cpu, data, len, val);
+            return 1;
+        }
+
+        if (be300_stowaway_keyboard_enabled() &&
+            off == BE300_COMMMODE_MODEM_EVENT_OFF) {
+            uint16_t val = be300_stowaway_commmode_event_read(d);
+
+            /*
+             * serial.dll's RS-232 path reads AA001054 as a companion-side
+             * modem-event latch before it accepts UART DCD/RLSD for the
+             * Stowaway dock. hardware.txt:189-191 labels 0xaa001000 as a
+             * separate companion block, and hw_dump_vrc4173.txt:39-42
+             * captures the real 0x0A001010/0x0A001054 latch values.
+             */
+            be300_probe_note_mmio("vrc4173-commmode-modem-event", off, 'R',
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
                 BE300_MMIO_CLASS_KNOWN);
             memory_writemax64(cpu, data, len, val);
@@ -2652,7 +2821,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         latch->cf_irq_asserted = false;
     }
 
-    if (m->cfg.enable_pcconnect_time_sync) {
+    if (m->cfg.enable_pcconnect_time_sync || m->cfg.enable_stowaway_keyboard) {
         char tmps[200];
 
         snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
@@ -2660,7 +2829,12 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         INTERRUPT_CONNECT(tmps, latch->pcconnect_irq);
         latch->pcconnect_irq_connected = true;
         latch->pcconnect_irq_asserted = false;
-        pcconnect_set_rx_ready_callback(be300_pcconnect_uart_rx_ready, latch);
+        if (m->cfg.enable_pcconnect_time_sync)
+            pcconnect_set_rx_ready_callback(be300_pcconnect_uart_rx_ready,
+                latch);
+        if (m->cfg.enable_stowaway_keyboard)
+            latch->pcconnect_dock_connected = true;
+        be300_pcconnect_irq_update(latch);
     }
 
     if (enable_ppsh) {
