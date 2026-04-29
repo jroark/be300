@@ -7,6 +7,7 @@ build/
 build-docker/
 build-host/
 build-host-*/
+build-web/
 build-test/
 *.o
 *.log
@@ -59,8 +60,3 @@ Testing/
 
 # Local disasm cache
 .tmp_spl/
-
-# Android build files (gradle wrapper)
-android/gradle/
-android/gradlew
-android/gradlew.bat

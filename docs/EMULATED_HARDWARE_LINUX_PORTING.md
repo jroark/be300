@@ -657,8 +657,10 @@ Readback bytes:
 | ---: | --- |
 | `0x00` | `0xFF` idle low byte from hardware dump. |
 | `0x01` | `0x9E` idle high byte from hardware dump. |
-| `0x02` | Live `btn_set1`. |
-| `0x03` | Live `btn_set2`. |
+| `0x02` | Dummy/status halfword low byte; stock WinCE performs a throwaway halfword read here. |
+| `0x03` | Dummy/status halfword high byte. |
+| `0x04` | Live `btn_set1`. |
+| `0x05` | Live `btn_set2`. |
 
 `btn_set1` bits:
 
@@ -681,11 +683,15 @@ Readback bytes:
 Button state changes assert the keyboard source at VRC4173 offset `0x0004`
 bit 1, routed through GIU line 0. The OAL/guest acknowledges this source by
 writing the GIRQ0 acknowledge path at VRC4173 offset `0x0014`.
+The power-button release edge updates the live bit but does not assert the
+keyboard source; otherwise the release from the press that entered SUSPEND
+immediately wakes the guest again. The BE-300 OAL also has a separate SYSINT1
+power-switch source for power-state transitions.
 
 Linux input driver guidance:
 
 - Polling works for early bring-up.
-- Interrupt support should watch GIU0/VRC4173 bit 1, then read bytes 2 and 3.
+- Interrupt support should watch GIU0/VRC4173 bit 1, then read bytes 4 and 5.
 - Do not treat the low halfword `0x9EFF` as button state; it is the idle
   quiescent readback.
 
@@ -1064,7 +1070,7 @@ This order minimizes dependency on incomplete companion-chip behavior.
    - Read ID `0xEC/0x73` and support READ0/READ1/READOOB/STATUS/RESET.
 
 7. Input:
-   - Add buttons as a small input driver reading `0x0A00A042/0x0A00A043`.
+   - Add buttons as a small input driver reading `0x0A00A044/0x0A00A045`.
    - Add PIU touch after GIU0 interrupt handling is reliable.
 
 8. CF/PCMCIA:
@@ -1092,7 +1098,7 @@ Recommended Linux driver names are suggestions, not existing upstream bindings.
 | `be300-fb` | `0x0A200000` | RGB565 framebuffer, 240x320, stride 512 bytes. |
 | `be300-nand` | `0x0A00A000` | Raw NAND command/address/data or transfer-engine MTD driver. |
 | `be300-piu` | `0x0A000300` | Interrupt-driven touch input with two ADC pages. |
-| `be300-buttons` | `0x0A00A040` | Input keys from bytes 2/3. |
+| `be300-buttons` | `0x0A00A040` | Input keys from bytes 4/5. |
 | `be300-cf-socket` | `0x0A001000`, `0x0B400000`, taskfile windows | Socket/CIS/ATA glue for attached CF images. |
 | `be300-ppsh` | `0x0C000120/0x0C000520` | Optional debug mailbox. |
 

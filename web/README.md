@@ -83,6 +83,7 @@ The generated browser bundle is written to:
 - `build-web/web/worker.js`
 - `build-web/web/styles.css`
 - `build-web/web/be300_frame.png`
+- `build-web/web/buttons_dpad_bw_mask.png`
 - `build-web/web/favicon.svg`
 - `build-web/web/be300_web.js`
 - `build-web/web/be300_web.wasm`

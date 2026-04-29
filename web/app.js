@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20260429g";
+const ASSET_VERSION = "20260429i";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -26,6 +26,7 @@ const clearSerialBtn = document.querySelector("#clearSerialBtn");
 const statusEl = document.querySelector("#status");
 const serialEl = document.querySelector("#serial");
 const serialPanelEl = document.querySelector(".serial-panel");
+const deviceFrameEl = document.querySelector(".device-frame");
 const screenEl = document.querySelector("#screen");
 const screenCtx = screenEl.getContext("2d", { alpha: false });
 const controlButtons = Array.from(document.querySelectorAll("[data-set][data-mask]"));
@@ -39,6 +40,15 @@ let btnSet1 = 0;
 let btnSet2 = 0;
 let activeTargusKeyboardEnabled = false;
 const pressedStowawayKeys = new Set();
+let frameButtonMask = null;
+let activeFrameButton = null;
+const activeMomentaryButtons = new Map();
+const pendingMomentaryButtonReleases = new Map();
+
+const FRAME_BUTTON_MASK_URL = `./buttons_dpad_bw_mask.png?v=${ASSET_VERSION}`;
+const BUTTON_MASK_THRESHOLD = 128;
+const BUTTON_MASK_MIN_AREA = 500;
+const BUTTON_MIN_DWELL_MS = 120;
 
 const STOWAWAY_KEY_CODES = new Map([
   ["Digit1", 0], ["Digit2", 1], ["Digit3", 2], ["KeyZ", 3],
@@ -273,7 +283,52 @@ function setButtonMask(targetSet, mask, enabled) {
   sendButtons();
 }
 
+function buttonPressKey(targetSet, mask) {
+  return `${targetSet}:${mask}`;
+}
+
+function pressMomentaryButton(targetSet, mask) {
+  const key = buttonPressKey(targetSet, mask);
+  const pendingRelease = pendingMomentaryButtonReleases.get(key);
+  if (pendingRelease) {
+    clearTimeout(pendingRelease);
+    pendingMomentaryButtonReleases.delete(key);
+  }
+  activeMomentaryButtons.set(key, performance.now());
+  setButtonMask(targetSet, mask, true);
+}
+
+function releaseMomentaryButton(targetSet, mask) {
+  const key = buttonPressKey(targetSet, mask);
+  const pressedAt = activeMomentaryButtons.get(key);
+  if (typeof pressedAt !== "number") {
+    setButtonMask(targetSet, mask, false);
+    return;
+  }
+
+  const finishRelease = () => {
+    pendingMomentaryButtonReleases.delete(key);
+    activeMomentaryButtons.delete(key);
+    setButtonMask(targetSet, mask, false);
+  };
+  const remaining = BUTTON_MIN_DWELL_MS - (performance.now() - pressedAt);
+  if (remaining <= 0) {
+    finishRelease();
+  } else {
+    pendingMomentaryButtonReleases.set(key, setTimeout(finishRelease, remaining));
+  }
+}
+
+function cancelMomentaryButtonTimers() {
+  for (const pendingRelease of pendingMomentaryButtonReleases.values()) {
+    clearTimeout(pendingRelease);
+  }
+  pendingMomentaryButtonReleases.clear();
+  activeMomentaryButtons.clear();
+}
+
 function clearGuestButtons() {
+  cancelMomentaryButtonTimers();
   btnSet1 = 0;
   btnSet2 = 0;
   syncControlButtonStates();
@@ -301,6 +356,13 @@ function releasePressedStowawayKeys() {
   pressedStowawayKeys.clear();
 }
 
+function requestStop() {
+  releasePressedStowawayKeys();
+  clearGuestButtons();
+  worker.postMessage({ type: "stop" });
+  setStatus("Stopping emulator...");
+}
+
 function isEditableTarget(target) {
   if (!(target instanceof Element)) {
     return false;
@@ -318,6 +380,327 @@ function mapPointerToGuest(event) {
   const x = clamp(Math.round(((event.clientX - rect.left) / rect.width) * 239), 0, 239);
   const y = clamp(Math.round(((event.clientY - rect.top) / rect.height) * 319), 0, 319);
   return { x, y };
+}
+
+function mapPointerToFrame(event) {
+  const rect = deviceFrameEl.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return null;
+  }
+  const x = ((event.clientX - rect.left) / rect.width) * 1024;
+  const y = ((event.clientY - rect.top) / rect.height) * 1536;
+  if (x < 0 || y < 0 || x >= 1024 || y >= 1536) {
+    return null;
+  }
+  return { x, y };
+}
+
+function insertButtonComponent(components, component) {
+  if (component.area < BUTTON_MASK_MIN_AREA) {
+    return;
+  }
+  components.push(component);
+  components.sort((a, b) => b.area - a.area);
+  if (components.length > 16) {
+    components.pop();
+  }
+}
+
+function collectButtonMaskComponents(active, width, height) {
+  const seen = new Uint8Array(active.length);
+  const queue = new Uint32Array(active.length);
+  const components = [];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const start = y * width + x;
+      if (!active[start] || seen[start]) {
+        continue;
+      }
+
+      let head = 0;
+      let tail = 0;
+      let area = 0;
+      let minX = x;
+      let maxX = x;
+      let minY = y;
+      let maxY = y;
+      let sumX = 0;
+      let sumY = 0;
+
+      seen[start] = 1;
+      queue[tail++] = start;
+
+      while (head < tail) {
+        const p = queue[head++];
+        const px = p % width;
+        const py = Math.floor(p / width);
+        const y0 = py > 0 ? py - 1 : py;
+        const y1 = py + 1 < height ? py + 1 : py;
+        const x0 = px > 0 ? px - 1 : px;
+        const x1 = px + 1 < width ? px + 1 : px;
+
+        area++;
+        sumX += px;
+        sumY += py;
+        minX = Math.min(minX, px);
+        maxX = Math.max(maxX, px);
+        minY = Math.min(minY, py);
+        maxY = Math.max(maxY, py);
+
+        for (let ny = y0; ny <= y1; ny++) {
+          for (let nx = x0; nx <= x1; nx++) {
+            if (nx === px && ny === py) {
+              continue;
+            }
+            const np = ny * width + nx;
+            if (!active[np] || seen[np]) {
+              continue;
+            }
+            seen[np] = 1;
+            queue[tail++] = np;
+          }
+        }
+      }
+
+      insertButtonComponent(components, {
+        area,
+        minX,
+        minY,
+        maxX,
+        maxY,
+        cx: sumX / area,
+        cy: sumY / area,
+      });
+    }
+  }
+
+  return components;
+}
+
+function splitSideComponent(active, width, component, leftSide) {
+  const boxW = component.maxX - component.minX + 1;
+  const boxH = component.maxY - component.minY + 1;
+  let upperX = component.minX + (leftSide ? 0.25 : 0.75) * boxW;
+  let upperY = component.minY + 0.30 * boxH;
+  let lowerX = component.minX + (leftSide ? 0.75 : 0.25) * boxW;
+  let lowerY = component.minY + 0.82 * boxH;
+
+  for (let iter = 0; iter < 8; iter++) {
+    let upperSumX = 0;
+    let upperSumY = 0;
+    let lowerSumX = 0;
+    let lowerSumY = 0;
+    let upperCount = 0;
+    let lowerCount = 0;
+
+    for (let y = component.minY; y <= component.maxY; y++) {
+      for (let x = component.minX; x <= component.maxX; x++) {
+        if (!active[y * width + x]) {
+          continue;
+        }
+        const du = ((x - upperX) ** 2) + ((y - upperY) ** 2);
+        const dl = ((x - lowerX) ** 2) + ((y - lowerY) ** 2);
+        if (du <= dl) {
+          upperSumX += x;
+          upperSumY += y;
+          upperCount++;
+        } else {
+          lowerSumX += x;
+          lowerSumY += y;
+          lowerCount++;
+        }
+      }
+    }
+
+    if (upperCount) {
+      upperX = upperSumX / upperCount;
+      upperY = upperSumY / upperCount;
+    }
+    if (lowerCount) {
+      lowerX = lowerSumX / lowerCount;
+      lowerY = lowerSumY / lowerCount;
+    }
+  }
+
+  return {
+    upper: { ...component, cx: upperX, cy: upperY },
+    lower: { ...component, cx: lowerX, cy: lowerY },
+  };
+}
+
+function assignButtonMaskRegions(components, active, width) {
+  if (components.length < 3) {
+    return null;
+  }
+
+  const dpad = components[0];
+  if (components.length < 5) {
+    let leftSide = null;
+    let rightSide = null;
+    for (const component of components.slice(1)) {
+      if (component.cx < dpad.cx) {
+        if (!leftSide || component.area > leftSide.area) {
+          leftSide = component;
+        }
+      } else if (!rightSide || component.area > rightSide.area) {
+        rightSide = component;
+      }
+    }
+    if (!leftSide || !rightSide) {
+      return null;
+    }
+
+    const left = splitSideComponent(active, width, leftSide, true);
+    const right = splitSideComponent(active, width, rightSide, false);
+    return {
+      dpad,
+      rocket: left.upper,
+      ok: left.lower,
+      power: right.upper,
+      esc: right.lower,
+    };
+  }
+
+  const left = [];
+  const right = [];
+  for (const component of components.slice(1)) {
+    (component.cx < dpad.cx ? left : right).push(component);
+  }
+  if (left.length < 2 || right.length < 2) {
+    return null;
+  }
+
+  left.sort((a, b) => a.cy - b.cy);
+  right.sort((a, b) => a.cy - b.cy);
+  return {
+    dpad,
+    rocket: left[0],
+    ok: left[left.length - 1],
+    power: right[0],
+    esc: right[right.length - 1],
+  };
+}
+
+function regionContains(region, x, y) {
+  return x >= region.minX && x <= region.maxX &&
+    y >= region.minY && y <= region.maxY;
+}
+
+function regionDistanceSq(region, x, y) {
+  return ((x + 0.5 - region.cx) ** 2) + ((y + 0.5 - region.cy) ** 2);
+}
+
+function chooseSideButton(upper, lower, x, y, upperHit, lowerHit) {
+  return regionDistanceSq(upper, x, y) <= regionDistanceSq(lower, x, y)
+    ? upperHit
+    : lowerHit;
+}
+
+function hitDpadRegion(region, x, y) {
+  const rx = (region.maxX - region.minX + 1) / 2;
+  const ry = (region.maxY - region.minY + 1) / 2;
+  const dx = (x + 0.5 - region.cx) / rx;
+  const dy = (y + 0.5 - region.cy) / ry;
+
+  if ((dx * dx) + (dy * dy) < 0.18) {
+    return { targetSet: "btn1", mask: 4 };
+  }
+  if (Math.abs(dy) >= Math.abs(dx)) {
+    return { targetSet: "btn1", mask: dy < 0 ? 16 : 32 };
+  }
+  return { targetSet: "btn1", mask: dx > 0 ? 64 : 128 };
+}
+
+function hitFrameButton(point) {
+  if (!frameButtonMask) {
+    return null;
+  }
+  const x = Math.floor(point.x);
+  const y = Math.floor(point.y);
+  if (x < 0 || y < 0 || x >= frameButtonMask.width || y >= frameButtonMask.height) {
+    return null;
+  }
+  if (!frameButtonMask.active[y * frameButtonMask.width + x]) {
+    return null;
+  }
+
+  const regions = frameButtonMask.regions;
+  if (regionContains(regions.dpad, x, y)) {
+    return hitDpadRegion(regions.dpad, x, y);
+  }
+  if (regionContains(regions.rocket, x, y) && regionContains(regions.ok, x, y)) {
+    return chooseSideButton(
+      regions.rocket,
+      regions.ok,
+      x,
+      y,
+      { targetSet: "btn2", mask: 16 },
+      { targetSet: "btn1", mask: 4 },
+    );
+  }
+  if (regionContains(regions.power, x, y) && regionContains(regions.esc, x, y)) {
+    return chooseSideButton(
+      regions.power,
+      regions.esc,
+      x,
+      y,
+      { targetSet: "btn2", mask: 128 },
+      { targetSet: "btn1", mask: 8 },
+    );
+  }
+  if (regionContains(regions.rocket, x, y)) {
+    return { targetSet: "btn2", mask: 16 };
+  }
+  if (regionContains(regions.power, x, y)) {
+    return { targetSet: "btn2", mask: 128 };
+  }
+  if (regionContains(regions.ok, x, y)) {
+    return { targetSet: "btn1", mask: 4 };
+  }
+  if (regionContains(regions.esc, x, y)) {
+    return { targetSet: "btn1", mask: 8 };
+  }
+  return null;
+}
+
+function loadFrameButtonMask() {
+  const image = new Image();
+  image.addEventListener("load", () => {
+    const width = image.naturalWidth;
+    const height = image.naturalHeight;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+    try {
+      ctx.drawImage(image, 0, 0);
+      const data = ctx.getImageData(0, 0, width, height).data;
+      const active = new Uint8Array(width * height);
+      for (let i = 0; i < active.length; i++) {
+        const off = i * 4;
+        const luma = (data[off] * 77) + (data[off + 1] * 150) + (data[off + 2] * 29);
+        active[i] = data[off + 3] >= 16 && (luma >> 8) >= BUTTON_MASK_THRESHOLD ? 1 : 0;
+      }
+      const regions = assignButtonMaskRegions(
+        collectButtonMaskComponents(active, width, height),
+        active,
+        width,
+      );
+      if (!regions) {
+        console.warn("BE-300 button mask did not contain the expected button regions.");
+        return;
+      }
+      frameButtonMask = { active, width, height, regions };
+    } catch (error) {
+      console.warn("Unable to load BE-300 button mask.", error);
+    }
+  });
+  image.addEventListener("error", () => {
+    console.warn(`Unable to load BE-300 button mask: ${FRAME_BUTTON_MASK_URL}`);
+  });
+  image.src = FRAME_BUTTON_MASK_URL;
 }
 
 function appendSerial(text) {
@@ -446,10 +829,7 @@ bootBtn.addEventListener("click", async () => {
 });
 
 stopBtn.addEventListener("click", () => {
-  releasePressedStowawayKeys();
-  clearGuestButtons();
-  worker.postMessage({ type: "stop" });
-  setStatus("Stopping emulator...");
+  requestStop();
 });
 
 resetBtn.addEventListener("click", () => {
@@ -494,6 +874,42 @@ function releaseTouch(event) {
 
 screenEl.addEventListener("pointerup", releaseTouch);
 screenEl.addEventListener("pointercancel", releaseTouch);
+
+function pressFrameButton(event) {
+  if (!running || activeFrameButton || event.target === screenEl) {
+    return;
+  }
+  const point = mapPointerToFrame(event);
+  if (!point) {
+    return;
+  }
+  const hit = hitFrameButton(point);
+  if (!hit) {
+    return;
+  }
+
+  event.preventDefault();
+  deviceFrameEl.setPointerCapture(event.pointerId);
+  activeFrameButton = { pointerId: event.pointerId, hit };
+  pressMomentaryButton(hit.targetSet, hit.mask);
+}
+
+function releaseFrameButton(event) {
+  if (!activeFrameButton || activeFrameButton.pointerId !== event.pointerId) {
+    return;
+  }
+
+  event.preventDefault();
+  if (deviceFrameEl.hasPointerCapture(event.pointerId)) {
+    deviceFrameEl.releasePointerCapture(event.pointerId);
+  }
+  releaseMomentaryButton(activeFrameButton.hit.targetSet, activeFrameButton.hit.mask);
+  activeFrameButton = null;
+}
+
+deviceFrameEl.addEventListener("pointerdown", pressFrameButton);
+deviceFrameEl.addEventListener("pointerup", releaseFrameButton);
+deviceFrameEl.addEventListener("pointercancel", releaseFrameButton);
 
 window.addEventListener("keydown", (event) => {
   if (!running || !activeTargusKeyboardEnabled || isEditableTarget(event.target)) {
@@ -542,7 +958,7 @@ for (const button of controlButtons) {
   const press = (event) => {
     event.preventDefault();
     button.setPointerCapture(event.pointerId);
-    setButtonMask(targetSet, mask, true);
+    pressMomentaryButton(targetSet, mask);
   };
 
   const release = (event) => {
@@ -550,7 +966,7 @@ for (const button of controlButtons) {
     if (button.hasPointerCapture(event.pointerId)) {
       button.releasePointerCapture(event.pointerId);
     }
-    setButtonMask(targetSet, mask, false);
+    releaseMomentaryButton(targetSet, mask);
   };
 
   button.addEventListener("pointerdown", press);
@@ -608,4 +1024,5 @@ syncControlButtonStates();
 syncSpeedLabel();
 syncPrimarySocketControls();
 setSerialCollapsed(false);
+loadFrameButtonMask();
 updateReadyStatus();

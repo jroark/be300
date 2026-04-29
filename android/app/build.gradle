@@ -1,0 +1,37 @@
+apply plugin: "com.android.application"
+
+android {
+    namespace "com.jroark.be300"
+    compileSdk 34
+    ndkVersion "26.1.10909125"
+
+    defaultConfig {
+        applicationId "com.jroark.be300"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1"
+
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DBUILD_CLI=OFF", "-DBUILD_ANDROID=ON"
+                targets "be300_android"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file("../../CMakeLists.txt")
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

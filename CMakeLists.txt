@@ -22,33 +22,37 @@ add_compile_options(-Wall -g -O2
 )
 
 # SDL2 (optional, for framebuffer display)
-find_package(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND)
-    pkg_check_modules(SDL2 QUIET sdl2)
-endif()
-find_package(SDL2 QUIET)
-if(APPLE AND CMAKE_OSX_ARCHITECTURES MATCHES "arm64"
-        AND EXISTS "/opt/homebrew/include/png.h"
-        AND EXISTS "/opt/homebrew/lib/libpng.dylib")
-    set(PNG_PNG_INCLUDE_DIR "/opt/homebrew/include" CACHE PATH
-        "Path to arm64 libpng headers" FORCE)
-    set(PNG_LIBRARY_RELEASE "/opt/homebrew/lib/libpng.dylib" CACHE FILEPATH
-        "Path to arm64 libpng library" FORCE)
-endif()
-find_package(PNG QUIET)
-if(SDL2_FOUND OR SDL2_LIBRARIES)
-    include_directories(${SDL2_INCLUDE_DIRS})
-    add_compile_definitions(HAVE_SDL2)
-    message(STATUS "SDL2 found — building with display support")
-    if(PNG_FOUND)
-        include_directories(${PNG_INCLUDE_DIRS})
-        add_compile_definitions(HAVE_PNG)
-        message(STATUS "PNG found — building with SDL frame support")
+if(NOT ANDROID)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(SDL2 QUIET sdl2)
+    endif()
+    find_package(SDL2 QUIET)
+    if(APPLE AND CMAKE_OSX_ARCHITECTURES MATCHES "arm64"
+            AND EXISTS "/opt/homebrew/include/png.h"
+            AND EXISTS "/opt/homebrew/lib/libpng.dylib")
+        set(PNG_PNG_INCLUDE_DIR "/opt/homebrew/include" CACHE PATH
+            "Path to arm64 libpng headers" FORCE)
+        set(PNG_LIBRARY_RELEASE "/opt/homebrew/lib/libpng.dylib" CACHE FILEPATH
+            "Path to arm64 libpng library" FORCE)
+    endif()
+    find_package(PNG QUIET)
+    if(SDL2_FOUND OR SDL2_LIBRARIES)
+        include_directories(${SDL2_INCLUDE_DIRS})
+        add_compile_definitions(HAVE_SDL2)
+        message(STATUS "SDL2 found — building with display support")
+        if(PNG_FOUND)
+            include_directories(${PNG_INCLUDE_DIRS})
+            add_compile_definitions(HAVE_PNG)
+            message(STATUS "PNG found — building with SDL frame support")
+        else()
+            message(STATUS "PNG not found — SDL frame support disabled")
+        endif()
     else()
-        message(STATUS "PNG not found — SDL frame support disabled")
+        message(STATUS "SDL2 not found — building headless (no display)")
     endif()
 else()
-    message(STATUS "SDL2 not found — building headless (no display)")
+    message(STATUS "Android build — SDL2 host display disabled")
 endif()
 
 # Generate embedded boot ROM header from binary
@@ -143,12 +147,32 @@ set(BE300_SOURCES
     src/hw/cf.c
 )
 
-# Main executable
-add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
-target_compile_definitions(be300 PRIVATE BE300_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-target_link_libraries(be300 m ${SDL2_LIBRARIES} ${PNG_LIBRARIES})
-if(APPLE)
-    target_link_libraries(be300 "-framework Cocoa" "-framework CoreGraphics" "-framework QuartzCore" objc)
+# Native host CLI executable.
+option(BUILD_CLI "Build the host command-line emulator" ON)
+if(BUILD_CLI)
+    add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
+    target_compile_definitions(be300 PRIVATE BE300_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_link_libraries(be300 m ${SDL2_LIBRARIES} ${PNG_LIBRARIES})
+    if(APPLE)
+        target_link_libraries(be300 "-framework Cocoa" "-framework CoreGraphics" "-framework QuartzCore" objc)
+    endif()
+endif()
+
+# Android JNI shared library. The Android app drives the same embeddable core
+# API used by the web frontend, with SDL disabled and rendering done in Java.
+option(BUILD_ANDROID "Build the Android JNI shared library" OFF)
+if(BUILD_ANDROID)
+    if(NOT ANDROID)
+        message(FATAL_ERROR "BUILD_ANDROID requires the Android NDK toolchain")
+    endif()
+
+    add_library(be300_android SHARED
+        android/app/src/main/cpp/be300_jni.c
+        ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
+    target_compile_definitions(be300_android PRIVATE
+        BE300_ANDROID=1
+        BE300_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_link_libraries(be300_android m log android jnigraphics)
 endif()
 
 # ============================================================
@@ -170,7 +194,7 @@ if(BUILD_WEB)
 
     set(WEB_OUTPUT_DIR ${CMAKE_BINARY_DIR}/web)
     file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR})
-    foreach(asset index.html app.js worker.js styles.css be300_frame.png favicon.svg)
+    foreach(asset index.html app.js worker.js styles.css be300_frame.png buttons_dpad_bw_mask.png favicon.svg)
         configure_file(${CMAKE_SOURCE_DIR}/web/${asset}
                        ${WEB_OUTPUT_DIR}/${asset}
                        COPYONLY)

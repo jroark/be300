@@ -264,6 +264,7 @@ DEVICE_ACCESS(be300_nand)
             uint64_t val = cf_window_read(d->cf, offset, (unsigned)len);
             memory_writemax64(cpu, data, len, val);
         }
+        be300_cf_irq_update(g_be300_vrc4173_latch);
         return 1;
     }
 
@@ -277,6 +278,7 @@ DEVICE_ACCESS(be300_nand)
             uint64_t val = cf_window_read(d->cf, offset, (unsigned)len);
             memory_writemax64(cpu, data, len, val);
         }
+        be300_cf_irq_update(g_be300_vrc4173_latch);
         return 1;
     }
 
@@ -339,6 +341,7 @@ DEVICE_ACCESS(be300_cf_window)
         uint64_t val = cf_window_read(d->cf, offset, (unsigned)len);
         memory_writemax64(cpu, data, len, val);
     }
+    be300_cf_irq_update(g_be300_vrc4173_latch);
 
     return 1;
 }
@@ -3039,6 +3042,7 @@ struct be300_input_device {
 #define PIU_PENDING_ANY         (PIU_PENDING_PENCHG | PIU_PENDING_TOUCH_GROUP)
 #define TOUCH_PANEL_W           240u
 #define TOUCH_PANEL_H           (319u + 40u)
+#define BUTTON_POWER_BIT        0x80u
 /* Real-hardware quiescent PIU timing: docs/hardware/hw_dump_vrc4173.txt:983. */
 #define PIU_DEFAULT_SCAN_INTERVAL   0x05DCu
 #define PIU_DEFAULT_STABLE          0x00C8u
@@ -3098,6 +3102,15 @@ static void button_ack_keyboard_source(struct be300_input_device *d)
     button_irq_update(d, false);
 }
 
+static bool button_change_is_power_release_only(uint8_t old_set1,
+    uint8_t old_set2, uint8_t new_set1, uint8_t new_set2)
+{
+    return old_set1 == new_set1 &&
+        ((old_set2 ^ new_set2) == BUTTON_POWER_BIT) &&
+        (old_set2 & BUTTON_POWER_BIT) != 0 &&
+        (new_set2 & BUTTON_POWER_BIT) == 0;
+}
+
 void be300_buttons_host_update(machine_t *m, uint8_t old_set1,
     uint8_t old_set2)
 {
@@ -3109,6 +3122,18 @@ void be300_buttons_host_update(machine_t *m, uint8_t old_set1,
         return;
 
     d = (struct be300_input_device *)m->button_device;
+    /*
+     * The stock OAL has a separate SYSINT1 power-switch source
+     * (docs/hardware/hardware.txt:15-18) and the keyboard source is used to
+     * sample the active button bitmap.  Treating the power release as another
+     * keyboard interrupt wakes SUSPEND immediately after the press powered the
+     * guest down.  The live bit still clears; only the release edge is not a
+     * keyboard wake source.
+     */
+    if (button_change_is_power_release_only(old_set1, old_set2,
+        m->btn_set1, m->btn_set2))
+        return;
+
     d->button_irq_pending = true;
     button_irq_update(d, true);
 }
@@ -3696,14 +3721,16 @@ DEVICE_ACCESS(be300_buttons)
      * Real-hardware idle dump:
      *   docs/hardware/hw_dump_vrc4173.txt:520
      *   0x0A00A040: 00009EFF ...
-     * Keep the low halfword at its quiescent value and expose the live
-     * host button bitmap in bytes 2/3, which are the bytes used by the
-     * existing BE-300 input mapping.
+     * Keep the low halfword at its quiescent value.  The stock WinCE
+     * keybddr.dll initializes that halfword to 0x9EFF, then its interrupt
+     * path performs a dummy lhu at 0x0A00A042 and samples the active-high
+     * button bitmap at 0x0A00A044 masked by 0x9EFF
+     * (keybddr.dll PCs 0x01A32460 and 0x01A3411C-0x01A34128).
      */
     reg[0x00] = 0xffu;
     reg[0x01] = 0x9eu;
-    reg[0x02] = m->btn_set1;
-    reg[0x03] = m->btn_set2;
+    reg[0x04] = m->btn_set1;
+    reg[0x05] = m->btn_set2;
 
     if ((uint32_t)relative_addr >= sizeof(reg))
         val = 0;
