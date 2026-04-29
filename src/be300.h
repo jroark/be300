@@ -136,8 +136,8 @@ typedef struct be300_state {
     void        *button_device;
 
     /* Input state (written by SDL event loop, read by be300_input MMIO device) */
-    uint8_t      btn_set1;       /* PA 0x0A00A042: bits 0x04=ok 0x08=esc 0x10=up 0x20=down 0x40=right 0x80=left */
-    uint8_t      btn_set2;       /* PA 0x0A00A043: bit 0x10=rocket/modifier  0x80=power */
+    uint8_t      btn_set1;       /* PA 0x0A00A044: bits 0x04=ok 0x08=esc 0x10=up 0x20=down 0x40=right 0x80=left */
+    uint8_t      btn_set2;       /* PA 0x0A00A045: bit 0x10=rocket/modifier  0x80=power */
     bool         touch_down;     /* pen-down state */
     uint16_t     touch_x;        /* touch-panel pixel 0..239 */
     uint16_t     touch_y;        /* touch-panel pixel 0..359; 320..359 drives the icon strip below the display */
