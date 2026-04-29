@@ -151,5 +151,52 @@ if(APPLE)
     target_link_libraries(be300 "-framework Cocoa" "-framework CoreGraphics" "-framework QuartzCore" objc)
 endif()
 
+# ============================================================
+# Optional Emscripten/WebAssembly frontend (additive only).
+#
+# The browser bundle reuses the emulator core verbatim and adds one
+# Emscripten-only translation unit (web/main_web.c) on top of the
+# existing GXEMUL_SOURCES + BE300_SOURCES lists. Configuring with
+# `cmake -DBUILD_WEB=ON ..` from a non-Emscripten toolchain is a
+# user error and produces FATAL_ERROR; the supported entry point is
+# `./tools/build_web.sh`, which invokes `emcmake cmake`.
+# ============================================================
+option(BUILD_WEB "Build the WebAssembly frontend bundle" OFF)
+
+if(BUILD_WEB)
+    if(NOT EMSCRIPTEN)
+        message(FATAL_ERROR "BUILD_WEB requires an Emscripten toolchain (emcmake cmake ..)")
+    endif()
+
+    set(WEB_OUTPUT_DIR ${CMAKE_BINARY_DIR}/web)
+    file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR})
+    foreach(asset index.html app.js worker.js styles.css be300_frame.png favicon.svg)
+        configure_file(${CMAKE_SOURCE_DIR}/web/${asset}
+                       ${WEB_OUTPUT_DIR}/${asset}
+                       COPYONLY)
+    endforeach()
+
+    add_executable(be300_web
+        ${CMAKE_SOURCE_DIR}/web/main_web.c
+        ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
+    set_target_properties(be300_web PROPERTIES
+        OUTPUT_NAME "be300_web"
+        RUNTIME_OUTPUT_DIRECTORY ${WEB_OUTPUT_DIR})
+    target_compile_options(be300_web PRIVATE "-sUSE_SDL=2")
+    target_link_libraries(be300_web m)
+    target_link_options(be300_web PRIVATE
+        "-sUSE_SDL=2"
+        "--no-entry"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sENVIRONMENT=worker"
+        "-sEXPORT_ES6=1"
+        "-sMODULARIZE=1"
+        "-sEXPORT_NAME=createBe300Module"
+        "-sNO_EXIT_RUNTIME=1"
+        "-sFORCE_FILESYSTEM=1"
+        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_be300_web_create','_be300_web_load_nand','_be300_step','_be300_copy_frame_rgba8888','_be300_drain_serial','_be300_set_touch','_be300_set_buttons','_be300_stop','_be300_destroy']"
+        "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU32','FS','cwrap','ccall']")
+endif()
+
 # Tests
 enable_testing()
