@@ -60,6 +60,7 @@ typedef struct {
     bool        log_nand_legacy;
     bool        enable_ppsh;
     bool        enable_pcconnect_time_sync;
+    bool        enable_rtc_host_time;
     bool        enable_stowaway_keyboard;
     bool        enable_ne2000;
     bool        net_mac_set;
@@ -70,9 +71,9 @@ typedef struct {
      * detect_stall:  periodic unique-PC sampler that fires [BE300_STALL] on spin. */
     bool        mmio_coverage;
     bool        detect_stall;
-    uint32_t    stall_window;            /* instructions per sampling bucket (default 200000) */
-    uint32_t    stall_unique_threshold;  /* fire when unique PCs in window drops below this (default 32) */
-    uint32_t    stall_wall_secs;         /* sustained wall-seconds below threshold before firing (default 15) */
+    uint32_t    stall_window;            /* instructions per sampling bucket (default 10000) */
+    uint32_t    stall_unique_threshold;  /* fire when unique PCs in window drops below this (default 64) */
+    uint32_t    stall_wall_secs;         /* sustained wall-seconds below threshold before firing (default 5) */
 
     const char *rom_path;
     const char *nand_path;
@@ -80,7 +81,7 @@ typedef struct {
     unsigned    cf_count;
     uint8_t     net_mac[6];
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
-    uint32_t    target_mhz;      /* target CPU speed in MHz; 0 = unthrottled (default: 166) */
+    uint32_t    target_mhz;      /* throttle target in million guest instructions/sec; 0 = unthrottled */
     double      frame_lcd_scale; /* framed SDL LCD scale; 0 = default/env */
 } machine_config_t;
 

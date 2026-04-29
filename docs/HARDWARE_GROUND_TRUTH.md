@@ -1,6 +1,8 @@
 # BE-300 Hardware "Ground Truth" Reference
 
-This document catalogs the findings from introspection and surveying of real Casio BE-300 hardware. This data serves as the "Oracle" for calibrating the Unicorn-based emulator.
+This document catalogs findings from introspection and surveying of real Casio
+BE-300 hardware. This data serves as the hardware reference for calibrating the
+GXemul-based emulator.
 
 ## Log Files Summary
 
@@ -21,6 +23,11 @@ This document catalogs the findings from introspection and surveying of real Cas
 *   **Measurement:** ~32,886 ticks in 1000ms.
 *   **Interpretation:** The BE-300 uses a standard **32.768 kHz** crystal. 
 *   **Emulator Action:** Set the RTC increment to exactly 32,768 per simulated second.
+*   **WinCE epoch:** WinCE interprets the elapsed counter from an 1850 epoch
+    (`gxemul/src/include/thirdparty/vr_rtcreg.h`). The emulator's
+    `--rtc-host-time` path must encode host local time against 1850, not the
+    image build year. Encoding 2026 against a 2001 epoch made the guest display
+    1875.
 
 ### CPU Pipeline Clock
 *   **CP0 Count ($9) / Compare ($11):** Snapshot shows `Count` trailing `Compare` by ~16,000 ticks.
@@ -114,9 +121,15 @@ The sniffer compared registers before and after a `ReadFile` from `\Nand Disk`.
 
 ### Active Registers
 *   **Register `0x0A000C38`:** Changed from `0x0006 -> 0x0091` and later to `0x007C`.
-*   **Interpretation:** This offset is within the companion chip space but outside the "official" VRC4173 NAND range. 
-*   **Hypothesis:** This is a proprietary Casio/NEC latch used for NAND Ready/Busy polling or Command/Address/Data (CLE/ALE) switching.
-*   **Emulator Action:** We should monitor this offset in `bus.c` to see if the guest OS waits for specific bits here before proceeding with NAND reads.
+*   **Observation:** This offset is within the companion chip space but outside
+    the "official" VRC4173 NAND range.
+*   **Interpretation:** This is treated as a proprietary Casio/NEC latch used
+    around NAND Ready/Busy polling or Command/Address/Data (CLE/ALE)
+    switching.
+*   **Emulator status:** Active NAND behavior lives in `src/hw/nand.c` and the
+    VRC4173/NAND window decode in `src/be300_devices.c`. The old instruction
+    to monitor a non-existent `bus.c` path is obsolete; only reopen this area
+    if a new NAND regression points at this offset.
 
 ---
 

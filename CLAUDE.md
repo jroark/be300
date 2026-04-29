@@ -15,7 +15,10 @@ Do not reintroduce `resume_ctx` seeding, synthetic warm-boot state, or any other
 ## Current Scope And Non-Goals
 
 - Primary active target: WinCE 3.0 cold boot via `--nand ce/restore_images/All_nand_300.bin`
-- Secondary code paths still present in the tree: CF recovery boot via `--restore --cf`, PPSH debug-shell probing via `--ppsh`
+- Secondary code paths still present in the tree: CF recovery boot via
+  `--restore --cf`, PPSH debug-shell probing via `--ppsh`, PCMCIA NE2000 via
+  `--ne2000`, host RTC initialization via `--rtc-host-time`, and experimental
+  PC Connect time sync via `--pcconnect-time-sync`
 - Non-3.0 WinCE images remain in the tree for reference only
 
 ## Reference & Documentation
@@ -43,7 +46,7 @@ Primary local references:
 ## Source Code Layout
 
 **Core emulation (`src/`)**
-- `machine_be300.c` — machine setup, boot-mode selection, device registration, ROM and NAND image loading, main emulation loop, NK dumping, runtime shutdown
+- `machine_be300.c` — machine setup, boot-mode selection, device registration, ROM and NAND image loading, RTC host-time setup, main emulation loop, NK dumping, runtime shutdown
 - `be300.h` — `be300_state_t`, `machine_config_t`, physical address map constants
 - `ui.c` / `ui.h` — SDL2 display, input handling, screenshot capture
 - `main.c` — CLI parsing for `--nand`, `--restore`, `--cf`, `--ppsh`, and other boot options
@@ -62,10 +65,10 @@ Primary local references:
 **Hardware peripherals (`src/hw/`)**
 - `bcu.c/h` — Bus Control Unit
 - `icu.c/h` — Interrupt Control Unit
-- `rtc.c/h` — Real-Time Clock
+- `rtc.c/h` — Real-Time Clock elapsed counter, long timers, interrupt-clear behavior, and WinCE-epoch host-time conversion
 - `siu.c/h` — Serial Interface Unit
 - `nand.c/h` — NAND flash controller and NANDWRITER restore-engine support
-- `cf.c/h` — CompactFlash image, ATA taskfile, CIS, and recovery-boot support
+- `cf.c/h` — CompactFlash image, ATA taskfile, CIS, recovery-boot support, and NE2000 PCMCIA card model
 - `gpio.c/h` — GPIO
 - `cmu.c/h` — Clock Management Unit
 - `pmu.c/h` — Power Management Unit
@@ -204,13 +207,21 @@ Cold boot through `--nand` starts at the ROM reset vector `0xBFC00000`, matching
 7. WinCE desktop (after both calibration and date/time are
    completed)
 
-Implication for emulator work: on a cold boot the RTC should
-present as uninitialised/default-value to the guest (so this
-dialog fires). Any emulator code that pre-populates a
-"reasonable" RTC date would accidentally skip this step and mask
-a class of guest-visible bugs.
+Implication for emulator work: the default native cold-boot path should
+present an uninitialized/default RTC value so this dialog fires, matching a
+battery-disconnected device. `--rtc-host-time` is an explicit interactive-test
+option, and the web build enables the same behavior by default so browser boots
+start with a usable date for networking and applications. The VR4131 elapsed
+counter must be encoded using WinCE's 1850 RTC epoch; using a 2001 epoch makes
+current host dates appear as 1875 in the guest.
 
-The two "backlight gets brighter" events plus the intermediate black screen mean boot is **not straight-through**: the first `Starting...` is drawn by OAL early, then the display is blanked (likely a PMU/PWM cycle or a framebuffer reset), then the second `Starting...` is drawn by the user-mode display stack once gwes/drivers come up. This is why the emulator's saved screenshot being byte-identical to `Starting.bmp` corresponds to step 2 — the stall point is **before** the display-blanking transition to step 3, not near the end of boot.
+The two "backlight gets brighter" events plus the intermediate black screen
+mean boot is **not straight-through**: the first `Starting...` is drawn by OAL
+early, then the display is blanked (likely a PMU/PWM cycle or a framebuffer
+reset), then the second `Starting...` is drawn by the user-mode display stack
+once gwes/drivers come up. Older notes that treated a `Starting.bmp` screenshot
+as the active stall point are superseded; the current emulator baseline reaches
+the WinCE shell / first-boot UI path.
 
 Reference screenshots of the splash stages are committed at the repo root as `Initializing.bmp`, `Starting.bmp`, and `All_nand_300.png`. Use them for visual regression when comparing the emulator's saved screenshot (per `[UI] Screenshot saved:` in stderr) against expected real-hardware output.
 
@@ -261,6 +272,26 @@ Historical reverse-engineering found that NK reaches warm-resume-style logic dur
 - NAND controller buffer registers `0xA4A0-0xA4AC` and `STATUS2` at `0xA4C0` only return meaningful data when a stream transfer is active
 - The ROM-era NAND ECC path expects zero syndromes when the emulated NAND data is bit-perfect
 
+### RTC And Host Time
+
+- Native cold boots default to the battery-disconnected RTC presentation, so
+  WinCE can prompt for date/time during first boot.
+- `--rtc-host-time` initializes the guest VR4131 RTC from host local time. This
+  is intended for interactive/application/network testing, not as the default
+  cold-boot accuracy path.
+- The web build enables host-time RTC initialization by default.
+- The elapsed counter is a 32.768 kHz tick count from WinCE's 1850 epoch
+  (`gxemul/src/include/thirdparty/vr_rtcreg.h`). A 2001 epoch is wrong for
+  WinCE 3.0 and was observed to display host year 2026 as guest year 1875.
+
+### NE2000
+
+- `--ne2000` attaches the PCMCIA NE2000 Ethernet card model.
+- The previous `Internet.exe` exception with `--ne2000` was caused by the bad
+  RTC epoch/date presentation, not by a confirmed NE2000 MMIO crash. After the
+  1850 epoch fix, that exception is no longer the active network failure
+  signature.
+
 ### PPSH
 
 - PPSH is a WinCE debug interface, not a companion MCU
@@ -308,9 +339,9 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 ## Current Investigation Guidance
 
 - Primary active target: WinCE 3.0 cold boot via `--nand ce/restore_images/All_nand_300.bin`
-- Secondary implemented paths: `--restore --cf` and `--ppsh`
+- Secondary implemented paths: `--restore --cf`, `--ppsh`, `--ne2000`, `--rtc-host-time`, and `--pcconnect-time-sync`
 - Do not solve cold boot with guest patches, RAM seeds, `resume_ctx` seeds, or forced handoff shortcuts
-- `docs/CURRENT_STATUS.md` is the current handoff for boot status, touch status, and the next investigation focus
+- `docs/CURRENT_STATUS.md` is the current handoff for boot status, RTC/NE2000 notes, and any active investigation focus
 - Historical pass handoffs live under `docs/archive/`; do not treat them as current unless `docs/CURRENT_STATUS.md` explicitly points back to one
 - For legitimate upstream GXemul 0.7.0 bugs that are *not* on the current boot path but may become relevant for future investigations, see:
   - `docs/LEGITIMATE_FIXES_NOT_APPLIED.md` — catalog of real bugs left unpatched, each with citation, warning signs that would justify re-applying, and a "do not reconsider" list of genuinely non-legitimate drops
@@ -319,14 +350,15 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 
 - `src/main.c` — CLI parsing for `--nand`, `--restore`, `--cf`, `--ppsh`, and related boot options
 - `src/be300.h` — NAND, CF, and machine configuration state
-- `src/machine_be300.c` — boot-mode setup, ROM and NAND boot path, image loaders, NK dump logic, runtime finalization, screenshot-on-shutdown behavior
+- `src/machine_be300.c` — boot-mode setup, ROM and NAND boot path, image loaders, RTC host-time setup, NK dump logic, runtime finalization, screenshot-on-shutdown behavior
 - `src/hw/nand.c` — NAND controller and NANDWRITER restore-engine behavior
-- `src/hw/cf.c` — CompactFlash emulation and recovery-boot support
-- `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, and interrupt-clear behavior
+- `src/hw/cf.c` — CompactFlash emulation, NE2000 PCMCIA, and recovery-boot support
+- `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, interrupt-clear behavior, and WinCE-epoch host-time conversion
 - `src/hw/bcu.c` — BCU register behavior and noisy-probe suppression
 - `src/be300_devices.c` — VRC4173 latch, CF window, PPSH device, WinCE aux device
 - `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU and timer behavior
 - `gxemul/src/devices/dev_ns16550.c` — SIU UART emulation
+- `web/main_web.c` / `web/worker.js` — browser frontend glue, web default RTC host-time behavior, optional NE2000 bridge plumbing
 
 ## Commit, Branch, And Push Rules
 

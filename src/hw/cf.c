@@ -5,6 +5,11 @@
 
 #include "cf.h"
 
+#ifdef __EMSCRIPTEN__
+int  be300_web_net_bridge_enabled(void);
+void be300_web_net_tx_enqueue(const uint8_t *packet, uint32_t len);
+#endif
+
 #define CF_COMPANION_PRESENT UINT32_C(0x00000004)
 #define CF_COMPANION_ABSENT UINT32_C(0x00000000)
 #define CF_SOCKET_NO_MEDIA UINT32_C(0x00000040)
@@ -1078,13 +1083,21 @@ static void ne2000_transmit(cf_state_t *s)
         ((uint16_t)s->ne2000.tbcr1 << 8);
     uint16_t addr = (uint16_t)s->ne2000.tpsr << 8;
     uint8_t packet[1600];
+    bool bridged = false;
 
     if (len > sizeof(packet))
         len = sizeof(packet);
     for (uint16_t i = 0; i < len; i++)
         packet[i] = ne2000_mem_read(s, (uint16_t)(addr + i));
 
-    if (s->ne2000.net && len >= 14)
+#ifdef __EMSCRIPTEN__
+    if (len >= 14 && be300_web_net_bridge_enabled()) {
+        be300_web_net_tx_enqueue(packet, len);
+        bridged = true;
+    }
+#endif
+
+    if (!bridged && s->ne2000.net && len >= 14)
         net_ethernet_tx(s->ne2000.net, &s->ne2000.nic, packet, len);
 
     s->ne2000.tsr = NE_TSR_PTX;

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BE-300 Emulator</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles.css?v=20260429f">
 </head>
 <body>
   <main class="shell">
@@ -27,6 +27,38 @@
         <input id="nandFile" type="file" accept=".bin,application/octet-stream">
         <small class="field-hint">Leave empty to fetch <code>./All_nand_300.bin</code> from the page origin.</small>
       </label>
+      <div class="boot-config-grid">
+        <label class="field speed-field">
+          <span>Speed</span>
+          <input id="speedControl" type="range" min="0" max="64" step="1" value="0">
+          <output id="speedValue" for="speedControl">Full speed</output>
+        </label>
+        <label class="field">
+          <span>Primary PCMCIA socket</span>
+          <select id="primarySocket">
+            <option value="none">No card</option>
+            <option value="cf0">CompactFlash slot 0</option>
+            <option value="ne2000">NE2000 Ethernet</option>
+          </select>
+          <input id="cf0File" type="file" accept=".img,.bin,application/octet-stream" hidden>
+        </label>
+        <label class="field">
+          <span>CF slot 1</span>
+          <input id="cf1File" type="file" accept=".img,.bin,application/octet-stream">
+        </label>
+        <label class="field">
+          <span>NE2000 MAC</span>
+          <input id="netMac" type="text" inputmode="text" placeholder="10:20:30:00:00:10">
+        </label>
+        <label class="field">
+          <span>Bridge URL (optional)</span>
+          <input id="netBridgeUrl" type="text" inputmode="url" placeholder="ws://127.0.0.1:8765">
+        </label>
+        <label class="checkbox-field checkbox-row">
+          <input id="targusKeyboardEnabled" type="checkbox">
+          <span>Targus / Stowaway keyboard</span>
+        </label>
+      </div>
       <p id="status" class="status">Ready to boot WinCE 3.0 NAND image.</p>
     </section>
 
@@ -66,6 +98,6 @@
     </section>
   </main>
 
-  <script type="module" src="./app.js?v=20260426a"></script>
+  <script type="module" src="./app.js?v=20260429g"></script>
 </body>
 </html>

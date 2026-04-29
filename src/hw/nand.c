@@ -1423,6 +1423,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                  s->state == NAND_STATE_READ_OOB)) {
                 nand_setup_transfer(s);
                 s->ready = true;
+                s->dio_last_write = 0;
             } else if (s->addr_cycle == 1 && s->state == NAND_STATE_PROGRAM_DATA) {
                 s->program_column = s->column;
             }

@@ -1,8 +1,10 @@
 # Casio PC Connect Time Sync Notes
 
-Goal: make host date/time sync into the emulated BE-300 through the same
-guest-visible PC Connect path used by real hardware, not by preloading RTC or
-patching guest memory.
+Goal: model host date/time sync through the same guest-visible PC Connect path
+used by real hardware, without patching guest memory or faking PC Connect
+state. This is separate from `--rtc-host-time`, which directly initializes the
+VR4131 RTC for interactive emulator boots and is enabled by default in the web
+build.
 
 ## Current Evidence
 
