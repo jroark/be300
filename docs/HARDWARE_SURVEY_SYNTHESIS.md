@@ -1,5 +1,9 @@
 # Hardware Survey Synthesis
 
+This is a synthesis of hardware-survey artifacts from a specific investigation
+pass. It is not the active next-step tracker; use `docs/CURRENT_STATUS.md` for
+current boot status and active investigation focus.
+
 ## Artifacts Reviewed
 This memo consolidates the current `hardware_survey/*.txt` artifacts that were used to drive emulator-target conclusions in this pass:
 
@@ -147,7 +151,8 @@ This makes the block useful for targeted investigation, but not safe for blind w
 
 ## Post-Boot Probe v3 Integration
 
-The current `BE300Probe_v3_*.txt` runs materially refine the next hardware-collection step.
+The `BE300Probe_v3_*.txt` runs refined the follow-up capture plan for this
+survey pass.
 
 ### Observed facts from v3
 
@@ -315,7 +320,7 @@ These are useful for identifying what WinCE drivers and services are alive, but 
 - The `0x2200` context page
 - The `0x00679400` structured text / record window
 
-## Remaining Gaps and Required Hardware Captures
+## Historical Gaps And Possible Hardware Captures
 
 1. **Cold-vs-retained comparison of the same post-boot ranges**
    - Capture the same ranges immediately after a battery-disconnect boot and after a warm-retained boot.
@@ -327,7 +332,7 @@ These are useful for identifying what WinCE drivers and services are alive, but 
      - `0x0A000C00..0x0A000C4F`
 
 2. **Early-vs-settled post-boot comparison**
-   - The next probe should capture both an immediate post-boot snapshot and a delayed settled snapshot before storage workloads.
+   - A follow-up probe could capture both an immediate post-boot snapshot and a delayed settled snapshot before storage workloads.
    - This is needed to separate reset-conditioned state from ordinary post-login driver churn.
 
 3. **Storage-sideband comparison**
@@ -337,8 +342,8 @@ These are useful for identifying what WinCE drivers and services are alive, but 
 4. **Retained-state interpretation**
    - If later cold-vs-retained captures show stable differences in ICU/RTC/PMU or companion-chip windows, those should become explicit emulator profile inputs rather than being inferred indirectly from Linux outcomes.
 
-5. **Immediate action for the next hardware pass**
-   - Keep `hardware_survey/be300_probe_v4.cpp` unchanged and collect one more controlled same-device batch:
+5. **Previously proposed hardware pass**
+   - The historical proposal was to keep `hardware_survey/be300_probe_v4.cpp` unchanged and collect one more controlled same-device batch:
      - same device only
      - stock WinCE 3.0 shell only
      - same EXE location, ideally `\Storage Card\Program Files`

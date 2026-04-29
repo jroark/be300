@@ -1,5 +1,8 @@
 #include "rtc.h"
 
+#define RTC_TICKS_PER_SECOND UINT64_C(32768)
+#define RTC_WINCE_EPOCH_YEAR 1850
+
 static inline void rtc_update_elapsed_irq(rtc_state_t *s)
 {
     if (!s->elapsed_compare_armed)
@@ -23,6 +26,46 @@ static inline void rtc_rearm_elapsed_irq(rtc_state_t *s)
 static inline uint64_t rtc_48bit_mask(void)
 {
     return UINT64_C(0x0000FFFFFFFFFFFF);
+}
+
+static int rtc_is_leap_year(int year)
+{
+    return ((year % 4) == 0 && (year % 100) != 0) ||
+        ((year % 400) == 0);
+}
+
+static int rtc_days_in_month(int year, int month)
+{
+    static const int days[12] = {
+        31, 28, 31, 30, 31, 30,
+        31, 31, 30, 31, 30, 31
+    };
+
+    if (month < 1 || month > 12)
+        return 0;
+    if (month == 2 && rtc_is_leap_year(year))
+        return 29;
+    return days[month - 1];
+}
+
+static int rtc_days_since_wince_epoch(int year, int month, int day,
+    uint64_t *days_out)
+{
+    uint64_t days = 0;
+
+    if (!days_out || year < RTC_WINCE_EPOCH_YEAR ||
+        month < 1 || month > 12)
+        return -1;
+    if (day < 1 || day > rtc_days_in_month(year, month))
+        return -1;
+
+    for (int y = RTC_WINCE_EPOCH_YEAR; y < year; y++)
+        days += rtc_is_leap_year(y) ? 366u : 365u;
+    for (int m = 1; m < month; m++)
+        days += (uint64_t)rtc_days_in_month(year, m);
+
+    *days_out = days + (uint64_t)(day - 1);
+    return 0;
 }
 
 static void rtc_write_48bit(uint64_t *target, uint32_t offset, unsigned size,
@@ -81,6 +124,31 @@ void rtc_init(rtc_state_t *s)
     s->rtcint = 0;
     s->elapsed_compare_armed = 0;
     s->elapsed_compare_fired = 0;
+}
+
+int rtc_init_from_ymdhms(rtc_state_t *s, int year, int month, int day,
+    int hour, int minute, int second)
+{
+    uint64_t days;
+    uint64_t seconds;
+    uint64_t ticks;
+
+    if (!s || hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
+        second < 0 || second > 60)
+        return -1;
+    if (rtc_days_since_wince_epoch(year, month, day, &days) != 0)
+        return -1;
+
+    seconds = days * UINT64_C(86400) +
+        (uint64_t)hour * UINT64_C(3600) +
+        (uint64_t)minute * UINT64_C(60) +
+        (uint64_t)second;
+    ticks = (seconds * RTC_TICKS_PER_SECOND) & rtc_48bit_mask();
+
+    rtc_init(s);
+    s->etime = ticks;
+    s->etime_latched = ticks;
+    return 0;
 }
 
 uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)

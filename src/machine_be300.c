@@ -196,6 +196,56 @@ static bool be300_uses_rom_boot(const machine_config_t *cfg)
     return cfg && (cfg->nand_path || cfg->restore);
 }
 
+static void be300_apply_rtc_host_time(machine_t *m)
+{
+    time_t now;
+    struct tm tm_local;
+    int year;
+    int month;
+    int day;
+    int hour;
+    int minute;
+    int second;
+
+    if (!m || !m->cfg.enable_rtc_host_time)
+        return;
+
+    now = time(NULL);
+    if (now == (time_t)-1) {
+        fprintf(stderr, "[BE300] Failed to read host time for RTC\n");
+        return;
+    }
+
+#if defined(_WIN32)
+    if (localtime_s(&tm_local, &now) != 0) {
+#else
+    if (localtime_r(&now, &tm_local) == NULL) {
+#endif
+        fprintf(stderr, "[BE300] Failed to convert host time for RTC\n");
+        return;
+    }
+
+    year = tm_local.tm_year + 1900;
+    month = tm_local.tm_mon + 1;
+    day = tm_local.tm_mday;
+    hour = tm_local.tm_hour;
+    minute = tm_local.tm_min;
+    second = tm_local.tm_sec;
+
+    if (dev_vr41xx_set_rtc_ymdhms(m->gxe_machine, year, month, day,
+            hour, minute, second) != 0) {
+        fprintf(stderr, "[BE300] Failed to initialize VR4131 RTC from host time\n");
+        return;
+    }
+    (void)rtc_init_from_ymdhms(&m->rtc, year, month, day, hour, minute,
+        second);
+
+    fprintf(stderr,
+        "[BE300] RTC initialized from host local time: "
+        "%04d-%02d-%02d %02d:%02d:%02d\n",
+        year, month, day, hour, minute, second);
+}
+
 static bool be300_nand_image_looks_bootable(const machine_t *m)
 {
     static const uint8_t spl_sig[] = { 'B', '0', '0', '0', 'F', 'F', '\n' };
@@ -485,6 +535,7 @@ machine_t *be300_create(const machine_config_t *cfg)
     nand_init(&m->nand, NULL, 0, 0);
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_init(&m->cf[i]);
+    be300_apply_rtc_host_time(m);
 
     if (cfg->restore)
         m->btn_set2 = 0x80u;
@@ -505,13 +556,17 @@ machine_t *be300_create(const machine_config_t *cfg)
             return NULL;
         }
 
-        for (unsigned i = 0; i < cfg->cf_count; i++) {
+        bool cf_image_loaded = false;
+        for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++) {
+            if (!cfg->cf_paths[i])
+                continue;
             if (cf_load_image(&m->cf[i], cfg->cf_paths[i]) != 0) {
                 fprintf(stderr, "[BE300] Failed to load CF image %u\n",
                     i + 1);
                 free(m);
                 return NULL;
             }
+            cf_image_loaded = true;
         }
 
         if (cfg->enable_ne2000) {
@@ -532,15 +587,16 @@ machine_t *be300_create(const machine_config_t *cfg)
             }
         }
 
-        if (cfg->cf_count > 0) {
+        if (cf_image_loaded) {
             bool nand_bootable = be300_nand_image_looks_bootable(m);
             bool cf_boot_visible = cfg->restore || !nand_bootable;
 
-            cf_set_boot_visibility(&m->cf[BE300_PRIMARY_CF_SLOT],
-                cf_boot_visible);
-            for (unsigned i = 1; i < cfg->cf_count; i++)
+            if (!cf_is_ne2000(&m->cf[BE300_PRIMARY_CF_SLOT]))
+                cf_set_boot_visibility(&m->cf[BE300_PRIMARY_CF_SLOT],
+                    cf_boot_visible);
+            for (unsigned i = 1; i < BE300_MAX_CF_SLOTS; i++)
                 cf_set_boot_visibility(&m->cf[i], false);
-            if (cfg->cf_count > 1) {
+            if (cf_present(&m->cf[1])) {
                 fprintf(stderr,
                     "[BE300] Secondary CF image loaded; secondary socket "
                     "MMIO is not decoded yet, so only slot 0 is "

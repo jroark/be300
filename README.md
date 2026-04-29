@@ -65,6 +65,11 @@ rapid host click events into one guest pen session. `BE300_TOUCH_MIN_DWELL_MS`
 sets the minimum guest pen-down time in milliseconds; set it to `0` for direct
 host timing.
 
+Native cold boot leaves the RTC in the first-boot/default state so WinCE can
+prompt for date/time like real hardware after battery removal. For interactive
+application or network testing, add `--rtc-host-time` to initialize the guest
+RTC from host local time.
+
 For a bounded smoke test:
 
 ```bash
@@ -83,6 +88,9 @@ primary regression target:
 
 - `--restore --cf` — CompactFlash recovery / NANDWRITER path
 - `--ppsh` — WinCE PPSH debug-shell probe path
+- `--ne2000` — PCMCIA NE2000 Ethernet card model
+- `--rtc-host-time` — initialize the guest RTC from host local time
+- `--pcconnect-time-sync` — experimental PC Connect serial time-sync peer
 - `--trace`, `--log-mmio`, `--mmio-coverage`, `--detect-stall` — diagnostic
   options for controlled investigations
 

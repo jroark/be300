@@ -1,7 +1,6 @@
 #pragma once
 
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
 
 struct cpu;
@@ -27,8 +26,7 @@ void be300_probe_detach(struct machine *machine);
 
 /*
  * Runtime options — set by machine_be300.c after be300_probe_attach, based on
- * CLI flags in machine_config_t. Called once; leaving flags unset keeps the
- * probe at its pre-existing env-var-driven behaviour.
+ * CLI flags in machine_config_t. Called once per run.
  */
 void be300_probe_set_options(bool mmio_coverage,
                              bool detect_stall,
@@ -37,10 +35,6 @@ void be300_probe_set_options(bool mmio_coverage,
                              uint32_t stall_wall_secs);
 
 void be300_probe_note_exec(struct cpu *cpu, uint64_t pc);
-void be300_probe_note_load(struct cpu *cpu, uint64_t pc, uint64_t vaddr,
-    const unsigned char *data, size_t len);
-void be300_probe_note_store(struct cpu *cpu, uint64_t pc, uint64_t vaddr,
-    const unsigned char *data, size_t len);
 
 /*
  * First-hit MMIO coverage logger. Handlers call this on every read/write; the

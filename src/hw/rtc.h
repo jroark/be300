@@ -52,6 +52,8 @@ typedef struct {
 } rtc_state_t;
 
 void     rtc_init (rtc_state_t *s);
+int      rtc_init_from_ymdhms(rtc_state_t *s, int year, int month,
+                              int day, int hour, int minute, int second);
 uint32_t rtc_read (rtc_state_t *s, uint32_t offset, unsigned size);
 void     rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val);
 

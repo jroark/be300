@@ -58,17 +58,20 @@ static void usage(const char *prog)
         "  --trace               Print each executed instruction to stderr\n"
         "  --log-mmio            Log all MMIO register reads/writes to stderr\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
-        "  --cf <image>          Attach a FAT16 CF image (may be specified twice)\n"
+        "  --cf <image>          Attach a FAT16 CF image (may be specified twice;\n"
+        "                        with --ne2000, one --cf uses the secondary socket)\n"
         "  --ne2000              Attach a PCMCIA NE2000 Ethernet card\n"
         "  --net-mac <mac>       Override NE2000 MAC address (aa:bb:cc:dd:ee:ff)\n"
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
         "  --pcconnect-time-sync Enable experimental Casio PC Connect time-sync peer\n"
+        "  --rtc-host-time       Initialize the guest RTC from host local time\n"
         "  --stowaway-keyboard   Feed host key events to the Stowaway serial dock on COM1:\n"
         "  --frame-2x            Show framed SDL display with a 480x640 LCD area\n"
         "  --frame-scale <N>     Framed SDL LCD scale, 1.0-4.0 (default: 1.0)\n"
-        "  --speed <mhz>         Target CPU MHz (default: 166 = real hardware, 0 = unthrottled)\n"
+        "  --speed <N>           Throttle target in million guest instructions/sec\n"
+        "                        (default: 166, 0 = unthrottled)\n"
         "  --mmio-coverage       First-hit log per (device, offset, op) + shutdown coverage table\n"
         "  --detect-stall        Emit [BE300_STALL] when guest spins on a tight PC set\n"
         "  --stall-window=N      Instructions per sampling bucket (default 10000)\n"
@@ -92,6 +95,7 @@ int main(int argc, char *argv[])
         .log_nand_legacy = false,
         .enable_ppsh     = false,
         .enable_pcconnect_time_sync = false,
+        .enable_rtc_host_time = false,
         .enable_stowaway_keyboard = false,
         .enable_ne2000   = false,
         .net_mac_set     = false,
@@ -125,6 +129,8 @@ int main(int argc, char *argv[])
             cfg.enable_ppsh = true;
         } else if (strcmp(argv[i], "--pcconnect-time-sync") == 0) {
             cfg.enable_pcconnect_time_sync = true;
+        } else if (strcmp(argv[i], "--rtc-host-time") == 0) {
+            cfg.enable_rtc_host_time = true;
         } else if (strcmp(argv[i], "--stowaway-keyboard") == 0) {
             cfg.enable_stowaway_keyboard = true;
         } else if (strcmp(argv[i], "--ne2000") == 0) {
@@ -192,13 +198,13 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    if (cfg.restore && cfg.cf_count == 0) {
-        fprintf(stderr, "Error: --restore requires --cf <image>\n");
+    if (cfg.restore && cfg.enable_ne2000) {
+        fprintf(stderr, "Error: --restore requires the primary PCMCIA socket, so it cannot be combined with --ne2000\n");
         usage(argv[0]);
         return 1;
     }
-    if (cfg.enable_ne2000 && cfg.cf_count > 0) {
-        fprintf(stderr, "Error: --ne2000 and --cf both use the primary PCMCIA socket in this build\n");
+    if (cfg.restore && cfg.cf_count == 0) {
+        fprintf(stderr, "Error: --restore requires --cf <image>\n");
         usage(argv[0]);
         return 1;
     }
@@ -206,6 +212,18 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Error: --ne2000 is supported only with --nand boots\n");
         usage(argv[0]);
         return 1;
+    }
+    if (cfg.enable_ne2000 && cfg.cf_count > 0) {
+        if (cfg.cf_count > 1) {
+            fprintf(stderr,
+                "Error: only one --cf image can be combined with --ne2000; "
+                "it is attached to the secondary PCMCIA socket\n");
+            usage(argv[0]);
+            return 1;
+        }
+        cfg.cf_paths[1] = cfg.cf_paths[0];
+        cfg.cf_paths[0] = NULL;
+        cfg.cf_count = 2;
     }
     if (cfg.net_mac_set && !cfg.enable_ne2000) {
         fprintf(stderr, "Error: --net-mac requires --ne2000\n");
