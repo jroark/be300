@@ -177,5 +177,15 @@ bool stowaway_queue_key(unsigned scancode, bool release)
         byte |= STOWAWAY_RELEASE;
 
     stowaway_queue_byte(byte);
+
+    /*
+     * Wake serial.dll: the ns16550 IRQ on giu.0 alone is invisible to the
+     * WinCE OAL, which dispatches GIU 0 by reading the AA000004 / AA008004
+     * latches. Synthesize a CommMode modem event so SYSINTR 0x23 fires and
+     * serial.dll's IST polls the UART, drains our RX queue, and signals
+     * EV_RXCHAR back to the user-mode worker thread blocked in
+     * WaitCommEvent.
+     */
+    be300_stowaway_signal_uart_irq(1);
     return true;
 }

@@ -987,6 +987,29 @@ static void be300_pcconnect_raise_dock_edge(struct be300_vrc4173_latch *d,
         BE300_COMMMODE_STATUS_OFF, 2, be300_pcconnect_commmode_read(d), 0);
 }
 
+/*
+ * Wake serial.dll's IST by raising a CommMode modem-pending event whenever the
+ * Stowaway-attached ns16550 has data in its RX queue.  Real BE-300 routes the
+ * companion SIU IRQ through GIU pin 0; the OAL dispatches by reading
+ * AA000004 (level 1) and AA008004 (level 2 sub-bits) and only fires SYSINTR
+ * 0x23 (serial.dll) when bit 4 is set in both.  ns16550 alone asserts the
+ * GIU line but never touches those latches, so the OAL never dispatches —
+ * the byte stays in our RX queue forever.  Synthesizing a modem event here
+ * piggy-backs on the same dispatch path that the probe ACK already uses.
+ */
+void be300_stowaway_signal_uart_irq(int pending)
+{
+    struct be300_vrc4173_latch *d = g_be300_vrc4173_latch;
+    if (!d || !be300_stowaway_keyboard_enabled())
+        return;
+    if (!pending)
+        return;
+    d->pcconnect_commmode_pending |= BE300_COMMMODE_MODEM_PENDING;
+    d->stowaway_commmode_events |= BE300_COMMMODE_MODEM_EVENT_BITS;
+    be300_pcconnect_irq_update(d);
+    be300_pcconnect_irq_reedge(d);
+}
+
 static void be300_stowaway_raise_modem_event(struct be300_vrc4173_latch *d)
 {
     if (!d || !be300_stowaway_keyboard_enabled())
