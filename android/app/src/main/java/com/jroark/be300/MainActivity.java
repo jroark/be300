@@ -73,6 +73,14 @@ public final class MainActivity extends Activity {
                     current.setButtons(set1, set2);
                 }
             }
+
+            @Override
+            public void onGuestStowawayKey(int scancode, boolean release) {
+                EmulatorRunner current = runner;
+                if (current != null) {
+                    current.stowawayKey(scancode, release);
+                }
+            }
         });
 
         LinearLayout root = new LinearLayout(this);
@@ -553,6 +561,14 @@ public final class MainActivity extends Activity {
             synchronized (nativeLock) {
                 if (handle != 0) {
                     NativeBe300.setButtons(handle, set1, set2);
+                }
+            }
+        }
+
+        void stowawayKey(int scancode, boolean release) {
+            synchronized (nativeLock) {
+                if (handle != 0) {
+                    NativeBe300.stowawayKey(handle, scancode, release);
                 }
             }
         }

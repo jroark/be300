@@ -301,6 +301,13 @@ Historical reverse-engineering found that NK reaches warm-resume-style logic dur
 - Default probe result is absent -> normal GUI boot
 - `--ppsh` returns the expected status bits and routes WinCE to the debug shell instead of the normal GUI path
 
+### Stowaway Keyboard
+
+- `--stowaway-keyboard` attaches a Targus / Think Outside Stowaway serial dock model on COM1 (companion VRC4173 SIU at PA `0xAA008680`).
+- Wire protocol (RE'd from `Stowaway.dll` inside `stowaway/Stowaway.PPC300_4000.cab`): probe ACK is `0xFA 0xFD` after RTS rises with DTR asserted; data is one byte per event with low 7 bits = scancode (0..95) and bit 7 = release. The driver dedupes consecutive identical bytes.
+- The companion SIU IRQ goes to GIU pin 0, but the WinCE OAL only dispatches GIU 0 by reading the AA000004 (level 1) and AA008004 (level 2) latches: bit 4 of both -> SYSINTR `0x23` -> `serial.dll` IST. Asserting GIU 0 alone leaves bytes stuck in the UART RX queue. `src/stowaway.c:stowaway_queue_key` calls `be300_stowaway_signal_uart_irq` after every queued byte to set those latch bits via the existing pcconnect modem-event path.
+- Front-ends share `src/stowaway.c`: SDL via `src/ui.c:ui_stowaway_lookup_key`, web via `web/app.js:STOWAWAY_KEY_CODES`, Android via `Be300View.STOWAWAY_KEYS`. The scancode map was inferred (not hardware-validated) — if guest characters appear wrong, the SDL/web/Android tables are the suspect.
+
 ### ROM NAND Boot Helpers
 
 - `FUN_9fc015f4` — multi-page reader

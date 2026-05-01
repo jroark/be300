@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "be300.h"
+#include "stowaway.h"
 
 #define LOG_TAG "BE300Native"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -55,7 +56,7 @@ static char *dup_jstring(JNIEnv *env, jstring value)
 JNIEXPORT jlong JNICALL
 Java_com_jroark_be300_NativeBe300_nativeCreate(JNIEnv *env, jclass cls,
     jstring nand_path, jstring cf0_path, jstring cf1_path, jint sdram_mb,
-    jint target_mhz, jboolean rtc_host_time)
+    jint target_mhz, jboolean rtc_host_time, jboolean enable_stowaway)
 {
     (void)cls;
 
@@ -96,7 +97,7 @@ Java_com_jroark_be300_NativeBe300_nativeCreate(JNIEnv *env, jclass cls,
     cfg.target_mhz = target_mhz > 0 ? (uint32_t)target_mhz : 0u;
     cfg.enable_rtc_host_time = rtc_host_time == JNI_TRUE;
     cfg.enable_ne2000 = false;
-    cfg.enable_stowaway_keyboard = false;
+    cfg.enable_stowaway_keyboard = enable_stowaway == JNI_TRUE;
     cfg.enable_pcconnect_time_sync = false;
 
     handle->machine = be300_create(&cfg);
@@ -225,6 +226,23 @@ Java_com_jroark_be300_NativeBe300_nativeDrainSerial(JNIEnv *env, jclass cls,
     }
     buf[len] = '\0';
     return (*env)->NewStringUTF(env, buf);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_jroark_be300_NativeBe300_nativeStowawayKey(JNIEnv *env, jclass cls,
+    jlong ptr, jint scancode, jboolean release)
+{
+    (void)env;
+    (void)cls;
+
+    android_be300_handle_t *handle = handle_from_jlong(ptr);
+    if (!handle || !handle->machine ||
+        !handle->machine->cfg.enable_stowaway_keyboard ||
+        scancode < 0 || scancode > 127)
+        return JNI_FALSE;
+
+    return stowaway_queue_key((unsigned)scancode, release == JNI_TRUE)
+        ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

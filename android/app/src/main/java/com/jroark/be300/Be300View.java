@@ -10,6 +10,8 @@ import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.AttributeSet;
+import android.util.SparseIntArray;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -17,6 +19,99 @@ final class Be300View extends View {
     interface InputSink {
         void onGuestTouch(boolean down, int x, int y);
         void onGuestButtons(int set1, int set2);
+        void onGuestStowawayKey(int scancode, boolean release);
+    }
+
+    /*
+     * Android keyCode -> Stowaway dock scancode. Mirrors the SDL/web map in
+     * src/ui.c:ui_stowaway_lookup_key and web/app.js:STOWAWAY_KEY_CODES.
+     * Only keys 0..95 are accepted by Stowaway.dll; F-keys (>= 96) are
+     * dropped by the driver but kept here for parity.
+     */
+    private static final SparseIntArray STOWAWAY_KEYS = new SparseIntArray();
+    static {
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_1, 0);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_2, 1);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_3, 2);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_Z, 3);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_4, 4);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_5, 5);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_6, 6);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_7, 7);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_Q, 9);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_W, 10);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_E, 11);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_R, 12);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_T, 13);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_Y, 14);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_GRAVE, 15);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_X, 16);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_A, 17);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_S, 18);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_D, 19);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F, 20);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_G, 21);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_H, 22);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SPACE, 23);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_CAPS_LOCK, 24);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_TAB, 25);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_CTRL_LEFT, 26);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_CTRL_RIGHT, 26);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_ALT_LEFT, 35);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_ALT_RIGHT, 35);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_C, 44);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_V, 45);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_B, 46);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_N, 47);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_MINUS, 48);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_EQUALS, 49);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_DEL, 50);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_MOVE_HOME, 51);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_8, 52);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_9, 53);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_0, 54);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_ESCAPE, 55);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_LEFT_BRACKET, 56);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_RIGHT_BRACKET, 57);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_BACKSLASH, 58);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_MOVE_END, 59);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_U, 60);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_I, 61);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_O, 62);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_P, 63);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_APOSTROPHE, 64);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_ENTER, 65);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_NUMPAD_ENTER, 65);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_PAGE_UP, 66);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_J, 68);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_K, 69);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_L, 70);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SEMICOLON, 71);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SLASH, 72);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_DPAD_UP, 73);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_PAGE_DOWN, 74);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_M, 76);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_COMMA, 77);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_PERIOD, 78);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_INSERT, 79);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_FORWARD_DEL, 80);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_DPAD_LEFT, 81);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_DPAD_DOWN, 82);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_DPAD_RIGHT, 83);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SHIFT_LEFT, 87);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SHIFT_RIGHT, 88);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F1, 105);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F2, 106);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F3, 107);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F4, 108);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F5, 109);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F6, 110);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F7, 111);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F8, 112);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F9, 113);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F10, 114);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F11, 115);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F12, 116);
     }
 
     private static final int TOUCH_DWELL_MS = 120;
@@ -159,6 +254,30 @@ final class Be300View extends View {
             float top = (height - dstH) * 0.5f;
             fallbackScreenDst.set(left, top, left + dstW, top + dstH);
         }
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (inputSink != null && event.getRepeatCount() == 0) {
+            int idx = STOWAWAY_KEYS.indexOfKey(keyCode);
+            if (idx >= 0) {
+                inputSink.onGuestStowawayKey(STOWAWAY_KEYS.valueAt(idx), false);
+                return true;
+            }
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (inputSink != null) {
+            int idx = STOWAWAY_KEYS.indexOfKey(keyCode);
+            if (idx >= 0) {
+                inputSink.onGuestStowawayKey(STOWAWAY_KEYS.valueAt(idx), true);
+                return true;
+            }
+        }
+        return super.onKeyUp(keyCode, event);
     }
 
     @Override

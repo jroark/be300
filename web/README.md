@@ -126,7 +126,12 @@ The controls panel can attach optional boot-time accessories:
   supplied as a unicast `aa:bb:cc:dd:ee:ff` address.
 - Targus / Stowaway keyboard enables the existing COM1 serial keyboard dock
   model and forwards browser keydown/keyup events through the same scancode
-  table used by the SDL frontend.
+  table used by the SDL frontend. The dock probe handshake completes
+  automatically; subsequent keypresses synthesize a CommMode modem event so
+  the WinCE OAL dispatches GIRQ0-4-4 to serial.dll and the queued bytes
+  reach the user-mode `WaitCommEvent` blocked thread (without this
+  dispatch, bytes would sit in the UART RX queue forever — see
+  `src/be300_devices.c:be300_stowaway_signal_uart_irq`).
 
 If NE2000 is enabled without a bridge URL, the card uses GXemul's internal
 IPv4 gateway model. If a `ws://` or `wss://` bridge URL is supplied, boot
