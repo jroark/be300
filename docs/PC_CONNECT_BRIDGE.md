@@ -185,6 +185,46 @@ Cross-reference against `docs/PC_CONNECT_TIME_SYNC.md` (which decodes
 the wake / `WilSetSystemTime` frames) and the original `pcconnect.log`
 captures.
 
+`tools/pcconnect_diff_tee.py` aligns a tee log against a real-hardware
+PortMon log (`pcconnect.log` / `pcconnect_2.log`) byte-by-byte and prints
+a side-by-side hex tape with the first divergence flagged. Use
+`--align-on-g2h` when the emulator capture has a long pre-launch
+host-only tail (e.g. before AtPcCnct opened the UART), so both streams
+re-base at the first guest-emitted byte.
+
+## Known protocol stall
+
+The bridge transport is correct (host bytes reach the guest UART RX
+queue verbatim, guest TX bytes reach the peer fd in order). The active
+blocker is on the **device side**: AtPcCnct.exe never emits a multi-byte
+framed response. Every G->H event in the tee is a single byte (`0x55`
+sync or `0x20` ready). Real-hardware PortMon logs show AtPcCnct emitting
+`55 11 .. 03 ?? ..` 34-byte framed responses within ~100µs of receiving
+a `10 .. 03 ?? ..` host frame. In the emulator, those framed responses
+never appear — neither for the first 0x2d query nor for any subsequent
+opcode (0x26, 0x28, 0x46, ...).
+
+Investigations so far have ruled out the cheaper hypotheses:
+
+- NS16550 MSR holds DCD+DSR+CTS asserted for the vrc4173siu UART
+  (`gxemul/src/devices/dev_ns16550.c:104`). MSR-change deltas are
+  intentionally suppressed because the BE-300 routes modem transitions
+  through the AA008004 latch instead of NS16550 IIR_MLSC.
+- `LSR_OE` (overrun) is never asserted by the NS16550 driver.
+- The bridge's per-byte rx-ready callback fires `BE300_COMMMODE_PENDING_MASK`
+  + `BE300_COMMMODE_MODEM_EVENT_BITS` on every byte released to rx_ring
+  (matches Stowaway, which works).
+
+Remaining work is RE of XIP slot 59 (`AtPcCnct.exe`) and `COShellApi.dll`
+to find the wake-to-framed-mode predicate that the emulator state isn't
+satisfying. AtPcCnct.exe itself is a 5 KB shim with only an import on
+`COShellApi.dll!CoshExecute`, so the actual frame parser lives in
+COShellApi.dll or another module spawned by coshell. Auto-launching
+AtPcCnct via `HKLM\init\Launch<NN>` does not solve the stall: the
+kernel-level launch spawns the shim, but `CoshExecute` without the
+correct shell-agent context apparently no-ops -- AtPcCnct never opens
+COM1.
+
 ## Implementation references
 
 - `src/pcconnect_bridge.c` — bridge state, openers, drain logic, tee
@@ -199,3 +239,6 @@ captures.
   create, `pcconnect_bridge_tick` driven from `be300_pcconnect_poll`,
   `pcconnect_bridge_shutdown` at machine destroy
 - `src/main.c` — CLI parsing, mutual-exclusion checks
+- `tools/pcconnect_diff_tee.py` — read-only diff between a bridge tee
+  and a PortMon TSV log; emits side-by-side hex with first divergence
+  highlighted
