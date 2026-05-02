@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Generate an experimental WinCE NAND image with a larger display mode.
 
-The stock BE-300 WinCE 3.0 display driver hardcodes a 240x320 mode, a
-512-byte primary-surface stride, and a 0x40000-byte framebuffer mapping. This
-tool patches the verified ``ddi.dll`` constants in the NK XIP image to expose
-480x640 with a 1024-byte stride and a 0xA0000-byte framebuffer mapping, then
-repacks the NK partition into a new NAND image.
+The stock BE-300 WinCE 3.0 display stack hardcodes a 240x320 mode in
+``ddi.dll`` and clamps calibrated touch output to that range in ``touch.dll``.
+This tool patches the verified NK XIP constants to expose 480x640 with a
+1024-byte stride, a 0xA0000-byte framebuffer mapping, and matching touch
+calibration limits, then repacks the NK partition into a new NAND image.
 """
 
 from __future__ import annotations
@@ -160,10 +160,68 @@ def patch_ddi_480x640(nk: bytearray) -> list[str]:
     return notes
 
 
+def patch_touch_480x640(nk: bytearray) -> list[str]:
+    base_va, data_off, size = find_module_text(nk, "touch.dll")
+    notes: list[str] = []
+    patches = (
+        imm_patch(
+            0x01A42E78,
+            0x241903BF,
+            0x077F,
+            "calibration scaled-x clamp max",
+        ),
+        imm_patch(
+            0x01A42E80,
+            0x240904FF,
+            0x09FF,
+            "calibration scaled-y clamp max",
+        ),
+        imm_patch(
+            0x01A42E9C,
+            0x2B0103C0,
+            0x0780,
+            "calibration scaled-x clamp limit",
+        ),
+        imm_patch(
+            0x01A42EB0,
+            0x29010500,
+            0x0A00,
+            "calibration scaled-y clamp limit",
+        ),
+    )
+
+    for patch in patches:
+        rel = patch.va - base_va
+        if rel < 0 or rel + 4 > size:
+            raise ValueError(
+                f"{patch.label}: VA 0x{patch.va:08X} is outside touch.dll"
+            )
+
+        off = data_off + rel
+        current = u32(nk, off)
+        if current == patch.new_word:
+            notes.append(f"already patched 0x{patch.va:08X} {patch.label}")
+            continue
+        if current != patch.old_word:
+            raise ValueError(
+                f"{patch.label}: expected 0x{patch.old_word:08X} at "
+                f"0x{patch.va:08X}, found 0x{current:08X}"
+            )
+
+        struct.pack_into("<I", nk, off, patch.new_word)
+        notes.append(
+            f"patched 0x{patch.va:08X} {patch.label}: "
+            f"0x{patch.old_word:08X} -> 0x{patch.new_word:08X}"
+        )
+
+    return notes
+
+
 def build_patched_nand(nand: bytes, partition_index: int) -> tuple[bytes, list[str], dict[str, int]]:
     image = decode_nk_partition(nand, partition_index=partition_index)
     patched_flat = bytearray(image.flat_image)
     notes = patch_ddi_480x640(patched_flat)
+    notes.extend(patch_touch_480x640(patched_flat))
     replacement_logical = patch_logical_stream_from_flat(image, bytes(patched_flat))
     replacement_raw = encode_lzss(replacement_logical)
 
