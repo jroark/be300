@@ -1630,28 +1630,30 @@ static void be300_vrc4173_200_display_op_maybe(
     /*
      * VRC4173/Casio display fill engine at PA 0x0A000200.
      *
-     * The real-hardware dump identifies this as display-related:
-     * docs/hardware/hw_dump_vrc4173.txt:977-982 shows the block populated,
-     * including PA 0x0A000220 = 0x1E0 (240 visible pixels * 2 bytes).
-     * ddi.dll's solid-fill path at UM 0x01A53EC8..0x01A53FA0 programs
-     * destination byte offset at 0x210/0x214, width/height at 0x208/0x20C,
-     * RGB565 color at 0x204, mode 0 at 0x200, then starts the operation by
-     * writing 1 to 0x234. Model that mode as an immediate framebuffer fill.
+     * Mode 0 (solid fill, ddi.dll FUN_01A54EC8..0x01A54FB0): reads dst at
+     * 0x210/0x214, width/height at 0x208/0x20C, RGB565 color at 0x204.
+     * hw_dump_vrc4173.txt:980-985 captures this shape.
      *
-     * The same dump also captures mode 2 immediately below the seed row
-     * (PA 0x0A000200 = 2, 0x0208/0x020C = 4x9, 0x0210 = 0xB414,
-     * 0x0220 = 0x1E0, 0x0238 = 1). ddi.dll's glyph path at UM
-     * 0x01A53848..0x01A53AAC programs mode 2, stages 1-bpp glyph rows into
-     * the framebuffer row padding at byte offset 0x1E0, then starts the
-     * block via 0x0234. Model that observed mode as transparent mono
-     * expansion from the staged padding rows into the visible destination.
+     * Mode 2 (transparent mono->RGB565 glyph expand, ddi.dll
+     * FUN_01A54944..0x01A54AAC): adds src byte offset at 0x220/0x224 and
+     * sub-byte bit offset at 0x228; src points into FB row padding
+     * (0x1E0 in hw_dump_vrc4173.txt:984).
      *
-     * TODO 2026-04-25: capture BEDiag traces for the remaining non-zero
-     * modes; copy/ROP modes in this block are deliberately left
-     * unimplemented until observed on the boot path with enough register
-     * evidence.
+     * Mode 1 (FB->FB block copy, ddi.dll FUN_01A54D44..0x01A54EBC): reads
+     * src at 0x210/0x214 and dst at 0x218/0x21C (i.e. the 0x210 register
+     * pair changes meaning vs. modes 0/2). The mode reg is built up as
+     * `1 | (h_flip ? 0x400 : 0) | (v_flip ? 0x800 : 0)`; each flip flag
+     * means the driver wrote the START corner of the rectangle in that
+     * axis (right edge / bottom edge), and the engine iterates from that
+     * corner so overlapping scrolls land safely. We re-derive the
+     * top-left corner here and pick a row-iteration direction by
+     * dst-vs-src ordering, then memmove each row for intra-row
+     * overlap. This is the path that scroll/redraw uses; without it
+     * scrolled apps leave stale pixels behind.
      */
-    if (width == 0 || height == 0 ||
+    if (width == 0 || height == 0)
+        goto complete;
+    if ((mode & 0xFFu) != 1u &&
         (uint64_t)dst_off >= (uint64_t)fb->framebuffer_size)
         goto complete;
 
@@ -1718,6 +1720,55 @@ static void be300_vrc4173_200_display_op_maybe(
                 + (uint64_t)width * bpp;
             uint32_t len = len64 > UINT32_MAX ? UINT32_MAX : (uint32_t)len64;
             be300_fb_mark_dirty(m, dst_off, len);
+        }
+    } else if ((mode & 0xFFu) == 1u) {
+        uint32_t src_byte = (be300_latch_peek_u32(d, 0x0210) & 0xFFFFu)
+            | ((be300_latch_peek_u32(d, 0x0214) & 0xFFFFu) << 16);
+        uint32_t dst_byte = (be300_latch_peek_u32(d, 0x0218) & 0xFFFFu)
+            | ((be300_latch_peek_u32(d, 0x021C) & 0xFFFFu) << 16);
+        bool h_flip = (mode & 0x400u) != 0;
+        bool v_flip = (mode & 0x800u) != 0;
+        bool reverse_y;
+        size_t fb_size = fb->framebuffer_size;
+
+        if (h_flip) {
+            uint32_t back = (width - 1u) * bpp;
+            src_byte = (src_byte >= back) ? src_byte - back : 0;
+            dst_byte = (dst_byte >= back) ? dst_byte - back : 0;
+        }
+        if (v_flip) {
+            uint32_t back = (height - 1u) * stride;
+            src_byte = (src_byte >= back) ? src_byte - back : 0;
+            dst_byte = (dst_byte >= back) ? dst_byte - back : 0;
+        }
+
+        if ((uint64_t)dst_byte >= (uint64_t)fb_size ||
+            (uint64_t)src_byte >= (uint64_t)fb_size)
+            goto complete;
+
+        reverse_y = dst_byte > src_byte;
+
+        for (uint32_t yi = 0; yi < height; yi++) {
+            uint32_t y = reverse_y ? (height - 1u - yi) : yi;
+            uint64_t s_row = (uint64_t)src_byte + (uint64_t)y * stride;
+            uint64_t d_row = (uint64_t)dst_byte + (uint64_t)y * stride;
+            size_t row_bytes = (size_t)width * bpp;
+
+            if (s_row >= (uint64_t)fb_size || d_row >= (uint64_t)fb_size)
+                continue;
+            if (row_bytes > fb_size - (size_t)s_row)
+                row_bytes = fb_size - (size_t)s_row;
+            if (row_bytes > fb_size - (size_t)d_row)
+                row_bytes = fb_size - (size_t)d_row;
+            memmove(fb->framebuffer + d_row,
+                fb->framebuffer + s_row, row_bytes);
+        }
+
+        {
+            uint64_t len64 = (uint64_t)(height - 1u) * stride
+                + (uint64_t)width * bpp;
+            uint32_t len = len64 > UINT32_MAX ? UINT32_MAX : (uint32_t)len64;
+            be300_fb_mark_dirty(m, dst_byte, len);
         }
     }
 
