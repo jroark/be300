@@ -1582,7 +1582,16 @@ static void be300_vrc4173_a00_blit_maybe(struct cpu *cpu,
         goto complete;
 
     dst = fb->framebuffer + dst_off;
-    memcpy(dst, src, len);
+    /*
+     * memmove (not memcpy): WinCE GDI also drives this engine for
+     * scroll/redraw with src and dst both inside the VRC4173 framebuffer
+     * window (PA 0x0A200000+). memory_paddr_to_hostaddr() resolves both
+     * to the same fb->framebuffer host buffer and the regions overlap.
+     * memcpy() is undefined for overlap; memmove() is required.
+     * Cold-boot SDRAM->FB paths are non-overlapping so behavior is
+     * byte-identical there.
+     */
+    memmove(dst, src, len);
     be300_fb_mark_dirty(m, dst_off, (uint32_t)len);
 
 complete:
