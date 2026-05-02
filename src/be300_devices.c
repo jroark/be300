@@ -1646,12 +1646,21 @@ static void be300_vrc4173_200_display_op_maybe(
      * block via 0x0234. Model that observed mode as transparent mono
      * expansion from the staged padding rows into the visible destination.
      *
-     * TODO 2026-04-25: capture BEDiag traces for the remaining non-zero
-     * modes; copy/ROP modes in this block are deliberately left
-     * unimplemented until observed on the boot path with enough register
-     * evidence.
+     * Mode 1 is FB-to-FB block copy. ddi.dll's copy path at
+     * UM 0x01A53D44..0x01A53EBC programs destination at 0x210/0x214,
+     * source at 0x218/0x21C, width/height at 0x208/0x20C, then
+     * starts through 0x234. The mode register is 1 plus optional
+     * 0x400/0x800 start-corner bits; when those bits are set the driver
+     * writes the right/bottom corner, and the hardware iterates from that
+     * corner so overlapping scrolls preserve source pixels. Browser page
+     * scrolling uses this path for 32-row framebuffer moves.
+     *
+     * TODO 2026-05-02: capture BEDiag traces for any other non-zero modes;
+     * unobserved ROP modes remain deliberately unimplemented.
      */
-    if (width == 0 || height == 0 ||
+    if (width == 0 || height == 0)
+        goto complete;
+    if ((mode & 0xFFu) != 1u &&
         (uint64_t)dst_off >= (uint64_t)fb->framebuffer_size)
         goto complete;
 
@@ -1718,6 +1727,60 @@ static void be300_vrc4173_200_display_op_maybe(
                 + (uint64_t)width * bpp;
             uint32_t len = len64 > UINT32_MAX ? UINT32_MAX : (uint32_t)len64;
             be300_fb_mark_dirty(m, dst_off, len);
+        }
+    } else if ((mode & 0xFFu) == 1u) {
+        uint32_t dst_byte = dst_off;
+        uint32_t src_byte = (be300_latch_peek_u32(d, 0x0218) & 0xFFFFu)
+            | ((be300_latch_peek_u32(d, 0x021C) & 0xFFFFu) << 16);
+        bool h_start_right = (mode & 0x400u) != 0;
+        bool v_start_bottom = (mode & 0x800u) != 0;
+        bool reverse_y;
+        size_t fb_size = fb->framebuffer_size;
+        size_t row_bytes;
+
+        if (h_start_right) {
+            uint64_t back = (uint64_t)(width - 1u) * bpp;
+            if ((uint64_t)src_byte < back || (uint64_t)dst_byte < back)
+                goto complete;
+            src_byte = (uint32_t)((uint64_t)src_byte - back);
+            dst_byte = (uint32_t)((uint64_t)dst_byte - back);
+        }
+        if (v_start_bottom) {
+            uint64_t back = (uint64_t)(height - 1u) * stride;
+            if ((uint64_t)src_byte < back || (uint64_t)dst_byte < back)
+                goto complete;
+            src_byte = (uint32_t)((uint64_t)src_byte - back);
+            dst_byte = (uint32_t)((uint64_t)dst_byte - back);
+        }
+
+        if ((uint64_t)src_byte >= (uint64_t)fb_size ||
+            (uint64_t)dst_byte >= (uint64_t)fb_size)
+            goto complete;
+
+        row_bytes = (size_t)width * bpp;
+        reverse_y = dst_byte > src_byte;
+        for (uint32_t yi = 0; yi < height; yi++) {
+            uint32_t y = reverse_y ? (height - 1u - yi) : yi;
+            uint64_t src_row_off = (uint64_t)src_byte + (uint64_t)y * stride;
+            uint64_t dst_row_off = (uint64_t)dst_byte + (uint64_t)y * stride;
+            size_t this_row_bytes = row_bytes;
+
+            if (src_row_off >= (uint64_t)fb_size ||
+                dst_row_off >= (uint64_t)fb_size)
+                continue;
+            if (this_row_bytes > fb_size - (size_t)src_row_off)
+                this_row_bytes = fb_size - (size_t)src_row_off;
+            if (this_row_bytes > fb_size - (size_t)dst_row_off)
+                this_row_bytes = fb_size - (size_t)dst_row_off;
+            memmove(fb->framebuffer + dst_row_off,
+                fb->framebuffer + src_row_off, this_row_bytes);
+        }
+
+        {
+            uint64_t len64 = (uint64_t)(height - 1u) * stride
+                + (uint64_t)width * bpp;
+            uint32_t len = len64 > UINT32_MAX ? UINT32_MAX : (uint32_t)len64;
+            be300_fb_mark_dirty(m, dst_byte, len);
         }
     }
 
