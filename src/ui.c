@@ -106,6 +106,9 @@ static ui_button_region_t button_regions[UI_BUTTON_REGION_COUNT];
 #define UI_BUTTON_MASK_THRESHOLD 128u
 #define UI_BUTTON_MASK_MIN_AREA 500u
 #define UI_BUTTON_MASK_MAX_COMPONENTS 16u
+#define BE300_TOUCH_LCD_W 240u
+#define BE300_TOUCH_LCD_H 320u
+#define BE300_TOUCH_PANEL_MAX_Y 359u
 
 static const SDL_Rect fallback_frame_lcd_rect = { 187, 218, 644, 859 };
 
@@ -1387,12 +1390,13 @@ static bool ui_frame_rect_to_touch(double fx, double fy, const SDL_Rect *rect,
         fx >= rect->x + rect->w || fy >= rect->y + rect->h)
         return false;
 
-    tx = (int)(((fx - rect->x) * 240.0) / rect->w);
+    tx = (int)(((fx - rect->x) * (double)BE300_TOUCH_LCD_W) / rect->w);
     ty = (int)(y_base + (((fy - rect->y) * (double)y_span) / rect->h));
     if (tx < 0) tx = 0;
     if (ty < 0) ty = 0;
-    if (tx > 239) tx = 239;
-    if (ty > 359) ty = 359;
+    if (tx >= (int)BE300_TOUCH_LCD_W) tx = (int)BE300_TOUCH_LCD_W - 1;
+    if (ty > (int)BE300_TOUCH_PANEL_MAX_Y)
+        ty = (int)BE300_TOUCH_PANEL_MAX_Y;
 
     *x_out = (uint16_t)tx;
     *y_out = (uint16_t)ty;
@@ -1428,12 +1432,14 @@ static bool ui_window_to_touch(machine_t *m, int win_x, int win_y,
     if (win_h <= 0)
         win_h = (int)m->fb_height;
 
-    tx = (int)(((int64_t)win_x * (int64_t)m->fb_width) / win_w);
-    ty = (int)(((int64_t)win_y * (int64_t)m->fb_height) / win_h);
+    tx = (int)(((int64_t)win_x * BE300_TOUCH_LCD_W) / win_w);
+    ty = (int)(((int64_t)win_y * BE300_TOUCH_LCD_H) / win_h);
     if (tx < 0) tx = 0;
     if (ty < 0) ty = 0;
-    if ((uint32_t)tx >= m->fb_width)  tx = (int)m->fb_width  - 1;
-    if ((uint32_t)ty >= m->fb_height) ty = (int)m->fb_height - 1;
+    if ((uint32_t)tx >= BE300_TOUCH_LCD_W)
+        tx = (int)BE300_TOUCH_LCD_W - 1;
+    if ((uint32_t)ty >= BE300_TOUCH_LCD_H)
+        ty = (int)BE300_TOUCH_LCD_H - 1;
 
     *x_out = (uint16_t)tx;
     *y_out = (uint16_t)ty;
@@ -1919,9 +1925,12 @@ int ui_init(machine_t *m)
     uint8_t *window_mask = NULL;
     bool have_frame_pixels = false;
 
-    m->fb_width  = 240;
-    m->fb_height = 320;
-    m->fb_stride = 256;
+    if (m->fb_width == 0)
+        m->fb_width = 240;
+    if (m->fb_height == 0)
+        m->fb_height = 320;
+    if (m->fb_stride == 0)
+        m->fb_stride = 256;
 
     quit_requested = false;
     frame_enabled = false;

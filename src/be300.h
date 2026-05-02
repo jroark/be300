@@ -82,6 +82,9 @@ typedef struct {
     uint8_t     net_mac[6];
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* throttle target in million guest instructions/sec; 0 = unthrottled */
+    uint32_t    fb_width;        /* visible framebuffer width; 0 = BE-300 default */
+    uint32_t    fb_height;       /* visible framebuffer height; 0 = BE-300 default */
+    uint32_t    fb_stride;       /* framebuffer stride in pixels; 0 = default for width */
     bool        frame_visible;   /* show the BE-300 bezel/frame around the LCD */
     double      scale;           /* render scale 1.0-4.0; applies framed and LCD-only */
 
@@ -138,10 +141,11 @@ typedef struct be300_state {
     /* Framebuffer host pointer (from GXemul dev_fb) */
     void        *fb_data;
 
-    /* Framebuffer geometry (fixed BE-300 hardware) */
-    uint32_t     fb_width;       /* 240 visible pixels */
-    uint32_t     fb_height;      /* 320 visible pixels */
-    uint32_t     fb_stride;      /* 256 pixels (allocation width for alignment) */
+    /* Framebuffer geometry. Defaults model fixed BE-300 hardware. */
+    uint32_t     fb_width;       /* visible pixels, normally 240 */
+    uint32_t     fb_height;      /* visible pixels, normally 320 */
+    uint32_t     fb_stride;      /* allocation width in pixels, normally 256 */
+    uint32_t     fb_mem_height;  /* allocation height in rows, normally 324 */
 
     /* PIU touch device (for tick callback interrupt generation) */
     void        *touch_device;
