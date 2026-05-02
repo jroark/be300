@@ -673,7 +673,8 @@ static uint32_t be300_buzzer_tone_ms(const struct be300_buzzer_state *b)
 static bool be300_pcconnect_cable_enabled(void)
 {
     return g_be300_machine &&
-        g_be300_machine->cfg.enable_pcconnect_time_sync;
+        (g_be300_machine->cfg.enable_pcconnect_time_sync ||
+         g_be300_machine->cfg.pcconnect_bridge != NULL);
 }
 
 static bool be300_stowaway_keyboard_enabled(void)
@@ -1056,6 +1057,12 @@ static void be300_pcconnect_maybe_raise_dock_edge(
         false);
 }
 
+bool be300_pcconnect_irq_is_asserted(void)
+{
+    struct be300_vrc4173_latch *d = g_be300_vrc4173_latch;
+    return d && d->pcconnect_irq_asserted;
+}
+
 void be300_pcconnect_poll(void)
 {
     if (be300_pcconnect_cable_enabled()) {
@@ -1085,8 +1092,16 @@ static void be300_pcconnect_uart_rx_ready(void *opaque)
      * Raise a CommMode edge when host RX data becomes available so the
      * guest's serial-side waiters get a companion interrupt after the
      * initial dock-detect edge.
+     *
+     * Also raise MODEM_EVENT_BITS the way stowaway_signal_uart_irq does.
+     * The bridge previously only set MODEM_PENDING, leaving the event
+     * sub-bits clear — AtPcCnct.exe appears to need a real event flag
+     * (DCD/CTS-change-style) to treat the IRQ as "data ready", not just
+     * a generic modem interrupt. Stowaway has set both since day one
+     * and works reliably; matching that behavior here.
      */
     d->pcconnect_commmode_pending |= BE300_COMMMODE_MODEM_PENDING;
+    d->stowaway_commmode_events |= BE300_COMMMODE_MODEM_EVENT_BITS;
     be300_pcconnect_trace(d, "uart-rx-edge",
         BE300_COMMMODE_STATUS_OFF, 2,
         be300_pcconnect_commmode_read(d), 0);
@@ -2847,7 +2862,8 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         latch->cf_irq_asserted = false;
     }
 
-    if (m->cfg.enable_pcconnect_time_sync || m->cfg.enable_stowaway_keyboard) {
+    if (m->cfg.enable_pcconnect_time_sync || m->cfg.enable_stowaway_keyboard ||
+        m->cfg.pcconnect_bridge) {
         char tmps[200];
 
         snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
@@ -2855,7 +2871,10 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         INTERRUPT_CONNECT(tmps, latch->pcconnect_irq);
         latch->pcconnect_irq_connected = true;
         latch->pcconnect_irq_asserted = false;
-        if (m->cfg.enable_pcconnect_time_sync)
+        /* The synth-vs-bridge dispatch in pcconnect.c calls both backends'
+         * set_rx_ready_callback, so registering once here is sufficient
+         * for either mode. */
+        if (m->cfg.enable_pcconnect_time_sync || m->cfg.pcconnect_bridge)
             pcconnect_set_rx_ready_callback(be300_pcconnect_uart_rx_ready,
                 latch);
         if (m->cfg.enable_stowaway_keyboard)
