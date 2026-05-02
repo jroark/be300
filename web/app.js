@@ -995,6 +995,10 @@ worker.addEventListener("message", ({ data }) => {
       syncButtons();
       break;
     case "frame":
+      if (screenEl.width !== data.width || screenEl.height !== data.height) {
+        screenEl.width = data.width;
+        screenEl.height = data.height;
+      }
       if (!imageData || imageData.width !== data.width || imageData.height !== data.height) {
         imageData = screenCtx.createImageData(data.width, data.height);
       }

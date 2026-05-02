@@ -153,12 +153,12 @@ def _ring_index_for_output_pos(pos: int) -> int:
     return (LZSS_START_R + pos) & LZSS_RING_MASK
 
 
-def encode_lzss(data: bytes, max_candidates: int = 64) -> bytes:
+def encode_lzss(data: bytes, max_candidates: int = 256) -> bytes:
     """Encode bytes using the SPL's LZSS flavor.
 
-    ``max_candidates`` bounds the backwards search per token. The stock NK
-    image is reproduced closely enough with 64 candidates to stay inside the
-    NAND partition budget while keeping the encoder fast enough for build use.
+    ``max_candidates`` bounds the backwards search per token. The higher
+    default keeps patched NK images inside the stock compressed-stream
+    envelope while staying fast enough for build use.
     """
 
     positions: DefaultDict[bytes, Deque[int]] = defaultdict(deque)
@@ -347,9 +347,12 @@ def patch_logical_stream_from_flat(image: LogicalNkImage, replacement_flat: byte
 
     for record in image.records:
         start = record.va - image.base_va
+        chunk = replacement_flat[start:start + record.length]
         logical[record.data_off:record.data_off + record.length] = (
-            replacement_flat[start:start + record.length]
+            chunk
         )
+        checksum_off = record.data_off - ENTRY_BYTES + 8
+        struct.pack_into("<I", logical, checksum_off, sum(chunk) & 0xFFFFFFFF)
 
     struct.pack_into("<I", logical, image.terminal_off + 0, 0)
     struct.pack_into("<I", logical, image.terminal_off + 4, image.entry_va)

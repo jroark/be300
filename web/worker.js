@@ -1,8 +1,8 @@
-import createBe300Module from "./be300_web.js?v=20260429i";
+import createBe300Module from "./be300_web.js?v=20260502a";
 
-const FRAME_WIDTH = 240;
-const FRAME_HEIGHT = 320;
-const FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 4;
+const MAX_FRAME_WIDTH = 480;
+const MAX_FRAME_HEIGHT = 640;
+const MAX_FRAME_BYTES = MAX_FRAME_WIDTH * MAX_FRAME_HEIGHT * 4;
 const SERIAL_BYTES = 16384;
 const NET_FRAME_BYTES = 2048;
 const DEFAULT_SPEED = 0;
@@ -43,6 +43,7 @@ function normalizeBootConfig(config = {}) {
   return {
     sdramMb: Number.isFinite(parsedSdram) ? Math.min(64, Math.max(1, parsedSdram)) : 16,
     targetMhz: normalizeSpeed(config.targetMhz),
+    fbSize: config.fbSize === "480x640" ? "480x640" : "240x320",
     enableNe2000: config.enableNe2000 === true,
     enableTargusKeyboard: config.enableTargusKeyboard === true,
     netMac: Array.isArray(config.netMac) && config.netMac.length === 6
@@ -82,7 +83,7 @@ async function ensureModule() {
 
 function ensureScratch(module) {
   if (!framePtr) {
-    framePtr = module._malloc(FRAME_BYTES);
+    framePtr = module._malloc(MAX_FRAME_BYTES);
   }
   if (!serialPtr) {
     serialPtr = module._malloc(SERIAL_BYTES);
@@ -280,7 +281,7 @@ function drainFrame(module) {
   const copied = module._be300_copy_frame_rgba8888(
     machineHandle,
     framePtr,
-    FRAME_BYTES,
+    MAX_FRAME_BYTES,
     widthPtr,
     heightPtr,
   );
@@ -379,12 +380,18 @@ async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes
     macPtr = allocBytes(module, config.netMac);
   }
 
-  machineHandle = module._be300_web_create_ex(
-    config.sdramMb,
-    config.targetMhz,
-    flags,
-    macPtr,
-  );
+  {
+    const fbWidth = config.fbSize === "480x640" ? 480 : 240;
+    const fbHeight = config.fbSize === "480x640" ? 640 : 320;
+    machineHandle = module._be300_web_create_ex2(
+      config.sdramMb,
+      config.targetMhz,
+      flags,
+      macPtr,
+      fbWidth,
+      fbHeight,
+    );
+  }
   if (macPtr) {
     module._free(macPtr);
   }

@@ -27,6 +27,34 @@ static bool parse_scale(const char *arg, double *scale_out)
     return true;
 }
 
+static bool parse_fb_size(const char *arg, uint32_t *width_out,
+    uint32_t *height_out, uint32_t *stride_out)
+{
+    unsigned width, height;
+    char tail;
+
+    if (!arg || !width_out || !height_out || !stride_out)
+        return false;
+    if (sscanf(arg, "%ux%u%c", &width, &height, &tail) != 2 &&
+        sscanf(arg, "%uX%u%c", &width, &height, &tail) != 2)
+        return false;
+
+    if (width == 240u && height == 320u) {
+        *width_out = 240u;
+        *height_out = 320u;
+        *stride_out = 256u;
+        return true;
+    }
+    if (width == 480u && height == 640u) {
+        *width_out = 480u;
+        *height_out = 640u;
+        *stride_out = 512u;
+        return true;
+    }
+
+    return false;
+}
+
 static bool parse_mac(const char *arg, uint8_t mac[6])
 {
     unsigned vals[6];
@@ -76,6 +104,8 @@ static void usage(const char *prog)
         "                        Default 115200 to match real serial; 0 = unlimited.\n"
         "  --rtc-host-time       Initialize the guest RTC from host local time\n"
         "  --stowaway-keyboard   Feed host key events to the Stowaway serial dock on COM1:\n"
+        "  --fb-size <WxH>       Experimental framebuffer size: 240x320 or 480x640\n"
+        "                        (default: 240x320; 480x640 requires a patched NAND)\n"
         "  --frame               Show the BE-300 bezel around the LCD (default: hidden)\n"
         "  --scale <N>           Render scale, 1.0-4.0 (default: 1.0; applies with or without --frame)\n"
         "  --speed <N>           Throttle target in million guest instructions/sec\n"
@@ -125,6 +155,9 @@ int main(int argc, char *argv[])
         .net_mac        = { 0 },
         .sdram_size     = 16u * 1024u * 1024u,
         .target_mhz     = 166u,
+        .fb_width       = 0,
+        .fb_height      = 0,
+        .fb_stride      = 0,
         .frame_visible  = false,
         .scale          = 1.0,
         .pcconnect_bridge = NULL,
@@ -159,6 +192,13 @@ int main(int argc, char *argv[])
             cfg.enable_rtc_host_time = true;
         } else if (strcmp(argv[i], "--stowaway-keyboard") == 0) {
             cfg.enable_stowaway_keyboard = true;
+        } else if (strcmp(argv[i], "--fb-size") == 0 && i + 1 < argc) {
+            if (!parse_fb_size(argv[++i], &cfg.fb_width, &cfg.fb_height,
+                    &cfg.fb_stride)) {
+                fprintf(stderr,
+                    "Error: --fb-size must be 240x320 or experimental 480x640\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--ne2000") == 0) {
             cfg.enable_ne2000 = true;
         } else if (strcmp(argv[i], "--net-mac") == 0 && i + 1 < argc) {
