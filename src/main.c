@@ -9,7 +9,7 @@
 extern int verbose;
 extern int quiet_mode;
 
-static bool parse_frame_scale(const char *arg, double *scale_out)
+static bool parse_scale(const char *arg, double *scale_out)
 {
     char *end = NULL;
     double scale;
@@ -18,11 +18,9 @@ static bool parse_frame_scale(const char *arg, double *scale_out)
         return false;
 
     scale = strtod(arg, &end);
-    if (end == arg)
+    if (end == arg || *end != '\0')
         return false;
-    if (*end == 'x' || *end == 'X')
-        end++;
-    if (*end != '\0' || !(scale >= 1.0 && scale <= 4.0))
+    if (!(scale >= 1.0 && scale <= 4.0))
         return false;
 
     *scale_out = scale;
@@ -78,8 +76,8 @@ static void usage(const char *prog)
         "                        Default 115200 to match real serial; 0 = unlimited.\n"
         "  --rtc-host-time       Initialize the guest RTC from host local time\n"
         "  --stowaway-keyboard   Feed host key events to the Stowaway serial dock on COM1:\n"
-        "  --frame-2x            Show framed SDL display with a 480x640 LCD area\n"
-        "  --frame-scale <N>     Framed SDL LCD scale, 1.0-4.0 (default: 1.0)\n"
+        "  --frame               Show the BE-300 bezel around the LCD (default: hidden)\n"
+        "  --scale <N>           Render scale, 1.0-4.0 (default: 1.0; applies with or without --frame)\n"
         "  --speed <N>           Throttle target in million guest instructions/sec\n"
         "                        (default: 166, 0 = unthrottled)\n"
         "  --mmio-coverage       First-hit log per (device, offset, op) + shutdown coverage table\n"
@@ -127,7 +125,8 @@ int main(int argc, char *argv[])
         .net_mac        = { 0 },
         .sdram_size     = 16u * 1024u * 1024u,
         .target_mhz     = 166u,
-        .frame_lcd_scale = 0.0,
+        .frame_visible  = false,
+        .scale          = 1.0,
         .pcconnect_bridge = NULL,
         .pcconnect_tee    = NULL,
         .pcconnect_baud   = 115200u,
@@ -169,11 +168,11 @@ int main(int argc, char *argv[])
                 return 1;
             }
             cfg.net_mac_set = true;
-        } else if (strcmp(argv[i], "--frame-2x") == 0) {
-            cfg.frame_lcd_scale = 2.0;
-        } else if (strcmp(argv[i], "--frame-scale") == 0 && i + 1 < argc) {
-            if (!parse_frame_scale(argv[++i], &cfg.frame_lcd_scale)) {
-                fprintf(stderr, "Error: --frame-scale must be 1.0-4.0\n");
+        } else if (strcmp(argv[i], "--frame") == 0) {
+            cfg.frame_visible = true;
+        } else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
+            if (!parse_scale(argv[++i], &cfg.scale)) {
+                fprintf(stderr, "Error: --scale must be 1.0-4.0\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "--nand") == 0 && i + 1 < argc) {

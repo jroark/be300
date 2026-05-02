@@ -144,10 +144,6 @@ static uint16_t *staging_buf = NULL;
 #define BUZZER_DEFAULT_MS          60
 static uint32_t last_buzzer_tick = 0;
 
-#ifndef BE300_SOURCE_DIR
-#define BE300_SOURCE_DIR "."
-#endif
-
 static bool ui_audio_env_enabled(void)
 {
     const char *v = getenv("BE300_AUDIO");
@@ -385,43 +381,15 @@ static uint32_t ui_ms_from_env(const char *name, uint32_t default_ms,
     return (uint32_t)ms;
 }
 
-static double ui_double_from_env(const char *name, double default_value,
-    double min_value, double max_value)
+static double ui_scale(machine_t *m)
 {
-    const char *v = getenv(name);
-    char *end = NULL;
-    double value;
+    double s = m->cfg.scale;
 
-    if (!v || !*v)
-        return default_value;
-
-    value = strtod(v, &end);
-    if (end == v)
-        return default_value;
-    if (*end == 'x' || *end == 'X')
-        end++;
-    if ((end && *end != '\0') ||
-        !(value >= min_value && value <= max_value))
-        return default_value;
-
-    return value;
-}
-
-static double ui_frame_lcd_scale_from_env(void)
-{
-    double scale = ui_double_from_env("BE300_FRAME_LCD_SCALE",
-        BE300_FRAME_LCD_SCALE_DEFAULT, 1.0, BE300_FRAME_LCD_SCALE_MAX);
-
-    return scale == 0.0 ? BE300_FRAME_LCD_SCALE_DEFAULT : scale;
-}
-
-static double ui_frame_lcd_scale(machine_t *m)
-{
-    if (m->cfg.frame_lcd_scale >= 1.0 &&
-        m->cfg.frame_lcd_scale <= BE300_FRAME_LCD_SCALE_MAX)
-        return m->cfg.frame_lcd_scale;
-
-    return ui_frame_lcd_scale_from_env();
+    if (!(s >= 1.0))
+        return BE300_FRAME_LCD_SCALE_DEFAULT;
+    if (s > BE300_FRAME_LCD_SCALE_MAX)
+        return BE300_FRAME_LCD_SCALE_MAX;
+    return s;
 }
 
 static void ui_trim_frame_transparent_edges(uint8_t **pixels_io,
@@ -480,27 +448,42 @@ static void ui_trim_frame_transparent_edges(uint8_t **pixels_io,
 }
 
 #ifdef HAVE_PNG
-static bool ui_load_png_rgba(const char *path, uint8_t **pixels_out,
-    uint32_t *width_out, uint32_t *height_out)
+typedef struct {
+    const uint8_t *cur;
+    size_t remaining;
+} ui_png_mem_reader_t;
+
+static void ui_png_read_from_memory(png_structp png, png_bytep dst, size_t len)
 {
-    FILE *f;
+    ui_png_mem_reader_t *r = (ui_png_mem_reader_t *)png_get_io_ptr(png);
+
+    if (!r || r->remaining < len) {
+        png_error(png, "ui_png_read_from_memory: short read");
+        return;
+    }
+    memcpy(dst, r->cur, len);
+    r->cur += len;
+    r->remaining -= len;
+}
+
+static bool ui_load_png_rgba(const uint8_t *data, size_t len,
+    uint8_t **pixels_out, uint32_t *width_out, uint32_t *height_out)
+{
+    ui_png_mem_reader_t reader;
     png_structp png = NULL;
     png_infop info = NULL;
     png_bytep *rows = NULL;
     uint8_t *pixels = NULL;
-    uint8_t sig[8];
     png_uint_32 width, height;
     int bit_depth, color_type;
     size_t rowbytes;
     bool ok = false;
 
-    f = fopen(path, "rb");
-    if (!f)
+    if (!data || len < 8 || png_sig_cmp((png_bytep)data, 0, 8) != 0)
         return false;
 
-    if (fread(sig, 1, sizeof(sig), f) != sizeof(sig) ||
-        png_sig_cmp(sig, 0, sizeof(sig)) != 0)
-        goto out;
+    reader.cur = data + 8;
+    reader.remaining = len - 8;
 
     png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
     if (!png)
@@ -512,8 +495,8 @@ static bool ui_load_png_rgba(const char *path, uint8_t **pixels_out,
     if (setjmp(png_jmpbuf(png)))
         goto out;
 
-    png_init_io(png, f);
-    png_set_sig_bytes(png, sizeof(sig));
+    png_set_read_fn(png, &reader, ui_png_read_from_memory);
+    png_set_sig_bytes(png, 8);
     png_read_info(png, info);
 
     width = png_get_image_width(png, info);
@@ -577,34 +560,22 @@ out:
     free(pixels);
     if (png || info)
         png_destroy_read_struct(&png, &info, NULL);
-    fclose(f);
     return ok;
 }
+
+#include "frame_png_embedded.h"
 
 static bool ui_load_frame_pixels(uint8_t **pixels_out, uint32_t *width_out,
     uint32_t *height_out)
 {
-    const char *names[] = { "be300_frame.png", "be300_fram.png" };
-    char path[1024];
+    if (!ui_load_png_rgba(be300_frame_png, (size_t)be300_frame_png_len,
+        pixels_out, width_out, height_out))
+        return false;
 
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-        if (ui_load_png_rgba(names[i], pixels_out, width_out, height_out)) {
-            ui_trim_frame_transparent_edges(pixels_out, width_out,
-                height_out);
-            fprintf(stderr, "[UI] Loaded frame asset: %s\n", names[i]);
-            return true;
-        }
-
-        snprintf(path, sizeof(path), "%s/%s", BE300_SOURCE_DIR, names[i]);
-        if (ui_load_png_rgba(path, pixels_out, width_out, height_out)) {
-            ui_trim_frame_transparent_edges(pixels_out, width_out,
-                height_out);
-            fprintf(stderr, "[UI] Loaded frame asset: %s\n", path);
-            return true;
-        }
-    }
-
-    return false;
+    ui_trim_frame_transparent_edges(pixels_out, width_out, height_out);
+    fprintf(stderr, "[UI] Loaded embedded frame asset (%u bytes)\n",
+        (unsigned)be300_frame_png_len);
+    return true;
 }
 
 static int ui_button_component_area_desc(const void *ap, const void *bp)
@@ -951,32 +922,22 @@ static bool ui_configure_button_mask(const char *path, const uint8_t *rgba,
     return true;
 }
 
+#include "buttons_mask_png_embedded.h"
+
 static bool ui_load_button_mask(void)
 {
-    const char *names[] = { "buttons_dpad_bw_mask.png" };
-    char path[1024];
+    uint8_t *pixels = NULL;
+    uint32_t width = 0, height = 0;
+    bool ok;
 
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-        uint8_t *pixels = NULL;
-        uint32_t width = 0, height = 0;
+    if (!ui_load_png_rgba(be300_buttons_mask_png,
+        (size_t)be300_buttons_mask_png_len, &pixels, &width, &height))
+        return false;
 
-        if (ui_load_png_rgba(names[i], &pixels, &width, &height)) {
-            bool ok = ui_configure_button_mask(names[i], pixels, width,
-                height);
-            free(pixels);
-            return ok;
-        }
-
-        snprintf(path, sizeof(path), "%s/%s", BE300_SOURCE_DIR, names[i]);
-        if (ui_load_png_rgba(path, &pixels, &width, &height)) {
-            bool ok = ui_configure_button_mask(path, pixels, width,
-                height);
-            free(pixels);
-            return ok;
-        }
-    }
-
-    return false;
+    ok = ui_configure_button_mask("embedded:buttons_dpad_bw_mask.png",
+        pixels, width, height);
+    free(pixels);
+    return ok;
 }
 #else
 static bool ui_load_frame_pixels(uint8_t **pixels_out, uint32_t *width_out,
@@ -2002,19 +1963,22 @@ int ui_init(machine_t *m)
     }
     sdl_video_initialized = true;
 
-    have_frame_pixels = ui_load_frame_pixels(&frame_pixels,
-        &loaded_frame_width, &loaded_frame_height);
-    if (!have_frame_pixels) {
-        fprintf(stderr,
-            "[UI] BE-300 frame unavailable - using LCD-only SDL window\n");
+    double scale = ui_scale(m);
+
+    if (m->cfg.frame_visible) {
+        have_frame_pixels = ui_load_frame_pixels(&frame_pixels,
+            &loaded_frame_width, &loaded_frame_height);
+        if (!have_frame_pixels) {
+            fprintf(stderr,
+                "[UI] BE-300 frame unavailable - using LCD-only SDL window\n");
+        }
     }
 
-    int win_w = (int)m->fb_width * 2;
-    int win_h = (int)m->fb_height * 2;
+    int win_w = (int)floor((double)m->fb_width * scale + 0.5);
+    int win_h = (int)floor((double)m->fb_height * scale + 0.5);
     Uint32 win_flags = 0;
 
     if (have_frame_pixels) {
-        double frame_lcd_scale = ui_frame_lcd_scale(m);
         frame_width = loaded_frame_width;
         frame_height = loaded_frame_height;
         if (!ui_load_button_mask())
@@ -2028,15 +1992,18 @@ int ui_init(machine_t *m)
                 frame_lcd_rect.x, frame_lcd_rect.y,
                 frame_lcd_rect.w, frame_lcd_rect.h);
         }
-        ui_configure_frame_layout(m, frame_lcd_scale, &win_w, &win_h);
+        ui_configure_frame_layout(m, scale, &win_w, &win_h);
         fprintf(stderr, "[UI] Frame LCD scale: %.3gx (window %dx%d)\n",
-            frame_lcd_scale, win_w, win_h);
+            scale, win_w, win_h);
         window_mask = ui_create_frame_window_mask(frame_pixels, win_w,
             win_h);
         if (!window_mask)
             fprintf(stderr,
                 "[UI] Frame window mask unavailable - transparent edges may show\n");
         win_flags = SDL_WINDOW_BORDERLESS;
+    } else {
+        fprintf(stderr, "[UI] LCD-only window scale: %.3gx (window %dx%d)\n",
+            scale, win_w, win_h);
     }
 
     SDL_Window *win = have_frame_pixels ?
@@ -2127,8 +2094,9 @@ int ui_init(machine_t *m)
             ui_free_button_mask();
             memset(&lcd_dst_rect, 0, sizeof(lcd_dst_rect));
             SDL_SetWindowResizable(win, SDL_FALSE);
-            SDL_SetWindowSize(win, (int)m->fb_width * 2,
-                (int)m->fb_height * 2);
+            SDL_SetWindowSize(win,
+                (int)floor((double)m->fb_width * scale + 0.5),
+                (int)floor((double)m->fb_height * scale + 0.5));
         }
         free(frame_pixels);
         frame_pixels = NULL;

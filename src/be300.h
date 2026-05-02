@@ -82,7 +82,8 @@ typedef struct {
     uint8_t     net_mac[6];
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* throttle target in million guest instructions/sec; 0 = unthrottled */
-    double      frame_lcd_scale; /* framed SDL LCD scale; 0 = default/env */
+    bool        frame_visible;   /* show the BE-300 bezel/frame around the LCD */
+    double      scale;           /* render scale 1.0-4.0; applies framed and LCD-only */
 
     /* Optional --pcconnect-bridge spec; mutually exclusive with
      * --pcconnect-time-sync. NULL = disabled.

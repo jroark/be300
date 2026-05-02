@@ -55,16 +55,40 @@ else()
     message(STATUS "Android build — SDL2 host display disabled")
 endif()
 
-# Generate embedded boot ROM header from binary
+# Generate embedded headers from binary assets via xxd -i.
+set(EMBED_GEN "${CMAKE_SOURCE_DIR}/tools/gen_embedded_header.sh")
+
 set(BOOT_ROM_BIN "${CMAKE_SOURCE_DIR}/docs/hardware/be300_boot_rom.bin")
 set(BOOT_ROM_HDR "${CMAKE_BINARY_DIR}/boot_rom_embedded.h")
 add_custom_command(
     OUTPUT "${BOOT_ROM_HDR}"
-    COMMAND ${CMAKE_COMMAND} -E env
-        sh ${CMAKE_SOURCE_DIR}/tools/gen_rom_header.sh
-            ${BOOT_ROM_BIN} ${BOOT_ROM_HDR}
-    DEPENDS "${BOOT_ROM_BIN}"
+    COMMAND sh ${EMBED_GEN} ${BOOT_ROM_BIN} ${BOOT_ROM_HDR} be300_boot_rom
+    DEPENDS "${BOOT_ROM_BIN}" "${EMBED_GEN}"
     COMMENT "Generating embedded boot ROM header"
+)
+
+set(FRAME_PNG_SRC "${CMAKE_SOURCE_DIR}/src/ui/assets/be300_frame.png")
+set(FRAME_PNG_HDR "${CMAKE_BINARY_DIR}/frame_png_embedded.h")
+add_custom_command(
+    OUTPUT "${FRAME_PNG_HDR}"
+    COMMAND sh ${EMBED_GEN} ${FRAME_PNG_SRC} ${FRAME_PNG_HDR} be300_frame_png
+    DEPENDS "${FRAME_PNG_SRC}" "${EMBED_GEN}"
+    COMMENT "Generating embedded frame PNG header"
+)
+
+set(BUTTONS_MASK_PNG_SRC "${CMAKE_SOURCE_DIR}/src/ui/assets/buttons_dpad_bw_mask.png")
+set(BUTTONS_MASK_PNG_HDR "${CMAKE_BINARY_DIR}/buttons_mask_png_embedded.h")
+add_custom_command(
+    OUTPUT "${BUTTONS_MASK_PNG_HDR}"
+    COMMAND sh ${EMBED_GEN} ${BUTTONS_MASK_PNG_SRC} ${BUTTONS_MASK_PNG_HDR} be300_buttons_mask_png
+    DEPENDS "${BUTTONS_MASK_PNG_SRC}" "${EMBED_GEN}"
+    COMMENT "Generating embedded button mask PNG header"
+)
+
+set(EMBEDDED_ASSET_HEADERS
+    ${BOOT_ROM_HDR}
+    ${FRAME_PNG_HDR}
+    ${BUTTONS_MASK_PNG_HDR}
 )
 
 # Include directories
@@ -151,8 +175,7 @@ set(BE300_SOURCES
 # Native host CLI executable.
 option(BUILD_CLI "Build the host command-line emulator" ON)
 if(BUILD_CLI)
-    add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
-    target_compile_definitions(be300 PRIVATE BE300_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${EMBEDDED_ASSET_HEADERS})
     target_link_libraries(be300 m ${SDL2_LIBRARIES} ${PNG_LIBRARIES})
     if(APPLE)
         target_link_libraries(be300 "-framework Cocoa" "-framework CoreGraphics" "-framework QuartzCore" objc)
@@ -169,10 +192,9 @@ if(BUILD_ANDROID)
 
     add_library(be300_android SHARED
         android/app/src/main/cpp/be300_jni.c
-        ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
+        ${GXEMUL_SOURCES} ${BE300_SOURCES} ${EMBEDDED_ASSET_HEADERS})
     target_compile_definitions(be300_android PRIVATE
-        BE300_ANDROID=1
-        BE300_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+        BE300_ANDROID=1)
     target_link_libraries(be300_android m log android jnigraphics)
 endif()
 
@@ -195,15 +217,20 @@ if(BUILD_WEB)
 
     set(WEB_OUTPUT_DIR ${CMAKE_BINARY_DIR}/web)
     file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR})
-    foreach(asset index.html app.js worker.js styles.css be300_frame.png buttons_dpad_bw_mask.png favicon.svg)
+    foreach(asset index.html app.js worker.js styles.css favicon.svg)
         configure_file(${CMAKE_SOURCE_DIR}/web/${asset}
+                       ${WEB_OUTPUT_DIR}/${asset}
+                       COPYONLY)
+    endforeach()
+    foreach(asset be300_frame.png buttons_dpad_bw_mask.png)
+        configure_file(${CMAKE_SOURCE_DIR}/src/ui/assets/${asset}
                        ${WEB_OUTPUT_DIR}/${asset}
                        COPYONLY)
     endforeach()
 
     add_executable(be300_web
         ${CMAKE_SOURCE_DIR}/web/main_web.c
-        ${GXEMUL_SOURCES} ${BE300_SOURCES} ${BOOT_ROM_HDR})
+        ${GXEMUL_SOURCES} ${BE300_SOURCES} ${EMBEDDED_ASSET_HEADERS})
     set_target_properties(be300_web PROPERTIES
         OUTPUT_NAME "be300_web"
         RUNTIME_OUTPUT_DIRECTORY ${WEB_OUTPUT_DIR})
