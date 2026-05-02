@@ -83,6 +83,17 @@ typedef struct {
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* throttle target in million guest instructions/sec; 0 = unthrottled */
     double      frame_lcd_scale; /* framed SDL LCD scale; 0 = default/env */
+
+    /* Optional --pcconnect-bridge spec; mutually exclusive with
+     * --pcconnect-time-sync. NULL = disabled.
+     * Examples: "tcp:127.0.0.1:5555", "tcp-listen:5555",
+     *           "unix:/tmp/pcc.sock", "unix-listen:/tmp/pcc.sock", "pty:auto".
+     * --pcconnect-tee writes both directions to a host-side log. */
+    const char *pcconnect_bridge;
+    const char *pcconnect_tee;
+    /* Inter-byte throttle on the guest->host bridge direction. 0 = unlimited.
+     * Default 115200 to match real-hardware 8N1 timing. */
+    uint32_t    pcconnect_baud;
 } machine_config_t;
 
 typedef enum {
@@ -195,6 +206,7 @@ void       be300_buttons_host_update(machine_t *m, uint8_t old_set1,
                                      uint8_t old_set2);
 void       be300_touch_tick(machine_t *m);
 void       be300_pcconnect_poll(void);
+bool       be300_pcconnect_irq_is_asserted(void);
 void       be300_vrc4173_update_cf_irq(void);
 void       be300_stop(machine_t *m);
 void       be300_run(machine_t *m);

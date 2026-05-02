@@ -16,6 +16,7 @@
 #include "be300_probe.h"
 #include "host_io.h"
 #include "pcconnect.h"
+#include "pcconnect_bridge.h"
 #include "ppsh.h"
 #include "stowaway.h"
 #include "ui.h"
@@ -407,6 +408,21 @@ machine_t *be300_create(const machine_config_t *cfg)
     if (!m) return NULL;
     m->cfg = *cfg;
     pcconnect_configure(cfg->enable_pcconnect_time_sync);
+    if (cfg->pcconnect_bridge) {
+        pcc_bridge_config_t br = {0};
+        if (!pcconnect_bridge_parse_spec(cfg->pcconnect_bridge, &br)) {
+            free(m);
+            return NULL;
+        }
+        br.tee_path = cfg->pcconnect_tee;
+        br.uart_name = NULL;        /* default vrc4173siu */
+        br.trace = (getenv("BE300_PCC_TRACE") != NULL);
+        br.baud = cfg->pcconnect_baud;
+        if (!pcconnect_bridge_configure(&br)) {
+            free(m);
+            return NULL;
+        }
+    }
     stowaway_configure(cfg->enable_stowaway_keyboard);
     m->boot_mode = BE300_BOOT_NONE;
     m->use_builtin_ui = true;
@@ -851,8 +867,11 @@ static bool be300_run_batch(machine_t *m)
     be300_touch_tick(m);
     cf_ne2000_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     be300_vrc4173_update_cf_irq();
-    if (m->cfg.enable_pcconnect_time_sync || m->cfg.enable_stowaway_keyboard)
+    if (m->cfg.enable_pcconnect_time_sync || m->cfg.enable_stowaway_keyboard ||
+        m->cfg.pcconnect_bridge)
         be300_pcconnect_poll();
+    if (m->cfg.pcconnect_bridge)
+        pcconnect_bridge_tick();
 
     if (m->use_builtin_ui && ui_should_quit(m))
         return false;
@@ -1044,6 +1063,7 @@ void be300_destroy(machine_t *m)
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_destroy(&m->cf[i]);
     pcconnect_configure(false);
+    pcconnect_bridge_shutdown();
     stowaway_configure(false);
 
     free(m);

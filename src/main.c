@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "be300.h"
+#include "pcconnect_bridge.h"
 
 /* GXemul global verbosity gates — see gxemul/src/core/debugmsg.c.
  * debug() is silent while emul_executing unless verbose >= 1. */
@@ -66,6 +67,15 @@ static void usage(const char *prog)
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
         "  --pcconnect-time-sync Enable experimental Casio PC Connect time-sync peer\n"
+        "  --pcconnect-bridge <S> Pipe the VRC4173 SIU UART to a host chardev so a\n"
+        "                        UTM Windows VM running PCConnect can talk to the guest.\n"
+        "                        S = tcp:HOST:PORT | tcp-listen:PORT[@ADDR]\n"
+        "                          | unix:/PATH | unix-listen:/PATH | pty:auto\n"
+        "                        Mutually exclusive with --pcconnect-time-sync.\n"
+        "  --pcconnect-tee <P>   Write both directions of the bridged byte stream to P\n"
+        "                        (annotated text). Requires --pcconnect-bridge.\n"
+        "  --pcconnect-baud <N>  Throttle guest->host bridge transmit to N baud (8N1).\n"
+        "                        Default 115200 to match real serial; 0 = unlimited.\n"
         "  --rtc-host-time       Initialize the guest RTC from host local time\n"
         "  --stowaway-keyboard   Feed host key events to the Stowaway serial dock on COM1:\n"
         "  --frame-2x            Show framed SDL display with a 480x640 LCD area\n"
@@ -118,6 +128,9 @@ int main(int argc, char *argv[])
         .sdram_size     = 16u * 1024u * 1024u,
         .target_mhz     = 166u,
         .frame_lcd_scale = 0.0,
+        .pcconnect_bridge = NULL,
+        .pcconnect_tee    = NULL,
+        .pcconnect_baud   = 115200u,
     };
 
     for (int i = 1; i < argc; i++) {
@@ -129,6 +142,20 @@ int main(int argc, char *argv[])
             cfg.enable_ppsh = true;
         } else if (strcmp(argv[i], "--pcconnect-time-sync") == 0) {
             cfg.enable_pcconnect_time_sync = true;
+        } else if (strcmp(argv[i], "--pcconnect-bridge") == 0 && i + 1 < argc) {
+            cfg.pcconnect_bridge = argv[++i];
+        } else if (strcmp(argv[i], "--pcconnect-tee") == 0 && i + 1 < argc) {
+            cfg.pcconnect_tee = argv[++i];
+        } else if (strcmp(argv[i], "--pcconnect-baud") == 0 && i + 1 < argc) {
+            char *end = NULL;
+            unsigned long b = strtoul(argv[++i], &end, 0);
+            if (!end || *end != '\0' || b > 1000000u) {
+                fprintf(stderr,
+                    "Error: --pcconnect-baud must be 0..1000000 (got '%s')\n",
+                    argv[i]);
+                return 1;
+            }
+            cfg.pcconnect_baud = (uint32_t)b;
         } else if (strcmp(argv[i], "--rtc-host-time") == 0) {
             cfg.enable_rtc_host_time = true;
         } else if (strcmp(argv[i], "--stowaway-keyboard") == 0) {
@@ -230,11 +257,36 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    if (cfg.enable_pcconnect_time_sync && cfg.enable_stowaway_keyboard) {
+    if ((cfg.enable_pcconnect_time_sync || cfg.pcconnect_bridge) &&
+        cfg.enable_stowaway_keyboard) {
         fprintf(stderr,
-            "Error: --pcconnect-time-sync and --stowaway-keyboard both use COM1:\n");
+            "Error: --pcconnect-time-sync / --pcconnect-bridge and "
+            "--stowaway-keyboard all share COM1:\n");
         usage(argv[0]);
         return 1;
+    }
+    if (cfg.enable_pcconnect_time_sync && cfg.pcconnect_bridge) {
+        fprintf(stderr,
+            "Error: --pcconnect-time-sync and --pcconnect-bridge are "
+            "mutually exclusive (one peer at a time on the SIU UART)\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (cfg.pcconnect_tee && !cfg.pcconnect_bridge) {
+        fprintf(stderr,
+            "Error: --pcconnect-tee requires --pcconnect-bridge\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (cfg.pcconnect_bridge) {
+        pcc_bridge_config_t br = {0};
+        if (!pcconnect_bridge_parse_spec(cfg.pcconnect_bridge, &br)) {
+            usage(argv[0]);
+            return 1;
+        }
+        /* Defer pcconnect_bridge_configure() to machine_be300.c, which
+         * runs after CLI parsing and before device wiring. The parse here
+         * is just a syntax check so we fail fast on bad specs. */
     }
     {
         int boot_modes = (cfg.rom_path    ? 1 : 0) +

@@ -17,8 +17,14 @@ Do not reintroduce `resume_ctx` seeding, synthetic warm-boot state, or any other
 - Primary active target: WinCE 3.0 cold boot via `--nand ce/restore_images/All_nand_300.bin`
 - Secondary code paths still present in the tree: CF recovery boot via
   `--restore --cf`, PPSH debug-shell probing via `--ppsh`, PCMCIA NE2000 via
-  `--ne2000`, host RTC initialization via `--rtc-host-time`, and experimental
-  PC Connect time sync via `--pcconnect-time-sync`
+  `--ne2000`, host RTC initialization via `--rtc-host-time`, experimental
+  PC Connect time sync via `--pcconnect-time-sync`, and PC Connect serial
+  bridge via `--pcconnect-bridge` (pipes the VRC4173 SIU UART to a host
+  TCP/Unix/PTY chardev so a UTM Windows VM running real `PCConnect.exe`
+  can talk to the WinCE guest; see `docs/PC_CONNECT_BRIDGE.md`). The dock
+  is serial-over-USB-bridge silicon, **not** a USB function controller —
+  neither VR4131 nor VRC4173 has a USBF block, so PC sync is fundamentally
+  serial.
 - Non-3.0 WinCE images remain in the tree for reference only
 
 ## Reference & Documentation
@@ -346,7 +352,7 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 ## Current Investigation Guidance
 
 - Primary active target: WinCE 3.0 cold boot via `--nand ce/restore_images/All_nand_300.bin`
-- Secondary implemented paths: `--restore --cf`, `--ppsh`, `--ne2000`, `--rtc-host-time`, and `--pcconnect-time-sync`
+- Secondary implemented paths: `--restore --cf`, `--ppsh`, `--ne2000`, `--rtc-host-time`, `--pcconnect-time-sync`, and `--pcconnect-bridge`
 - Do not solve cold boot with guest patches, RAM seeds, `resume_ctx` seeds, or forced handoff shortcuts
 - `docs/CURRENT_STATUS.md` is the current handoff for boot status, RTC/NE2000 notes, and any active investigation focus
 - Historical pass handoffs live under `docs/archive/`; do not treat them as current unless `docs/CURRENT_STATUS.md` explicitly points back to one

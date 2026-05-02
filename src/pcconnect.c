@@ -5,8 +5,9 @@
 #include <time.h>
 
 #include "pcconnect.h"
+#include "pcconnect_bridge.h"
+#include "pcconnect_ring.h"
 
-#define PCC_RX_CAP 4096u
 #define PCC_TX_FRAME_CAP 512u
 #define PCC_NS_PER_MS 1000000ull
 #define PCC_DEFAULT_POST_READY_DELAY_MS 4u
@@ -35,10 +36,7 @@ typedef struct {
     unsigned guest_sync_seen;
     unsigned post_ready_sync_seen;
     unsigned post_ready_delay_ms;
-    uint8_t rx[PCC_RX_CAP];
-    size_t head;
-    size_t tail;
-    size_t count;
+    pcc_ring_t rx;
     uint8_t tx_frame[PCC_TX_FRAME_CAP];
     size_t tx_frame_len;
     size_t tx_frame_expected;
@@ -112,15 +110,8 @@ static void queue_host_byte(uint8_t byte)
     if (!g_pcc.enabled)
         return;
 
-    was_empty = g_pcc.count == 0;
-    if (g_pcc.count == PCC_RX_CAP) {
-        g_pcc.tail = (g_pcc.tail + 1u) % PCC_RX_CAP;
-        g_pcc.count--;
-    }
-
-    g_pcc.rx[g_pcc.head] = byte;
-    g_pcc.head = (g_pcc.head + 1u) % PCC_RX_CAP;
-    g_pcc.count++;
+    was_empty = pcc_ring_is_empty(&g_pcc.rx);
+    pcc_ring_push(&g_pcc.rx, byte);
     trace_byte("host->guest", byte);
 
     if (was_empty && g_pcc.rx_ready_cb)
@@ -135,9 +126,7 @@ static void queue_host_bytes(const uint8_t *bytes, size_t len)
 
 static void clear_rx_queue(void)
 {
-    g_pcc.head = 0;
-    g_pcc.tail = 0;
-    g_pcc.count = 0;
+    pcc_ring_clear(&g_pcc.rx);
 }
 
 static void put_be16(uint8_t *p, unsigned value)
@@ -422,10 +411,15 @@ void pcconnect_set_rx_ready_callback(void (*cb)(void *opaque), void *opaque)
 {
     g_pcc.rx_ready_cb = cb;
     g_pcc.rx_ready_opaque = opaque;
+    /* Bridge runs in parallel as a backend; share the dock-edge plumbing. */
+    pcconnect_bridge_set_rx_ready_callback(cb, opaque);
 }
 
 void pcconnect_set_cable_connected(bool connected)
 {
+    /* Both backends consume cable edges; whichever is enabled acts. */
+    pcconnect_bridge_set_cable_connected(connected);
+
     if (!g_pcc.enabled)
         return;
 
@@ -462,6 +456,8 @@ void pcconnect_set_cable_connected(bool connected)
 
 bool pcconnect_ns16550_claims(const char *name)
 {
+    if (pcconnect_bridge_ns16550_claims(name))
+        return true;
     if (!g_pcc.enabled || !name)
         return false;
 
@@ -473,11 +469,15 @@ bool pcconnect_ns16550_claims(const char *name)
 
 bool pcconnect_cable_connected(void)
 {
+    if (pcconnect_bridge_cable_connected())
+        return true;
     return g_pcc.enabled && g_pcc.cable_connected;
 }
 
 bool pcconnect_guest_uart_ready(void)
 {
+    if (pcconnect_bridge_guest_uart_ready())
+        return true;
     return g_pcc.enabled && g_pcc.guest_uart_ready;
 }
 
@@ -489,6 +489,8 @@ bool pcconnect_trace_enabled(void)
 void pcconnect_note_uart_config(const char *name, uint8_t lcr, uint8_t mcr,
     uint8_t ier, int divisor, int dlab)
 {
+    pcconnect_bridge_note_uart_config(name, lcr, mcr, ier, divisor, dlab);
+
     if (!g_pcc.enabled)
         return;
 
@@ -540,29 +542,38 @@ void pcconnect_trace_uart_access(const char *name, bool claimed,
 
 bool pcconnect_uart_rx_available(void)
 {
+    if (pcconnect_bridge_enabled())
+        return pcconnect_bridge_uart_rx_available();
+
     if (!g_pcc.enabled || !g_pcc.cable_connected)
         return false;
 
     service_pending_host_action(false);
-    return g_pcc.count > 0;
+    return !pcc_ring_is_empty(&g_pcc.rx);
 }
 
 int pcconnect_uart_rx_pop(void)
 {
-    uint8_t byte;
+    int byte;
+
+    if (pcconnect_bridge_enabled())
+        return pcconnect_bridge_uart_rx_pop();
 
     if (!pcconnect_uart_rx_available())
         return -1;
 
-    byte = g_pcc.rx[g_pcc.tail];
-    g_pcc.tail = (g_pcc.tail + 1u) % PCC_RX_CAP;
-    g_pcc.count--;
-    trace_byte("guest read", byte);
+    byte = pcc_ring_pop(&g_pcc.rx);
+    trace_byte("guest read", (uint8_t)byte);
     return byte;
 }
 
 void pcconnect_uart_tx_byte(uint8_t byte)
 {
+    if (pcconnect_bridge_enabled()) {
+        pcconnect_bridge_uart_tx_byte(byte);
+        return;
+    }
+
     if (!g_pcc.enabled)
         return;
 
@@ -595,7 +606,7 @@ void pcconnect_uart_tx_byte(uint8_t byte)
 
     if (!g_pcc.probe_frame_queued && byte == 0x55) {
         service_pending_host_action(false);
-        if (g_pcc.count > 0) {
+        if (!pcc_ring_is_empty(&g_pcc.rx)) {
             trace_message("discard stale post-ready sync echo before next phase");
             clear_rx_queue();
         }
