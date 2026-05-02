@@ -2,10 +2,12 @@
 """Generate an experimental WinCE NAND image with a larger display mode.
 
 The stock BE-300 WinCE 3.0 display stack hardcodes a 240x320 mode in
-``ddi.dll`` and clamps calibrated touch output to that range in ``touch.dll``.
+``ddi.dll``, clamps calibrated touch output to that range in ``touch.dll``,
+and sizes the launcher pane for the original QVGA width in ``menu.exe``.
 This tool patches the verified NK XIP constants to expose 480x640 with a
-1024-byte stride, a 0xA0000-byte framebuffer mapping, and matching touch
-calibration limits, then repacks the NK partition into a new NAND image.
+1024-byte stride, a 0xA0000-byte framebuffer mapping, matching touch
+calibration limits, and a 480-wide launcher pane, then repacks the NK
+partition into a new NAND image.
 """
 
 from __future__ import annotations
@@ -73,6 +75,12 @@ PATCHES_480X640 = (
     imm_patch(0x01A56524, 0x24090140, 0x0280, "surface height"),
     WordPatch(0x01A5C6F0, 0x8E290004, 0x240901E0, "DrvGetModes width"),
     WordPatch(0x01A5C6FC, 0x8E2A0008, 0x240A0280, "DrvGetModes height"),
+)
+
+PATCHES_MENU_480X640 = (
+    imm_patch(0x00011840, 0x240900D3, 0x01C3, "launcher item row width"),
+    imm_patch(0x000118D4, 0x25F800D7, 0x01C7, "launcher scrollbar x offset"),
+    imm_patch(0x00011938, 0x241800ED, 0x01DD, "launcher pane width"),
 )
 
 
@@ -217,11 +225,41 @@ def patch_touch_480x640(nk: bytearray) -> list[str]:
     return notes
 
 
+def patch_menu_480x640(nk: bytearray) -> list[str]:
+    base_va, data_off, size = find_module_text(nk, "menu.exe")
+    notes: list[str] = []
+
+    for patch in PATCHES_MENU_480X640:
+        rel = patch.va - base_va
+        if rel < 0 or rel + 4 > size:
+            raise ValueError(f"{patch.label}: VA 0x{patch.va:08X} is outside menu.exe")
+
+        off = data_off + rel
+        current = u32(nk, off)
+        if current == patch.new_word:
+            notes.append(f"already patched 0x{patch.va:08X} {patch.label}")
+            continue
+        if current != patch.old_word:
+            raise ValueError(
+                f"{patch.label}: expected 0x{patch.old_word:08X} at "
+                f"0x{patch.va:08X}, found 0x{current:08X}"
+            )
+
+        struct.pack_into("<I", nk, off, patch.new_word)
+        notes.append(
+            f"patched 0x{patch.va:08X} {patch.label}: "
+            f"0x{patch.old_word:08X} -> 0x{patch.new_word:08X}"
+        )
+
+    return notes
+
+
 def build_patched_nand(nand: bytes, partition_index: int) -> tuple[bytes, list[str], dict[str, int]]:
     image = decode_nk_partition(nand, partition_index=partition_index)
     patched_flat = bytearray(image.flat_image)
     notes = patch_ddi_480x640(patched_flat)
     notes.extend(patch_touch_480x640(patched_flat))
+    notes.extend(patch_menu_480x640(patched_flat))
     replacement_logical = patch_logical_stream_from_flat(image, bytes(patched_flat))
     replacement_raw = encode_lzss(replacement_logical)
 
