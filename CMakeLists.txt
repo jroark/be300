@@ -177,6 +177,7 @@ set(BE300_SOURCES
     src/hw/nand.c
     src/hw/nand_restore.c
     src/hw/cf.c
+    src/hw/cf_ne2000.c
     src/hw/aiu.c
 )
 
