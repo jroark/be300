@@ -2,9 +2,9 @@
 
 ## Emulation Philosophy
 
-The goal of this project is **accurate cold boot of Windows CE 3.0** (`ce/restore_images/All_nand_300.bin`) on the Casio BE-300. The emulator must boot from the ROM reset vector through SPL, NK.exe decompression, and into WinCE 3.0 exactly as real hardware does after battery removal.
+The goal of this project is **accurate cold boot of Windows CE 3.0** (`ce/restore_images/All_nand_300.bin`, supplied locally) on the Casio BE-300. The emulator must boot from the ROM reset vector through SPL, NK.exe decompression, and into WinCE 3.0 exactly as real hardware does after battery removal.
 
-The Linux kernel boot path (`--kernel`), its ELF loader, and the `kernels/` tree have been removed. Non-3.0 WinCE images remain in the tree for reference only but are not tested or supported.
+The Linux kernel boot path (`--kernel`), its ELF loader, and the `kernels/` tree have been removed. Non-3.0 WinCE images may be kept locally for reference only but are not tested or supported.
 
 **Always prefer hardware-accurate emulation over workarounds.** Do not use seeds, patches, memory pre-population, guest binary modifications, or forced handoff shortcuts to work around emulation bugs. If a guest OS behavior fails, the root cause is a missing or incorrect hardware behavior in the emulator. Find and fix the emulator bug rather than patching the guest. The ROM and NK.exe binaries are captured from real hardware and must run unmodified.
 
@@ -25,7 +25,7 @@ Do not reintroduce `resume_ctx` seeding, synthetic warm-boot state, or any other
   is serial-over-USB-bridge silicon, **not** a USB function controller —
   neither VR4131 nor VRC4173 has a USBF block, so PC sync is fundamentally
   serial.
-- Non-3.0 WinCE images remain in the tree for reference only
+- Non-3.0 WinCE images are local-only reference assets
 
 ## Reference & Documentation
 
@@ -35,8 +35,8 @@ Available external reference environments:
 - Platform Builder 3.0 VM
 
 Primary local references:
-- `docs/hardware/Vr4131-um_200203.pdf` - NEC VR4131 SoC users manual
-- `docs/hardware/U14579EJ2V0UM00.pdf` - NEC VRC4173 companion chip users manual
+- `docs/hardware/Vr4131-um_200203.pdf` - local NEC VR4131 SoC users manual copy
+- `docs/hardware/U14579EJ2V0UM00.pdf` - local NEC VRC4173 companion chip users manual copy
 - `docs/hardware/hardware.txt` - notes from Linux4be project developers
 - `docs/hardware/hw_dump_vr4131.txt` - VR4131 register dumps from real hardware
 - `docs/hardware/hw_dump_vrc4173.txt` - VRC4173 register dumps from real hardware
@@ -135,8 +135,8 @@ git submodule update --init
 - Restore images are raw sector data in logical block order: `1004 blocks * 32 pages * 512 bytes = 16,449,536 bytes`
 - `NANDWRITER.bin` writes them to NAND as-is with identity block mapping
 - `ce/restore_images/RESTORE_IMAGES.md` documents the image set
-- `ce/restore_images/All_nand_300.bin` is the sole active cold-boot target
-- Other images such as `All_nand_Net.bin`, `org_CE_30.bin`, `BE500.bin`, and `CE_Net.bin` remain in the tree for reference only
+- `ce/restore_images/All_nand_300.bin` is the sole active cold-boot target and must be supplied locally
+- Other local images such as `All_nand_Net.bin`, `org_CE_30.bin`, `BE500.bin`, and `CE_Net.bin` may be useful for reference but are not distributed in Git
 
 **Restore image partition table** (block 0, 16-byte entries: `8 bytes 0xFF + start_sector(4) + size(4)`)
 - Entry 0: sectors `0-31` -> boot metadata

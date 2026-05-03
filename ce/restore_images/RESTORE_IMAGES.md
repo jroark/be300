@@ -1,12 +1,14 @@
 # Restore Images Documentation
 
-This document describes the WinCE restore images for the Casio BE-300 found in `ce/restore_images/`.
+This document describes local WinCE restore images for the Casio BE-300. The
+images themselves are not redistributed in Git; keep developer-supplied copies
+under `ce/restore_images/` or another ignored local path. See
+[`docs/LOCAL_ASSETS.md`](../../docs/LOCAL_ASSETS.md).
 
 ## Summary
 
-The repository contains raw NAND restore images and Casio backup files. The
-NAND images contain the boot metadata, SPL, NK.exe, and FAT16 filesystem
-partition. The backup files contain only a Casio backup header plus the FAT16
+Raw NAND images contain the boot metadata, SPL, NK.exe, and FAT16 filesystem
+partition. Backup files contain only a Casio backup header plus the FAT16
 filesystem payload; they are not directly bootable.
 
 | File | Size | OS Version | Description |
@@ -16,8 +18,8 @@ filesystem payload; they are not directly bootable.
 | `CE_Net.bin` | 16 MB | Windows CE 4.0 (.NET) | An unofficial or experimental port of WinCE 4.0. |
 | `NANDWRITER.bin` | 32 KB | Windows CE (App) | A "B000FF" formatted utility for CF-to-NAND flashing/verification. |
 | `org_CE_30.bin` | 16 MB | Windows CE 3.0 | Original CE 3.0 factory image, Bootloader Ver 0.60. |
-| `BACKUP.bin` | 12 MB | Windows CE 3.0 user data | Casio backup file. Not bootable by itself. |
-| `BACKUP_BeShell_fixed.bin` | 12 MB | Windows CE 3.0 user data | Casio backup file with BeShell payload. Not bootable by itself. |
+| `BACKUP.bin` | 12 MB | Windows CE 3.0 user data | Local Casio backup file. Not bootable by itself. |
+| `BACKUP_BeShell_fixed.bin` | 12 MB | Windows CE 3.0 user data | Local Casio backup file with BeShell payload. Not bootable by itself. |
 
 ## NAND Layout
 

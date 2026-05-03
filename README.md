@@ -4,6 +4,10 @@ Casio Cassiopeia BE-300 emulator using a lightly integrated GXemul 0.7.0 MIPS
 CPU core. The active target is accurate cold boot of Windows CE 3.0 from the
 real masked boot ROM and a raw NAND restore image.
 
+NAND restore images, Casio backup images, and vendor PDFs are not distributed
+in this repository. Place local copies at the expected paths before running
+WinCE boot tests; see [`docs/LOCAL_ASSETS.md`](docs/LOCAL_ASSETS.md).
+
 The emulator must boot the unmodified ROM and NAND image through the same chain
 as hardware after battery removal:
 
@@ -51,6 +55,14 @@ On macOS, replace `$(nproc)` with the number of jobs you want to run, or use a
 shell that provides `nproc`.
 
 ## Run WinCE 3.0
+
+Provide a local NAND image first:
+
+```text
+ce/restore_images/All_nand_300.bin
+```
+
+Then run:
 
 ```bash
 cd build-host
@@ -100,8 +112,8 @@ Run `./be300 --help` for the current option list.
 
 Primary hardware and boot references:
 
-- [`docs/hardware/Vr4131-um_200203.pdf`](docs/hardware/Vr4131-um_200203.pdf)
-- [`docs/hardware/U14579EJ2V0UM00.pdf`](docs/hardware/U14579EJ2V0UM00.pdf)
+- NEC VR4131 users manual (`Vr4131-um_200203.pdf`, local copy)
+- NEC VRC4173 users manual (`U14579EJ2V0UM00.pdf`, local copy)
 - [`docs/hardware/hardware.txt`](docs/hardware/hardware.txt)
 - [`docs/hardware/hw_dump_vr4131.txt`](docs/hardware/hw_dump_vr4131.txt)
 - [`docs/hardware/hw_dump_vrc4173.txt`](docs/hardware/hw_dump_vrc4173.txt)

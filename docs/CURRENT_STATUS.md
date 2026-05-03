@@ -10,6 +10,9 @@ The primary target is accurate cold boot of Windows CE 3.0 from:
 ./be300 --nand ../ce/restore_images/All_nand_300.bin
 ```
 
+The NAND image is a local prerequisite and is not redistributed in Git; see
+`docs/LOCAL_ASSETS.md`.
+
 The emulator should run the real masked ROM, load the SPL from NAND, decompress
 NK.exe, start WinCE, and reach the first-boot UI without guest patches, RAM
 seeds, or synthetic handoff state.
@@ -84,8 +87,8 @@ evidence. Those investigations are archived under `docs/archive/`.
 
 ## Authoritative References
 
-- `docs/hardware/Vr4131-um_200203.pdf`
-- `docs/hardware/U14579EJ2V0UM00.pdf`
+- `Vr4131-um_200203.pdf` (local NEC VR4131 users manual copy)
+- `U14579EJ2V0UM00.pdf` (local NEC VRC4173 users manual copy)
 - `docs/hardware/hardware.txt`
 - `docs/hardware/hw_dump_vr4131.txt`
 - `docs/hardware/hw_dump_vrc4173.txt`

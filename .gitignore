@@ -43,9 +43,15 @@ android/app/.cxx/
 screenshot_*.bmp
 *.bin
 *.bin.meta.txt
+*.nand
+*.img
+*.dat
+*.zip
+*.pdf
 
-# Local CF test images (built by hand for --cf testing)
+# Local restore / CF / web assets supplied by developers.
 ce/restore_images/cf_test_*.img
+web/nand/
 
 # Python cache
 __pycache__/
