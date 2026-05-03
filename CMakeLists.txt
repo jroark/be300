@@ -156,6 +156,11 @@ set(BE300_SOURCES
     src/machine_be300.c
     src/be300_probe.c
     src/be300_devices.c
+    src/devices/input.c
+    src/devices/nand_window.c
+    src/devices/pcmcia_attr.c
+    src/devices/siu_extra.c
+    src/devices/wince_aux.c
     src/host_io.c
     src/pcconnect.c
     src/pcconnect_bridge.c
