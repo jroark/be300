@@ -41,6 +41,15 @@
 extern volatile bool emul_shutdown;
 extern volatile bool emul_executing;
 
+#define BE300_FB_DEFAULT_WIDTH       240u
+#define BE300_FB_DEFAULT_HEIGHT      320u
+#define BE300_FB_DEFAULT_STRIDE      256u
+#define BE300_FB_DEFAULT_MEM_HEIGHT  324u
+#define BE300_FB_HIRES_WIDTH         480u
+#define BE300_FB_HIRES_HEIGHT        640u
+#define BE300_FB_HIRES_STRIDE        512u
+#define BE300_FB_HIRES_MEM_HEIGHT    640u
+
 static void be300_handle_stop_signal(int signum)
 {
     (void)signum;
@@ -195,6 +204,53 @@ static void be300_maybe_apply_nk_override(machine_t *m)
 static bool be300_uses_rom_boot(const machine_config_t *cfg)
 {
     return cfg && (cfg->nand_path || cfg->restore);
+}
+
+static bool be300_select_framebuffer_geometry(machine_t *m)
+{
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+
+    if (!m)
+        return false;
+
+    width = m->cfg.fb_width ? m->cfg.fb_width : BE300_FB_DEFAULT_WIDTH;
+    height = m->cfg.fb_height ? m->cfg.fb_height : BE300_FB_DEFAULT_HEIGHT;
+    stride = m->cfg.fb_stride ? m->cfg.fb_stride : BE300_FB_DEFAULT_STRIDE;
+
+    if (width == BE300_FB_DEFAULT_WIDTH &&
+        height == BE300_FB_DEFAULT_HEIGHT &&
+        stride == BE300_FB_DEFAULT_STRIDE) {
+        m->fb_width = width;
+        m->fb_height = height;
+        m->fb_stride = stride;
+        m->fb_mem_height = BE300_FB_DEFAULT_MEM_HEIGHT;
+        return true;
+    }
+
+    if (width == BE300_FB_HIRES_WIDTH &&
+        height == BE300_FB_HIRES_HEIGHT &&
+        stride == BE300_FB_HIRES_STRIDE) {
+        m->fb_width = width;
+        m->fb_height = height;
+        m->fb_stride = stride;
+        m->fb_mem_height = BE300_FB_HIRES_MEM_HEIGHT;
+        if (m->cfg.sdram_size < 64u * 1024u * 1024u) {
+            fprintf(stderr,
+                "[BE300] Warning: 480x640 framebuffer mode is experimental; "
+                "--sdram 64 is recommended\n");
+        }
+        fprintf(stderr,
+            "[BE300] Experimental framebuffer mode: %ux%u stride=%u\n",
+            m->fb_width, m->fb_height, m->fb_stride);
+        return true;
+    }
+
+    fprintf(stderr,
+        "[BE300] Unsupported framebuffer geometry: %ux%u stride=%u\n",
+        width, height, stride);
+    return false;
 }
 
 static void be300_apply_rtc_host_time(machine_t *m)
@@ -444,9 +500,10 @@ machine_t *be300_create(const machine_config_t *cfg)
                 autostop_env);
         }
     }
-    m->fb_width = 240;
-    m->fb_height = 320;
-    m->fb_stride = 256;
+    if (!be300_select_framebuffer_geometry(m)) {
+        free(m);
+        return NULL;
+    }
 
     /*
      * Initialize GXemul subsystems once per process.
@@ -498,6 +555,10 @@ machine_t *be300_create(const machine_config_t *cfg)
     gxm->machine_subtype = MACHINE_HPCMIPS_CASIO_BE300;
     gxm->cpu_name = strdup("VR4131");
     gxm->physical_ram_in_mb = cfg->sdram_size / (1024 * 1024);
+    gxm->hpcmips_fb_width = (int)m->fb_width;
+    gxm->hpcmips_fb_height = (int)m->fb_height;
+    gxm->hpcmips_fb_stride = (int)m->fb_stride;
+    gxm->hpcmips_fb_mem_height = (int)m->fb_mem_height;
     /* NAND/ROM boot does not use the NetBSD prom_emulation boot convention. */
     gxm->prom_emulation = be300_uses_rom_boot(cfg) ? 0 : 1;
     gxm->boot_kernel_filename = strdup("");

@@ -42,6 +42,7 @@ android/app/.cxx/
 # Screenshots and binary dumps
 screenshot_*.bmp
 *.bin
+*.bin.meta.txt
 
 # Local CF test images (built by hand for --cf testing)
 ce/restore_images/cf_test_*.img

@@ -10,9 +10,10 @@
  *   - `be300_web_load_cf(slot, data, len)` writes optional CF images into
  *     MEMFS paths consumed through `cfg.cf_paths[]`.
  *
- *   - `be300_web_create_ex(sdram_mb, target_mhz, flags, mac)` builds a
- *     `machine_config_t`, calls the existing public `be300_create()` API,
- *     then flips `web_mode`/`use_builtin_ui`/`mirror_serial_to_stdout`.
+ *   - `be300_web_create_ex2(sdram_mb, target_mhz, flags, mac, fb_w, fb_h)`
+ *     builds a `machine_config_t`, calls the existing public
+ *     `be300_create()` API, then flips
+ *     `web_mode`/`use_builtin_ui`/`mirror_serial_to_stdout`.
  *
  *   - `be300_web_stowaway_key`, `be300_web_net_rx`, and
  *     `be300_web_net_tx_pop` expose the browser-only keyboard and Ethernet
@@ -110,9 +111,34 @@ int be300_web_load_cf(uint32_t slot, const uint8_t *data, uint32_t len) {
     return web_write_file(CF_PATHS[slot], data, len);
 }
 
-EMSCRIPTEN_KEEPALIVE
-machine_t *be300_web_create_ex(uint32_t sdram_mb, uint32_t target_mhz,
-                               uint32_t flags, const uint8_t *mac) {
+static bool web_configure_fb(machine_config_t *cfg, uint32_t width,
+                             uint32_t height)
+{
+    if (!cfg || (width == 0 && height == 0))
+        return true;
+    if (width == 240u && height == 320u) {
+        cfg->fb_width = 240u;
+        cfg->fb_height = 320u;
+        cfg->fb_stride = 256u;
+        return true;
+    }
+    if (width == 480u && height == 640u) {
+        cfg->fb_width = 480u;
+        cfg->fb_height = 640u;
+        cfg->fb_stride = 512u;
+        return true;
+    }
+    fprintf(stderr, "[WEB] Unsupported framebuffer size: %ux%u\n",
+        width, height);
+    return false;
+}
+
+static machine_t *be300_web_create_with_fb(uint32_t sdram_mb,
+                                           uint32_t target_mhz,
+                                           uint32_t flags,
+                                           const uint8_t *mac,
+                                           uint32_t fb_width,
+                                           uint32_t fb_height) {
     machine_config_t cfg = {0};
     machine_t *m;
 
@@ -126,6 +152,8 @@ machine_t *be300_web_create_ex(uint32_t sdram_mb, uint32_t target_mhz,
     cfg.sdram_size = sdram_mb * 1024u * 1024u;
     cfg.target_mhz = target_mhz;
     cfg.enable_rtc_host_time = true;
+    if (!web_configure_fb(&cfg, fb_width, fb_height))
+        return NULL;
     cfg.enable_ne2000 = (flags & WEB_FLAG_NE2000) != 0;
     cfg.enable_stowaway_keyboard =
         (flags & WEB_FLAG_TARGUS_KEYBOARD) != 0;
@@ -157,6 +185,20 @@ machine_t *be300_web_create_ex(uint32_t sdram_mb, uint32_t target_mhz,
     m->mirror_serial_to_stdout = false;
     g_current_machine = m;
     return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+machine_t *be300_web_create_ex2(uint32_t sdram_mb, uint32_t target_mhz,
+                                uint32_t flags, const uint8_t *mac,
+                                uint32_t fb_width, uint32_t fb_height) {
+    return be300_web_create_with_fb(sdram_mb, target_mhz, flags, mac,
+        fb_width, fb_height);
+}
+
+EMSCRIPTEN_KEEPALIVE
+machine_t *be300_web_create_ex(uint32_t sdram_mb, uint32_t target_mhz,
+                               uint32_t flags, const uint8_t *mac) {
+    return be300_web_create_with_fb(sdram_mb, target_mhz, flags, mac, 0, 0);
 }
 
 EMSCRIPTEN_KEEPALIVE
