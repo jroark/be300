@@ -19,7 +19,7 @@ seeds, or synthetic handoff state.
 
 Secondary implemented paths, used for targeted investigation only:
 
-- `--restore --cf` for the NANDWRITER/CompactFlash recovery path
+- `--restore --cf` for the local NANDWRITER/CompactFlash recovery path
 - `--ppsh` for the WinCE debug-shell probe path
 - `--ne2000` for the PCMCIA NE2000 Ethernet card path
 - `--rtc-host-time` for interactive boots that should start with the host

@@ -4,9 +4,10 @@ Casio Cassiopeia BE-300 emulator using a lightly integrated GXemul 0.7.0 MIPS
 CPU core. The active target is accurate cold boot of Windows CE 3.0 from the
 real masked boot ROM and a raw NAND restore image.
 
-NAND restore images, Casio backup images, and vendor PDFs are not distributed
-in this repository. Place local copies at the expected paths before running
-WinCE boot tests; see [`docs/LOCAL_ASSETS.md`](docs/LOCAL_ASSETS.md).
+NAND restore images, Casio backup images, restore-package binaries, and vendor
+PDFs are not distributed in this repository. Place local copies at the expected
+paths before running WinCE boot tests; see
+[`docs/LOCAL_ASSETS.md`](docs/LOCAL_ASSETS.md).
 
 The emulator must boot the unmodified ROM and NAND image through the same chain
 as hardware after battery removal:
@@ -98,7 +99,7 @@ not exit on its own.
 These paths remain implemented for targeted investigation, but they are not the
 primary regression target:
 
-- `--restore --cf` — CompactFlash recovery / NANDWRITER path
+- `--restore --cf` — CompactFlash recovery path using a local NANDWRITER tool
 - `--ppsh` — WinCE PPSH debug-shell probe path
 - `--ne2000` — PCMCIA NE2000 Ethernet card model
 - `--rtc-host-time` — initialize the guest RTC from host local time

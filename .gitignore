@@ -50,6 +50,11 @@ screenshot_*.bmp
 *.pdf
 
 # Local restore / CF / web assets supplied by developers.
+ce/restore_images/*.exe
+ce/restore_images/*.dll
+ce/restore_images/*.DLL
+ce/restore_images/*.cab
+ce/restore_images/*.txt
 ce/restore_images/cf_test_*.img
 web/nand/
 

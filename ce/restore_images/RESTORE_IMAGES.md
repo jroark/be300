@@ -1,22 +1,25 @@
 # Restore Images Documentation
 
-This document describes local WinCE restore images for the Casio BE-300. The
-images themselves are not redistributed in Git; keep developer-supplied copies
-under `ce/restore_images/` or another ignored local path. See
+This document describes local WinCE restore images and restore-package tools
+for the Casio BE-300. Those assets are not redistributed in Git; keep
+developer-supplied copies under `ce/restore_images/` or another ignored local
+path. See
 [`docs/LOCAL_ASSETS.md`](../../docs/LOCAL_ASSETS.md).
 
 ## Summary
 
 Raw NAND images contain the boot metadata, SPL, NK.exe, and FAT16 filesystem
 partition. Backup files contain only a Casio backup header plus the FAT16
-filesystem payload; they are not directly bootable.
+filesystem payload; they are not directly bootable. Restore utilities such as
+`NANDWRITER.bin` are local-only tools and are documented here only by observed
+format/behavior.
 
 | File | Size | OS Version | Description |
 |------|------|------------|-------------|
 | `All_nand_300.bin` | 16 MB | Windows CE 3.0 | Factory restore image for BE-300. Bootable NAND template. |
 | `BE500.bin` | 16 MB | Windows CE 3.0? | Likely from the BE-500 model. Features Bootloader Ver 0.62. |
 | `CE_Net.bin` | 16 MB | Windows CE 4.0 (.NET) | An unofficial or experimental port of WinCE 4.0. |
-| `NANDWRITER.bin` | 32 KB | Windows CE (App) | A "B000FF" formatted utility for CF-to-NAND flashing/verification. |
+| `NANDWRITER.bin` | 32 KB | Windows CE (App) | Local-only "B000FF" utility for CF-to-NAND flashing/verification. |
 | `org_CE_30.bin` | 16 MB | Windows CE 3.0 | Original CE 3.0 factory image, Bootloader Ver 0.60. |
 | `BACKUP.bin` | 12 MB | Windows CE 3.0 user data | Local Casio backup file. Not bootable by itself. |
 | `BACKUP_BeShell_fixed.bin` | 12 MB | Windows CE 3.0 user data | Local Casio backup file with BeShell payload. Not bootable by itself. |
@@ -65,9 +68,10 @@ For the WinCE 3.0 images, partition 3 is the filesystem partition at sector
 - **OS**: Reported as Windows CE 4.0 in filename, but internal strings still reference `MSIE 3.02`. This might be a "Net" edition that still uses parts of the CE 3.0 UI or is an early port.
 - **Notes**: Consistent `B000FF\n` structure.
 
-### `NANDWRITER.bin`
+### `NANDWRITER.bin` Local Restore Utility
 - **Type**: Standalone binary image (not a full NAND dump).
 - **Function**: Appears to be a specialized tool for flashing or verifying a full NAND image (`all_nand.bin`) from a Compact Flash (CF) card. Contains debug strings for NAND verification and CF sector access.
+- **Distribution**: Not stored in Git; keep developer-supplied copies local.
 
 ### Backup-only images
 - **Type**: Casio backup file, not a full NAND dump.

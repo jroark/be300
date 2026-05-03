@@ -133,8 +133,8 @@ git submodule update --init
 
 **WinCE restore images**
 - Restore images are raw sector data in logical block order: `1004 blocks * 32 pages * 512 bytes = 16,449,536 bytes`
-- `NANDWRITER.bin` writes them to NAND as-is with identity block mapping
-- `ce/restore_images/RESTORE_IMAGES.md` documents the image set
+- A local `NANDWRITER.bin` restore utility writes them to NAND as-is with identity block mapping
+- `ce/restore_images/RESTORE_IMAGES.md` documents the local image/tool set
 - `ce/restore_images/All_nand_300.bin` is the sole active cold-boot target and must be supplied locally
 - Other local images such as `All_nand_Net.bin`, `org_CE_30.bin`, `BE500.bin`, and `CE_Net.bin` may be useful for reference but are not distributed in Git
 
@@ -145,13 +145,14 @@ git submodule update --init
 - Entry 3: sectors `7584-32127` -> FAT16 filesystem
 - The NK partition at offset `0x14000` includes a real leading `0xFF` byte before the `B000FF` signature
 
-**Flash tools** (`ce/restore_images/`)
+**Local-only flash tools** (`ce/restore_images/` or another ignored path)
 - `NANDWRITER.bin` — CF-to-NAND recovery tool, WinCE B000FF app, version `0.67`, base `0x80E00000`
 - `KLOADER.bin` — standalone SPL used by `NANDWRITER.bin`, version `0.62`
 - `DevOSInstall.exe` — on-device OS installer
 - `Setup.exe` — host-side ActiveSync upgrade coordinator
 - `DevRestore.exe` / `DevBackup.exe` — user-data backup and restore
 - `BootInSafeModeWithPCC.exe` — safe-mode boot utility
+- These binaries are not distributed in Git.
 
 Recovery boot through `--restore --cf` is still implemented for NANDWRITER-path work, but it is not the primary regression target.
 
