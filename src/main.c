@@ -89,6 +89,9 @@ static void usage(const char *prog)
         "                        with --ne2000, one --cf uses the secondary socket)\n"
         "  --ne2000              Attach a PCMCIA NE2000 Ethernet card\n"
         "  --net-mac <mac>       Override NE2000 MAC address (aa:bb:cc:dd:ee:ff)\n"
+        "  --audio               Enable Casio AIU audio path on the VRC4173 latch\n"
+        "                        (default off; pulls PCM from wavedev DMA pointers\n"
+        "                         and plays through SDL; BE300_AUDIO=0 mutes host audio)\n"
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
@@ -136,6 +139,7 @@ int main(int argc, char *argv[])
         .enable_rtc_host_time = false,
         .enable_stowaway_keyboard = false,
         .enable_ne2000   = false,
+        .enable_audio    = false,
         .net_mac_set     = false,
         .restore         = false,
         .mmio_coverage   = false,
@@ -201,6 +205,8 @@ int main(int argc, char *argv[])
             }
         } else if (strcmp(argv[i], "--ne2000") == 0) {
             cfg.enable_ne2000 = true;
+        } else if (strcmp(argv[i], "--audio") == 0) {
+            cfg.enable_audio = true;
         } else if (strcmp(argv[i], "--net-mac") == 0 && i + 1 < argc) {
             if (!parse_mac(argv[++i], cfg.net_mac)) {
                 fprintf(stderr,

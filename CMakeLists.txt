@@ -170,6 +170,7 @@ set(BE300_SOURCES
     src/hw/gpio.c
     src/hw/nand.c
     src/hw/cf.c
+    src/hw/aiu.c
 )
 
 # Native host CLI executable.

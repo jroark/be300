@@ -21,6 +21,7 @@
 #include "hw/gpio.h"
 #include "hw/nand.h"
 #include "hw/cf.h"
+#include "hw/aiu.h"
 
 /* Forward declarations for GXemul types */
 struct cpu;
@@ -63,6 +64,7 @@ typedef struct {
     bool        enable_rtc_host_time;
     bool        enable_stowaway_keyboard;
     bool        enable_ne2000;
+    bool        enable_audio;
     bool        net_mac_set;
     bool        restore;
 
@@ -132,6 +134,9 @@ typedef struct be300_state {
     /* NAND flash controller (VRC4173) */
     nand_state_t nand;
     cf_state_t   cf[BE300_MAX_CF_SLOTS];
+
+    /* AIU (Casio audio block on the VRC4173 latch) */
+    aiu_state_t  aiu;
 
     /* NAND image data (loaded from file) */
     uint8_t     *nand_data;

@@ -147,6 +147,11 @@ static uint16_t *staging_buf = NULL;
 #define BUZZER_DEFAULT_MS          60
 static uint32_t last_buzzer_tick = 0;
 
+/* Real audio path (AIU codec). Streams continuously, so allow a deeper
+ * queue than the buzzer's one-shot pulses. */
+#define AIU_HOST_SAMPLE_RATE     BUZZER_SAMPLE_RATE
+#define AIU_MAX_QUEUE_MS               120
+
 static bool ui_audio_env_enabled(void)
 {
     const char *v = getenv("BE300_AUDIO");
@@ -2431,6 +2436,79 @@ void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
     free(pcm);
 }
 
+void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
+                        uint32_t guest_rate_hz, uint8_t channels)
+{
+    uint32_t queued_max;
+    int16_t *out;
+    size_t out_count;
+
+    if (!audio_device || !samples || count_frames == 0)
+        return;
+    if (channels == 0)
+        channels = 1;
+    if (guest_rate_hz == 0)
+        guest_rate_hz = AIU_HOST_SAMPLE_RATE;
+
+    /* Backpressure: if the host queue is already deeper than our cap,
+     * drop this batch. Keeps wall-clock latency bounded even if the AIU
+     * tick over-pulls. */
+    queued_max = (AIU_HOST_SAMPLE_RATE * (uint32_t)sizeof(int16_t) *
+        AIU_MAX_QUEUE_MS) / 1000u;
+    if (SDL_GetQueuedAudioSize(audio_device) > queued_max)
+        return;
+
+    /* Resample guest_rate -> host_rate with a single-tap linear
+     * interpolator, downmix stereo to mono on the fly.  This is the
+     * simplest correct path; if the test wav is recorded at the host
+     * rate (44.1 kHz mono) it falls through as a straight copy. */
+    {
+        double ratio = (double)AIU_HOST_SAMPLE_RATE / (double)guest_rate_hz;
+        size_t expected = (size_t)((double)count_frames * ratio + 0.5);
+        if (expected == 0)
+            return;
+        out_count = expected;
+    }
+
+    out = (int16_t *)malloc(out_count * sizeof(int16_t));
+    if (!out)
+        return;
+
+    for (size_t i = 0; i < out_count; i++) {
+        double src_idx = (double)i * (double)guest_rate_hz /
+                         (double)AIU_HOST_SAMPLE_RATE;
+        size_t i0 = (size_t)src_idx;
+        size_t i1 = i0 + 1u;
+        double frac;
+        int32_t s0_l, s0_r, s1_l, s1_r, s0, s1, mixed;
+
+        if (i0 >= count_frames)
+            i0 = count_frames - 1u;
+        if (i1 >= count_frames)
+            i1 = count_frames - 1u;
+        frac = src_idx - (double)((size_t)src_idx);
+
+        if (channels == 2u) {
+            s0_l = samples[i0 * 2u];
+            s0_r = samples[i0 * 2u + 1u];
+            s1_l = samples[i1 * 2u];
+            s1_r = samples[i1 * 2u + 1u];
+            s0 = (s0_l + s0_r) / 2;
+            s1 = (s1_l + s1_r) / 2;
+        } else {
+            s0 = samples[i0];
+            s1 = samples[i1];
+        }
+        mixed = (int32_t)((double)s0 + ((double)(s1 - s0)) * frac);
+        if (mixed > 32767) mixed = 32767;
+        if (mixed < -32768) mixed = -32768;
+        out[i] = (int16_t)mixed;
+    }
+
+    SDL_QueueAudio(audio_device, out, (uint32_t)(out_count * sizeof(int16_t)));
+    free(out);
+}
+
 #else  /* !HAVE_SDL2 — headless stubs */
 
 int  ui_init(machine_t *m)         { (void)m; return 0; }
@@ -2440,6 +2518,9 @@ bool ui_should_quit(machine_t *m)  { (void)m; return false; }
 void ui_save_screenshot(machine_t *m) { (void)m; }
 void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
     { (void)frequency_hz; (void)duration_ms; }
+void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
+                        uint32_t guest_rate_hz, uint8_t channels)
+    { (void)samples; (void)count_frames; (void)guest_rate_hz; (void)channels; }
 
 #endif  /* HAVE_SDL2 */
 

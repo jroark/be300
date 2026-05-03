@@ -612,6 +612,7 @@ machine_t *be300_create(const machine_config_t *cfg)
     nand_init(&m->nand, NULL, 0, 0);
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_init(&m->cf[i]);
+    aiu_init(&m->aiu, cfg->log_mmio);
     be300_apply_rtc_host_time(m);
 
     if (cfg->restore)
@@ -928,6 +929,8 @@ static bool be300_run_batch(machine_t *m)
     be300_touch_tick(m);
     cf_ne2000_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     be300_vrc4173_update_cf_irq();
+    if (m->cfg.enable_audio)
+        aiu_tick(m);
     if (m->cfg.enable_pcconnect_time_sync || m->cfg.enable_stowaway_keyboard ||
         m->cfg.pcconnect_bridge)
         be300_pcconnect_poll();
