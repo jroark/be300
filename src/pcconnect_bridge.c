@@ -1,8 +1,7 @@
 /*
  * pcconnect_bridge — transparent serial bridge between the emulated
  * VRC4173 SIU UART and a host chardev (TCP socket / Unix socket / PTY).
- * Pairs with --pcconnect-bridge in src/main.c. Mutually exclusive with
- * the time-sync synthesizer in src/pcconnect.c.
+ * Pairs with --pcconnect-bridge in src/main.c.
  *
  * On the BE-300, the dock cradle wraps a USB-to-UART bridge IC. WinCE
  * drives a plain 115200 8N1 UART, and Windows on the PC sees a USB→Serial
@@ -33,7 +32,7 @@
 #include "pcconnect_ring.h"
 
 #define PCC_BR_DEFAULT_UART "vrc4173siu"
-#define PCC_PREOPEN_FIFO_CAP 16u
+#define PCC_PREOPEN_FIFO_CAP 64u
 
 typedef struct {
     bool armed;
@@ -58,6 +57,7 @@ typedef struct {
     bool cable_connected;
     bool guest_link_connected;
     bool guest_uart_ready;
+    bool drop_initial_rx_idle;
     uint8_t guest_uart_lcr;
     uint8_t guest_uart_mcr;
     uint8_t guest_uart_ier;
@@ -163,6 +163,11 @@ static void clear_serial_queues(void)
     pcc_ring_clear(&g.tx_ring);
     g.rx_next_due_ns = 0;
     g.tx_next_due_ns = 0;
+}
+
+static void arm_initial_rx_idle_drop(void)
+{
+    g.drop_initial_rx_idle = true;
 }
 
 /* ---------- config / spec parsing ---------- */
@@ -634,6 +639,9 @@ static void bridge_drain_rx(void)
             cap = sizeof(scratch);
         ssize_t n = read(g.fd, scratch, cap);
         if (n > 0) {
+            size_t off = 0;
+            size_t len = (size_t)n;
+
             if (!bridge_data_path_connected()) {
                 /*
                  * PCConnect may poll the VM's serial port before the BE-300 is
@@ -645,7 +653,22 @@ static void bridge_drain_rx(void)
                 tee_write_dir("H>G:drop", scratch, (size_t)n);
                 continue;
             }
-            for (ssize_t i = 0; i < n; i++)
+            if (g.drop_initial_rx_idle) {
+                /*
+                 * The PC side may have been polling its COM port before the
+                 * BE-300 dock edge. Real cable insertion does not replay those
+                 * pre-connect serial-idle marks into the guest UART; expose
+                 * the next non-idle poll burst instead.
+                 */
+                while (off < len && scratch[off] == 0x55)
+                    off++;
+                if (off > 0)
+                    tee_write_dir("H>G:drop-idle", scratch, off);
+                if (off == len)
+                    continue;
+                g.drop_initial_rx_idle = false;
+            }
+            for (size_t i = off; i < len; i++)
                 queue_host_rx_pre(scratch[i]);
             /*
              * Once the cable is inserted, the PC's serial stream is present
@@ -653,7 +676,7 @@ static void bridge_drain_rx(void)
              * until serial.dll finishes programming 8N1 and drains the UART.
              */
             tee_write_dir(g.guest_uart_ready ? "H>G" : "H>G:queued",
-                scratch, (size_t)n);
+                &scratch[off], len - off);
             continue;
         }
         if (n == 0) {
@@ -957,6 +980,7 @@ void pcconnect_bridge_set_cable_connected(bool connected)
         g.guest_link_connected = false;
         g.guest_uart_ready = false;
         clear_serial_queues();
+        arm_initial_rx_idle_drop();
         trace("cable disconnected");
         return;
     }
@@ -965,6 +989,7 @@ void pcconnect_bridge_set_cable_connected(bool connected)
     g.cable_connected = true;
     g.guest_link_connected = true;
     if (changed) {
+        arm_initial_rx_idle_drop();
         bridge_release_rx_paced();
         trace("cable connected");
     }
@@ -978,6 +1003,7 @@ void pcconnect_bridge_reset_guest_serial(void)
     g.guest_link_connected = false;
     g.guest_uart_ready = false;
     clear_serial_queues();
+    arm_initial_rx_idle_drop();
     trace("guest serial reset; cable %s",
         g.cable_connected ? "connected" : "disconnected");
 }
