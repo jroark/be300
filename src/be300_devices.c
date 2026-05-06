@@ -736,6 +736,18 @@ static void be300_pcconnect_uart_irq_ready(void *opaque)
         return;
 
     /*
+     * Keep the dock insertion edge separate from later companion-SIU events.
+     * hardware.txt:122-130 documents AA008004 bit 0 and bit 4 as distinct
+     * GIRQ0-4 sub-sources; if an always-polling PC queues RX bytes while bit
+     * 0 is still pending, merging both into one CommMode read can send the
+     * guest down the modem-event path before the socket insertion path has
+     * launched PC Connect.  The polling path below will re-edge bit 4 once
+     * the guest acknowledges bit 0 and RX data is still queued.
+     */
+    if ((d->pcconnect_commmode_pending & BE300_COMMMODE_SOCKET_PENDING) != 0)
+        return;
+
+    /*
      * The companion serial path is not the VR4131 internal SIU path:
      * hardware.txt:8 notes serial is handled by the custom companion, and
      * hardware.txt:122-130 routes the Vic/CommMode page through GIRQ0-4.
