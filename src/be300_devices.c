@@ -548,8 +548,6 @@ static void be300_pcconnect_arm_insert_after_reset(
 void be300_pcconnect_reset_for_cpu_reset(
     struct be300_vrc4173_latch *d)
 {
-    bool preserve_pcconnect_link;
-
     if (!d)
         return;
 
@@ -571,41 +569,29 @@ void be300_pcconnect_reset_for_cpu_reset(
     if (!be300_pcconnect_cable_enabled())
         return;
 
-    preserve_pcconnect_link = pcconnect_cable_connected();
-
     /*
      * KjCMU resets the CPU while the VRC4173-side latch state remains in
-     * host memory.  Before the first emulated insertion, keep the
-     * guest-visible CommMode socket as "not docked" and schedule a fresh
-     * insertion edge after the normal Boot.exe reset.  Once that physical
-     * cable has been presented, later CPU resets (including PCConnect
-     * restore-stage resets) must keep the host-side serial link active.
-     * hardware.txt:189-191 places Vic/CommMode and the SIU in the companion
-     * dock path, and real-hardware PC Connect observation on 2026-05-06
-     * showed the docked serial connection stays active across guest-side
-     * reset/restart until the BE-300 is physically removed from the cradle
-     * or powered down; the host PC keeps polling the serial port in the
-     * meantime.
+     * host memory.  Keep the guest-visible CommMode socket as "not docked"
+     * and schedule a fresh insertion edge after the normal Boot.exe reset,
+     * but do not drop the bridge's physical cable state once it has been
+     * inserted.  hardware.txt:189-191 places Vic/CommMode and the SIU in
+     * the companion dock path, and real-hardware PC Connect observation on
+     * 2026-05-06 showed the docked serial connection stays active across
+     * guest-side reset/restart until the BE-300 is physically removed from
+     * the cradle or powered down; the host PC keeps polling the serial port
+     * in the meantime.
      *
      * The delayed guest-visible edge avoids presenting an already-docked
      * CommMode state to the second-boot OAL, which takes the
-     * software-shutdown/HIBERNATE path before user PC Connect monitors exist.
-     * With preserve_pcconnect_link, host bytes received while the rebooted
-     * guest is not yet re-docked are still treated as arriving on connected
-     * serial pins; the bridge caps or backpressures them instead of modeling
-     * a physical disconnect.  Guest-to-host bytes already accepted by the
-     * companion UART are allowed to finish draining because this is a
-     * CPU-only reset, not a physical dock removal.
+     * software-shutdown/HIBERNATE path before user PC Connect monitors
+     * exist.
      */
     d->pcconnect_dock_connected = false;
     d->pcconnect_commmode_pending = 0;
     d->stowaway_commmode_events = 0;
     d->pcconnect_modem_after_socket_sent = false;
     d->pcconnect_rx_wake_count = 0;
-    if (preserve_pcconnect_link)
-        pcconnect_reset_guest_serial_preserve_link();
-    else
-        pcconnect_reset_guest_serial();
+    pcconnect_reset_guest_serial();
     d->usb_intr_status = 0;
     d->usb_port_status[0] &= ~VRC4173_USB_PORT_CHANGE_MASK;
     d->usb_port_status[1] &= ~VRC4173_USB_PORT_CHANGE_MASK;
