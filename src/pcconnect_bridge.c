@@ -806,11 +806,6 @@ bool pcconnect_bridge_configure(const pcc_bridge_config_t *cfg)
     return true;
 }
 
-bool pcconnect_bridge_enabled(void)
-{
-    return g.armed;
-}
-
 void pcconnect_bridge_tick(void)
 {
     if (!g.armed)
@@ -978,11 +973,6 @@ void pcconnect_bridge_note_uart_config(const char *name, uint8_t lcr,
 bool pcconnect_bridge_cable_connected(void)
 {
     return g.armed && g.cable_connected;
-}
-
-bool pcconnect_bridge_guest_uart_ready(void)
-{
-    return g.armed && g.guest_uart_ready;
 }
 
 bool pcconnect_bridge_trace_enabled(void)

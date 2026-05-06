@@ -98,7 +98,6 @@ Java_com_jroark_be300_NativeBe300_nativeCreate(JNIEnv *env, jclass cls,
     cfg.enable_rtc_host_time = rtc_host_time == JNI_TRUE;
     cfg.enable_ne2000 = false;
     cfg.enable_stowaway_keyboard = enable_stowaway == JNI_TRUE;
-    cfg.enable_pcconnect_time_sync = false;
 
     handle->machine = be300_create(&cfg);
     if (!handle->machine) {

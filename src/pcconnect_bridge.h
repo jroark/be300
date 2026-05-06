@@ -31,11 +31,8 @@ typedef struct {
 bool pcconnect_bridge_parse_spec(const char *spec, pcc_bridge_config_t *out);
 
 /* Open the host fd / listener and arm the bridge. Returns false on error
- * (also prints to stderr). After success, pcconnect_bridge_enabled()
- * returns true. */
+ * and prints details to stderr. */
 bool pcconnect_bridge_configure(const pcc_bridge_config_t *cfg);
-
-bool pcconnect_bridge_enabled(void);
 
 /* Drain TX, accept new connections, reconnect on error. Called every
  * machine tick from be300_pcconnect_poll(). */
@@ -58,5 +55,4 @@ void pcconnect_bridge_set_rx_ready_callback(void (*cb)(void *opaque),
 void pcconnect_bridge_note_uart_config(const char *name, uint8_t lcr,
     uint8_t mcr, uint8_t ier, int divisor, int dlab);
 bool pcconnect_bridge_cable_connected(void);
-bool pcconnect_bridge_guest_uart_ready(void);
 bool pcconnect_bridge_trace_enabled(void);

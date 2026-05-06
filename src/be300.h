@@ -60,7 +60,6 @@ typedef struct {
     bool        log_mmio;
     bool        log_nand_legacy;
     bool        enable_ppsh;
-    bool        enable_pcconnect_time_sync;
     bool        enable_rtc_host_time;
     bool        enable_stowaway_keyboard;
     bool        enable_ne2000;
@@ -90,8 +89,7 @@ typedef struct {
     bool        frame_visible;   /* show the BE-300 bezel/frame around the LCD */
     double      scale;           /* render scale 1.0-4.0; applies framed and LCD-only */
 
-    /* Optional --pcconnect-bridge spec; mutually exclusive with
-     * --pcconnect-time-sync. NULL = disabled.
+    /* Optional --pcconnect-bridge spec. NULL = disabled.
      * Examples: "tcp:127.0.0.1:5555", "tcp-listen:5555",
      *           "unix:/tmp/pcc.sock", "unix-listen:/tmp/pcc.sock", "pty:auto".
      * --pcconnect-tee writes both directions to a host-side log. */

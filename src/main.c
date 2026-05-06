@@ -95,12 +95,10 @@ static void usage(const char *prog)
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
-        "  --pcconnect-time-sync Enable experimental Casio PC Connect time-sync peer\n"
         "  --pcconnect-bridge <S> Pipe the VRC4173 SIU UART to a host chardev so a\n"
         "                        UTM Windows VM running PCConnect can talk to the guest.\n"
         "                        S = tcp:HOST:PORT | tcp-listen:PORT[@ADDR]\n"
         "                          | unix:/PATH | unix-listen:/PATH | pty:auto\n"
-        "                        Mutually exclusive with --pcconnect-time-sync.\n"
         "  --pcconnect-tee <P>   Write both directions of the bridged byte stream to P\n"
         "                        (annotated text). Requires --pcconnect-bridge.\n"
         "  --pcconnect-baud <N>  Throttle guest->host bridge transmit to N baud (8N1).\n"
@@ -135,7 +133,6 @@ int main(int argc, char *argv[])
         .log_mmio        = false,
         .log_nand_legacy = false,
         .enable_ppsh     = false,
-        .enable_pcconnect_time_sync = false,
         .enable_rtc_host_time = false,
         .enable_stowaway_keyboard = false,
         .enable_ne2000   = false,
@@ -176,8 +173,6 @@ int main(int argc, char *argv[])
             cfg.log_mmio = true;
         } else if (strcmp(argv[i], "--ppsh") == 0) {
             cfg.enable_ppsh = true;
-        } else if (strcmp(argv[i], "--pcconnect-time-sync") == 0) {
-            cfg.enable_pcconnect_time_sync = true;
         } else if (strcmp(argv[i], "--pcconnect-bridge") == 0 && i + 1 < argc) {
             cfg.pcconnect_bridge = argv[++i];
         } else if (strcmp(argv[i], "--pcconnect-tee") == 0 && i + 1 < argc) {
@@ -302,18 +297,9 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    if ((cfg.enable_pcconnect_time_sync || cfg.pcconnect_bridge) &&
-        cfg.enable_stowaway_keyboard) {
+    if (cfg.pcconnect_bridge && cfg.enable_stowaway_keyboard) {
         fprintf(stderr,
-            "Error: --pcconnect-time-sync / --pcconnect-bridge and "
-            "--stowaway-keyboard all share COM1:\n");
-        usage(argv[0]);
-        return 1;
-    }
-    if (cfg.enable_pcconnect_time_sync && cfg.pcconnect_bridge) {
-        fprintf(stderr,
-            "Error: --pcconnect-time-sync and --pcconnect-bridge are "
-            "mutually exclusive (one peer at a time on the SIU UART)\n");
+            "Error: --pcconnect-bridge and --stowaway-keyboard share COM1\n");
         usage(argv[0]);
         return 1;
     }

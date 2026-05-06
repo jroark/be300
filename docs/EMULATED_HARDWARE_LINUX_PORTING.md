@@ -71,7 +71,7 @@ Optional useful flags while developing Linux support:
 | `--ne2000` | Attach the PCMCIA NE2000 Ethernet card model. |
 | `--ppsh` | Enable the PPSH debug-shell transport at `0x0C000120/0x0C000520`. |
 | `--rtc-host-time` | Initialize the VR4131 RTC from host local time. Native cold boots leave this off by default; the web frontend enables it by default. |
-| `--pcconnect-time-sync` | Enable the experimental PC Connect serial/dock model. Not needed for normal kernel bring-up. |
+| `--pcconnect-bridge <S>` | Bridge the PC Connect serial dock UART to a host chardev. Not needed for normal kernel bring-up. |
 | `--sdram <MB>` | Set SDRAM size, valid range 1-64 MB. Default is 16 MB. |
 | `--speed <N>` | Throttle to approximately N million guest instructions/sec. Default is 166. `0` means unthrottled. |
 | `--log-mmio` | Print every MMIO access. Very noisy but useful while writing drivers. |
@@ -208,7 +208,7 @@ BE-300-specific cascades:
 | Touch panel | MIPS IP2 -> VRIP line 8 GIU -> GIU line 0 -> VRC4173 offset `0x0004` bit 9 -> PIUINTREG at `0x0A000304`. |
 | Buttons | MIPS IP2 -> VRIP line 8 GIU -> GIU line 0 -> VRC4173 offset `0x0004` bit 1. |
 | CF/PCMCIA | MIPS IP2 -> VRIP line 8 GIU -> GIU line 0 -> VRC4173 offset `0x0004` bit 0. |
-| PC Connect CommMode | MIPS IP2 -> VRIP line 8 GIU -> GIU line 0 -> VRC4173 offset `0x0004` bit 4, only with `--pcconnect-time-sync`. |
+| PC Connect CommMode | MIPS IP2 -> VRIP line 8 GIU -> GIU line 0 -> VRC4173 offset `0x0004` bit 4, only with `--pcconnect-bridge`. |
 | VR4131 SIU | MIPS IP2 -> VRIP line 9. |
 | VR4131 DSIU | MIPS IP2 -> VRIP line 21. |
 | RTCL1 | MIPS IP2 -> VRIP line 2, status also appears in RTCINTREG. |

@@ -20,10 +20,6 @@ Neither the VR4131 SoC nor the VRC4173 companion chip has a USB function
 fictional. The right model is "the emulator's UART = the cradle's UART;
 let UTM put a `usb-serial` device in front of it on the PC side."
 
-This bridge is mutually exclusive with `--pcconnect-time-sync` (the small
-synthesizer that fakes a `WilSetSystemTime` frame for the WinCE first-boot
-date dialog). Pick one peer at a time on the SIU UART.
-
 ## CLI
 
 ```text
@@ -61,9 +57,9 @@ captures) to align frame structure.
 
 ## Cable gating and dock detect
 
-The bridge rides the same VRC4173 dock-detect plumbing as the
-synthesizer: when the GIU "cradle inserted" edge fires (after a Boot.exe
-reset; see `src/be300_devices.c:be300_pcconnect_raise_dock_edge`),
+The bridge rides the VRC4173 dock-detect plumbing: when the GIU "cradle
+inserted" edge fires (after a Boot.exe reset; see
+`src/be300_devices.c:be300_pcconnect_raise_dock_edge`),
 `pcconnect_set_cable_connected(true)` is called, the bridge logs
 `[PC_CONNECT_BRIDGE] cable connected`, and guest-to-host bytes can flow.
 Host-to-guest bytes received before the dock edge are consumed and tee'd as
@@ -190,9 +186,7 @@ With the BE-300 configured to connect automatically, docking should show:
   `11 01 00 12 03 2d 00 00 00 54 ...`
 
 For protocol RE, `tail -f /tmp/pcc.tee` and exercise PCConnect features.
-Cross-reference against `docs/PC_CONNECT_TIME_SYNC.md` (which decodes
-the wake / `WilSetSystemTime` frames) and the original `pcconnect.log`
-captures.
+Cross-reference against the original `pcconnect.log` captures.
 
 `tools/pcconnect_diff_tee.py` aligns a tee log against a real-hardware
 PortMon log (`pcconnect.log` / `pcconnect_2.log`) byte-by-byte and prints
@@ -201,38 +195,12 @@ a side-by-side hex tape with the first divergence flagged. Use
 host-only tail (e.g. before AtPcCnct opened the UART), so both streams
 re-base at the first guest-emitted byte.
 
-## Known protocol stall
+## Known timing gap
 
-The bridge transport is correct (host bytes reach the guest UART RX
-queue verbatim, guest TX bytes reach the peer fd in order). The active
-blocker is on the **device side**: AtPcCnct.exe never emits a multi-byte
-framed response. Every G->H event in the tee is a single byte (`0x55`
-sync or `0x20` ready). Real-hardware PortMon logs show AtPcCnct emitting
-`55 11 .. 03 ?? ..` 34-byte framed responses within ~100µs of receiving
-a `10 .. 03 ?? ..` host frame. In the emulator, those framed responses
-never appear — neither for the first 0x2d query nor for any subsequent
-opcode (0x26, 0x28, 0x46, ...).
-
-Investigations so far have ruled out the cheaper hypotheses:
-
-- NS16550 MSR holds DCD+DSR+CTS asserted for the vrc4173siu UART
-  (`gxemul/src/devices/dev_ns16550.c:104`). MSR-change deltas are
-  intentionally suppressed because the BE-300 routes modem transitions
-  through the AA008004 latch instead of NS16550 IIR_MLSC.
-- `LSR_OE` (overrun) is never asserted by the NS16550 driver.
-- The bridge's per-byte rx-ready callback fires `BE300_COMMMODE_PENDING_MASK`
-  + `BE300_COMMMODE_MODEM_EVENT_BITS` on every byte released to rx_ring
-  (matches Stowaway, which works).
-
-Remaining work is RE of XIP slot 59 (`AtPcCnct.exe`) and `COShellApi.dll`
-to find the wake-to-framed-mode predicate that the emulator state isn't
-satisfying. AtPcCnct.exe itself is a 5 KB shim with only an import on
-`COShellApi.dll!CoshExecute`, so the actual frame parser lives in
-COShellApi.dll or another module spawned by coshell. Auto-launching
-AtPcCnct via `HKLM\init\Launch<NN>` does not solve the stall: the
-kernel-level launch spawns the shim, but `CoshExecute` without the
-correct shell-agent context apparently no-ops -- AtPcCnct never opens
-COM1.
+The bridge can complete real PCConnect syncs through a Win2K VM, but the
+initial `0x55` wake train is still slower than the real-hardware PortMon
+capture. Treat byte-for-byte timing comparisons as diagnostic evidence, not as
+a current accuracy guarantee.
 
 ## Implementation references
 
@@ -241,9 +209,7 @@ COM1.
 - `src/pcconnect.c` — backend dispatch shims at the four `pcconnect_uart_*`
   entry points called from `gxemul/src/devices/dev_ns16550.c`
 - `src/pcconnect_ring.h` — shared 4096-byte ring buffer
-- `src/be300_devices.c` — `be300_pcconnect_cable_enabled()` and the
-  interrupt-connect block at the VRC4173 latch init treat
-  `cfg.pcconnect_bridge` like `cfg.enable_pcconnect_time_sync`
+- `src/be300_devices.c` — dock socket selection and CommMode IRQ plumbing
 - `src/machine_be300.c` — `pcconnect_bridge_configure` at machine
   create, `pcconnect_bridge_tick` driven from `be300_pcconnect_poll`,
   `pcconnect_bridge_shutdown` at machine destroy

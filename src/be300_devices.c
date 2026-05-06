@@ -310,13 +310,6 @@ static uint32_t be300_buzzer_tone_ms(const struct be300_buzzer_state *b)
 
 static bool be300_pcconnect_cable_enabled(void)
 {
-    return g_be300_machine &&
-        (g_be300_machine->cfg.enable_pcconnect_time_sync ||
-         g_be300_machine->cfg.pcconnect_bridge != NULL);
-}
-
-static bool be300_pcconnect_bridge_enabled(void)
-{
     return g_be300_machine && g_be300_machine->cfg.pcconnect_bridge != NULL;
 }
 
@@ -705,14 +698,9 @@ static void be300_pcconnect_maybe_raise_dock_edge(
     /*
      * The transparent bridge models a real dock insertion while the host PC
      * is already polling the serial port, so let the delayed insertion path
-     * fire after the Boot.exe reset.  The synthetic time-sync peer keeps the
-     * older UART-ready force path because it has no external peer to hold
-     * post-dock bytes while the guest finishes opening COM1.
+     * fire after the Boot.exe reset.
      */
-    be300_pcconnect_raise_dock_edge(d,
-        be300_pcconnect_cable_enabled() &&
-        !be300_pcconnect_bridge_enabled() &&
-        pcconnect_guest_uart_ready());
+    be300_pcconnect_raise_dock_edge(d, false);
 }
 
 static void be300_pcconnect_maybe_raise_uart_rx_level(
@@ -2159,8 +2147,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         latch->cf_irq_asserted = false;
     }
 
-    if (m->cfg.enable_pcconnect_time_sync || m->cfg.enable_stowaway_keyboard ||
-        m->cfg.pcconnect_bridge) {
+    if (m->cfg.enable_stowaway_keyboard || m->cfg.pcconnect_bridge) {
         char tmps[200];
 
         snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
@@ -2168,10 +2155,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         INTERRUPT_CONNECT(tmps, latch->pcconnect_irq);
         latch->pcconnect_irq_connected = true;
         latch->pcconnect_irq_asserted = false;
-        /* The synth-vs-bridge dispatch in pcconnect.c calls both backends'
-         * set_rx_ready_callback, so registering once here is sufficient
-         * for either mode. */
-        if (m->cfg.enable_pcconnect_time_sync || m->cfg.pcconnect_bridge)
+        if (m->cfg.pcconnect_bridge)
             pcconnect_set_rx_ready_callback(be300_pcconnect_uart_irq_ready,
                 latch);
         if (m->cfg.enable_stowaway_keyboard)

@@ -4,12 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-void pcconnect_configure(bool enabled);
 void pcconnect_set_rx_ready_callback(void (*cb)(void *opaque), void *opaque);
 void pcconnect_set_cable_connected(bool connected);
 bool pcconnect_ns16550_claims(const char *name);
 bool pcconnect_cable_connected(void);
-bool pcconnect_guest_uart_ready(void);
 bool pcconnect_trace_enabled(void);
 void pcconnect_signal_uart_irq(void);
 void pcconnect_note_uart_config(const char *name, uint8_t lcr, uint8_t mcr,

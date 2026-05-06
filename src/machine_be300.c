@@ -463,7 +463,6 @@ machine_t *be300_create(const machine_config_t *cfg)
     const char *autostop_env;
     if (!m) return NULL;
     m->cfg = *cfg;
-    pcconnect_configure(cfg->enable_pcconnect_time_sync);
     if (cfg->pcconnect_bridge) {
         pcc_bridge_config_t br = {0};
         if (!pcconnect_bridge_parse_spec(cfg->pcconnect_bridge, &br)) {
@@ -931,8 +930,7 @@ static bool be300_run_batch(machine_t *m)
     be300_vrc4173_update_cf_irq();
     if (m->cfg.enable_audio)
         aiu_tick(m);
-    if (m->cfg.enable_pcconnect_time_sync || m->cfg.enable_stowaway_keyboard ||
-        m->cfg.pcconnect_bridge)
+    if (m->cfg.enable_stowaway_keyboard || m->cfg.pcconnect_bridge)
         be300_pcconnect_poll();
     if (m->cfg.pcconnect_bridge)
         pcconnect_bridge_tick();
@@ -1126,7 +1124,6 @@ void be300_destroy(machine_t *m)
     }
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_destroy(&m->cf[i]);
-    pcconnect_configure(false);
     pcconnect_bridge_shutdown();
     stowaway_configure(false);
 
