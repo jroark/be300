@@ -88,12 +88,18 @@ reading the host fd so TCP applies backpressure instead of dropping or
 replaying sync payload bytes.
 
 The physical cable state is separate from the guest-visible serial data path.
-On a BE-300 CPU reset, the bridge clears transient UART FIFOs and marks the
-guest data path not-yet-inserted while leaving the physical cable connected.
-Host polling bytes received before the replayed CommMode socket edge are
-consumed as `H>G:drop`; bytes between the edge and UART configuration are capped
-to the latest UART-sized tail, matching a real serial device's finite/reset
-FIFO rather than preserving an unbounded reset-time backlog.
+On the first BE-300 CPU reset before the emulated insertion edge, the bridge
+keeps dropping pre-dock host polling. After the physical cable has been
+presented, later CPU resets clear transient UART FIFOs and mark the rebooted
+guest as not-yet-reinserted, but they keep the host-side serial data path
+connected. Host polling or restore traffic received before the replayed
+CommMode socket edge is therefore capped or backpressured as connected serial
+input instead of being modeled as a physical disconnect; bytes between the edge
+and UART configuration are capped to the latest UART-sized tail, matching a
+real serial device's finite/reset FIFO rather than preserving an unbounded
+reset-time backlog. Guest-to-host bytes already accepted by the companion UART
+continue draining across this CPU-only reset so a restore-stage final response
+is not erased before the host receives it.
 
 A peer-side disconnect closes the local fd but does **not** drop the
 cable.  Transient serial FIFOs are cleared so bytes sent while the PC-side

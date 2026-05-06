@@ -169,6 +169,13 @@ static void clear_serial_queues(void)
     g.tx_next_due_ns = 0;
 }
 
+static void clear_guest_rx_queues(void)
+{
+    pcc_ring_clear(&g.rx_ring);
+    pcc_ring_clear(&g.rx_pre_ring);
+    g.rx_next_due_ns = 0;
+}
+
 static void arm_initial_rx_idle_drop(void)
 {
     g.drop_initial_rx_idle = true;
@@ -1015,17 +1022,32 @@ void pcconnect_bridge_set_cable_connected(bool connected)
     }
 }
 
-void pcconnect_bridge_reset_guest_serial(void)
+static void pcconnect_bridge_reset_guest_serial_common(bool preserve_link)
 {
     if (!g.armed)
         return;
 
-    g.guest_link_connected = false;
+    g.guest_link_connected = preserve_link && g.cable_connected;
     g.guest_uart_ready = false;
-    clear_serial_queues();
+    if (preserve_link)
+        clear_guest_rx_queues();
+    else
+        clear_serial_queues();
     arm_initial_rx_idle_drop();
-    trace("guest serial reset; cable %s",
-        g.cable_connected ? "connected" : "disconnected");
+    trace("guest serial reset; cable %s, link %s%s",
+        g.cable_connected ? "connected" : "disconnected",
+        g.guest_link_connected ? "preserved" : "reset",
+        preserve_link ? ", tx preserved" : "");
+}
+
+void pcconnect_bridge_reset_guest_serial(void)
+{
+    pcconnect_bridge_reset_guest_serial_common(false);
+}
+
+void pcconnect_bridge_reset_guest_serial_preserve_link(void)
+{
+    pcconnect_bridge_reset_guest_serial_common(true);
 }
 
 void pcconnect_bridge_set_rx_ready_callback(void (*cb)(void *opaque),

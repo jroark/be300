@@ -7,6 +7,7 @@
 void pcconnect_set_rx_ready_callback(void (*cb)(void *opaque), void *opaque);
 void pcconnect_set_cable_connected(bool connected);
 void pcconnect_reset_guest_serial(void);
+void pcconnect_reset_guest_serial_preserve_link(void);
 bool pcconnect_ns16550_claims(const char *name);
 bool pcconnect_cable_connected(void);
 bool pcconnect_trace_enabled(void);

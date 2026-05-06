@@ -50,6 +50,7 @@ void pcconnect_bridge_uart_tx_byte(uint8_t byte);
 uint32_t pcconnect_bridge_uart_baud(void);
 void pcconnect_bridge_set_cable_connected(bool connected);
 void pcconnect_bridge_reset_guest_serial(void);
+void pcconnect_bridge_reset_guest_serial_preserve_link(void);
 void pcconnect_bridge_set_rx_ready_callback(void (*cb)(void *opaque),
     void *opaque);
 void pcconnect_bridge_note_uart_config(const char *name, uint8_t lcr,
