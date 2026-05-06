@@ -591,6 +591,7 @@ void be300_pcconnect_reset_for_cpu_reset(
     d->stowaway_commmode_events = 0;
     d->pcconnect_modem_after_socket_sent = false;
     d->pcconnect_rx_wake_count = 0;
+    pcconnect_reset_guest_serial();
     d->usb_intr_status = 0;
     d->usb_port_status[0] &= ~VRC4173_USB_PORT_CHANGE_MASK;
     d->usb_port_status[1] &= ~VRC4173_USB_PORT_CHANGE_MASK;

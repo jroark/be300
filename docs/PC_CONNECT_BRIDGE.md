@@ -42,9 +42,8 @@ Set `BE300_PCC_TRACE=1` to enable bridge state-change logging on stderr.
 # pcconnect-bridge tee log; mono_ns dir count: hex bytes
 <mono_ns> H>G <count>: <space-separated lowercase hex>      ← host → guest
 <mono_ns> G>H <count>: <space-separated lowercase hex>      ← guest → host
-<mono_ns> H>G:queued <count>: …                              ← host bytes held
-                                                              after dock edge
-                                                              until UART ready
+<mono_ns> H>G:queued <count>: …                              ← host bytes retained
+                                                              before UART ready
 <mono_ns> H>G:drop <count>: …                                ← host bytes while
                                                               the emulated cable
                                                               is disconnected
@@ -68,18 +67,25 @@ inserted" edge fires (after a Boot.exe reset; see
 `[PC_CONNECT_BRIDGE] cable connected`, and guest-to-host bytes can flow.
 Host-to-guest bytes received before the dock edge are consumed and tee'd as
 `H>G:drop`; real disconnected serial pins do not buffer the PC's polling
-stream. After the dock edge, the bridge preserves host bytes in the VRC4173
-SIU receive queue until the guest configures the receiver for 8N1, teeing that
-short interval as `H>G:queued`. This matches the real usage pattern where
-`PCConnect.exe` is already polling the configured COM port and the
-connect-only capture shows the important `AT`/`0x55` poll immediately after
-the BE-300 is docked.
+stream. After the dock edge, bytes received before the guest UART is configured
+are retained only as a small UART-sized tail, tee'd as `H>G:queued`. This gives
+the guest serial path a real polling edge without replaying an unbounded backlog
+that a real finite UART FIFO would have lost or serial.dll would have flushed
+during COM open.
 
 After insertion, the bridge keeps the physical cable state connected across
 BE-300 CPU resets.  The guest-visible CommMode socket edge may be replayed
 after reset so socket.dll sees a fresh insertion, but the host-side serial
 polling stream is treated as a still-connected dock until emulator shutdown or
 an explicit future physical-disconnect model.
+
+The physical cable state is separate from the guest-visible serial data path.
+On a BE-300 CPU reset, the bridge clears transient UART FIFOs and marks the
+guest data path not-yet-inserted while leaving the physical cable connected.
+Host polling bytes received before the replayed CommMode socket edge are
+consumed as `H>G:drop`; bytes between the edge and UART configuration are capped
+to the latest UART-sized tail, matching a real serial device's finite/reset
+FIFO rather than preserving an unbounded reset-time backlog.
 
 A peer-side disconnect closes the local fd but does **not** drop the
 cable.  Transient serial FIFOs are cleared so bytes sent while the PC-side

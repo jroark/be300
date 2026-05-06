@@ -33,6 +33,7 @@
 #include "pcconnect_ring.h"
 
 #define PCC_BR_DEFAULT_UART "vrc4173siu"
+#define PCC_PREOPEN_FIFO_CAP 16u
 
 typedef struct {
     bool armed;
@@ -53,8 +54,9 @@ typedef struct {
     /* Saved path for unix-connect / unix-listen. */
     char *unix_path;
 
-    /* Cable / readiness mirrored from set_cable_connected. */
+    /* Physical cable plus guest-visible serial data path readiness. */
     bool cable_connected;
+    bool guest_link_connected;
     bool guest_uart_ready;
     uint8_t guest_uart_lcr;
     uint8_t guest_uart_mcr;
@@ -148,6 +150,9 @@ static void trace(const char *fmt, ...)
 
 static void queue_host_rx_pre(uint8_t byte)
 {
+    if (!g.guest_uart_ready &&
+        pcc_ring_count(&g.rx_pre_ring) >= PCC_PREOPEN_FIFO_CAP)
+        (void)pcc_ring_pop(&g.rx_pre_ring);
     pcc_ring_push(&g.rx_pre_ring, byte);
 }
 
@@ -561,6 +566,11 @@ static void bridge_guest_rx_push(uint8_t byte)
     pcc_ring_push(&g.rx_ring, byte);
 }
 
+static bool bridge_data_path_connected(void)
+{
+    return g.cable_connected && g.guest_link_connected;
+}
+
 /* Move bytes from rx_pre_ring (TCP arrival queue) into rx_ring
  * (guest-visible queue), pacing at rx_ns_per_byte when requested. The
  * companion wake is an empty->non-empty edge; once RX is already pending,
@@ -570,7 +580,7 @@ static void bridge_release_rx_paced(void)
     bool was_empty;
     bool released = false;
 
-    if (!g.cable_connected || !g.guest_uart_ready)
+    if (!bridge_data_path_connected() || !g.guest_uart_ready)
         return;
 
     if (g.rx_ns_per_byte == 0) {
@@ -624,12 +634,13 @@ static void bridge_drain_rx(void)
             cap = sizeof(scratch);
         ssize_t n = read(g.fd, scratch, cap);
         if (n > 0) {
-            if (!g.cable_connected) {
+            if (!bridge_data_path_connected()) {
                 /*
-                 * PCConnect may poll the VM's serial port before the BE-300
-                 * is docked. Real disconnected serial pins do not buffer the
-                 * PC's polling stream for later replay, so consume those
-                 * bytes from the host fd until the cable edge is presented.
+                 * PCConnect may poll the VM's serial port before the BE-300 is
+                 * guest-visible as docked. Real serial hardware has only a
+                 * small UART FIFO, and serial.dll clears it on COM open; do
+                 * not replay an unbounded pre-dock or reset-time polling
+                 * backlog into AtPcCnct.
                  */
                 tee_write_dir("H>G:drop", scratch, (size_t)n);
                 continue;
@@ -877,7 +888,7 @@ bool pcconnect_bridge_uart_rx_available(void)
     /* Drain the host fd into the rx ring on every poll; tick() also drains
      * it so PCConnect polling is retained even before the guest opens COM1. */
     bridge_drain_rx();
-    if (!g.cable_connected || !g.guest_uart_ready)
+    if (!bridge_data_path_connected() || !g.guest_uart_ready)
         return false;
     return !pcc_ring_is_empty(&g.rx_ring);
 }
@@ -887,7 +898,7 @@ size_t pcconnect_bridge_uart_rx_count(void)
     if (!g.armed)
         return 0;
     bridge_drain_rx();
-    if (!g.cable_connected || !g.guest_uart_ready)
+    if (!bridge_data_path_connected() || !g.guest_uart_ready)
         return 0;
     return pcc_ring_count(&g.rx_ring);
 }
@@ -913,7 +924,7 @@ void pcconnect_bridge_uart_rx_clear(void)
 
 void pcconnect_bridge_uart_tx_byte(uint8_t byte)
 {
-    if (!g.armed || !g.cable_connected || g.fd < 0) {
+    if (!g.armed || !bridge_data_path_connected() || g.fd < 0) {
         if (g.tee && g.armed)
             tee_write_dir("G>H:drop", &byte, 1);
         return;
@@ -933,20 +944,42 @@ uint32_t pcconnect_bridge_uart_baud(void)
 
 void pcconnect_bridge_set_cable_connected(bool connected)
 {
+    bool changed;
+
     if (!g.armed)
         return;
 
-    if (g.cable_connected == connected)
-        return;
-
-    g.cable_connected = connected;
     if (!connected) {
+        if (!g.cable_connected && !g.guest_link_connected)
+            return;
+
+        g.cable_connected = false;
+        g.guest_link_connected = false;
         g.guest_uart_ready = false;
         clear_serial_queues();
-    } else {
-        bridge_release_rx_paced();
+        trace("cable disconnected");
+        return;
     }
-    trace("cable %s", connected ? "connected" : "disconnected");
+
+    changed = !g.cable_connected || !g.guest_link_connected;
+    g.cable_connected = true;
+    g.guest_link_connected = true;
+    if (changed) {
+        bridge_release_rx_paced();
+        trace("cable connected");
+    }
+}
+
+void pcconnect_bridge_reset_guest_serial(void)
+{
+    if (!g.armed)
+        return;
+
+    g.guest_link_connected = false;
+    g.guest_uart_ready = false;
+    clear_serial_queues();
+    trace("guest serial reset; cable %s",
+        g.cable_connected ? "connected" : "disconnected");
 }
 
 void pcconnect_bridge_set_rx_ready_callback(void (*cb)(void *opaque),
@@ -965,8 +998,12 @@ void pcconnect_bridge_note_uart_config(const char *name, uint8_t lcr,
         return;
     if (!pcconnect_bridge_ns16550_claims(name))
         return;
-    /* The receiver is usable once the guest has selected 8N1 and left the
-     * divisor latch; MCR DTR/RTS are modem outputs, not an RX enable. */
+    /*
+     * The receiver is usable once the guest has selected 8N1 and left the
+     * divisor latch. While the guest is not ready, bridge_drain_rx retains
+     * only a small UART-sized tail of the PC's polling stream so opening COM
+     * cannot replay an unbounded reset-time backlog.
+     */
     ready = !dlab && (lcr & 0x7f) == 0x03;
     if (!ready) {
         if (g.guest_uart_ready) {
@@ -990,7 +1027,7 @@ void pcconnect_bridge_note_uart_config(const char *name, uint8_t lcr,
 
 bool pcconnect_bridge_cable_connected(void)
 {
-    return g.armed && g.cable_connected;
+    return g.armed && bridge_data_path_connected();
 }
 
 bool pcconnect_bridge_trace_enabled(void)

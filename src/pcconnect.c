@@ -18,6 +18,11 @@ void pcconnect_set_cable_connected(bool connected)
     pcconnect_bridge_set_cable_connected(connected);
 }
 
+void pcconnect_reset_guest_serial(void)
+{
+    pcconnect_bridge_reset_guest_serial();
+}
+
 bool pcconnect_ns16550_claims(const char *name)
 {
     return pcconnect_bridge_ns16550_claims(name);
