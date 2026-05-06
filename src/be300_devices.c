@@ -571,19 +571,26 @@ void be300_pcconnect_reset_for_cpu_reset(
 
     /*
      * KjCMU resets the CPU while the VRC4173-side latch state remains in
-     * host memory.  The PC Connect option represents a host-side cable
-     * insertion, so keep the reboot path as "not docked" and schedule the
-     * cable edge after the normal Boot.exe reset.  This avoids presenting
-     * an already-docked CommMode state to the second-boot OAL, which takes
-     * the software-shutdown/HIBERNATE path before user PC Connect monitors
+     * host memory.  Keep the guest-visible CommMode socket as "not docked"
+     * and schedule a fresh insertion edge after the normal Boot.exe reset,
+     * but do not drop the bridge's physical cable state once it has been
+     * inserted.  hardware.txt:189-191 places Vic/CommMode and the SIU in
+     * the companion dock path, and real-hardware PC Connect observation on
+     * 2026-05-06 showed the docked serial connection stays active across
+     * guest-side reset/restart until the BE-300 is physically removed from
+     * the cradle or powered down; the host PC keeps polling the serial port
+     * in the meantime.
+     *
+     * The delayed guest-visible edge avoids presenting an already-docked
+     * CommMode state to the second-boot OAL, which takes the
+     * software-shutdown/HIBERNATE path before user PC Connect monitors
      * exist.
-    */
+     */
     d->pcconnect_dock_connected = false;
     d->pcconnect_commmode_pending = 0;
     d->stowaway_commmode_events = 0;
     d->pcconnect_modem_after_socket_sent = false;
     d->pcconnect_rx_wake_count = 0;
-    pcconnect_set_cable_connected(false);
     d->usb_intr_status = 0;
     d->usb_port_status[0] &= ~VRC4173_USB_PORT_CHANGE_MASK;
     d->usb_port_status[1] &= ~VRC4173_USB_PORT_CHANGE_MASK;

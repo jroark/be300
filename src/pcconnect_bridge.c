@@ -151,6 +151,15 @@ static void queue_host_rx_pre(uint8_t byte)
     pcc_ring_push(&g.rx_pre_ring, byte);
 }
 
+static void clear_serial_queues(void)
+{
+    pcc_ring_clear(&g.rx_ring);
+    pcc_ring_clear(&g.rx_pre_ring);
+    pcc_ring_clear(&g.tx_ring);
+    g.rx_next_due_ns = 0;
+    g.tx_next_due_ns = 0;
+}
+
 /* ---------- config / spec parsing ---------- */
 
 bool pcconnect_bridge_parse_spec(const char *spec, pcc_bridge_config_t *out)
@@ -438,6 +447,7 @@ static void try_accept(void)
     int one = 1;
     setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif
+    clear_serial_queues();
     g.fd = s;
     trace("peer accepted on fd=%d", s);
 }
@@ -526,10 +536,18 @@ static void on_peer_gone(const char *why)
 {
     if (g.fd < 0)
         return;
-    trace("peer gone (%s); closing fd %d", why, g.fd);
+    trace("peer gone (%s); closing fd %d; cable remains %s",
+        why, g.fd, g.cable_connected ? "connected" : "disconnected");
     close_fd(&g.fd);
-    /* Cable stays connected; PTY-style backends can re-open transparently
-     * when a new client attaches. Listen-mode backends will re-accept in tick. */
+    /*
+     * Cable presence is a cradle state, not the lifetime of a TCP/Unix/PTY
+     * peer.  A 2026-05-06 PortMon connect-only capture of PCConnect.exe and
+     * PCLSTART.exe showed repeated COM open/close and purge cycles during
+     * startup; bytes sent while no host endpoint is attached should not be
+     * replayed into the next open.  Drop transient FIFOs but leave the
+     * docked level intact so the guest remains connected.
+     */
+    clear_serial_queues();
 }
 
 static void bridge_note_rx_released(bool was_empty, bool released)
@@ -656,8 +674,10 @@ static void bridge_drain_rx(void)
 
 static void bridge_drain_tx(void)
 {
-    if (g.fd < 0)
+    if (g.fd < 0) {
+        pcc_ring_clear(&g.tx_ring);
         return;
+    }
 
     /* Baud-throttled path: emit one byte per tx_ns_per_byte interval so
      * PCConnect sees inter-byte gaps comparable to real 115200 8N1.
@@ -893,7 +913,7 @@ void pcconnect_bridge_uart_rx_clear(void)
 
 void pcconnect_bridge_uart_tx_byte(uint8_t byte)
 {
-    if (!g.armed || !g.cable_connected) {
+    if (!g.armed || !g.cable_connected || g.fd < 0) {
         if (g.tee && g.armed)
             tee_write_dir("G>H:drop", &byte, 1);
         return;
@@ -922,9 +942,7 @@ void pcconnect_bridge_set_cable_connected(bool connected)
     g.cable_connected = connected;
     if (!connected) {
         g.guest_uart_ready = false;
-        pcc_ring_clear(&g.rx_ring);
-        pcc_ring_clear(&g.rx_pre_ring);
-        pcc_ring_clear(&g.tx_ring);
+        clear_serial_queues();
     } else {
         bridge_release_rx_paced();
     }

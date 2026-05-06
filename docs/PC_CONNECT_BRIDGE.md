@@ -48,6 +48,10 @@ Set `BE300_PCC_TRACE=1` to enable bridge state-change logging on stderr.
 <mono_ns> H>G:drop <count>: …                                ← host bytes while
                                                               the emulated cable
                                                               is disconnected
+<mono_ns> G>H:drop <count>: …                                ← guest bytes while
+                                                              the emulated cable
+                                                              or host endpoint is
+                                                              unavailable
 ```
 
 Times are `clock_gettime(CLOCK_MONOTONIC)` nanoseconds. The file is
@@ -71,10 +75,18 @@ short interval as `H>G:queued`. This matches the real usage pattern where
 connect-only capture shows the important `AT`/`0x55` poll immediately after
 the BE-300 is docked.
 
+After insertion, the bridge keeps the physical cable state connected across
+BE-300 CPU resets.  The guest-visible CommMode socket edge may be replayed
+after reset so socket.dll sees a fresh insertion, but the host-side serial
+polling stream is treated as a still-connected dock until emulator shutdown or
+an explicit future physical-disconnect model.
+
 A peer-side disconnect closes the local fd but does **not** drop the
-cable. PTY mode re-opens its master so a fresh `screen` session can
-attach. TCP/Unix listen modes re-`accept()` in the next tick. TCP/Unix
-connect modes re-dial every 500 ms until the peer is back.
+cable.  Transient serial FIFOs are cleared so bytes sent while the PC-side
+COM handle is closed are not replayed to the next open. PTY mode re-opens its
+master so a fresh `screen` session can attach. TCP/Unix listen modes
+re-`accept()` in the next tick. TCP/Unix connect modes re-dial every 500 ms
+until the peer is back.
 
 ## Host-side recipes
 
