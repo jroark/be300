@@ -33,6 +33,7 @@
 
 #define PCC_BR_DEFAULT_UART "vrc4173siu"
 #define PCC_PREOPEN_FIFO_CAP 64u
+#define PCC_GUEST_RX_FIFO_CAP 16u
 
 typedef struct {
     bool armed;
@@ -148,12 +149,15 @@ static void trace(const char *fmt, ...)
     va_end(ap);
 }
 
-static void queue_host_rx_pre(uint8_t byte)
+static bool queue_host_rx_pre(uint8_t byte)
 {
     if (!g.guest_uart_ready &&
         pcc_ring_count(&g.rx_pre_ring) >= PCC_PREOPEN_FIFO_CAP)
         (void)pcc_ring_pop(&g.rx_pre_ring);
+    if (pcc_ring_is_full(&g.rx_pre_ring))
+        return false;
     pcc_ring_push(&g.rx_pre_ring, byte);
+    return true;
 }
 
 static void clear_serial_queues(void)
@@ -566,9 +570,21 @@ static void bridge_note_rx_released(bool was_empty, bool released)
         g.rx_ready_cb(g.rx_ready_opaque);
 }
 
-static void bridge_guest_rx_push(uint8_t byte)
+static size_t bridge_guest_rx_space(void)
 {
+    size_t count = pcc_ring_count(&g.rx_ring);
+
+    if (count >= PCC_GUEST_RX_FIFO_CAP)
+        return 0;
+    return PCC_GUEST_RX_FIFO_CAP - count;
+}
+
+static bool bridge_guest_rx_push(uint8_t byte)
+{
+    if (bridge_guest_rx_space() == 0)
+        return false;
     pcc_ring_push(&g.rx_ring, byte);
+    return true;
 }
 
 static bool bridge_data_path_connected(void)
@@ -594,11 +610,10 @@ static void bridge_release_rx_paced(void)
             return;
         was_empty = pcc_ring_is_empty(&g.rx_ring);
         while (!pcc_ring_is_empty(&g.rx_pre_ring) &&
-               pcc_ring_count(&g.rx_ring) < PCC_RING_CAP) {
+               bridge_guest_rx_space() > 0) {
             int b = pcc_ring_pop(&g.rx_pre_ring);
             if (b < 0) break;
-            bridge_guest_rx_push((uint8_t)b);
-            released = true;
+            released |= bridge_guest_rx_push((uint8_t)b);
         }
         bridge_note_rx_released(was_empty, released);
         return;
@@ -611,11 +626,10 @@ static void bridge_release_rx_paced(void)
     if (g.rx_next_due_ns == 0 || g.rx_next_due_ns + 100000000ull < now)
         g.rx_next_due_ns = now;
     while (!pcc_ring_is_empty(&g.rx_pre_ring) && now >= g.rx_next_due_ns &&
-           pcc_ring_count(&g.rx_ring) < PCC_RING_CAP) {
+           bridge_guest_rx_space() > 0) {
         int b = pcc_ring_pop(&g.rx_pre_ring);
         if (b < 0) break;
-        bridge_guest_rx_push((uint8_t)b);
-        released = true;
+        released |= bridge_guest_rx_push((uint8_t)b);
         g.rx_next_due_ns += g.rx_ns_per_byte;
         now = mono_ns();
     }
@@ -631,6 +645,7 @@ static void bridge_drain_rx(void)
     }
 
     uint8_t scratch[1024];
+    bridge_release_rx_paced();
     for (;;) {
         size_t cap = PCC_RING_CAP - pcc_ring_count(&g.rx_pre_ring);
         if (cap == 0)
@@ -668,8 +683,12 @@ static void bridge_drain_rx(void)
                     continue;
                 g.drop_initial_rx_idle = false;
             }
-            for (size_t i = off; i < len; i++)
-                queue_host_rx_pre(scratch[i]);
+            for (size_t i = off; i < len; i++) {
+                if (!queue_host_rx_pre(scratch[i])) {
+                    trace("host RX backlog full; applying fd backpressure");
+                    break;
+                }
+            }
             /*
              * Once the cable is inserted, the PC's serial stream is present
              * on the dock RX pin. Preserve the short post-dock polling prefix
@@ -807,12 +826,13 @@ bool pcconnect_bridge_configure(const pcc_bridge_config_t *cfg)
     } else {
         g.tx_ns_per_byte = 0;
     }
-    /* H->G stays unthrottled: empirically AtPcCnct.exe handles a single
-     * IRQ-with-N-bytes-in-ring better than N per-byte IRQs at 87us
-     * spacing. Protocol exchange (28+ frames including RAPI code-upload)
-     * worked with burst delivery; per-byte pacing reduced it to 24
-     * sync echoes only. The G->H direction still needs the baud throttle
-     * because PCConnect's parser is sensitive to inter-byte gaps. */
+    /*
+     * Keep H->G release controlled by the guest-visible UART FIFO rather than
+     * wall-clock byte pacing. The host fd can deliver a large TCP batch, but
+     * the dock silicon presents a finite UART FIFO to serial.dll. If the
+     * bridge backlog fills, bridge_drain_rx stops reading the fd so UTM/Windows
+     * applies backpressure instead of dropping payload bytes.
+     */
     g.rx_ns_per_byte = 0;
     g.tx_next_due_ns = 0;
     g.rx_next_due_ns = 0;

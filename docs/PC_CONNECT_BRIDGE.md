@@ -32,6 +32,8 @@ let UTM put a `usb-serial` device in front of it on the PC side."
                                                         slave path printed)
 --pcconnect-tee <P>      Mirror both directions of the byte stream to file P
                          (annotated text). Requires --pcconnect-bridge.
+--pcconnect-baud <N>     Pace guest-to-host bytes to N baud (8N1).
+                         Default is 115200; 0 disables pacing.
 ```
 
 Set `BE300_PCC_TRACE=1` to enable bridge state-change logging on stderr.
@@ -78,6 +80,12 @@ BE-300 CPU resets.  The guest-visible CommMode socket edge may be replayed
 after reset so socket.dll sees a fresh insertion, but the host-side serial
 polling stream is treated as a still-connected dock until emulator shutdown or
 an explicit future physical-disconnect model.
+
+Once serial.dll opens the dock UART, the bridge releases host-to-guest bytes
+through a finite guest-visible UART FIFO. Large TCP batches from UTM are
+retained in the bridge backlog; if that backlog fills, the emulator stops
+reading the host fd so TCP applies backpressure instead of dropping or
+replaying sync payload bytes.
 
 The physical cable state is separate from the guest-visible serial data path.
 On a BE-300 CPU reset, the bridge clears transient UART FIFOs and marks the

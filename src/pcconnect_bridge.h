@@ -19,9 +19,8 @@ typedef struct {
     const char *tee_path;   /* optional, NULL = no tee */
     const char *uart_name;  /* default "vrc4173siu" */
     bool trace;
-    /* Pace guest->host transmission to a serial-equivalent rate so PCConnect
-     * sees inter-byte gaps similar to real hardware. 0 = unlimited.
-     * 115200 = 8N1 baud, ~87 us per byte. */
+    /* Pace guest->host transmission to a serial-equivalent rate. 0 =
+     * unlimited. 115200 = 8N1 baud, ~87 us per byte. */
     uint32_t baud;
 } pcc_bridge_config_t;
 
