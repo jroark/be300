@@ -65,6 +65,13 @@ bool stowaway_uart_rx_available(void)
     return g_stowaway.enabled && g_stowaway.count > 0;
 }
 
+size_t stowaway_uart_rx_count(void)
+{
+    if (!g_stowaway.enabled)
+        return 0;
+    return g_stowaway.count;
+}
+
 int stowaway_uart_rx_pop(void)
 {
     uint8_t byte;
@@ -89,6 +96,18 @@ int stowaway_uart_rx_pop(void)
         }
     }
     return byte;
+}
+
+void stowaway_uart_rx_clear(void)
+{
+    if (!g_stowaway.enabled)
+        return;
+
+    g_stowaway.head = 0;
+    g_stowaway.tail = 0;
+    g_stowaway.count = 0;
+    g_stowaway.probe_ack_pending = false;
+    g_stowaway.probe_ack_seen = 0;
 }
 
 void stowaway_uart_tx_byte(uint8_t byte)

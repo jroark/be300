@@ -474,6 +474,14 @@ bool pcconnect_cable_connected(void)
     return g_pcc.enabled && g_pcc.cable_connected;
 }
 
+void pcconnect_signal_uart_irq(void)
+{
+    if (!pcconnect_cable_connected())
+        return;
+    if (g_pcc.rx_ready_cb)
+        g_pcc.rx_ready_cb(g_pcc.rx_ready_opaque);
+}
+
 bool pcconnect_guest_uart_ready(void)
 {
     if (pcconnect_bridge_guest_uart_ready())
@@ -483,7 +491,7 @@ bool pcconnect_guest_uart_ready(void)
 
 bool pcconnect_trace_enabled(void)
 {
-    return g_pcc.trace;
+    return g_pcc.trace || pcconnect_bridge_trace_enabled();
 }
 
 void pcconnect_note_uart_config(const char *name, uint8_t lcr, uint8_t mcr,
@@ -529,7 +537,7 @@ void pcconnect_trace_uart_access(const char *name, bool claimed,
     uint8_t ier, uint8_t iir, uint8_t lcr, uint8_t mcr,
     uint8_t lsr, uint8_t msr, int dlab, int divisor)
 {
-    if (!g_pcc.trace)
+    if (!pcconnect_trace_enabled())
         return;
 
     fprintf(stderr,
@@ -552,6 +560,18 @@ bool pcconnect_uart_rx_available(void)
     return !pcc_ring_is_empty(&g_pcc.rx);
 }
 
+size_t pcconnect_uart_rx_count(void)
+{
+    if (pcconnect_bridge_enabled())
+        return pcconnect_bridge_uart_rx_count();
+
+    if (!g_pcc.enabled || !g_pcc.cable_connected)
+        return 0;
+
+    service_pending_host_action(false);
+    return pcc_ring_count(&g_pcc.rx);
+}
+
 int pcconnect_uart_rx_pop(void)
 {
     int byte;
@@ -565,6 +585,16 @@ int pcconnect_uart_rx_pop(void)
     byte = pcc_ring_pop(&g_pcc.rx);
     trace_byte("guest read", (uint8_t)byte);
     return byte;
+}
+
+void pcconnect_uart_rx_clear(void)
+{
+    if (pcconnect_bridge_enabled()) {
+        pcconnect_bridge_uart_rx_clear();
+        return;
+    }
+
+    clear_rx_queue();
 }
 
 void pcconnect_uart_tx_byte(uint8_t byte)
@@ -625,4 +655,12 @@ void pcconnect_uart_tx_byte(uint8_t byte)
     }
 
     feed_guest_frame_byte(byte);
+}
+
+uint32_t pcconnect_uart_baud(void)
+{
+    if (pcconnect_bridge_enabled())
+        return pcconnect_bridge_uart_baud();
+
+    return g_pcc.enabled ? 115200u : 0u;
 }

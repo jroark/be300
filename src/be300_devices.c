@@ -105,6 +105,8 @@ struct be300_vrc4173_latch {
     bool     pcconnect_dock_connected;
     uint16_t pcconnect_commmode_pending;
     uint16_t stowaway_commmode_events;
+    bool     pcconnect_modem_after_socket_sent;
+    size_t   pcconnect_rx_wake_count;
     bool     pcconnect_insert_armed;
     uint32_t pcconnect_insert_delay_ms;
     uint64_t pcconnect_insert_deadline_ns;
@@ -313,6 +315,11 @@ static bool be300_pcconnect_cable_enabled(void)
          g_be300_machine->cfg.pcconnect_bridge != NULL);
 }
 
+static bool be300_pcconnect_bridge_enabled(void)
+{
+    return g_be300_machine && g_be300_machine->cfg.pcconnect_bridge != NULL;
+}
+
 static bool be300_stowaway_keyboard_enabled(void)
 {
     return g_be300_machine &&
@@ -458,12 +465,12 @@ static uint16_t be300_pcconnect_socket_read(
     return v;
 }
 
-static uint16_t be300_stowaway_commmode_event_read(
+static uint16_t be300_serial_dock_commmode_event_read(
     const struct be300_vrc4173_latch *d)
 {
     uint16_t v = be300_latch_peek_u16(d, BE300_COMMMODE_MODEM_EVENT_OFF);
 
-    if (d && be300_stowaway_keyboard_enabled())
+    if (d && be300_serial_dock_socket_enabled())
         v |= d->stowaway_commmode_events;
 
     return v;
@@ -555,6 +562,8 @@ void be300_pcconnect_reset_for_cpu_reset(
         d->pcconnect_dock_connected = true;
         d->pcconnect_commmode_pending = 0;
         d->stowaway_commmode_events = 0;
+        d->pcconnect_modem_after_socket_sent = false;
+        d->pcconnect_rx_wake_count = 0;
         d->pcconnect_insert_armed = false;
         stowaway_uart_reset();
         if (d->pcconnect_irq_connected && d->pcconnect_irq_asserted) {
@@ -578,6 +587,9 @@ void be300_pcconnect_reset_for_cpu_reset(
     */
     d->pcconnect_dock_connected = false;
     d->pcconnect_commmode_pending = 0;
+    d->stowaway_commmode_events = 0;
+    d->pcconnect_modem_after_socket_sent = false;
+    d->pcconnect_rx_wake_count = 0;
     pcconnect_set_cable_connected(false);
     d->usb_intr_status = 0;
     d->usb_port_status[0] &= ~VRC4173_USB_PORT_CHANGE_MASK;
@@ -614,11 +626,13 @@ static void be300_pcconnect_raise_dock_edge(struct be300_vrc4173_latch *d,
      * transition instead of a reset-time static level.
     */
     d->pcconnect_dock_connected = true;
-    d->pcconnect_commmode_pending |= BE300_COMMMODE_PENDING_MASK;
+    d->pcconnect_commmode_pending |= BE300_COMMMODE_SOCKET_PENDING;
     if (be300_pcconnect_cable_enabled())
         pcconnect_set_cable_connected(true);
-    if (be300_stowaway_keyboard_enabled())
+    if (be300_stowaway_keyboard_enabled()) {
+        d->pcconnect_commmode_pending |= BE300_COMMMODE_MODEM_PENDING;
         d->stowaway_commmode_events |= BE300_COMMMODE_MODEM_EVENT_BITS;
+    }
     be300_pcconnect_irq_update(d);
     be300_pcconnect_trace(d, force ? "dock-edge-uart" : "dock-edge",
         BE300_COMMMODE_STATUS_OFF, 2, be300_pcconnect_commmode_read(d), 0);
@@ -688,10 +702,21 @@ static void be300_pcconnect_maybe_raise_dock_edge(
     if (d->pcconnect_dock_connected)
         return;
 
+    /*
+     * The transparent bridge models a real dock insertion while the host PC
+     * is already polling the serial port, so let the delayed insertion path
+     * fire after the Boot.exe reset.  The synthetic time-sync peer keeps the
+     * older UART-ready force path because it has no external peer to hold
+     * post-dock bytes while the guest finishes opening COM1.
+     */
     be300_pcconnect_raise_dock_edge(d,
-        be300_pcconnect_cable_enabled() ? pcconnect_guest_uart_ready() :
-        false);
+        be300_pcconnect_cable_enabled() &&
+        !be300_pcconnect_bridge_enabled() &&
+        pcconnect_guest_uart_ready());
 }
+
+static void be300_pcconnect_maybe_raise_uart_rx_level(
+    struct be300_vrc4173_latch *d);
 
 bool be300_pcconnect_irq_is_asserted(void)
 {
@@ -703,6 +728,7 @@ void be300_pcconnect_poll(void)
 {
     if (be300_pcconnect_cable_enabled()) {
         be300_pcconnect_maybe_raise_dock_edge(g_be300_vrc4173_latch);
+        be300_pcconnect_maybe_raise_uart_rx_level(g_be300_vrc4173_latch);
         return;
     }
 
@@ -713,7 +739,7 @@ void be300_pcconnect_poll(void)
     }
 }
 
-static void be300_pcconnect_uart_rx_ready(void *opaque)
+static void be300_pcconnect_uart_irq_ready(void *opaque)
 {
     struct be300_vrc4173_latch *d = opaque;
 
@@ -725,9 +751,10 @@ static void be300_pcconnect_uart_rx_ready(void *opaque)
      * The companion serial path is not the VR4131 internal SIU path:
      * hardware.txt:8 notes serial is handled by the custom companion, and
      * hardware.txt:122-130 routes the Vic/CommMode page through GIRQ0-4.
-     * Raise a CommMode edge when host RX data becomes available so the
-     * guest's serial-side waiters get a companion interrupt after the
-     * initial dock-detect edge.
+     * Raise a CommMode edge when the bridged companion SIU needs service
+     * after the initial dock-detect edge.  This covers both host RX data and
+     * TX-ready service: serial.dll sees the UART IIR only after the OAL
+     * dispatches GIRQ0-4 sub-bit 4.
      *
      * Also raise MODEM_EVENT_BITS the way stowaway_signal_uart_irq does.
      * The bridge previously only set MODEM_PENDING, leaving the event
@@ -735,10 +762,48 @@ static void be300_pcconnect_uart_rx_ready(void *opaque)
      * (DCD/CTS-change-style) to treat the IRQ as "data ready", not just
      * a generic modem interrupt. Stowaway has set both since day one
      * and works reliably; matching that behavior here.
-     */
+    */
     d->pcconnect_commmode_pending |= BE300_COMMMODE_MODEM_PENDING;
     d->stowaway_commmode_events |= BE300_COMMMODE_MODEM_EVENT_BITS;
-    be300_pcconnect_trace(d, "uart-rx-edge",
+    be300_pcconnect_trace(d, "uart-irq-edge",
+        BE300_COMMMODE_STATUS_OFF, 2,
+        be300_pcconnect_commmode_read(d), 0);
+    be300_pcconnect_irq_update(d);
+    be300_pcconnect_irq_reedge(d);
+}
+
+static void be300_pcconnect_maybe_raise_uart_rx_level(
+    struct be300_vrc4173_latch *d)
+{
+    size_t rx_count;
+
+    if (!d || !be300_pcconnect_cable_enabled() ||
+        !d->pcconnect_dock_connected)
+        return;
+
+    rx_count = pcconnect_uart_rx_count();
+    if (rx_count == 0) {
+        d->pcconnect_rx_wake_count = 0;
+        return;
+    }
+    if ((d->pcconnect_commmode_pending & BE300_COMMMODE_PENDING_MASK) != 0)
+        return;
+    if (rx_count == d->pcconnect_rx_wake_count)
+        return;
+
+    /*
+     * The companion SIU receive interrupt is a level condition: while the
+     * UART still reports RXRDY, the VRC4173 CommMode modem subsource can
+     * become pending again after the OAL consumes the previous dispatch.
+     * Treating it as a one-shot edge loses PCConnect's poll bytes if the
+     * first SYSINTR fires before serial.dll drains the UART. Re-edge only
+     * when the queued RX depth changes; the same unread byte does not create
+     * a new hardware edge on every machine poll.
+     */
+    d->pcconnect_rx_wake_count = rx_count;
+    d->pcconnect_commmode_pending |= BE300_COMMMODE_MODEM_PENDING;
+    d->stowaway_commmode_events |= BE300_COMMMODE_MODEM_EVENT_BITS;
+    be300_pcconnect_trace(d, "uart-rx-level",
         BE300_COMMMODE_STATUS_OFF, 2,
         be300_pcconnect_commmode_read(d), 0);
     be300_pcconnect_irq_update(d);
@@ -791,6 +856,23 @@ static void be300_pcconnect_note_comm_write(struct be300_vrc4173_latch *d,
          */
         d->pcconnect_commmode_pending &=
             (uint16_t)~(commmode & BE300_COMMMODE_PENDING_MASK);
+        if ((old_pending & BE300_COMMMODE_SOCKET_PENDING) != 0 &&
+            (d->pcconnect_commmode_pending &
+                BE300_COMMMODE_SOCKET_PENDING) == 0 &&
+            be300_pcconnect_cable_enabled() &&
+            d->pcconnect_dock_connected &&
+            !d->pcconnect_modem_after_socket_sent) {
+            /*
+             * hardware.txt:124-130 documents AA008004 as separate
+             * pending/mask sub-bits.  Present the RS-232 socket insertion
+             * first, then raise the companion modem-event subsource after
+             * the socket bit is acknowledged so sub-bit 4 is not swallowed
+             * by the same writeback that clears sub-bit 0.
+             */
+            d->pcconnect_commmode_pending |= BE300_COMMMODE_MODEM_PENDING;
+            d->stowaway_commmode_events |= BE300_COMMMODE_MODEM_EVENT_BITS;
+            d->pcconnect_modem_after_socket_sent = true;
+        }
         reedge =
             (old_pending & BE300_COMMMODE_SOCKET_PENDING) != 0 &&
             (d->pcconnect_commmode_pending &
@@ -839,23 +921,17 @@ static void be300_pcconnect_note_comm_read(struct be300_vrc4173_latch *d,
     /*
      * The NK GIRQ0-4 dispatcher at 0x800b6db4 selects the lowest active
      * AA008004 sub-bit.  Sub-bit 4's handler returns SYSINTR 0x23 without
-     * writing AA008004, so consume the latched modem-detect bit when the
-     * dispatcher observes it as the selected source.  Sub-bit 0 has an
-     * explicit writeback in its handler and is cleared in the write path.
+     * writing AA008004; keep that modem level asserted until the companion
+     * modem-event latch at AA001054 is acknowledged.  This mirrors the
+     * Stowaway dock path and gives the serial event thread a stable source
+     * to observe after the OAL dispatch.
      */
     if (pc == 0x800b6db4u &&
         (active & BE300_COMMMODE_SOCKET_PENDING) == 0 &&
         (active & BE300_COMMMODE_MODEM_PENDING) != 0) {
-        if (be300_stowaway_keyboard_enabled()) {
-            be300_pcconnect_trace(d, "commmode-modem-dispatch",
-                BE300_COMMMODE_STATUS_OFF, 2, val, pc);
-            return;
-        }
-        d->pcconnect_commmode_pending &=
-            (uint16_t)~BE300_COMMMODE_MODEM_PENDING;
         be300_pcconnect_trace(d, "commmode-modem-dispatch",
             BE300_COMMMODE_STATUS_OFF, 2, val, pc);
-        be300_pcconnect_irq_update(d);
+        return;
     }
 }
 
@@ -1029,8 +1105,6 @@ static void be300_buzzer_note_write(struct be300_vrc4173_latch *d,
     struct be300_buzzer_state *b;
     uint32_t old_control;
     uint32_t new_control;
-    uint32_t old_cmm;
-    uint32_t new_cmm;
     bool touched_blg;
     bool touched_cmm;
 
@@ -1046,7 +1120,6 @@ static void be300_buzzer_note_write(struct be300_vrc4173_latch *d,
 
     b = &d->buzzer;
     old_control = be300_buzzer_peek_le32(&b->blg[0]);
-    old_cmm = be300_buzzer_peek_le32(b->cmm);
 
     for (unsigned i = 0; i < len; i++) {
         uint32_t byte_off = off + i;
@@ -1064,21 +1137,16 @@ static void be300_buzzer_note_write(struct be300_vrc4173_latch *d,
     }
 
     new_control = be300_buzzer_peek_le32(&b->blg[0]);
-    new_cmm = be300_buzzer_peek_le32(b->cmm);
 
+    /*
+     * The real idle dump seeds BLG[0] and CMM bit 0 as set. Boot-time driver
+     * configuration rewrites those registers without making real hardware
+     * beep, so host audio should only model the explicit off->on edge.
+     */
     if ((new_control & 1u) && !(old_control & 1u)) {
         ui_buzzer_pulse(be300_buzzer_tone_hz(b), be300_buzzer_tone_ms(b));
         return;
     }
-
-    if ((new_control & 1u) && touched_blg &&
-        !be300_buzzer_range_overlap(off, len, 0x098Cu, 4u)) {
-        ui_buzzer_pulse(be300_buzzer_tone_hz(b), be300_buzzer_tone_ms(b));
-        return;
-    }
-
-    if (touched_cmm && new_cmm != old_cmm && (new_cmm & 1u))
-        ui_buzzer_pulse(be300_buzzer_tone_hz(b), be300_buzzer_tone_ms(b));
 }
 
 static bool be300_reg_addr_to_pa(uint32_t addr, uint64_t *pa_out)
@@ -1535,7 +1603,7 @@ DEVICE_ACCESS(be300_vrc4173)
         }
         be300_pcconnect_note_comm_write(d, off, (unsigned)len, val,
             (uint32_t)cpu->pc);
-        if (be300_stowaway_keyboard_enabled() &&
+        if (be300_serial_dock_socket_enabled() &&
             off <= BE300_COMMMODE_MODEM_EVENT_OFF &&
             off + len > BE300_COMMMODE_MODEM_EVENT_OFF) {
             uint16_t written = be300_pcconnect_write_u16_at(off,
@@ -1620,7 +1688,7 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
-        if (be300_stowaway_keyboard_enabled() &&
+        if (be300_serial_dock_socket_enabled() &&
             off == BE300_COMMMODE_SERIAL_SOCKET_OFF) {
             uint16_t val = be300_serial_dock_socket_connected(d) ? 0u : 1u;
 
@@ -1631,16 +1699,17 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
-        if (be300_stowaway_keyboard_enabled() &&
+        if (be300_serial_dock_socket_enabled() &&
             off == BE300_COMMMODE_MODEM_EVENT_OFF) {
-            uint16_t val = be300_stowaway_commmode_event_read(d);
+            uint16_t val = be300_serial_dock_commmode_event_read(d);
 
             /*
              * serial.dll's RS-232 path reads AA001054 as a companion-side
              * modem-event latch before it accepts UART DCD/RLSD for the
-             * Stowaway dock. hardware.txt:189-191 labels 0xaa001000 as a
-             * separate companion block, and hw_dump_vrc4173.txt:39-42
-             * captures the real 0x0A001010/0x0A001054 latch values.
+             * serial dock. hardware.txt:189-191 labels 0xaa001000 as a
+             * separate companion block next to the VRC4173 SIU, and
+             * hw_dump_vrc4173.txt:39-42 captures the real
+             * 0x0A001010/0x0A001054 latch values.
              */
             be300_probe_note_mmio("vrc4173-commmode-modem-event", off, 'R',
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
@@ -2103,7 +2172,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
          * set_rx_ready_callback, so registering once here is sufficient
          * for either mode. */
         if (m->cfg.enable_pcconnect_time_sync || m->cfg.pcconnect_bridge)
-            pcconnect_set_rx_ready_callback(be300_pcconnect_uart_rx_ready,
+            pcconnect_set_rx_ready_callback(be300_pcconnect_uart_irq_ready,
                 latch);
         if (m->cfg.enable_stowaway_keyboard)
             latch->pcconnect_dock_connected = true;
@@ -2112,5 +2181,3 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
 
     (void)enable_ppsh;  /* device registration handled by be300_register_wince_aux above */
 }
-
-

@@ -46,11 +46,12 @@ Set `BE300_PCC_TRACE=1` to enable bridge state-change logging on stderr.
 # pcconnect-bridge tee log; mono_ns dir count: hex bytes
 <mono_ns> H>G <count>: <space-separated lowercase hex>      ← host → guest
 <mono_ns> G>H <count>: <space-separated lowercase hex>      ← guest → host
-<mono_ns> H>G:drop <count>: …                                ← bytes received
-                                                              before cable
-                                                              detect; dropped
-                                                              to mimic an
-                                                              unpowered dock
+<mono_ns> H>G:queued <count>: …                              ← host bytes held
+                                                              after dock edge
+                                                              until UART ready
+<mono_ns> H>G:drop <count>: …                                ← host bytes while
+                                                              the emulated cable
+                                                              is disconnected
 ```
 
 Times are `clock_gettime(CLOCK_MONOTONIC)` nanoseconds. The file is
@@ -64,9 +65,15 @@ The bridge rides the same VRC4173 dock-detect plumbing as the
 synthesizer: when the GIU "cradle inserted" edge fires (after a Boot.exe
 reset; see `src/be300_devices.c:be300_pcconnect_raise_dock_edge`),
 `pcconnect_set_cable_connected(true)` is called, the bridge logs
-`[PC_CONNECT_BRIDGE] cable connected`, and bytes start flowing in both
-directions. Bytes received from the host before that edge are dropped
-(and tee'd as `H>G:drop`).
+`[PC_CONNECT_BRIDGE] cable connected`, and guest-to-host bytes can flow.
+Host-to-guest bytes received before the dock edge are consumed and tee'd as
+`H>G:drop`; real disconnected serial pins do not buffer the PC's polling
+stream. After the dock edge, the bridge preserves host bytes in the VRC4173
+SIU receive queue until the guest configures the receiver for 8N1, teeing that
+short interval as `H>G:queued`. This matches the real usage pattern where
+`PCConnect.exe` is already polling the configured COM port and the
+connect-only capture shows the important `AT`/`0x55` poll immediately after
+the BE-300 is docked.
 
 A peer-side disconnect closes the local fd but does **not** drop the
 cable. PTY mode re-opens its master so a fresh `screen` session can
@@ -173,12 +180,14 @@ patches required. Reference: `Configuration/UTMQemuConfiguration+Arguments.swift
    `ce/restore_images/`) if not already present, launch `PCConnect.exe`,
    and point it at the new COM port.
 
-When `PCConnect.exe` clicks **Connect**, the tee should show:
+With the BE-300 configured to connect automatically, docking should show:
 
-- host AT/`0x55`/`0x20` wake handshake → guest `0x55` echoes → guest
-  `0x20` ready
-- a `0x10 …` framed PCConnect command from host
-- a matching `0x11 …` ACK from guest
+- host AT/`0x55` wake polling
+- a guest `0x55` wake train
+- the first host framed query, typically
+  `10 01 00 0a 03 2d 00 00 00 4b`
+- the matching guest ACK, typically
+  `11 01 00 12 03 2d 00 00 00 54 ...`
 
 For protocol RE, `tail -f /tmp/pcc.tee` and exercise PCConnect features.
 Cross-reference against `docs/PC_CONNECT_TIME_SYNC.md` (which decodes

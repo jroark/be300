@@ -51,9 +51,11 @@ def _hex_tokens_to_bytes(tokens: list[str]) -> bytes:
 def parse_tee(path: Path) -> list[Event]:
     """Parse a pcconnect-bridge tee log into Event objects.
 
-    Drop ``H>G:drop`` events (those happened before cable-up). Microsecond
-    timestamps are derived from the mono_ns column; the first usable event
-    is re-based to t=0 by the caller.
+    Drop ``H>G:drop`` events; those are host bytes consumed before the emulated
+    cable edge. Treat ``H>G:queued`` as host-to-guest data because the bridge
+    retains those bytes and releases them when the guest UART becomes ready.
+    Microsecond timestamps are derived from the mono_ns column; the first
+    usable event is re-based to t=0 by the caller.
     """
     out: list[Event] = []
     for line in path.read_text(errors="replace").splitlines():
@@ -71,6 +73,8 @@ def parse_tee(path: Path) -> list[Event]:
         direction = parts[1]
         if direction.endswith(":drop"):
             continue
+        if direction == "H>G:queued":
+            direction = "H>G"
         if direction not in ("H>G", "G>H"):
             continue
         # parts[2] is "<count>:" — discard, we'll measure

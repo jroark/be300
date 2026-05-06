@@ -60,17 +60,10 @@ typedef struct {
     uint8_t guest_uart_mcr;
     uint8_t guest_uart_ier;
     int guest_uart_divisor;
+    uint32_t baud;
 
     pcc_ring_t rx_ring;     /* host -> guest */
     pcc_ring_t tx_ring;     /* guest -> host */
-
-    /* Rate-limit rx_ready_cb. Each call sets the VRC4173 CommMode
-     * MODEM_PENDING bit and re-edges the dock IRQ; calling it once per
-     * host byte produced a kHz IRQ flood that starved the WinCE shell
-     * and chimed the buzzer continuously. Fire on empty->non-empty
-     * transition, then at most every rx_wake_min_gap_ns to keep
-     * serial.dll's IST awake without flooding. */
-    uint64_t rx_wake_last_ns;
 
     /* Reconnect throttle for TCP/Unix connect modes. */
     uint64_t next_reconnect_ns;
@@ -151,6 +144,11 @@ static void trace(const char *fmt, ...)
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     va_end(ap);
+}
+
+static void queue_host_rx_pre(uint8_t byte)
+{
+    pcc_ring_push(&g.rx_pre_ring, byte);
 }
 
 /* ---------- config / spec parsing ---------- */
@@ -534,29 +532,48 @@ static void on_peer_gone(const char *why)
      * when a new client attaches. Listen-mode backends will re-accept in tick. */
 }
 
-/* Move up to one byte at a time from rx_pre_ring (TCP arrival queue) into
- * rx_ring (guest-visible queue), pacing at rx_ns_per_byte. Each released
- * byte fires the rx-ready callback so the guest's serial.dll IST runs
- * once per byte — matching real-hardware per-byte UART IRQ behavior. */
+static void bridge_note_rx_released(bool was_empty, bool released)
+{
+    if (released && was_empty && g.rx_ready_cb)
+        g.rx_ready_cb(g.rx_ready_opaque);
+}
+
+static void bridge_guest_rx_push(uint8_t byte)
+{
+    pcc_ring_push(&g.rx_ring, byte);
+}
+
+/* Move bytes from rx_pre_ring (TCP arrival queue) into rx_ring
+ * (guest-visible queue), pacing at rx_ns_per_byte when requested. The
+ * companion wake is an empty->non-empty edge; once RX is already pending,
+ * additional host poll bytes should not generate a CommMode IRQ storm. */
 static void bridge_release_rx_paced(void)
 {
+    bool was_empty;
+    bool released = false;
+
+    if (!g.cable_connected || !g.guest_uart_ready)
+        return;
+
     if (g.rx_ns_per_byte == 0) {
         /* Unthrottled: flush pre_ring straight to rx_ring in one shot. */
         if (pcc_ring_is_empty(&g.rx_pre_ring))
             return;
+        was_empty = pcc_ring_is_empty(&g.rx_ring);
         while (!pcc_ring_is_empty(&g.rx_pre_ring) &&
                pcc_ring_count(&g.rx_ring) < PCC_RING_CAP) {
             int b = pcc_ring_pop(&g.rx_pre_ring);
             if (b < 0) break;
-            pcc_ring_push(&g.rx_ring, (uint8_t)b);
+            bridge_guest_rx_push((uint8_t)b);
+            released = true;
         }
-        if (g.rx_ready_cb)
-            g.rx_ready_cb(g.rx_ready_opaque);
+        bridge_note_rx_released(was_empty, released);
         return;
     }
 
     if (pcc_ring_is_empty(&g.rx_pre_ring))
         return;
+    was_empty = pcc_ring_is_empty(&g.rx_ring);
     uint64_t now = mono_ns();
     if (g.rx_next_due_ns == 0 || g.rx_next_due_ns + 100000000ull < now)
         g.rx_next_due_ns = now;
@@ -564,12 +581,12 @@ static void bridge_release_rx_paced(void)
            pcc_ring_count(&g.rx_ring) < PCC_RING_CAP) {
         int b = pcc_ring_pop(&g.rx_pre_ring);
         if (b < 0) break;
-        pcc_ring_push(&g.rx_ring, (uint8_t)b);
-        if (g.rx_ready_cb)
-            g.rx_ready_cb(g.rx_ready_opaque);
+        bridge_guest_rx_push((uint8_t)b);
+        released = true;
         g.rx_next_due_ns += g.rx_ns_per_byte;
         now = mono_ns();
     }
+    bridge_note_rx_released(was_empty, released);
 }
 
 static void bridge_drain_rx(void)
@@ -589,14 +606,25 @@ static void bridge_drain_rx(void)
             cap = sizeof(scratch);
         ssize_t n = read(g.fd, scratch, cap);
         if (n > 0) {
-            if (g.cable_connected) {
-                for (ssize_t i = 0; i < n; i++)
-                    pcc_ring_push(&g.rx_pre_ring, scratch[i]);
-                tee_write_dir("H>G", scratch, (size_t)n);
-            } else {
-                /* Pre-link bytes are dropped to mimic an unpowered dock IC. */
+            if (!g.cable_connected) {
+                /*
+                 * PCConnect may poll the VM's serial port before the BE-300
+                 * is docked. Real disconnected serial pins do not buffer the
+                 * PC's polling stream for later replay, so consume those
+                 * bytes from the host fd until the cable edge is presented.
+                 */
                 tee_write_dir("H>G:drop", scratch, (size_t)n);
+                continue;
             }
+            for (ssize_t i = 0; i < n; i++)
+                queue_host_rx_pre(scratch[i]);
+            /*
+             * Once the cable is inserted, the PC's serial stream is present
+             * on the dock RX pin. Preserve the short post-dock polling prefix
+             * until serial.dll finishes programming 8N1 and drains the UART.
+             */
+            tee_write_dir(g.guest_uart_ready ? "H>G" : "H>G:queued",
+                scratch, (size_t)n);
             continue;
         }
         if (n == 0) {
@@ -718,6 +746,7 @@ bool pcconnect_bridge_configure(const pcc_bridge_config_t *cfg)
     g.target = cfg->target ? strdup(cfg->target) : NULL;
     g.uart_name = cfg->uart_name ? cfg->uart_name : PCC_BR_DEFAULT_UART;
     g.trace = cfg->trace;
+    g.baud = cfg->baud;
     if (cfg->baud > 0) {
         /* 8N1 framing = 10 bit-times per byte. */
         g.tx_ns_per_byte = 10000000000ull / (uint64_t)cfg->baud;
@@ -770,8 +799,9 @@ bool pcconnect_bridge_configure(const pcc_bridge_config_t *cfg)
     }
 
     g.armed = true;
-    trace("armed kind=%d target=%s tee=%s",
+    trace("armed kind=%d target=%s uart=%s tee=%s",
           (int)g.kind, g.target ? g.target : "(null)",
+          g.uart_name ? g.uart_name : PCC_BR_DEFAULT_UART,
           g.tee_path ? g.tee_path : "(none)");
     return true;
 }
@@ -792,12 +822,7 @@ void pcconnect_bridge_tick(void)
     else if (g.kind == PCC_BR_TCP_CONNECT || g.kind == PCC_BR_UNIX_CONNECT)
         try_reconnect();
     bridge_drain_tx();
-
-    /* Release pending H->G bytes from rx_pre_ring at baud rate, so a
-     * single TCP burst delivers to the guest one byte per ~87 us
-     * (matching real-serial cadence). */
-    if (g.cable_connected)
-        bridge_release_rx_paced();
+    bridge_drain_rx();
 }
 
 void pcconnect_bridge_shutdown(void)
@@ -826,6 +851,7 @@ bool pcconnect_bridge_ns16550_claims(const char *name)
 {
     if (!g.armed || !name)
         return false;
+
     return strcmp(name, g.uart_name ? g.uart_name : PCC_BR_DEFAULT_UART) == 0;
 }
 
@@ -833,13 +859,22 @@ bool pcconnect_bridge_uart_rx_available(void)
 {
     if (!g.armed)
         return false;
-    /* Drain the host fd into the rx ring on every poll; this is the only
-     * place that pulls bytes from the peer, so it must run regardless of
-     * cable state. Pre-link bytes are dropped inside bridge_drain_rx(). */
+    /* Drain the host fd into the rx ring on every poll; tick() also drains
+     * it so PCConnect polling is retained even before the guest opens COM1. */
     bridge_drain_rx();
-    if (!g.cable_connected)
+    if (!g.cable_connected || !g.guest_uart_ready)
         return false;
     return !pcc_ring_is_empty(&g.rx_ring);
+}
+
+size_t pcconnect_bridge_uart_rx_count(void)
+{
+    if (!g.armed)
+        return 0;
+    bridge_drain_rx();
+    if (!g.cable_connected || !g.guest_uart_ready)
+        return 0;
+    return pcc_ring_count(&g.rx_ring);
 }
 
 int pcconnect_bridge_uart_rx_pop(void)
@@ -849,6 +884,16 @@ int pcconnect_bridge_uart_rx_pop(void)
         return -1;
     byte = pcc_ring_pop(&g.rx_ring);
     return byte;
+}
+
+void pcconnect_bridge_uart_rx_clear(void)
+{
+    if (!g.armed)
+        return;
+
+    pcc_ring_clear(&g.rx_ring);
+    pcc_ring_clear(&g.rx_pre_ring);
+    g.rx_next_due_ns = 0;
 }
 
 void pcconnect_bridge_uart_tx_byte(uint8_t byte)
@@ -861,6 +906,14 @@ void pcconnect_bridge_uart_tx_byte(uint8_t byte)
     pcc_ring_push(&g.tx_ring, byte);
     tee_write_dir("G>H", &byte, 1);
     /* drain attempted in tick() */
+}
+
+uint32_t pcconnect_bridge_uart_baud(void)
+{
+    if (!g.armed)
+        return 0;
+
+    return g.baud != 0 ? g.baud : 115200u;
 }
 
 void pcconnect_bridge_set_cable_connected(bool connected)
@@ -877,6 +930,8 @@ void pcconnect_bridge_set_cable_connected(bool connected)
         pcc_ring_clear(&g.rx_ring);
         pcc_ring_clear(&g.rx_pre_ring);
         pcc_ring_clear(&g.tx_ring);
+    } else {
+        bridge_release_rx_paced();
     }
     trace("cable %s", connected ? "connected" : "disconnected");
 }
@@ -891,22 +946,33 @@ void pcconnect_bridge_set_rx_ready_callback(void (*cb)(void *opaque),
 void pcconnect_bridge_note_uart_config(const char *name, uint8_t lcr,
     uint8_t mcr, uint8_t ier, int divisor, int dlab)
 {
+    bool ready;
+
     if (!g.armed)
         return;
     if (!pcconnect_bridge_ns16550_claims(name))
         return;
-    /* Match synth gating: 8N1 + DTR|RTS asserted, divisor latch off. */
-    if (dlab || (lcr & 0x7f) != 0x03 || (mcr & 0x03) == 0)
+    /* The receiver is usable once the guest has selected 8N1 and left the
+     * divisor latch; MCR DTR/RTS are modem outputs, not an RX enable. */
+    ready = !dlab && (lcr & 0x7f) == 0x03;
+    if (!ready) {
+        if (g.guest_uart_ready) {
+            trace("guest UART %s receiver not ready lcr=0x%02x mcr=0x%02x divisor=%d",
+                  name ? name : "", lcr, mcr, divisor);
+        }
+        g.guest_uart_ready = false;
         return;
+    }
     g.guest_uart_lcr = lcr;
     g.guest_uart_mcr = mcr;
     g.guest_uart_ier = ier;
     g.guest_uart_divisor = divisor;
     if (!g.guest_uart_ready) {
-        trace("guest UART %s asserted DTR/RTS in 8N1 divisor=%d",
+        trace("guest UART %s configured 8N1 divisor=%d",
               name ? name : "", divisor);
     }
     g.guest_uart_ready = true;
+    bridge_release_rx_paced();
 }
 
 bool pcconnect_bridge_cable_connected(void)
@@ -917,4 +983,9 @@ bool pcconnect_bridge_cable_connected(void)
 bool pcconnect_bridge_guest_uart_ready(void)
 {
     return g.armed && g.guest_uart_ready;
+}
+
+bool pcconnect_bridge_trace_enabled(void)
+{
+    return g.armed && g.trace;
 }

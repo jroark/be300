@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum {
@@ -46,8 +47,11 @@ void pcconnect_bridge_shutdown(void);
 /* Backend entry points called via dispatch from pcconnect.c shims. */
 bool pcconnect_bridge_ns16550_claims(const char *name);
 bool pcconnect_bridge_uart_rx_available(void);
+size_t pcconnect_bridge_uart_rx_count(void);
 int  pcconnect_bridge_uart_rx_pop(void);
+void pcconnect_bridge_uart_rx_clear(void);
 void pcconnect_bridge_uart_tx_byte(uint8_t byte);
+uint32_t pcconnect_bridge_uart_baud(void);
 void pcconnect_bridge_set_cable_connected(bool connected);
 void pcconnect_bridge_set_rx_ready_callback(void (*cb)(void *opaque),
     void *opaque);
@@ -55,3 +59,4 @@ void pcconnect_bridge_note_uart_config(const char *name, uint8_t lcr,
     uint8_t mcr, uint8_t ier, int divisor, int dlab);
 bool pcconnect_bridge_cable_connected(void);
 bool pcconnect_bridge_guest_uart_ready(void);
+bool pcconnect_bridge_trace_enabled(void);
