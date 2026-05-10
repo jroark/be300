@@ -15,7 +15,7 @@ const HOSTED_NAND_IMAGES = [
   { id: "300", name: "300.bin", label: "WinCE 3.0", url: "./nand/300.bin", sdramMb: 16 },
   { id: "beshell", name: "beshell.bin", label: "BEshell", url: "./nand/beshell.bin", sdramMb: 16 },
   { id: "expod", name: "expod.bin", label: "Expod", url: "./nand/expod.bin", sdramMb: 16 },
-  { id: "mw", name: "mw.bin", label: "MobileWrite", url: "./nand/mw.bin", sdramMb: 16 },
+  { id: "mw", name: "mw.bin", label: "Microwindows", url: "./nand/mw.bin", sdramMb: 16 },
   { id: "net", name: "net.bin", label: "Net", url: "./nand/net.bin", sdramMb: 16 },
   { id: "opie", name: "opie.bin", label: "OPIE Linux", url: "./nand/opie.bin", sdramMb: 64 },
   { id: "picogui", name: "picogui.bin", label: "PicoGUI", url: "./nand/picogui.bin", sdramMb: 16 },
