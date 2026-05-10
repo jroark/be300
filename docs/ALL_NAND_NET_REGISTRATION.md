@@ -152,6 +152,59 @@ python3 tools/analyze_net_registration.py All_nand_Net.bin \
   --out-image /tmp/All_nand_Net_registered.bin
 ```
 
-The patch path uses `mcopy` from mtools and verifies that the new FAT directory
-entry exists. It does not modify the source image, synthesize a DLL, patch NK,
-or alter emulator behavior.
+The DLL-install path uses `mcopy` from mtools and verifies that the new FAT
+directory entry exists. It does not modify the source image, synthesize a DLL,
+patch NK, or alter emulator behavior.
+
+## Registration Bypass
+
+For local CE .NET experiments where registration with the retired service is
+impossible, the analyzer can also patch a copy of the NAND image so
+`PowerOn.dll` treats registration as complete:
+
+```bash
+python3 tools/analyze_net_registration.py All_nand_Net.bin \
+  --patch-registration-check \
+  --out-image /tmp/All_nand_Net_noreg.bin
+```
+
+This replaces the `PowerOn.dll` registration-check function at VA
+`0x039A1370` with:
+
+```mips
+addiu v0, zero, 1
+jr    ra
+nop
+```
+
+The original function does the following:
+
+1. waits briefly for `Program Disk` / `\Nand Disk\Program Files`
+2. calls `LoadLibraryW("\\Nand Disk\\Program Files\\Cassiopeia.dll")`
+3. resolves `Verificate` and `Certificate` with `GetProcAddressW`
+4. computes a 16-bit value from the current time/date path
+5. calls `Certificate(seed)` and compares its 16-bit return to that value
+6. returns `Verificate()` when the certificate check matches
+7. unloads the DLL and returns false on any failure
+
+That gives the fake-registration ABI: a replacement `Cassiopeia.dll` would need
+exports named `Certificate` and `Verificate`; `Certificate` must accept the
+computed 16-bit seed and return the same 16-bit value, and `Verificate` must
+return nonzero. Building that DLL would be a cleaner behavioral fake if a
+WinCE/MIPS DLL toolchain is available, but the direct NAND patch is smaller
+and deterministic.
+
+Verification from the patched NAND:
+
+```text
+original words at NK flat offset 0x49E370:
+  0x27BDFFC8 0xAFBF0034 0xAFBE0010
+
+patched words:
+  0x24020001 0x03E00008 0x00000000
+```
+
+Booting the patched copy reaches the touch calibration screen. That does not
+prove final registration state by itself, because calibration is a separate
+first-run blocker, but it confirms the previous registration modal is no
+longer the first visible gate.

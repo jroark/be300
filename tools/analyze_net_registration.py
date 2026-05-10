@@ -23,7 +23,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from nk_lzss import decode_nk_partition
+from nk_lzss import (
+    decode_lzss,
+    decode_nk_partition,
+    encode_lzss,
+    patch_logical_stream_from_flat,
+)
 
 
 SECTOR_SIZE = 512
@@ -34,6 +39,18 @@ REGISTRATION_DLL_PATH = r"\Nand Disk\Program Files\Cassiopeia.dll"
 REGISTRATION_DLL_NAME = "Cassiopeia.dll"
 REGISTRATION_CPK_NAME = "Cassiopeia.dll.cpk"
 PROGRAM_FILES_NAME = "Program Files"
+
+REGISTRATION_CHECK_VA = 0x039A1370
+REGISTRATION_CHECK_OLD_WORDS = (
+    0x27BDFFC8,  # addiu sp, sp, -0x38
+    0xAFBF0034,  # sw ra, 0x34(sp)
+    0xAFBE0010,  # sw fp, 0x10(sp)
+)
+REGISTRATION_CHECK_PATCH_WORDS = (
+    0x24020001,  # addiu v0, zero, 1
+    0x03E00008,  # jr ra
+    0x00000000,  # nop
+)
 
 
 def u16(data: bytes, off: int) -> int:
@@ -612,6 +629,119 @@ def install_registration_dll(
         raise ValueError("mcopy completed, but Cassiopeia.dll was not found afterward")
 
 
+def module_va_to_nk_flat_offset(
+    nk_data: bytes | bytearray,
+    nk_base_va: int,
+    module: ModuleEntry,
+    module_va: int,
+) -> int:
+    rva = module_va - module.vbase
+    if rva < 0 or rva >= module.vsize:
+        raise ValueError(
+            f"VA 0x{module_va:08X} is outside {module.name} "
+            f"vbase=0x{module.vbase:08X} vsize=0x{module.vsize:X}"
+        )
+
+    for section in module.sections:
+        if section.rva <= rva < section.rva + section.psize:
+            off = va_to_off(section.data_ptr, nk_base_va) + (rva - section.rva)
+            if off < 0 or off + 4 > len(nk_data):
+                raise ValueError(f"{module.name}: section storage is outside flat NK")
+            return off
+
+    raise ValueError(f"VA 0x{module_va:08X} is not backed by copied section bytes")
+
+
+def read_words(data: bytes | bytearray, off: int, count: int) -> tuple[int, ...]:
+    return tuple(u32(data, off + i * 4) for i in range(count))
+
+
+def write_words(data: bytearray, off: int, words: tuple[int, ...]) -> None:
+    for i, word in enumerate(words):
+        struct.pack_into("<I", data, off + i * 4, word)
+
+
+def patch_registration_check(
+    image_path: Path,
+    out_image_path: Path,
+    partition_index: int,
+    poweron: ModuleEntry,
+) -> None:
+    if image_path.resolve() == out_image_path.resolve():
+        raise ValueError("--out-image must not overwrite the source NAND image")
+
+    nand = image_path.read_bytes()
+    parsed = decode_nk_partition(nand, partition_index=partition_index)
+    patched_flat = bytearray(parsed.flat_image)
+    patch_off = module_va_to_nk_flat_offset(
+        patched_flat,
+        parsed.base_va,
+        poweron,
+        REGISTRATION_CHECK_VA,
+    )
+
+    current = read_words(patched_flat, patch_off, len(REGISTRATION_CHECK_OLD_WORDS))
+    if current == REGISTRATION_CHECK_PATCH_WORDS:
+        already = True
+    elif current == REGISTRATION_CHECK_OLD_WORDS:
+        already = False
+        write_words(patched_flat, patch_off, REGISTRATION_CHECK_PATCH_WORDS)
+    else:
+        expected = " ".join(f"0x{word:08X}" for word in REGISTRATION_CHECK_OLD_WORDS)
+        found = " ".join(f"0x{word:08X}" for word in current)
+        raise ValueError(
+            f"unexpected words at PowerOn.dll registration check "
+            f"VA 0x{REGISTRATION_CHECK_VA:08X}: expected {expected}, found {found}"
+        )
+
+    replacement_logical = patch_logical_stream_from_flat(parsed, bytes(patched_flat))
+    replacement_raw = encode_lzss(replacement_logical)
+    if len(replacement_raw) > parsed.partition.size_bytes:
+        raise ValueError(
+            f"patched NK does not fit partition: "
+            f"0x{len(replacement_raw):X} > 0x{parsed.partition.size_bytes:X}"
+        )
+
+    roundtrip_logical, raw_consumed = decode_lzss(
+        replacement_raw,
+        output_limit=len(replacement_logical),
+    )
+    if roundtrip_logical != replacement_logical:
+        raise ValueError("patched NK LZSS roundtrip verification failed")
+
+    out = bytearray(nand)
+    part_start = parsed.partition.offset
+    out[part_start:part_start + len(replacement_raw)] = replacement_raw
+
+    out_image_path.parent.mkdir(parents=True, exist_ok=True)
+    out_image_path.write_bytes(out)
+
+    verify = decode_nk_partition(bytes(out), partition_index=partition_index)
+    verify_words = read_words(
+        verify.flat_image,
+        module_va_to_nk_flat_offset(
+            verify.flat_image,
+            verify.base_va,
+            poweron,
+            REGISTRATION_CHECK_VA,
+        ),
+        len(REGISTRATION_CHECK_PATCH_WORDS),
+    )
+    if verify_words != REGISTRATION_CHECK_PATCH_WORDS:
+        raise ValueError("patched output verification failed")
+
+    status = "already patched" if already else "patched"
+    print()
+    print(
+        f"{status} PowerOn.dll registration check at VA "
+        f"0x{REGISTRATION_CHECK_VA:08X}: return TRUE"
+    )
+    print(
+        f"wrote {out_image_path} "
+        f"raw_size=0x{len(replacement_raw):X} raw_consumed=0x{raw_consumed:X}"
+    )
+
+
 def report(
     image_path: Path,
     partitions: list[PartitionEntry],
@@ -676,8 +806,9 @@ def report(
             "has no completed-registration artifact."
         )
     print(
-        "  A recovered Cassiopeia.dll should be copied into a new NAND image; "
-        "do not patch NK or the emulator to bypass the gate."
+        "  Prefer copying a recovered Cassiopeia.dll into a new NAND image "
+        "when preserving the vendor flow matters; --patch-registration-check "
+        "is a local bypass for the retired registration service."
     )
 
 
@@ -689,6 +820,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         metavar="DLL",
         help="copy a recovered Cassiopeia.dll into a new NAND image",
+    )
+    parser.add_argument(
+        "--patch-registration-check",
+        action="store_true",
+        help="patch PowerOn.dll in a new NAND image so the registration check returns TRUE",
     )
     parser.add_argument(
         "--out-image",
@@ -751,6 +887,9 @@ def main() -> int:
         cassiopeia_cpk=cassiopeia_cpk,
     )
 
+    if args.install_cassiopeia_dll is not None and args.patch_registration_check:
+        sys.exit("error: choose either --install-cassiopeia-dll or --patch-registration-check")
+
     if args.install_cassiopeia_dll is not None:
         if args.out_image is None:
             sys.exit("error: --install-cassiopeia-dll requires --out-image")
@@ -768,6 +907,21 @@ def main() -> int:
             f"installed {args.install_cassiopeia_dll} as "
             f"{PROGRAM_FILES_NAME}/{REGISTRATION_DLL_NAME} in {args.out_image}"
         )
+
+    if args.patch_registration_check:
+        if args.out_image is None:
+            sys.exit("error: --patch-registration-check requires --out-image")
+        if poweron is None:
+            sys.exit("error: PowerOn.dll was not found; cannot patch registration check")
+        try:
+            patch_registration_check(
+                image_path=image_path,
+                out_image_path=args.out_image,
+                partition_index=args.partition_index,
+                poweron=poweron,
+            )
+        except ValueError as exc:
+            sys.exit(f"error: {exc}")
 
     return 0
 
