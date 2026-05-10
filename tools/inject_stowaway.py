@@ -94,6 +94,12 @@ STOWAWAY_REG_VALUES: list[tuple[str, int, str | int]] = [
     ("InitialDelay", REG_DWORD, 0x226),
     ("IdleDelay", REG_DWORD, 0x7D0),
     ("LampDelay", REG_DWORD, 0x3E8),
+    # Stowaway.dll records the selected keyboard layout here after its setup
+    # path succeeds.  The injected images do not run the vendor installer, so
+    # seed the same values observed on the working 3.0 NAND: use the XIP
+    # Stowaway.dll module's built-in English layout.
+    ("KeyboardLayoutFile", REG_SZ, XIP_DRIVER_MODULE_NAME),
+    ("KeyboardLayoutID", REG_DWORD, 0),
     ("HotKeyA1", REG_SZ, "pmail.exe"),
     ("HotKeyA2", REG_SZ, "addrbook.exe"),
     ("HotKeyA3", REG_SZ, "calendar.exe"),
@@ -136,8 +142,8 @@ NET_STOWAWAY_RUNTIME_REG_VALUES: list[tuple[str, int, str | int]] = [
     ("LampDelay", REG_DWORD, 0x3E8),
     ("RunawayCount", REG_DWORD, 0),
     ("RunawayPing", REG_DWORD, 0),
-    ("HomeScreenApp", REG_SZ, r"\Windows\Menu.exe"),
-    ("Window32768", REG_SZ, "DesktopExplorerWindow"),
+    ("KeyboardLayoutFile", REG_SZ, XIP_DRIVER_MODULE_NAME),
+    ("KeyboardLayoutID", REG_DWORD, 0),
 ]
 
 
