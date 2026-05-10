@@ -25,6 +25,8 @@ The script:
   this repo
 - configures `BUILD_WEB=ON`
 - builds the `be300_web` target
+- packages native `be300-net-bridge` helper downloads for macOS, Windows,
+  and Linux
 
 ## Optional overrides
 
@@ -72,6 +74,8 @@ EM_LLVM_ROOT="$EMSCRIPTEN_PREFIX/libexec/llvm/bin" \
 EM_BINARYEN_ROOT="$EMSCRIPTEN_PREFIX/libexec/binaryen" \
 EM_CACHE="$PWD/build-web/.emcache" \
 cmake --build build-web --target be300_web -j4
+
+bash tools/build_net_bridge.sh
 ```
 
 ## Output
@@ -87,6 +91,10 @@ The generated browser bundle is written to:
 - `build-web/web/favicon.svg`
 - `build-web/web/be300_web.js`
 - `build-web/web/be300_web.wasm`
+- `build-web/web/downloads/be300-net-bridge-macos-amd64.tar.gz`
+- `build-web/web/downloads/be300-net-bridge-macos-arm64.tar.gz`
+- `build-web/web/downloads/be300-net-bridge-linux-amd64.tar.gz`
+- `build-web/web/downloads/be300-net-bridge-windows-amd64.zip`
 - `build-web/web/nand/*.bin`
 
 ## Local run
@@ -137,14 +145,26 @@ The controls panel attaches optional boot-time accessories:
   `src/be300_devices.c:be300_stowaway_signal_uart_irq`).
 
 If NE2000 is enabled without a bridge URL, the card uses GXemul's internal
-IPv4 gateway model. If a `ws://` or `wss://` bridge URL is supplied, boot
-still starts immediately with the internal gateway while the worker connects
-to the bridge in the background. Once connected, the web build forwards raw
-Ethernet frames to that WebSocket and injects binary frames received from the
-socket back into the NE2000 receive path. Each WebSocket binary message is
-exactly one Ethernet frame; text messages are ignored. The browser cannot
-open TAP/raw sockets by itself, so real host LAN access requires a separate
-bridge process implementing that protocol.
+IPv4 gateway model. The controls default to `ws://127.0.0.1:8765`, matching
+the downloadable native `be300-net-bridge` helpers linked from the page.
+Download the helper for your operating system, extract it, and run the
+binary:
+
+```bash
+./be300-net-bridge
+```
+
+On Windows, run `be300-net-bridge.exe`.
+
+Boot still starts immediately while the worker connects to the bridge in the
+background. Once connected, the web build forwards raw Ethernet frames to
+that WebSocket and injects binary frames received from the socket back into
+the NE2000 receive path. Each WebSocket binary message is exactly one Ethernet
+frame; text messages are ignored. The helper listens on loopback by default
+and provides user-mode DHCP/ARP/DNS plus outbound TCP/UDP proxying through
+ordinary host sockets, so it does not need TAP drivers or administrator
+privileges, and it does not require Node.js. It does not provide inbound LAN
+access to guest services.
 
 ## Boot flow
 

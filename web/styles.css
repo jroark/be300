@@ -90,6 +90,23 @@ input[type="range"] {
   font-size: 12px;
 }
 
+.field-link {
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.field-link:hover {
+  text-decoration: underline;
+}
+
+.download-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  line-height: 1.3;
+}
+
 .boot-config-grid {
   display: grid;
   gap: 14px;

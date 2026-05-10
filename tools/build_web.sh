@@ -97,5 +97,6 @@ fi
 
 env "${env_args[@]}" emcmake cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -DBUILD_WEB=ON
 env "${env_args[@]}" cmake --build "$BUILD_DIR" --target be300_web -j"$JOBS"
+bash "$ROOT_DIR/tools/build_net_bridge.sh"
 
 echo "Built web bundle in $BUILD_DIR/web"

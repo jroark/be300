@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BE-300 Emulator</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20260510c">
+  <link rel="stylesheet" href="./styles.css?v=20260510d">
 </head>
 <body>
   <main class="shell">
@@ -63,7 +63,14 @@
         </label>
         <label class="field">
           <span>Bridge URL (optional)</span>
-          <input id="netBridgeUrl" type="text" inputmode="url" placeholder="ws://127.0.0.1:8765">
+          <input id="netBridgeUrl" type="text" inputmode="url" value="ws://127.0.0.1:8765">
+          <small class="field-hint">Run the local bridge helper first, then boot with this URL.</small>
+          <div class="download-links" aria-label="Network bridge downloads">
+            <a class="field-link" href="./downloads/be300-net-bridge-macos-arm64.tar.gz" download>macOS Apple Silicon</a>
+            <a class="field-link" href="./downloads/be300-net-bridge-macos-amd64.tar.gz" download>macOS Intel</a>
+            <a class="field-link" href="./downloads/be300-net-bridge-windows-amd64.zip" download>Windows</a>
+            <a class="field-link" href="./downloads/be300-net-bridge-linux-amd64.tar.gz" download>Linux</a>
+          </div>
         </label>
         <label class="checkbox-field checkbox-row">
           <input id="targusKeyboardEnabled" type="checkbox" checked>
@@ -109,6 +116,6 @@
     </section>
   </main>
 
-  <script type="module" src="./app.js?v=20260510c"></script>
+  <script type="module" src="./app.js?v=20260510d"></script>
 </body>
 </html>
