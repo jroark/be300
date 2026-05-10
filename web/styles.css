@@ -207,7 +207,7 @@ button[aria-pressed="true"]:not(:disabled) {
   --lcd-top: 16.36328%;
   --lcd-width: 57.81250%;
   position: relative;
-  width: min(100%, 415px);
+  width: min(100%, 415.135px);
   aspect-ratio: 1024 / 1536;
   filter: drop-shadow(0 28px 50px rgba(0, 0, 0, 0.35));
   touch-action: none;
