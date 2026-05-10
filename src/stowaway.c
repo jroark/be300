@@ -124,6 +124,12 @@ static void stowaway_queue_probe_ack(void)
     stowaway_queue_byte(STOWAWAY_PROBE_ACK_1);
     g_stowaway.probe_ack_pending = true;
     g_stowaway.probe_ack_seen = 0;
+    /*
+     * The probe ACK is host-to-guest RX data just like later key events.
+     * Wake serial.dll through the BE-300 CommMode latch so it drains the
+     * UART before the driver times out and resets the FIFO.
+     */
+    be300_stowaway_signal_uart_irq(1);
 }
 
 void stowaway_uart_note_port_config(void)
@@ -163,18 +169,17 @@ void stowaway_uart_note_modem_control(bool dtr_asserted, bool rts_asserted)
     g_stowaway.rts_asserted = rts_asserted;
 
     /*
-     * The Stowaway driver drains RX after DCD is accepted, then clears and
-     * reasserts RTS immediately before its two-byte keyboard ACK read.
+     * The physical dock's DCD/modem wake can be observed before the driver
+     * asserts DTR.  The keyboard probe ACK is produced when the driver raises
+     * RTS while DTR is already asserted.
      */
-    if (dtr_asserted && rts_asserted && !old_rts &&
-        g_stowaway.modem_events_delivered > 0)
+    if (dtr_asserted && rts_asserted && !old_rts)
         stowaway_queue_probe_ack();
 }
 
 bool stowaway_uart_take_modem_wait_request(void)
 {
     if (!g_stowaway.enabled || !g_stowaway.modem_wait_requested ||
-        !g_stowaway.dtr_asserted ||
         g_stowaway.modem_events_delivered >= STOWAWAY_MODEM_EVENT_LIMIT)
         return false;
 
