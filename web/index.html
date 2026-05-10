@@ -5,17 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BE-300 Emulator</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20260429i">
+  <link rel="stylesheet" href="./styles.css?v=20260510a">
 </head>
 <body>
   <main class="shell">
     <section class="panel controls">
       <h1>BE-300 Emulator</h1>
       <p class="field-hint">
-        Cold-boots WinCE 3.0 from a NAND restore image (16,449,536 bytes).
-        Place <code>All_nand_300.bin</code> next to this page or upload one
-        below; the worker writes it into MEMFS before calling
-        <code>be300_create()</code>.
+        Cold-boots BE-300 NAND images with NE2000, Stowaway keyboard, and
+        host-time RTC enabled. The worker writes the selected image into
+        MEMFS before calling <code>be300_create()</code>.
       </p>
       <div class="actions">
         <button id="bootBtn" disabled>Boot</button>
@@ -23,9 +22,21 @@
         <button id="resetBtn" disabled>Reset</button>
       </div>
       <label class="field">
-        <span>NAND image (<code>All_nand_300.bin</code>)</span>
+        <span>Hosted NAND image</span>
+        <select id="nandSelect">
+          <option value="300">WinCE 3.0 (300.bin)</option>
+          <option value="beshell">BEshell (beshell.bin)</option>
+          <option value="expod">Expod (expod.bin)</option>
+          <option value="mw">MobileWrite (mw.bin)</option>
+          <option value="net">Net (net.bin)</option>
+          <option value="opie">OPIE Linux (opie.bin, 64 MB SDRAM)</option>
+          <option value="picogui">PicoGUI (picogui.bin)</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>NAND upload override</span>
         <input id="nandFile" type="file" accept=".bin,application/octet-stream">
-        <small class="field-hint">Leave empty to fetch <code>./All_nand_300.bin</code> from the page origin.</small>
+        <small class="field-hint">Leave empty to boot the hosted image selected above.</small>
       </label>
       <div class="boot-config-grid">
         <label class="field speed-field">
@@ -35,10 +46,8 @@
         </label>
         <label class="field">
           <span>Primary PCMCIA socket</span>
-          <select id="primarySocket">
-            <option value="none">No card</option>
-            <option value="cf0">CompactFlash slot 0</option>
-            <option value="ne2000">NE2000 Ethernet</option>
+          <select id="primarySocket" disabled>
+            <option value="ne2000" selected>NE2000 Ethernet</option>
           </select>
           <input id="cf0File" type="file" accept=".img,.bin,application/octet-stream" hidden>
         </label>
@@ -55,11 +64,11 @@
           <input id="netBridgeUrl" type="text" inputmode="url" placeholder="ws://127.0.0.1:8765">
         </label>
         <label class="checkbox-field checkbox-row">
-          <input id="targusKeyboardEnabled" type="checkbox">
+          <input id="targusKeyboardEnabled" type="checkbox" checked disabled>
           <span>Targus / Stowaway keyboard</span>
         </label>
       </div>
-      <p id="status" class="status">Ready to boot WinCE 3.0 NAND image.</p>
+      <p id="status" class="status">Ready to boot hosted NAND image.</p>
     </section>
 
     <section class="panel screen-panel">
@@ -98,6 +107,6 @@
     </section>
   </main>
 
-  <script type="module" src="./app.js?v=20260429i"></script>
+  <script type="module" src="./app.js?v=20260510a"></script>
 </body>
 </html>

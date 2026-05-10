@@ -236,6 +236,15 @@ if(BUILD_WEB)
                        ${WEB_OUTPUT_DIR}/${asset}
                        COPYONLY)
     endforeach()
+    file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR}/nand)
+    file(GLOB WEB_NAND_ASSETS CONFIGURE_DEPENDS
+         ${CMAKE_SOURCE_DIR}/nand/*.bin)
+    foreach(asset ${WEB_NAND_ASSETS})
+        get_filename_component(asset_name ${asset} NAME)
+        configure_file(${asset}
+                       ${WEB_OUTPUT_DIR}/nand/${asset_name}
+                       COPYONLY)
+    endforeach()
 
     add_executable(be300_web
         ${CMAKE_SOURCE_DIR}/web/main_web.c

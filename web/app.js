@@ -1,14 +1,27 @@
-const ASSET_VERSION = "20260429i";
+const ASSET_VERSION = "20260510a";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
 
-// The WinCE NAND boot only supports the stock 16 MB SDRAM layout. Speed 0
-// means unthrottled/full speed; non-zero values are pacing units, not MHz.
+// Hosted linux4be.com boots always attach NE2000, the Stowaway keyboard dock,
+// and the web glue's host-time RTC path. Speed 0 means unthrottled/full speed;
+// non-zero values are pacing units, not MHz.
 const DEFAULT_SDRAM_MB = 16;
 const DEFAULT_SPEED = 0;
-const DEFAULT_NAND_URL = "./All_nand_300.bin";
+const FORCE_NE2000 = true;
+const FORCE_STOWAWAY_KEYBOARD = true;
 
+const HOSTED_NAND_IMAGES = [
+  { id: "300", name: "300.bin", label: "WinCE 3.0", url: "./nand/300.bin", sdramMb: 16 },
+  { id: "beshell", name: "beshell.bin", label: "BEshell", url: "./nand/beshell.bin", sdramMb: 16 },
+  { id: "expod", name: "expod.bin", label: "Expod", url: "./nand/expod.bin", sdramMb: 16 },
+  { id: "mw", name: "mw.bin", label: "MobileWrite", url: "./nand/mw.bin", sdramMb: 16 },
+  { id: "net", name: "net.bin", label: "Net", url: "./nand/net.bin", sdramMb: 16 },
+  { id: "opie", name: "opie.bin", label: "OPIE Linux", url: "./nand/opie.bin", sdramMb: 64 },
+  { id: "picogui", name: "picogui.bin", label: "PicoGUI", url: "./nand/picogui.bin", sdramMb: 16 },
+];
+
+const nandSelect = document.querySelector("#nandSelect");
 const nandFileInput = document.querySelector("#nandFile");
 const speedControlInput = document.querySelector("#speedControl");
 const speedValueEl = document.querySelector("#speedValue");
@@ -80,11 +93,31 @@ function setStatus(text) {
   statusEl.textContent = text;
 }
 
+function getSelectedHostedNand() {
+  return HOSTED_NAND_IMAGES.find((image) => image.id === nandSelect.value) ?? HOSTED_NAND_IMAGES[0];
+}
+
+function getUploadedSdramMb(file) {
+  return file?.name?.toLowerCase().includes("opie") ? 64 : DEFAULT_SDRAM_MB;
+}
+
 function getActiveNand() {
   if (uploadedNandFile) {
-    return { kind: "upload", name: uploadedNandFile.name, file: uploadedNandFile };
+    return {
+      kind: "upload",
+      name: uploadedNandFile.name,
+      file: uploadedNandFile,
+      sdramMb: getUploadedSdramMb(uploadedNandFile),
+    };
   }
-  return { kind: "fetch", name: "All_nand_300.bin", url: DEFAULT_NAND_URL };
+  const hosted = getSelectedHostedNand();
+  return {
+    kind: "fetch",
+    name: hosted.name,
+    label: hosted.label,
+    url: hosted.url,
+    sdramMb: hosted.sdramMb,
+  };
 }
 
 function getActiveCf(slot) {
@@ -117,11 +150,17 @@ function sendSpeed() {
 }
 
 function syncPrimarySocketControls() {
-  const primarySocket = primarySocketSelect.value;
-  const usingNe2000 = primarySocket === "ne2000";
+  if (FORCE_NE2000) {
+    primarySocketSelect.value = "ne2000";
+    primarySocketSelect.disabled = true;
+  }
+  if (FORCE_STOWAWAY_KEYBOARD) {
+    targusKeyboardEnabledInput.checked = true;
+    targusKeyboardEnabledInput.disabled = true;
+  }
 
-  netMacInput.disabled = !usingNe2000;
-  netBridgeUrlInput.disabled = !usingNe2000;
+  netMacInput.disabled = !FORCE_NE2000;
+  netBridgeUrlInput.disabled = !FORCE_NE2000;
 }
 
 function parseMacAddress(value) {
@@ -167,15 +206,15 @@ function normalizeBridgeUrl(value) {
 function getBootOptions() {
   const mac = parseMacAddress(netMacInput.value);
   const bridge = normalizeBridgeUrl(netBridgeUrlInput.value);
-  const primarySocket = primarySocketSelect.value;
+  const primarySocket = FORCE_NE2000 ? "ne2000" : primarySocketSelect.value;
 
   return {
     primarySocket,
     speed: getSpeedValue(),
     cf0: getActiveCf(0),
     cf1: getActiveCf(1),
-    enableNe2000: primarySocket === "ne2000",
-    enableTargusKeyboard: targusKeyboardEnabledInput.checked,
+    enableNe2000: FORCE_NE2000 || primarySocket === "ne2000",
+    enableTargusKeyboard: FORCE_STOWAWAY_KEYBOARD || targusKeyboardEnabledInput.checked,
     mac,
     bridge,
   };
@@ -233,7 +272,7 @@ function updateReadyStatus() {
   const active = getActiveNand();
   const accessories = describeAccessories(options);
   const suffix = accessories.length ? ` with ${accessories.join(", ")}` : "";
-  setStatus(`Ready to boot ${active.name}${suffix} at ${formatSpeed(options.speed)}.`);
+  setStatus(`Ready to boot ${active.name} (${active.sdramMb} MB SDRAM)${suffix} at ${formatSpeed(options.speed)}.`);
 }
 
 function syncButtons() {
@@ -718,6 +757,11 @@ function setSerialCollapsed(collapsed) {
   toggleSerialBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
 }
 
+nandSelect.addEventListener("change", () => {
+  updateReadyStatus();
+  syncButtons();
+});
+
 nandFileInput.addEventListener("change", () => {
   uploadedNandFile = nandFileInput.files?.[0] ?? null;
   updateReadyStatus();
@@ -786,7 +830,7 @@ bootBtn.addEventListener("click", async () => {
   const message = {
     type: "bootNand",
     nandName: active.name,
-    sdramMb: DEFAULT_SDRAM_MB,
+    sdramMb: active.sdramMb,
     targetMhz: options.speed,
     enableNe2000: options.enableNe2000,
     enableTargusKeyboard: options.enableTargusKeyboard,

@@ -1,11 +1,11 @@
 # BE-300 Web Build
 
 This repo can build a browser-only BE-300 frontend into `build-web/web/`.
-The frontend cold-boots WinCE 3.0 from a NAND restore image
-(`ce/restore_images/All_nand_300.bin`) — there is no Linux boot path. The
-web target adds Emscripten glue in `web/main_web.c` plus static assets in
-`web/`, and uses a small Emscripten-only NE2000 transmit hook in the CF
-device so browser networking can be bridged.
+The frontend cold-boots hosted NAND images from `nand/*.bin`; there is no
+kernel ELF boot path. The web target adds Emscripten glue in
+`web/main_web.c` plus static assets in `web/`, and uses a small
+Emscripten-only NE2000 transmit hook in the CF device so browser networking
+can be bridged.
 
 ## One-command build
 
@@ -87,24 +87,28 @@ The generated browser bundle is written to:
 - `build-web/web/favicon.svg`
 - `build-web/web/be300_web.js`
 - `build-web/web/be300_web.wasm`
+- `build-web/web/nand/*.bin`
 
 ## Local run
 
-Copy the NAND image next to the served HTML so the page can fetch it on
-boot, then serve the directory with any static file server:
+Serve the generated directory with any static file server:
 
 ```bash
-cp ce/restore_images/All_nand_300.bin build-web/web/
 python3 -m http.server --directory build-web/web 8000
 ```
 
-Then open <http://127.0.0.1:8000> and click **Boot**. If
-`./All_nand_300.bin` is not bundled with the page you can also upload one
-via the file input on the controls panel; the worker writes it into MEMFS at
-`/All_nand_300.bin` before calling `be300_create()`.
+Then open <http://127.0.0.1:8000>, choose a hosted NAND image, and click
+**Boot**. The build copies every local `nand/*.bin` file into
+`build-web/web/nand/`; the page currently exposes `300.bin`, `beshell.bin`,
+`expod.bin`, `mw.bin`, `net.bin`, `opie.bin`, and `picogui.bin`. You can
+also upload a local override through the file input; the worker writes the
+selected bytes into MEMFS at `/All_nand_300.bin` before calling
+`be300_create()`.
 
 Web boots initialize the guest RTC from the browser host's local date/time by
-default, matching the native emulator's `--rtc-host-time` option.
+default, matching the native emulator's `--rtc-host-time` option. Hosted
+boots always attach NE2000 and the Targus / Stowaway serial keyboard dock.
+`opie.bin` boots with 64 MB SDRAM; all other hosted images use 16 MB.
 
 The Speed control defaults to **Full speed** and can be changed while the
 emulator is running. Non-zero values are web worker step-batch pacing units,
@@ -112,20 +116,17 @@ not MHz.
 
 ## Accessories
 
-The controls panel can attach optional boot-time accessories:
+The controls panel attaches standard boot-time accessories:
 
-- The primary PCMCIA dropdown chooses no card, CF slot 0, or NE2000. Choosing
-  CF slot 0 opens the file picker immediately; the selected upload is written
-  into MEMFS as `/cf0.img` before machine creation. CF slot 0 and NE2000 are
-  mutually exclusive because both use the primary PCMCIA socket.
+- The primary PCMCIA socket is fixed to NE2000 for hosted linux4be.com
+  boots. A MAC override may be supplied as a unicast `aa:bb:cc:dd:ee:ff`
+  address.
 - CF slot 1 uploads are written into MEMFS as `/cf1.img`. Slot 1 can be
   staged, but the native emulator still warns that secondary socket MMIO is
   not decoded yet, so current WinCE visibility is limited.
-- NE2000 attaches the existing PCMCIA NE2000 card model. The MAC and bridge
-  fields are enabled only when NE2000 is selected. A MAC override may be
-  supplied as a unicast `aa:bb:cc:dd:ee:ff` address.
-- Targus / Stowaway keyboard enables the existing COM1 serial keyboard dock
-  model and forwards browser keydown/keyup events through the same scancode
+- Targus / Stowaway keyboard is always enabled. It uses the existing COM1
+  serial keyboard dock model and forwards browser keydown/keyup events
+  through the same scancode
   table used by the SDL frontend. The dock probe handshake completes
   automatically; subsequent keypresses synthesize a CommMode modem event so
   the WinCE OAL dispatches GIRQ0-4-4 to serial.dll and the queued bytes
@@ -160,3 +161,25 @@ bridge process implementing that protocol.
    `_be300_drain_serial`, `_be300_set_touch`, `_be300_set_buttons`,
    `_be300_web_stowaway_key`, `_be300_web_net_rx`, `_be300_web_net_tx_pop`,
    `_be300_stop`, and `_be300_destroy` directly.
+
+## Publish to linux4be.com
+
+The production site is served from S3 bucket `s3://linux4be.com` through
+CloudFront distribution `E2LF6QBIW7PZR`.
+
+Back up the current site before overwriting it:
+
+```bash
+BACKUP_PREFIX="_backups/$(date -u +%Y%m%dT%H%M%SZ)"
+aws s3 sync s3://linux4be.com "s3://linux4be.com/$BACKUP_PREFIX" \
+  --exclude "_backups/*"
+```
+
+Publish the freshly built bundle while preserving backups:
+
+```bash
+aws s3 sync build-web/web/ s3://linux4be.com/ --delete \
+  --exclude "_backups/*"
+aws cloudfront create-invalidation --distribution-id E2LF6QBIW7PZR \
+  --paths "/*"
+```
