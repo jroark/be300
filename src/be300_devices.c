@@ -713,6 +713,8 @@ static void be300_pcconnect_maybe_raise_dock_edge(
 
 static void be300_pcconnect_maybe_raise_uart_rx_level(
     struct be300_vrc4173_latch *d);
+static void be300_stowaway_maybe_raise_uart_rx_level(
+    struct be300_vrc4173_latch *d);
 
 bool be300_pcconnect_irq_is_asserted(void)
 {
@@ -730,6 +732,7 @@ void be300_pcconnect_poll(void)
 
     if (be300_stowaway_keyboard_enabled()) {
         be300_pcconnect_maybe_raise_dock_edge(g_be300_vrc4173_latch);
+        be300_stowaway_maybe_raise_uart_rx_level(g_be300_vrc4173_latch);
         be300_pcconnect_irq_update(g_be300_vrc4173_latch);
         be300_pcconnect_irq_reedge(g_be300_vrc4173_latch);
     }
@@ -802,6 +805,44 @@ static void be300_pcconnect_maybe_raise_uart_rx_level(
     be300_pcconnect_trace(d, "uart-rx-level",
         BE300_COMMMODE_STATUS_OFF, 2,
         be300_pcconnect_commmode_read(d), 0);
+    be300_pcconnect_irq_update(d);
+    be300_pcconnect_irq_reedge(d);
+}
+
+static void be300_stowaway_maybe_raise_uart_rx_level(
+    struct be300_vrc4173_latch *d)
+{
+    size_t rx_count;
+
+    if (!d || !be300_stowaway_keyboard_enabled())
+        return;
+
+    rx_count = stowaway_uart_rx_count();
+    if (rx_count == 0) {
+        d->pcconnect_rx_wake_count = 0;
+        return;
+    }
+
+    if ((d->pcconnect_commmode_pending & BE300_COMMMODE_PENDING_MASK) != 0)
+        return;
+    if (rx_count == d->pcconnect_rx_wake_count)
+        return;
+
+    /*
+     * The host key enqueue can be observed by WinCE before GXemul's periodic
+     * ns16550 tick has refreshed IIR from the backend RX count.  If that first
+     * CommMode service reads IIR_NOPEND, serial.dll clears the companion latch
+     * while the UART line later remains asserted.  Re-raise the same GIRQ0-4
+     * modem subsource once the RX level is still non-empty.  The companion
+     * SIU lives behind the VRC4173 Vic/CommMode block
+     * (docs/hardware/hardware.txt:122-130, 190-191), so this models the
+     * same level-sensitive serial-dock dispatch path used for PCConnect.
+     */
+    d->pcconnect_rx_wake_count = rx_count;
+    d->pcconnect_commmode_pending |= BE300_COMMMODE_MODEM_PENDING;
+    d->stowaway_commmode_events |= BE300_COMMMODE_MODEM_EVENT_BITS;
+    be300_pcconnect_trace(d, "stowaway-uart-rx-level",
+        BE300_COMMMODE_STATUS_OFF, 2, be300_pcconnect_commmode_read(d), 0);
     be300_pcconnect_irq_update(d);
     be300_pcconnect_irq_reedge(d);
 }

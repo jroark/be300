@@ -23,6 +23,10 @@ typedef struct {
     size_t head;
     size_t tail;
     size_t count;
+    uint8_t pending[STOWAWAY_RX_CAP];
+    size_t pending_head;
+    size_t pending_tail;
+    size_t pending_count;
 } stowaway_state_t;
 
 static stowaway_state_t g_stowaway;
@@ -37,6 +41,40 @@ static void stowaway_queue_byte(uint8_t byte)
     g_stowaway.rx[g_stowaway.head] = byte;
     g_stowaway.head = (g_stowaway.head + 1u) % STOWAWAY_RX_CAP;
     g_stowaway.count++;
+}
+
+static void stowaway_queue_pending_byte(uint8_t byte)
+{
+    if (g_stowaway.pending_count == STOWAWAY_RX_CAP) {
+        g_stowaway.pending_tail =
+            (g_stowaway.pending_tail + 1u) % STOWAWAY_RX_CAP;
+        g_stowaway.pending_count--;
+    }
+
+    g_stowaway.pending[g_stowaway.pending_head] = byte;
+    g_stowaway.pending_head =
+        (g_stowaway.pending_head + 1u) % STOWAWAY_RX_CAP;
+    g_stowaway.pending_count++;
+}
+
+static bool stowaway_flush_pending_keys(void)
+{
+    bool moved = false;
+
+    while (g_stowaway.pending_count > 0) {
+        uint8_t byte = g_stowaway.pending[g_stowaway.pending_tail];
+        g_stowaway.pending_tail =
+            (g_stowaway.pending_tail + 1u) % STOWAWAY_RX_CAP;
+        g_stowaway.pending_count--;
+        stowaway_queue_byte(byte);
+        moved = true;
+    }
+
+    if (moved) {
+        be300_stowaway_signal_uart_irq(1);
+    }
+
+    return moved;
 }
 
 void stowaway_configure(bool enabled)
@@ -90,6 +128,7 @@ int stowaway_uart_rx_pop(void)
             g_stowaway.connected = true;
             g_stowaway.probe_ack_pending = false;
             g_stowaway.probe_ack_seen = 0;
+            stowaway_flush_pending_keys();
         } else {
             g_stowaway.probe_ack_pending = false;
             g_stowaway.probe_ack_seen = 0;
@@ -117,7 +156,7 @@ void stowaway_uart_tx_byte(uint8_t byte)
 
 static void stowaway_queue_probe_ack(void)
 {
-    if (g_stowaway.probe_ack_pending || g_stowaway.connected)
+    if (g_stowaway.probe_ack_pending)
         return;
 
     stowaway_queue_byte(STOWAWAY_PROBE_ACK_0);
@@ -147,6 +186,9 @@ void stowaway_uart_note_port_config(void)
     g_stowaway.head = 0;
     g_stowaway.tail = 0;
     g_stowaway.count = 0;
+    g_stowaway.pending_head = 0;
+    g_stowaway.pending_tail = 0;
+    g_stowaway.pending_count = 0;
 }
 
 void stowaway_uart_note_modem_wait(void)
@@ -167,6 +209,11 @@ void stowaway_uart_note_modem_control(bool dtr_asserted, bool rts_asserted)
     old_rts = g_stowaway.rts_asserted;
     g_stowaway.dtr_asserted = dtr_asserted;
     g_stowaway.rts_asserted = rts_asserted;
+    if (!dtr_asserted) {
+        g_stowaway.connected = false;
+        g_stowaway.probe_ack_pending = false;
+        g_stowaway.probe_ack_seen = 0;
+    }
 
     /*
      * The physical dock's DCD/modem wake can be observed before the driver
@@ -191,7 +238,8 @@ bool stowaway_queue_key(unsigned scancode, bool release)
 {
     uint8_t byte;
 
-    if (!g_stowaway.enabled || !g_stowaway.connected)
+    if (!g_stowaway.enabled || !g_stowaway.connected ||
+        !g_stowaway.dtr_asserted)
         return false;
     if (scancode > STOWAWAY_KEY_MASK)
         return false;
@@ -199,6 +247,11 @@ bool stowaway_queue_key(unsigned scancode, bool release)
     byte = (uint8_t)scancode;
     if (release)
         byte |= STOWAWAY_RELEASE;
+
+    if (!g_stowaway.rts_asserted || g_stowaway.probe_ack_pending) {
+        stowaway_queue_pending_byte(byte);
+        return true;
+    }
 
     stowaway_queue_byte(byte);
 
