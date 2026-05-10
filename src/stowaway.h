@@ -16,6 +16,7 @@ void stowaway_uart_note_port_config(void);
 void stowaway_uart_note_modem_wait(void);
 void stowaway_uart_note_modem_control(bool dtr_asserted, bool rts_asserted);
 bool stowaway_uart_take_modem_wait_request(void);
+bool stowaway_uart_take_modem_delta(void);
 bool stowaway_queue_key(unsigned scancode, bool release);
 
 /* Implemented in be300_devices.c. Synthesizes a CommMode modem event so the

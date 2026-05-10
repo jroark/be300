@@ -14,6 +14,7 @@ typedef struct {
     bool enabled;
     bool connected;
     bool modem_wait_requested;
+    bool modem_delta_pending;
     unsigned modem_events_delivered;
     bool dtr_asserted;
     bool rts_asserted;
@@ -178,6 +179,7 @@ void stowaway_uart_note_port_config(void)
 
     g_stowaway.connected = false;
     g_stowaway.modem_wait_requested = false;
+    g_stowaway.modem_delta_pending = false;
     g_stowaway.modem_events_delivered = 0;
     g_stowaway.dtr_asserted = false;
     g_stowaway.rts_asserted = false;
@@ -234,12 +236,20 @@ bool stowaway_uart_take_modem_wait_request(void)
     return true;
 }
 
+bool stowaway_uart_take_modem_delta(void)
+{
+    if (!g_stowaway.enabled || !g_stowaway.modem_delta_pending)
+        return false;
+
+    g_stowaway.modem_delta_pending = false;
+    return true;
+}
+
 bool stowaway_queue_key(unsigned scancode, bool release)
 {
     uint8_t byte;
 
-    if (!g_stowaway.enabled || !g_stowaway.connected ||
-        !g_stowaway.dtr_asserted)
+    if (!g_stowaway.enabled)
         return false;
     if (scancode > STOWAWAY_KEY_MASK)
         return false;
@@ -247,6 +257,22 @@ bool stowaway_queue_key(unsigned scancode, bool release)
     byte = (uint8_t)scancode;
     if (release)
         byte |= STOWAWAY_RELEASE;
+
+    if (!g_stowaway.connected || !g_stowaway.dtr_asserted) {
+        if (!g_stowaway.modem_wait_requested)
+            return false;
+
+        /*
+         * Net images power the driver down by lowering DTR while serial.dll
+         * remains armed for modem/RX wake.  A key from the physical keyboard
+         * wakes that path with a modem transition and a byte on RX; do the
+         * same here instead of discarding the key until the driver re-probes.
+         */
+        stowaway_queue_byte(byte);
+        g_stowaway.modem_delta_pending = true;
+        be300_stowaway_signal_uart_irq(1);
+        return true;
+    }
 
     if (!g_stowaway.rts_asserted || g_stowaway.probe_ack_pending) {
         stowaway_queue_pending_byte(byte);
