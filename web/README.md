@@ -120,8 +120,9 @@ both can be disabled from the controls panel. `opie.bin` boots with 64 MB
 SDRAM; all other hosted images use 16 MB.
 
 The Speed control defaults to **Full speed** and can be changed while the
-emulator is running. Non-zero values are web worker step-batch pacing units,
-not MHz.
+emulator is running. Full speed uses a low-latency worker scheduler and a
+short time-budgeted execution slice. Non-zero values keep the older
+timer-paced step-batch model; they are pacing units, not MHz.
 
 ## Accessories
 

@@ -1,4 +1,4 @@
-import createBe300Module from "./be300_web.js?v=20260510d";
+import createBe300Module from "./be300_web.js?v=20260510e";
 
 const MAX_FRAME_WIDTH = 480;
 const MAX_FRAME_HEIGHT = 640;
@@ -6,7 +6,8 @@ const MAX_FRAME_BYTES = MAX_FRAME_WIDTH * MAX_FRAME_HEIGHT * 4;
 const SERIAL_BYTES = 16384;
 const NET_FRAME_BYTES = 2048;
 const DEFAULT_SPEED = 0;
-const UNTHROTTLED_BATCHES_PER_TICK = 64;
+const FULL_SPEED_BATCHES_PER_STEP = 128;
+const FULL_SPEED_SLICE_MS = 12;
 const FRAME_INTERVAL_MS = 33;
 
 const WEB_FLAG_NE2000 = 0x00000001;
@@ -34,8 +35,18 @@ let cachedCfSlot1 = null;
 let cachedBootConfig = null;
 let lastFrameAt = 0;
 let batchesPerTick = getBatchesPerTick(DEFAULT_SPEED);
+let currentSpeed = DEFAULT_SPEED;
 let netSocket = null;
 let netBridgeGeneration = 0;
+
+const scheduleFastTick = (() => {
+  if (typeof MessageChannel === "function") {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => runTick();
+    return () => channel.port2.postMessage(0);
+  }
+  return () => setTimeout(runTick, 0);
+})();
 
 function normalizeBootConfig(config = {}) {
   const parsedSdram = Number.parseInt(config.sdramMb, 10);
@@ -59,7 +70,7 @@ function normalizeSpeed(value) {
 }
 
 function getBatchesPerTick(targetMhz) {
-  return targetMhz > 0 ? Math.max(1, targetMhz) : UNTHROTTLED_BATCHES_PER_TICK;
+  return targetMhz > 0 ? Math.max(1, targetMhz) : FULL_SPEED_BATCHES_PER_STEP;
 }
 
 function postStatus(message, extra = {}) {
@@ -299,7 +310,23 @@ function scheduleTick() {
     return;
   }
   tickScheduled = true;
-  setTimeout(runTick, 0);
+  if (currentSpeed === 0) {
+    scheduleFastTick();
+  } else {
+    setTimeout(runTick, 0);
+  }
+}
+
+function stepFullSpeedSlice(module) {
+  const deadline = performance.now() + FULL_SPEED_SLICE_MS;
+  let rc = 1;
+
+  do {
+    rc = module._be300_step(machineHandle, batchesPerTick);
+    drainNetTx(module);
+  } while (rc > 0 && running && performance.now() < deadline);
+
+  return rc;
 }
 
 function runTick() {
@@ -308,7 +335,9 @@ function runTick() {
     return;
   }
 
-  const rc = moduleInstance._be300_step(machineHandle, batchesPerTick);
+  const rc = currentSpeed === 0
+    ? stepFullSpeedSlice(moduleInstance)
+    : moduleInstance._be300_step(machineHandle, batchesPerTick);
   drainSerial(moduleInstance);
   drainFrame(moduleInstance);
   drainNetTx(moduleInstance);
@@ -410,6 +439,7 @@ async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes
   cachedCfSlot0 = cfSlot0Bytes;
   cachedCfSlot1 = cfSlot1Bytes;
   cachedBootConfig = config;
+  currentSpeed = config.targetMhz;
   batchesPerTick = getBatchesPerTick(config.targetMhz);
   running = true;
   lastFrameAt = 0;
@@ -498,6 +528,7 @@ self.addEventListener("message", async ({ data }) => {
       break;
     case "setSpeed": {
       const speed = normalizeSpeed(data.targetMhz);
+      currentSpeed = speed;
       batchesPerTick = getBatchesPerTick(speed);
       if (cachedBootConfig) {
         cachedBootConfig.targetMhz = speed;
