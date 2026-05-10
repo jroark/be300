@@ -1,4 +1,4 @@
-import createBe300Module from "./be300_web.js?v=20260510b";
+import createBe300Module from "./be300_web.js?v=20260510c";
 
 const MAX_FRAME_WIDTH = 480;
 const MAX_FRAME_HEIGHT = 640;

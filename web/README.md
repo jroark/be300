@@ -107,8 +107,9 @@ selected bytes into MEMFS at `/All_nand_300.bin` before calling
 
 Web boots initialize the guest RTC from the browser host's local date/time by
 default, matching the native emulator's `--rtc-host-time` option. Hosted
-boots always attach NE2000 and the Targus / Stowaway serial keyboard dock.
-`opie.bin` boots with 64 MB SDRAM; all other hosted images use 16 MB.
+boots default to NE2000 and the Targus / Stowaway serial keyboard dock, but
+both can be disabled from the controls panel. `opie.bin` boots with 64 MB
+SDRAM; all other hosted images use 16 MB.
 
 The Speed control defaults to **Full speed** and can be changed while the
 emulator is running. Non-zero values are web worker step-batch pacing units,
@@ -116,17 +117,18 @@ not MHz.
 
 ## Accessories
 
-The controls panel attaches standard boot-time accessories:
+The controls panel attaches optional boot-time accessories:
 
-- The primary PCMCIA socket is fixed to NE2000 for hosted linux4be.com
-  boots. A MAC override may be supplied as a unicast `aa:bb:cc:dd:ee:ff`
-  address.
+- The primary PCMCIA dropdown chooses no card, CF slot 0, or NE2000. It
+  defaults to NE2000. Choosing CF slot 0 opens the file picker immediately;
+  the selected upload is written into MEMFS as `/cf0.img` before machine
+  creation. CF slot 0 and NE2000 are mutually exclusive because both use the
+  primary PCMCIA socket.
 - CF slot 1 uploads are written into MEMFS as `/cf1.img`. Slot 1 can be
   staged, but the native emulator still warns that secondary socket MMIO is
   not decoded yet, so current WinCE visibility is limited.
-- Targus / Stowaway keyboard is always enabled. It uses the existing COM1
-  serial keyboard dock model and forwards browser keydown/keyup events
-  through the same scancode
+- Targus / Stowaway keyboard defaults on. It uses the existing COM1 serial
+  keyboard dock model and forwards browser keydown/keyup events through the same scancode
   table used by the SDL frontend. The dock probe handshake completes
   automatically; subsequent keypresses synthesize a CommMode modem event so
   the WinCE OAL dispatches GIRQ0-4-4 to serial.dll and the queued bytes

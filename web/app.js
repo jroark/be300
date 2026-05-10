@@ -1,15 +1,13 @@
-const ASSET_VERSION = "20260510b";
+const ASSET_VERSION = "20260510c";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
 
-// Hosted linux4be.com boots always attach NE2000, the Stowaway keyboard dock,
+// Hosted linux4be.com boots default to NE2000, the Stowaway keyboard dock,
 // and the web glue's host-time RTC path. Speed 0 means unthrottled/full speed;
 // non-zero values are pacing units, not MHz.
 const DEFAULT_SDRAM_MB = 16;
 const DEFAULT_SPEED = 0;
-const FORCE_NE2000 = true;
-const FORCE_STOWAWAY_KEYBOARD = true;
 
 const HOSTED_NAND_IMAGES = [
   { id: "300", name: "300.bin", label: "WinCE 3.0", url: "./nand/300.bin", sdramMb: 16 },
@@ -150,17 +148,11 @@ function sendSpeed() {
 }
 
 function syncPrimarySocketControls() {
-  if (FORCE_NE2000) {
-    primarySocketSelect.value = "ne2000";
-    primarySocketSelect.disabled = true;
-  }
-  if (FORCE_STOWAWAY_KEYBOARD) {
-    targusKeyboardEnabledInput.checked = true;
-    targusKeyboardEnabledInput.disabled = true;
-  }
+  const primarySocket = primarySocketSelect.value;
+  const usingNe2000 = primarySocket === "ne2000";
 
-  netMacInput.disabled = !FORCE_NE2000;
-  netBridgeUrlInput.disabled = !FORCE_NE2000;
+  netMacInput.disabled = !usingNe2000;
+  netBridgeUrlInput.disabled = !usingNe2000;
 }
 
 function parseMacAddress(value) {
@@ -206,15 +198,15 @@ function normalizeBridgeUrl(value) {
 function getBootOptions() {
   const mac = parseMacAddress(netMacInput.value);
   const bridge = normalizeBridgeUrl(netBridgeUrlInput.value);
-  const primarySocket = FORCE_NE2000 ? "ne2000" : primarySocketSelect.value;
+  const primarySocket = primarySocketSelect.value;
 
   return {
     primarySocket,
     speed: getSpeedValue(),
     cf0: getActiveCf(0),
     cf1: getActiveCf(1),
-    enableNe2000: FORCE_NE2000 || primarySocket === "ne2000",
-    enableTargusKeyboard: FORCE_STOWAWAY_KEYBOARD || targusKeyboardEnabledInput.checked,
+    enableNe2000: primarySocket === "ne2000",
+    enableTargusKeyboard: targusKeyboardEnabledInput.checked,
     mac,
     bridge,
   };

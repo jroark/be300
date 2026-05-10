@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BE-300 Emulator</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20260510b">
+  <link rel="stylesheet" href="./styles.css?v=20260510c">
 </head>
 <body>
   <main class="shell">
@@ -46,7 +46,9 @@
         </label>
         <label class="field">
           <span>Primary PCMCIA socket</span>
-          <select id="primarySocket" disabled>
+          <select id="primarySocket">
+            <option value="none">No card</option>
+            <option value="cf0">CompactFlash slot 0</option>
             <option value="ne2000" selected>NE2000 Ethernet</option>
           </select>
           <input id="cf0File" type="file" accept=".img,.bin,application/octet-stream" hidden>
@@ -64,7 +66,7 @@
           <input id="netBridgeUrl" type="text" inputmode="url" placeholder="ws://127.0.0.1:8765">
         </label>
         <label class="checkbox-field checkbox-row">
-          <input id="targusKeyboardEnabled" type="checkbox" checked disabled>
+          <input id="targusKeyboardEnabled" type="checkbox" checked>
           <span>Targus / Stowaway keyboard</span>
         </label>
       </div>
@@ -107,6 +109,6 @@
     </section>
   </main>
 
-  <script type="module" src="./app.js?v=20260510b"></script>
+  <script type="module" src="./app.js?v=20260510c"></script>
 </body>
 </html>
