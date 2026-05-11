@@ -27,13 +27,14 @@ var (
 )
 
 const (
-	bridgeVersion = "20260511b"
-	ethIPv4       = 0x0800
-	ethARP        = 0x0806
-	tcpMSS        = 1200
-	udpIdle       = 60 * time.Second
-	tcpIdle       = 120 * time.Second
-	maxWSFrame    = 4096
+	bridgeVersion    = "20260511e"
+	ethIPv4          = 0x0800
+	ethARP           = 0x0806
+	minEthernetFrame = 60
+	tcpMSS           = 1200
+	udpIdle          = 60 * time.Second
+	tcpIdle          = 120 * time.Second
+	maxWSFrame       = 4096
 )
 
 type bridge struct {
@@ -314,11 +315,16 @@ func (b *bridge) handleDHCP(ip *ipv4Packet, req []byte) {
 	if len(req) < 240 || !eq(req[236:240], []byte{99, 130, 83, 99}) {
 		return
 	}
+	msgType := dhcpType(req)
 	replyType := byte(2)
-	if dhcpType(req) == 3 {
+	if msgType == 3 {
 		replyType = 5
 	}
-	payload := make([]byte, 300)
+	ciaddr := req[12:16]
+	requestedIP := dhcpOption(req, 50)
+	serverID := dhcpOption(req, 54)
+	prl := dhcpOption(req, 55)
+	payload := make([]byte, 360)
 	copy(payload, req[:min(len(req), 240)])
 	payload[0] = 2
 	copy(payload[16:20], guestIP)
@@ -332,11 +338,28 @@ func (b *bridge) handleDHCP(ip *ipv4Packet, req []byte) {
 	off = dhcpOpt(payload, off, 6, gatewayIP)
 	off = dhcpOpt(payload, off, 54, gatewayIP)
 	off = dhcpOpt(payload, off, 51, []byte{0, 1, 0x51, 0x80})
+	off = dhcpOpt(payload, off, 15, []byte("local"))
+	off = dhcpOpt(payload, off, 28, []byte{10, 255, 255, 255})
+	off = dhcpOpt(payload, off, 44, gatewayIP)
+	off = dhcpOpt(payload, off, 46, []byte{8})
+	off = dhcpOpt(payload, off, 47, []byte("local"))
 	payload[off] = 255
 	body := payload[:off+1]
-	udp := udpPacket(gatewayIP, bcastIP, 67, 68, body)
-	b.sendEthernet(ethernet(dhcpReplyMAC(ip, req), gatewayMAC, ethIPv4, udp))
-	fmt.Printf("[bridge] DHCP %s %s to %s\n", map[byte]string{2: "OFFER", 5: "ACK"}[replyType], ipText(guestIP), macText(ip.srcMAC))
+	dstIP := dhcpReplyIP(req)
+	dstMAC := dhcpReplyMAC(ip, req)
+	udp := udpPacket(gatewayIP, dstIP, 67, 68, body)
+	b.sendEthernet(ethernet(dstMAC, gatewayMAC, ethIPv4, udp))
+	fmt.Printf("[bridge] DHCP %s %s to %s msg=%d ciaddr=%s requested=%s server=%s dst=%s/%s\n",
+		map[byte]string{2: "OFFER", 5: "ACK"}[replyType],
+		ipText(guestIP),
+		macText(ip.srcMAC),
+		msgType,
+		ipText(ciaddr),
+		dhcpOptionIPText(requestedIP),
+		dhcpOptionIPText(serverID),
+		ipText(dstIP),
+		macText(dstMAC))
+	fmt.Printf("[bridge] DHCP flags=0x%04x prl=%s\n", dhcpFlags(req), dhcpOptionListText(prl))
 }
 
 func (b *bridge) handleDNS(ip *ipv4Packet, srcPort uint16, query []byte) {
@@ -402,14 +425,28 @@ func dnsTypeText(qtype uint16) string {
 }
 
 func dhcpReplyMAC(ip *ipv4Packet, req []byte) []byte {
-	if dhcpBroadcast(req) || eq(ip.dstMAC, bcastMAC) || eq(ip.srcIP, zeroIP) {
+	if dhcpBroadcast(req) {
 		return bcastMAC
 	}
 	return ip.srcMAC
 }
 
+func dhcpReplyIP(req []byte) []byte {
+	if len(req) >= 16 && !eq(req[12:16], zeroIP) && !dhcpBroadcast(req) {
+		return req[12:16]
+	}
+	return bcastIP
+}
+
+func dhcpFlags(payload []byte) uint16 {
+	if len(payload) < 12 {
+		return 0
+	}
+	return be16(payload[10:12])
+}
+
 func dhcpBroadcast(payload []byte) bool {
-	return len(payload) >= 12 && be16(payload[10:12])&0x8000 != 0
+	return dhcpFlags(payload)&0x8000 != 0
 }
 
 func (b *bridge) proxyUDP(ip *ipv4Packet, srcPort, dstPort uint16, body []byte) {
@@ -758,7 +795,11 @@ func tcpPacket(srcIP, dstIP []byte, srcPort, dstPort uint16, seq, ack uint32, fl
 }
 
 func ethernet(dstMAC, srcMAC []byte, typ uint16, payload []byte) []byte {
-	frame := make([]byte, 14+len(payload))
+	frameLen := 14 + len(payload)
+	if frameLen < minEthernetFrame {
+		frameLen = minEthernetFrame
+	}
+	frame := make([]byte, frameLen)
 	copy(frame[0:6], dstMAC)
 	copy(frame[6:12], srcMAC)
 	put16(frame[12:14], typ)
@@ -838,6 +879,14 @@ func dnsQuestionEnd(query []byte) int {
 }
 
 func dhcpType(payload []byte) byte {
+	opt := dhcpOption(payload, 53)
+	if len(opt) > 0 {
+		return opt[0]
+	}
+	return 0
+}
+
+func dhcpOption(payload []byte, want byte) []byte {
 	for off := 240; off < len(payload); {
 		code := payload[off]
 		off++
@@ -852,12 +901,30 @@ func dhcpType(payload []byte) byte {
 		if off+l > len(payload) {
 			break
 		}
-		if code == 53 && l > 0 {
-			return payload[off]
+		if code == want {
+			return payload[off : off+l]
 		}
 		off += l
 	}
-	return 0
+	return nil
+}
+
+func dhcpOptionIPText(value []byte) string {
+	if len(value) != 4 {
+		return "-"
+	}
+	return ipText(value)
+}
+
+func dhcpOptionListText(value []byte) string {
+	if len(value) == 0 {
+		return "-"
+	}
+	parts := make([]string, len(value))
+	for i, v := range value {
+		parts[i] = fmt.Sprintf("%d", v)
+	}
+	return strings.Join(parts, ",")
 }
 
 func dhcpOpt(buf []byte, off int, code byte, value []byte) int {
