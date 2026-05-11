@@ -1,4 +1,4 @@
-import createBe300Module from "./be300_web.js?v=20260510e";
+import createBe300Module from "./be300_web.js?v=20260511a";
 
 const MAX_FRAME_WIDTH = 480;
 const MAX_FRAME_HEIGHT = 640;
@@ -262,6 +262,28 @@ function startNetBridge(url) {
   });
 }
 
+async function prepareNetBridge(url) {
+  closeNetBridge();
+  if (!url) {
+    return false;
+  }
+
+  const generation = netBridgeGeneration;
+  postSerial(`[NET] Connecting bridge before boot: ${url}\n`);
+  postStatus("Connecting network bridge...", { bootInFlight: true });
+  try {
+    await connectNetBridge(url, generation);
+    postSerial("[NET] Bridge ready before boot; NE2000 DHCP will use the helper.\n");
+    return true;
+  } catch (error) {
+    if (generation === netBridgeGeneration) {
+      postSerial(`[NET] ${error instanceof Error ? error.message : String(error)}; using internal gateway.\n`);
+      postStatus("Network bridge unavailable; NE2000 internal gateway is active.", { bootInFlight: true });
+    }
+    return false;
+  }
+}
+
 function destroyMachine() {
   closeNetBridge();
   if (moduleInstance && machineHandle) {
@@ -429,8 +451,12 @@ async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes
     return;
   }
 
-  if (config.enableNe2000 && config.netBridgeUrl) {
-    postSerial("[NET] NE2000 using GXemul internal IPv4 gateway until bridge connects.\n");
+  const bridgeReady = config.enableNe2000 && config.netBridgeUrl
+    ? await prepareNetBridge(config.netBridgeUrl)
+    : false;
+
+  if (config.enableNe2000 && bridgeReady) {
+    postSerial("[NET] NE2000 using local network bridge.\n");
   } else if (config.enableNe2000) {
     postSerial("[NET] NE2000 using GXemul internal IPv4 gateway.\n");
   }
@@ -445,9 +471,6 @@ async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes
   lastFrameAt = 0;
   postStatus("NAND loaded. Starting emulation...", { bootInFlight: false });
   scheduleTick();
-  if (config.enableNe2000 && config.netBridgeUrl) {
-    startNetBridge(config.netBridgeUrl);
-  }
 }
 
 async function loadNandBytes(data) {

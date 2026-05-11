@@ -27,7 +27,7 @@ var (
 )
 
 const (
-	bridgeVersion = "20260511a"
+	bridgeVersion = "20260511b"
 	ethIPv4       = 0x0800
 	ethARP        = 0x0806
 	tcpMSS        = 1200
@@ -327,13 +327,11 @@ func (b *bridge) handleDHCP(ip *ipv4Packet, req []byte) {
 	copy(payload[236:240], []byte{99, 130, 83, 99})
 	off := 240
 	off = dhcpOpt(payload, off, 53, []byte{replyType})
-	off = dhcpOpt(payload, off, 1, []byte{255, 255, 255, 0})
+	off = dhcpOpt(payload, off, 1, []byte{255, 0, 0, 0})
 	off = dhcpOpt(payload, off, 3, gatewayIP)
 	off = dhcpOpt(payload, off, 6, gatewayIP)
 	off = dhcpOpt(payload, off, 54, gatewayIP)
 	off = dhcpOpt(payload, off, 51, []byte{0, 1, 0x51, 0x80})
-	off = dhcpOpt(payload, off, 58, []byte{0, 0, 0xa8, 0xc0})
-	off = dhcpOpt(payload, off, 59, []byte{0, 0, 0xd2, 0xf0})
 	payload[off] = 255
 	body := payload[:off+1]
 	udp := udpPacket(gatewayIP, bcastIP, 67, 68, body)

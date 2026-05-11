@@ -149,7 +149,7 @@ If NE2000 is enabled without a bridge URL, the card uses GXemul's internal
 IPv4 gateway model. The controls default to `ws://127.0.0.1:8765`, matching
 the downloadable native `be300-net-bridge` helpers linked from the page.
 Download the helper for your operating system, extract it, and run the
-binary:
+binary before booting:
 
 ```bash
 ./be300-net-bridge
@@ -157,10 +157,11 @@ binary:
 
 On Windows, run `be300-net-bridge.exe`.
 
-Boot still starts immediately while the worker connects to the bridge in the
-background. Once connected, the web build forwards raw Ethernet frames to
-that WebSocket and injects binary frames received from the socket back into
-the NE2000 receive path. Each WebSocket binary message is exactly one Ethernet
+When a bridge URL is configured, the worker connects to the bridge before
+starting the guest CPU so DHCP OFFER and ACK packets come from one network
+backend. Once connected, the web build forwards raw Ethernet frames to that
+WebSocket and injects binary frames received from the socket back into the
+NE2000 receive path. Each WebSocket binary message is exactly one Ethernet
 frame; text messages are ignored. The helper listens on loopback by default
 and provides user-mode DHCP/ARP/DNS plus outbound TCP/UDP proxying through
 ordinary host sockets, so it does not need TAP drivers or administrator
