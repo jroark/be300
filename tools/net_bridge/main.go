@@ -27,12 +27,13 @@ var (
 )
 
 const (
-	ethIPv4    = 0x0800
-	ethARP     = 0x0806
-	tcpMSS     = 1200
-	udpIdle    = 60 * time.Second
-	tcpIdle    = 120 * time.Second
-	maxWSFrame = 4096
+	bridgeVersion = "20260511a"
+	ethIPv4       = 0x0800
+	ethARP        = 0x0806
+	tcpMSS        = 1200
+	udpIdle       = 60 * time.Second
+	tcpIdle       = 120 * time.Second
+	maxWSFrame    = 4096
 )
 
 type bridge struct {
@@ -94,6 +95,7 @@ func main() {
 
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 	server := &http.Server{Addr: addr, Handler: http.HandlerFunc(b.serve)}
+	fmt.Printf("[bridge] BE-300 network bridge %s\n", bridgeVersion)
 	fmt.Printf("[bridge] listening on ws://%s\n", addr)
 	fmt.Println("[bridge] set Bridge URL in the web app to this address")
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -266,7 +268,11 @@ func (b *bridge) handleEthernet(frame []byte) {
 }
 
 func (b *bridge) handleARP(frame []byte) {
-	if len(frame) < 42 || be16(frame[20:22]) != 1 || !eq(frame[38:42], gatewayIP) {
+	if len(frame) < 42 || be16(frame[20:22]) != 1 {
+		return
+	}
+	targetIP := frame[38:42]
+	if eq(targetIP, guestIP) {
 		return
 	}
 	payload := make([]byte, 28)
@@ -275,10 +281,11 @@ func (b *bridge) handleARP(frame []byte) {
 	payload[4], payload[5] = 6, 4
 	put16(payload[6:8], 2)
 	copy(payload[8:14], gatewayMAC)
-	copy(payload[14:18], gatewayIP)
+	copy(payload[14:18], targetIP)
 	copy(payload[18:24], frame[6:12])
 	copy(payload[24:28], frame[28:32])
 	b.sendEthernet(ethernet(frame[6:12], gatewayMAC, ethARP, payload))
+	fmt.Printf("[bridge] ARP %s is at %s\n", ipText(targetIP), macText(gatewayMAC))
 }
 
 func (b *bridge) handleUDP(ip *ipv4Packet) {
@@ -296,7 +303,7 @@ func (b *bridge) handleUDP(ip *ipv4Packet) {
 		b.handleDHCP(ip, body)
 		return
 	}
-	if dstPort == 53 && eq(ip.dstIP, gatewayIP) {
+	if dstPort == 53 {
 		b.handleDNS(ip, srcPort, body)
 		return
 	}
@@ -320,11 +327,13 @@ func (b *bridge) handleDHCP(ip *ipv4Packet, req []byte) {
 	copy(payload[236:240], []byte{99, 130, 83, 99})
 	off := 240
 	off = dhcpOpt(payload, off, 53, []byte{replyType})
-	off = dhcpOpt(payload, off, 1, []byte{255, 0, 0, 0})
+	off = dhcpOpt(payload, off, 1, []byte{255, 255, 255, 0})
 	off = dhcpOpt(payload, off, 3, gatewayIP)
 	off = dhcpOpt(payload, off, 6, gatewayIP)
 	off = dhcpOpt(payload, off, 54, gatewayIP)
 	off = dhcpOpt(payload, off, 51, []byte{0, 1, 0x51, 0x80})
+	off = dhcpOpt(payload, off, 58, []byte{0, 0, 0xa8, 0xc0})
+	off = dhcpOpt(payload, off, 59, []byte{0, 0, 0xd2, 0xf0})
 	payload[off] = 255
 	body := payload[:off+1]
 	udp := udpPacket(gatewayIP, bcastIP, 67, 68, body)
@@ -364,11 +373,15 @@ func (b *bridge) handleDNS(ip *ipv4Packet, srcPort uint16, query []byte) {
 	if len(response) == 0 {
 		return
 	}
-	udp := udpPacket(gatewayIP, ip.srcIP, 53, srcPort, response)
+	serverIP := ip.dstIP
+	if eq(serverIP, zeroIP) || eq(serverIP, bcastIP) {
+		serverIP = gatewayIP
+	}
+	udp := udpPacket(serverIP, ip.srcIP, 53, srcPort, response)
 	b.sendEthernet(ethernet(ip.srcMAC, gatewayMAC, ethIPv4, udp))
 	if q.name != "" {
-		fmt.Printf("[bridge] DNS %s %s -> %d A record(s), rcode %d\n",
-			q.name, dnsTypeText(q.qtype), len(answers), rcode)
+		fmt.Printf("[bridge] DNS %s %s via %s -> %d A record(s), rcode %d\n",
+			q.name, dnsTypeText(q.qtype), ipText(serverIP), len(answers), rcode)
 	}
 }
 
@@ -409,10 +422,12 @@ func (b *bridge) proxyUDP(ip *ipv4Packet, srcPort, dstPort uint16, body []byte) 
 	if flow == nil {
 		raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", ipText(ip.dstIP), dstPort))
 		if err != nil {
+			fmt.Printf("[bridge] UDP resolve failed %s:%d: %v\n", ipText(ip.dstIP), dstPort, err)
 			return
 		}
 		conn, err := net.DialUDP("udp4", nil, raddr)
 		if err != nil {
+			fmt.Printf("[bridge] UDP dial failed %s:%d: %v\n", ipText(ip.dstIP), dstPort, err)
 			return
 		}
 		newFlow := &udpFlow{conn: conn, guestMAC: clone(ip.srcMAC), guestIP: clone(ip.srcIP), guestPort: srcPort}

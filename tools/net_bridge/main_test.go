@@ -80,3 +80,17 @@ func TestDHCPReplyMACUsesBroadcastWhenClientBroadcasts(t *testing.T) {
 		t.Fatalf("dhcpReplyMAC = %s, want broadcast", macText(got))
 	}
 }
+
+func TestDNSResponseCanUseArbitraryServerIP(t *testing.T) {
+	serverIP := []byte{8, 8, 8, 8}
+	guestIP := []byte{10, 0, 0, 1}
+	dns := dnsResponse(
+		dnsQueryForTest("frogfind.com", 1, false),
+		[]net.IP{net.IPv4(1, 2, 3, 4)},
+		0,
+	)
+	udp := udpPacket(serverIP, guestIP, 53, 12345, dns)
+	if !eq(udp[12:16], serverIP) {
+		t.Fatalf("DNS reply source IP = %s, want %s", ipText(udp[12:16]), ipText(serverIP))
+	}
+}
