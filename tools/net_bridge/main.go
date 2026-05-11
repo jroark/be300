@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,8 +19,10 @@ import (
 
 var (
 	gatewayMAC = []byte{0x60, 0x50, 0x40, 0x30, 0x20, 0x10}
+	bcastMAC   = []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 	gatewayIP  = ip4("10.0.0.254")
 	guestIP    = ip4("10.0.0.1")
+	zeroIP     = ip4("0.0.0.0")
 	bcastIP    = ip4("255.255.255.255")
 )
 
@@ -325,34 +328,77 @@ func (b *bridge) handleDHCP(ip *ipv4Packet, req []byte) {
 	payload[off] = 255
 	body := payload[:off+1]
 	udp := udpPacket(gatewayIP, bcastIP, 67, 68, body)
-	b.sendEthernet(ethernet(ip.srcMAC, gatewayMAC, ethIPv4, udp))
+	b.sendEthernet(ethernet(dhcpReplyMAC(ip, req), gatewayMAC, ethIPv4, udp))
 	fmt.Printf("[bridge] DHCP %s %s to %s\n", map[byte]string{2: "OFFER", 5: "ACK"}[replyType], ipText(guestIP), macText(ip.srcMAC))
 }
 
 func (b *bridge) handleDNS(ip *ipv4Packet, srcPort uint16, query []byte) {
 	q := dnsQuestion(query)
 	var answers []net.IP
-	if q.name != "" && q.qtype == 1 && q.qclass == 1 {
-		if ips, err := net.LookupIP(q.name); err == nil {
-			for _, candidate := range ips {
-				if v4 := candidate.To4(); v4 != nil {
-					answers = append(answers, v4)
-					if len(answers) == 4 {
-						break
+	rcode := byte(0)
+
+	if q.name != "" && q.qclass == 1 {
+		switch q.qtype {
+		case 1, 255:
+			if ips, err := net.LookupIP(q.name); err == nil {
+				for _, candidate := range ips {
+					if v4 := candidate.To4(); v4 != nil {
+						answers = append(answers, v4)
+						if len(answers) == 4 {
+							break
+						}
 					}
 				}
+			} else if dnsNameNotFound(err) {
+				rcode = 3
+			} else {
+				rcode = 2
 			}
+		case 28:
+			rcode = 0
+		default:
+			rcode = 0
 		}
 	}
-	response := dnsResponse(query, answers)
+	response := dnsResponse(query, answers, rcode)
 	if len(response) == 0 {
 		return
 	}
 	udp := udpPacket(gatewayIP, ip.srcIP, 53, srcPort, response)
 	b.sendEthernet(ethernet(ip.srcMAC, gatewayMAC, ethIPv4, udp))
 	if q.name != "" {
-		fmt.Printf("[bridge] DNS %s -> %d A record(s)\n", q.name, len(answers))
+		fmt.Printf("[bridge] DNS %s %s -> %d A record(s), rcode %d\n",
+			q.name, dnsTypeText(q.qtype), len(answers), rcode)
 	}
+}
+
+func dnsNameNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
+}
+
+func dnsTypeText(qtype uint16) string {
+	switch qtype {
+	case 1:
+		return "A"
+	case 28:
+		return "AAAA"
+	case 255:
+		return "ANY"
+	default:
+		return fmt.Sprintf("TYPE%d", qtype)
+	}
+}
+
+func dhcpReplyMAC(ip *ipv4Packet, req []byte) []byte {
+	if dhcpBroadcast(req) || eq(ip.dstMAC, bcastMAC) || eq(ip.srcIP, zeroIP) {
+		return bcastMAC
+	}
+	return ip.srcMAC
+}
+
+func dhcpBroadcast(payload []byte) bool {
+	return len(payload) >= 12 && be16(payload[10:12])&0x8000 != 0
 }
 
 func (b *bridge) proxyUDP(ip *ipv4Packet, srcPort, dstPort uint16, body []byte) {
@@ -707,18 +753,18 @@ func ethernet(dstMAC, srcMAC []byte, typ uint16, payload []byte) []byte {
 	return frame
 }
 
-func dnsResponse(query []byte, answers []net.IP) []byte {
+func dnsResponse(query []byte, answers []net.IP, rcode byte) []byte {
 	end := dnsQuestionEnd(query)
 	if end == 0 {
 		return nil
 	}
 	resp := make([]byte, end+len(answers)*16)
 	copy(resp, query[:end])
-	resp[2], resp[3] = 0x81, 0x80
-	if len(answers) == 0 {
-		resp[3] = 0x83
-	}
+	resp[2] = 0x80 | (query[2] & 0x79)
+	resp[3] = 0x80 | (rcode & 0x0f)
 	put16(resp[6:8], uint16(len(answers)))
+	put16(resp[8:10], 0)
+	put16(resp[10:12], 0)
 	off := end
 	for _, ip := range answers {
 		resp[off], resp[off+1] = 0xc0, 0x0c
