@@ -7,8 +7,10 @@ build/
 build-docker/
 build-host/
 build-host-*/
+build-windows/
 build-web/
 build-test/
+dist/
 *.o
 *.log
 boot_stdout*.txt
@@ -31,6 +33,12 @@ Makefile
 linux4be/
 linux4be20040908/
 .DS_Store
+System Volume Information/
+
+# Deferred local-only asset: generated Casio-derived backup boot template.
+# 16 MB embedded SPL+NK; see docs/LOCAL_ASSETS.md. Regenerate locally with
+# tools/gen_backup_boot_template_source.py when working the --backup path.
+src/backup_boot_template.c
 
 # Android project artifacts
 android/.gradle/
@@ -57,6 +65,9 @@ ce/restore_images/*.cab
 ce/restore_images/*.txt
 ce/restore_images/cf_test_*.img
 web/nand/
+*.7z
+*.cab
+stowaway/
 
 # Python cache
 __pycache__/

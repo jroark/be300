@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-04-29
+Last updated: 2026-05-16
 
 ## Active Target
 
@@ -24,6 +24,15 @@ Secondary implemented paths, used for targeted investigation only:
 - `--ne2000` for the PCMCIA NE2000 Ethernet card path
 - `--rtc-host-time` for interactive boots that should start with the host
   local date/time instead of the first-boot default RTC value
+- `--pcconnect-bridge` pipes the VRC4173 SIU UART to a host
+  TCP/Unix/PTY chardev so real `PCConnect.exe` can talk to the guest;
+  `--serial0`/`--serial1` expose the VR4131 main SIU / VRC4173 companion
+  SIU as plain host serial bridges; see `docs/PC_CONNECT_BRIDGE.md`
+- `--stowaway-keyboard` attaches the Targus/Think Outside Stowaway dock
+
+A portable Windows x86_64 build is produced from macOS by the MinGW
+cross-build helper `tools/build_windows.sh` (output
+`dist/be300-windows-amd64.zip`).
 
 ## Current Behavior
 
