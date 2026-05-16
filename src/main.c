@@ -3,6 +3,9 @@
 #include <string.h>
 #include "be300.h"
 #include "pcconnect_bridge.h"
+#ifdef _WIN32
+#include "win32_compat.h"
+#endif
 
 /* GXemul global verbosity gates — see gxemul/src/core/debugmsg.c.
  * debug() is silent while emul_executing unless verbose >= 1. */
@@ -76,6 +79,24 @@ static bool parse_mac(const char *arg, uint8_t mac[6])
     return true;
 }
 
+static bool parse_pcconnect_dock(const char *arg,
+    be300_pcconnect_dock_mode_t *dock_out)
+{
+    if (!arg || !dock_out)
+        return false;
+
+    if (strcmp(arg, "rs232") == 0) {
+        *dock_out = BE300_PCC_DOCK_RS232;
+        return true;
+    }
+    if (strcmp(arg, "usb-sync") == 0 || strcmp(arg, "usb-vcom") == 0) {
+        *dock_out = BE300_PCC_DOCK_USB_SYNC;
+        return true;
+    }
+
+    return false;
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -103,6 +124,19 @@ static void usage(const char *prog)
         "                        (annotated text). Requires --pcconnect-bridge.\n"
         "  --pcconnect-baud <N>  Throttle guest->host bridge transmit to N baud (8N1).\n"
         "                        Default 115200 to match real serial; 0 = unlimited.\n"
+        "  --pcconnect-dock <D>  Guest-visible dock socket: rs232 or usb-sync\n"
+        "                        (default rs232; usb-sync requires --pcconnect-bridge).\n"
+        "  --serial0-bridge <S>  Pipe the VR4131 main SIU (Linux ttyVR0) to a host chardev.\n"
+        "                        S = same forms as --pcconnect-bridge (tcp/tcp-listen/unix/...\n"
+        "                        unix-listen/pty:auto). Plain Linux-mode (no PCConnect quirks).\n"
+        "  --serial0-tee <P>     Tee both directions of the serial0 stream to P.\n"
+        "  --serial0-baud <N>    Throttle serial0 transmit to N baud (default 115200).\n"
+        "  --serial1-bridge <S>  Pipe the VRC4173 companion SIU (Linux ttyS0 / WinCE dock)\n"
+        "                        to a host chardev in plain-Linux mode (no PCConnect quirks).\n"
+        "                        Mutually exclusive with --pcconnect-bridge and\n"
+        "                        --stowaway-keyboard (all share the same UART).\n"
+        "  --serial1-tee <P>     Tee both directions of the serial1 stream to P.\n"
+        "  --serial1-baud <N>    Throttle serial1 transmit to N baud (default 115200).\n"
         "  --rtc-host-time       Initialize the guest RTC from host local time\n"
         "  --stowaway-keyboard   Feed host key events to the Stowaway serial dock on COM1:\n"
         "  --fb-size <WxH>       Experimental framebuffer size: 240x320 or 480x640\n"
@@ -119,7 +153,7 @@ static void usage(const char *prog)
         "  -h, --help            Show this help\n"
         "\n"
         "ROM image (positional arg) is loaded at PA 0x1FC00000 (MIPS reset vector).\n"
-        "--restore/--nand and rom.bin are mutually exclusive.\n",
+        "Choose exactly one boot source: --restore, --nand, or rom.bin.\n",
         prog);
 }
 
@@ -127,6 +161,12 @@ int main(int argc, char *argv[])
 {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+
+#ifdef _WIN32
+    if (!be300_win32_init())
+        return 1;
+    atexit(be300_win32_shutdown);
+#endif
 
     machine_config_t cfg = {
         .trace           = false,
@@ -164,6 +204,13 @@ int main(int argc, char *argv[])
         .pcconnect_bridge = NULL,
         .pcconnect_tee    = NULL,
         .pcconnect_baud   = 115200u,
+        .pcconnect_dock   = BE300_PCC_DOCK_RS232,
+        .serial0_bridge   = NULL,
+        .serial0_tee      = NULL,
+        .serial0_baud     = 115200u,
+        .serial1_bridge   = NULL,
+        .serial1_tee      = NULL,
+        .serial1_baud     = 115200u,
     };
 
     for (int i = 1; i < argc; i++) {
@@ -187,6 +234,41 @@ int main(int argc, char *argv[])
                 return 1;
             }
             cfg.pcconnect_baud = (uint32_t)b;
+        } else if (strcmp(argv[i], "--serial0-bridge") == 0 && i + 1 < argc) {
+            cfg.serial0_bridge = argv[++i];
+        } else if (strcmp(argv[i], "--serial0-tee") == 0 && i + 1 < argc) {
+            cfg.serial0_tee = argv[++i];
+        } else if (strcmp(argv[i], "--serial0-baud") == 0 && i + 1 < argc) {
+            char *end = NULL;
+            unsigned long b = strtoul(argv[++i], &end, 0);
+            if (!end || *end != '\0' || b > 1000000u) {
+                fprintf(stderr,
+                    "Error: --serial0-baud must be 0..1000000 (got '%s')\n",
+                    argv[i]);
+                return 1;
+            }
+            cfg.serial0_baud = (uint32_t)b;
+        } else if (strcmp(argv[i], "--serial1-bridge") == 0 && i + 1 < argc) {
+            cfg.serial1_bridge = argv[++i];
+        } else if (strcmp(argv[i], "--serial1-tee") == 0 && i + 1 < argc) {
+            cfg.serial1_tee = argv[++i];
+        } else if (strcmp(argv[i], "--serial1-baud") == 0 && i + 1 < argc) {
+            char *end = NULL;
+            unsigned long b = strtoul(argv[++i], &end, 0);
+            if (!end || *end != '\0' || b > 1000000u) {
+                fprintf(stderr,
+                    "Error: --serial1-baud must be 0..1000000 (got '%s')\n",
+                    argv[i]);
+                return 1;
+            }
+            cfg.serial1_baud = (uint32_t)b;
+        } else if (strcmp(argv[i], "--pcconnect-dock") == 0 && i + 1 < argc) {
+            if (!parse_pcconnect_dock(argv[++i], &cfg.pcconnect_dock)) {
+                fprintf(stderr,
+                    "Error: --pcconnect-dock must be rs232 or usb-sync (got '%s')\n",
+                    argv[i]);
+                return 1;
+            }
         } else if (strcmp(argv[i], "--rtc-host-time") == 0) {
             cfg.enable_rtc_host_time = true;
         } else if (strcmp(argv[i], "--stowaway-keyboard") == 0) {
@@ -261,7 +343,8 @@ int main(int argc, char *argv[])
     }
 
     if (!cfg.rom_path && !cfg.nand_path && !cfg.restore) {
-        fprintf(stderr, "Error: must specify --nand, --restore, or a ROM image\n");
+        fprintf(stderr,
+            "Error: must specify --nand, --restore, or a ROM image\n");
         usage(argv[0]);
         return 1;
     }
@@ -297,15 +380,42 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    if (cfg.pcconnect_bridge && cfg.enable_stowaway_keyboard) {
-        fprintf(stderr,
-            "Error: --pcconnect-bridge and --stowaway-keyboard share COM1\n");
-        usage(argv[0]);
-        return 1;
+    /* --pcconnect-bridge, --serial1-bridge, and --stowaway-keyboard all
+     * claim the VRC4173 companion SIU. At most one may be active. */
+    {
+        int vrc4173_claims = (cfg.pcconnect_bridge ? 1 : 0) +
+                             (cfg.serial1_bridge ? 1 : 0) +
+                             (cfg.enable_stowaway_keyboard ? 1 : 0);
+        if (vrc4173_claims > 1) {
+            fprintf(stderr,
+                "Error: --pcconnect-bridge, --serial1-bridge, and --stowaway-keyboard "
+                "all claim the VRC4173 dock UART; pick one\n");
+            usage(argv[0]);
+            return 1;
+        }
     }
     if (cfg.pcconnect_tee && !cfg.pcconnect_bridge) {
         fprintf(stderr,
             "Error: --pcconnect-tee requires --pcconnect-bridge\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (cfg.serial0_tee && !cfg.serial0_bridge) {
+        fprintf(stderr,
+            "Error: --serial0-tee requires --serial0-bridge\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (cfg.serial1_tee && !cfg.serial1_bridge) {
+        fprintf(stderr,
+            "Error: --serial1-tee requires --serial1-bridge\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (cfg.pcconnect_dock == BE300_PCC_DOCK_USB_SYNC &&
+        !cfg.pcconnect_bridge) {
+        fprintf(stderr,
+            "Error: --pcconnect-dock usb-sync requires --pcconnect-bridge\n");
         usage(argv[0]);
         return 1;
     }
@@ -315,15 +425,28 @@ int main(int argc, char *argv[])
             usage(argv[0]);
             return 1;
         }
-        /* Defer pcconnect_bridge_configure() to machine_be300.c, which
-         * runs after CLI parsing and before device wiring. The parse here
-         * is just a syntax check so we fail fast on bad specs. */
+    }
+    if (cfg.serial0_bridge) {
+        pcc_bridge_config_t br = {0};
+        if (!pcconnect_bridge_parse_spec(cfg.serial0_bridge, &br)) {
+            usage(argv[0]);
+            return 1;
+        }
+    }
+    if (cfg.serial1_bridge) {
+        pcc_bridge_config_t br = {0};
+        if (!pcconnect_bridge_parse_spec(cfg.serial1_bridge, &br)) {
+            usage(argv[0]);
+            return 1;
+        }
     }
     {
         int boot_modes = (cfg.rom_path    ? 1 : 0) +
-                         ((cfg.nand_path || cfg.restore) ? 1 : 0);
+                         (cfg.nand_path   ? 1 : 0) +
+                         (cfg.restore     ? 1 : 0);
         if (boot_modes > 1) {
-            fprintf(stderr, "Error: --restore/--nand and rom.bin are mutually exclusive\n");
+            fprintf(stderr,
+                "Error: choose exactly one of --restore, --nand, or rom.bin\n");
             usage(argv[0]);
             return 1;
         }

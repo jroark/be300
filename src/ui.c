@@ -1819,6 +1819,10 @@ int ui_init(machine_t *m)
     if (m->fb_stride == 0)
         m->fb_stride = 256;
 
+#ifdef SDL_MAIN_HANDLED
+    SDL_SetMainReady();
+#endif
+
     quit_requested = false;
     frame_enabled = false;
     frame_width = 0;
@@ -1845,7 +1849,7 @@ int ui_init(machine_t *m)
     ui_audio_init();
 
     /* Skip SDL when no display server is available (headless / Docker) */
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(_WIN32)
     if (!getenv("DISPLAY") && !getenv("WAYLAND_DISPLAY")) {
         fprintf(stderr, "[UI] No DISPLAY/WAYLAND_DISPLAY — running headless\n");
         return 0;

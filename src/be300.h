@@ -52,6 +52,11 @@ struct emul;
 #define BE300_MAX_CF_SLOTS 2u
 #define BE300_PRIMARY_CF_SLOT 0u
 
+typedef enum {
+    BE300_PCC_DOCK_RS232 = 0,
+    BE300_PCC_DOCK_USB_SYNC,
+} be300_pcconnect_dock_mode_t;
+
 /*
  * CLI configuration — parsed from command line, passed to machine setup.
  */
@@ -98,6 +103,17 @@ typedef struct {
     /* Inter-byte throttle on the guest->host bridge direction. 0 = unlimited.
      * Default 115200 to match real-hardware 8N1 timing. */
     uint32_t    pcconnect_baud;
+    be300_pcconnect_dock_mode_t pcconnect_dock;
+
+    /* Plain-Linux-mode serial bridges. serial0 = VR4131 main SIU
+     * (Linux ttyVR0 via CONFIG_SERIAL_VR41XX). serial1 = VRC4173 companion
+     * SIU (Linux ttyS0 via 8250 platform driver). NULL = disabled. */
+    const char *serial0_bridge;
+    const char *serial0_tee;
+    uint32_t    serial0_baud;
+    const char *serial1_bridge;
+    const char *serial1_tee;
+    uint32_t    serial1_baud;
 } machine_config_t;
 
 typedef enum {

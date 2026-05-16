@@ -469,10 +469,46 @@ machine_t *be300_create(const machine_config_t *cfg)
             free(m);
             return NULL;
         }
+        br.uart_id = PCC_UART_VRC4173_SIU;
+        br.wince_mode = true;
         br.tee_path = cfg->pcconnect_tee;
         br.uart_name = NULL;        /* default vrc4173siu */
         br.trace = (getenv("BE300_PCC_TRACE") != NULL);
         br.baud = cfg->pcconnect_baud;
+        if (!pcconnect_bridge_configure(&br)) {
+            free(m);
+            return NULL;
+        }
+    }
+    if (cfg->serial0_bridge) {
+        pcc_bridge_config_t br = {0};
+        if (!pcconnect_bridge_parse_spec(cfg->serial0_bridge, &br)) {
+            free(m);
+            return NULL;
+        }
+        br.uart_id = PCC_UART_VR4131_SIU;
+        br.wince_mode = false;
+        br.tee_path = cfg->serial0_tee;
+        br.uart_name = NULL;        /* default "siu" */
+        br.trace = (getenv("BE300_SERIAL0_TRACE") != NULL);
+        br.baud = cfg->serial0_baud;
+        if (!pcconnect_bridge_configure(&br)) {
+            free(m);
+            return NULL;
+        }
+    }
+    if (cfg->serial1_bridge) {
+        pcc_bridge_config_t br = {0};
+        if (!pcconnect_bridge_parse_spec(cfg->serial1_bridge, &br)) {
+            free(m);
+            return NULL;
+        }
+        br.uart_id = PCC_UART_VRC4173_SIU;
+        br.wince_mode = false;
+        br.tee_path = cfg->serial1_tee;
+        br.uart_name = NULL;        /* default "vrc4173siu" */
+        br.trace = (getenv("BE300_SERIAL1_TRACE") != NULL);
+        br.baud = cfg->serial1_baud;
         if (!pcconnect_bridge_configure(&br)) {
             free(m);
             return NULL;
@@ -885,8 +921,12 @@ static bool be300_run_batch(machine_t *m)
 
     be300_maybe_apply_nk_override(m);
 
+#ifdef _WIN32
+    timer_tick_manual();
+#else
     if (m->web_mode)
         timer_tick_manual();
+#endif
 
     if (!m->web_mode && m->throttle_target_ips > 0) {
         uint64_t now_ns = monotonic_ns();
@@ -930,9 +970,11 @@ static bool be300_run_batch(machine_t *m)
     be300_vrc4173_update_cf_irq();
     if (m->cfg.enable_audio)
         aiu_tick(m);
-    if (m->cfg.enable_stowaway_keyboard || m->cfg.pcconnect_bridge)
+    if (m->cfg.enable_stowaway_keyboard || m->cfg.pcconnect_bridge ||
+        m->cfg.serial0_bridge || m->cfg.serial1_bridge)
         be300_pcconnect_poll();
-    if (m->cfg.pcconnect_bridge)
+    if (m->cfg.pcconnect_bridge || m->cfg.serial0_bridge ||
+        m->cfg.serial1_bridge)
         pcconnect_bridge_tick();
 
     if (m->use_builtin_ui && ui_should_quit(m))

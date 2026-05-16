@@ -107,6 +107,7 @@ struct be300_vrc4173_latch {
     uint16_t stowaway_commmode_events;
     bool     pcconnect_modem_after_socket_sent;
     size_t   pcconnect_rx_wake_count;
+    bool     serial_dock_pccard_status_pending;
     bool     pcconnect_insert_armed;
     uint32_t pcconnect_insert_delay_ms;
     uint64_t pcconnect_insert_deadline_ns;
@@ -304,6 +305,7 @@ static uint32_t be300_buzzer_tone_ms(const struct be300_buzzer_state *b)
 #define BE300_COMMMODE_SOCKET_VALUE_MASK 0x001Fu
 #define BE300_COMMMODE_SOCKET_NONE  0x0007u
 #define BE300_COMMMODE_SOCKET_RS232 0x0008u
+#define BE300_COMMMODE_SOCKET_USB_SYNC 0x000Cu
 #define BE300_COMMMODE_MODEM_EVENT_BITS 0x0030u
 #define BE300_COMMSIU_CTRL_RS232   0x0008u
 #define BE300_PCC_CONNECT_DELAY_DEFAULT_MS 1000u
@@ -338,6 +340,15 @@ static bool be300_commmode_interrupt_enabled(void)
 {
     return be300_pcconnect_cable_enabled() ||
         be300_stowaway_keyboard_enabled();
+}
+
+static uint16_t be300_serial_dock_socket_value(void)
+{
+    if (be300_pcconnect_cable_enabled() &&
+        g_be300_machine->cfg.pcconnect_dock == BE300_PCC_DOCK_USB_SYNC)
+        return BE300_COMMMODE_SOCKET_USB_SYNC;
+
+    return BE300_COMMMODE_SOCKET_RS232;
 }
 
 static uint32_t be300_pcconnect_connect_delay_ms(void)
@@ -442,17 +453,17 @@ static uint16_t be300_pcconnect_socket_read(
          * raw 0x0008 to serial.dll, and raw 0x000c/0x000d to USB/VCom
          * entries.  hardware.txt:88-102 documents AA008004 as the
          * CommMode GIRQ0-4 pending/mask register, and hardware.txt:189-191
-         * places this page next to the companion SIU.  For the serial
-         * PC Connect option, do not expose a socket until the emulated
-         * cable edge; after that edge, expose the RS-232 socket.  The
-         * Stowaway keyboard dock is already physically inserted when
-         * --stowaway-keyboard is selected, and its driver uses this same
-         * socket.dll path before accepting the UART DCD level.  Preserve
-         * the other latched bits.
+         * places this page next to the companion SIU.  For PC Connect, do
+         * not expose a socket until the emulated cable edge; after that
+         * edge, expose either the RS-232 or USB/VCom socket identity while
+         * keeping the same companion SIU byte path.  The Stowaway keyboard
+         * dock is already physically inserted when --stowaway-keyboard is
+         * selected, and its driver uses this same socket.dll path before
+         * accepting the UART DCD level.  Preserve the other latched bits.
          */
         v &= (uint16_t)~BE300_COMMMODE_SOCKET_VALUE_MASK;
         v |= be300_serial_dock_socket_connected(d) ?
-            BE300_COMMMODE_SOCKET_RS232 : BE300_COMMMODE_SOCKET_NONE;
+            be300_serial_dock_socket_value() : BE300_COMMMODE_SOCKET_NONE;
     }
 
     return v;
@@ -470,29 +481,30 @@ static uint16_t be300_serial_dock_commmode_event_read(
 }
 
 static uint64_t be300_pcconnect_pccard_status_read(
-    const struct be300_vrc4173_latch *d, bool cf_attached, uint32_t off,
+    struct be300_vrc4173_latch *d, bool cf_attached, uint32_t off,
     unsigned len, uint64_t val)
 {
     unsigned shift;
 
     if (!d || !be300_serial_dock_socket_enabled() ||
-        cf_attached || !be300_serial_dock_socket_connected(d) || len == 0 ||
+        cf_attached || !be300_serial_dock_socket_connected(d) ||
+        !d->serial_dock_pccard_status_pending || len == 0 ||
         off > BE300_PCCARD_STATUS_OFF ||
         off + len <= BE300_PCCARD_STATUS_OFF)
         return val;
 
     /*
-     * pcmcia.dll maps AA001B00 and waits for AA001B50 bit 3 after
-     * enabling the socket path via AA000144 bit 5.  The 0x1000-0x1fff
-     * VRC4173 range is currently backed by the CF companion model, so
-     * expose the PC Connect dock-ready level at the actual read boundary
-     * instead of seeding the generic latch byte array.  When --cf is
-     * attached, the CF model owns this status byte and intentionally
-     * returns the inserted-card edge only once before settling back to the
-     * real inserted-CF dump's zero value; do not keep reasserting it from
-     * the PC Connect dock path.
+     * pcmcia.dll maps AA001B00 and waits for AA001B50 bit 3 after enabling
+     * the socket path via AA000144 bit 5.  The 0x1000-0x1fff VRC4173 range
+     * is currently backed by the CF companion model, so expose the serial
+     * dock insert edge at the actual read boundary instead of seeding the
+     * generic latch byte array.  Match cf.c's AA001B50 behavior: this is a
+     * transition edge, not a held card-present level. Holding it asserted can
+     * make later FATFS/card-unit probes see a phantom storage card during
+     * PCConnect restore.
      */
     shift = (unsigned)((BE300_PCCARD_STATUS_OFF - off) * 8u);
+    d->serial_dock_pccard_status_pending = false;
     return val | ((uint64_t)BE300_PCCARD_SOCKET_READY << shift);
 }
 
@@ -557,6 +569,7 @@ void be300_pcconnect_reset_for_cpu_reset(
         d->stowaway_commmode_events = 0;
         d->pcconnect_modem_after_socket_sent = false;
         d->pcconnect_rx_wake_count = 0;
+        d->serial_dock_pccard_status_pending = true;
         d->pcconnect_insert_armed = false;
         stowaway_uart_reset();
         if (d->pcconnect_irq_connected && d->pcconnect_irq_asserted) {
@@ -591,6 +604,7 @@ void be300_pcconnect_reset_for_cpu_reset(
     d->stowaway_commmode_events = 0;
     d->pcconnect_modem_after_socket_sent = false;
     d->pcconnect_rx_wake_count = 0;
+    d->serial_dock_pccard_status_pending = false;
     pcconnect_reset_guest_serial();
     d->usb_intr_status = 0;
     d->usb_port_status[0] &= ~VRC4173_USB_PORT_CHANGE_MASK;
@@ -627,6 +641,7 @@ static void be300_pcconnect_raise_dock_edge(struct be300_vrc4173_latch *d,
      * transition instead of a reset-time static level.
     */
     d->pcconnect_dock_connected = true;
+    d->serial_dock_pccard_status_pending = true;
     d->pcconnect_commmode_pending |= BE300_COMMMODE_SOCKET_PENDING;
     if (be300_pcconnect_cable_enabled())
         pcconnect_set_cable_connected(true);
@@ -2210,8 +2225,10 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         if (m->cfg.pcconnect_bridge)
             pcconnect_set_rx_ready_callback(be300_pcconnect_uart_irq_ready,
                 latch);
-        if (m->cfg.enable_stowaway_keyboard)
+        if (m->cfg.enable_stowaway_keyboard) {
             latch->pcconnect_dock_connected = true;
+            latch->serial_dock_pccard_status_pending = true;
+        }
         be300_pcconnect_irq_update(latch);
     }
 

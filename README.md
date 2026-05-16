@@ -2,7 +2,8 @@
 
 Casio Cassiopeia BE-300 emulator using a lightly integrated GXemul 0.7.0 MIPS
 CPU core. The active target is accurate cold boot of Windows CE 3.0 from the
-real masked boot ROM and a raw NAND restore image.
+real masked boot ROM and a raw NAND restore image, or from a Casio backup file
+overlaid onto the embedded WinCE 3.0 SPL/NK boot template.
 
 NAND restore images, Casio backup images, restore-package binaries, and vendor
 PDFs are not distributed in this repository. Place local copies at the expected
@@ -18,7 +19,7 @@ ROM reset vector -> SPL/Kloader from NAND -> NK.exe decompression -> WinCE 3.0
 
 ## Current Status
 
-The primary boot target is:
+The primary boot target is a full NAND restore image:
 
 ```bash
 ./be300 --nand ../ce/restore_images/All_nand_300.bin
@@ -55,6 +56,23 @@ make -j$(nproc)
 On macOS, replace `$(nproc)` with the number of jobs you want to run, or use a
 shell that provides `nproc`.
 
+### Windows x86_64 ZIP
+
+From macOS, the MinGW cross-build helper produces a portable Windows package:
+
+```bash
+brew install mingw-w64
+./tools/build_windows.sh
+```
+
+The output is `dist/be300-windows-amd64.zip`. It contains `be300.exe`,
+`SDL2.dll`, and a `run-be300.bat` helper. The WinCE NAND image is not bundled;
+copy your local image to the Windows machine and run:
+
+```cmd
+be300.exe --nand C:\path\to\All_nand_300.bin
+```
+
 ## Run WinCE 3.0
 
 Provide a local NAND image first:
@@ -68,6 +86,15 @@ Then run:
 ```bash
 cd build-host
 ./be300 --nand ../ce/restore_images/All_nand_300.bin
+```
+
+Casio backup files can also be booted directly. They do not contain SPL or
+NK.exe; `--backup` grafts the backup FAT16 payload onto the embedded WinCE 3.0
+boot template in memory and leaves the source backup file unchanged:
+
+```bash
+cd build-host
+./be300 --backup ../backups/Backup.dat
 ```
 
 Serial output is written to stdout. Emulator diagnostics are written to stderr.
@@ -100,6 +127,7 @@ These paths remain implemented for targeted investigation, but they are not the
 primary regression target:
 
 - `--restore --cf` — CompactFlash recovery path using a local NANDWRITER tool
+- `--backup` — direct boot of `backup.dat` / `backup.bin` user-data backups
 - `--ppsh` — WinCE PPSH debug-shell probe path
 - `--ne2000` — PCMCIA NE2000 Ethernet card model
 - `--rtc-host-time` — initialize the guest RTC from host local time

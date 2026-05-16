@@ -1,7 +1,11 @@
 #include <errno.h>
 #include <stddef.h>
+#ifdef _WIN32
+#include <conio.h>
+#else
 #include <unistd.h>
 #include <sys/select.h>
+#endif
 
 #include "host_io.h"
 
@@ -55,6 +59,21 @@ size_t host_io_read_stdin_nonblocking(unsigned char *buf, size_t cap)
     (void)buf;
     (void)cap;
     return 0;
+#elif defined(_WIN32)
+    size_t len = 0;
+
+    if (!buf || cap == 0 || g_stdin_eof)
+        return 0;
+
+    while (len < cap && _kbhit()) {
+        int ch = _getch();
+        if (ch < 0) {
+            g_stdin_eof = true;
+            break;
+        }
+        buf[len++] = (unsigned char)ch;
+    }
+    return len;
 #else
     fd_set rfds;
     struct timeval tv;

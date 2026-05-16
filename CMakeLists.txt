@@ -21,13 +21,32 @@ add_compile_options(-Wall -g -O2
     -Wno-missing-field-initializers
 )
 
+if(WIN32)
+    add_compile_definitions(
+        WIN32_LEAN_AND_MEAN
+        _WIN32_WINNT=0x0601
+        SDL_MAIN_HANDLED
+    )
+endif()
+
 # SDL2 (optional, for framebuffer display)
+set(BE300_SDL2_MINGW_ROOT "" CACHE PATH
+    "SDL2 x86_64-w64-mingw32 prefix for Windows cross-builds")
 if(NOT ANDROID)
-    find_package(PkgConfig QUIET)
-    if(PKG_CONFIG_FOUND)
-        pkg_check_modules(SDL2 QUIET sdl2)
+    if(WIN32 AND BE300_SDL2_MINGW_ROOT)
+        set(SDL2_FOUND TRUE)
+        set(SDL2_INCLUDE_DIRS "${BE300_SDL2_MINGW_ROOT}/include/SDL2")
+        set(SDL2_LIBRARIES "${BE300_SDL2_MINGW_ROOT}/lib/libSDL2.dll.a")
+    else()
+        find_package(PkgConfig QUIET)
+        if(PKG_CONFIG_FOUND)
+            pkg_check_modules(SDL2 QUIET sdl2)
+        endif()
+        find_package(SDL2 QUIET)
     endif()
-    find_package(SDL2 QUIET)
+    if(TARGET SDL2::SDL2 AND NOT WIN32)
+        set(SDL2_LIBRARIES SDL2::SDL2)
+    endif()
     if(APPLE AND CMAKE_OSX_ARCHITECTURES MATCHES "arm64"
             AND EXISTS "/opt/homebrew/include/png.h"
             AND EXISTS "/opt/homebrew/lib/libpng.dylib")
@@ -153,9 +172,11 @@ set(GXEMUL_SOURCES
 # BE-300 emulator sources
 # ============================================================
 set(BE300_SOURCES
+    src/backup_boot_template.c
     src/machine_be300.c
     src/be300_probe.c
     src/be300_devices.c
+    src/win32_compat.c
     src/devices/input.c
     src/devices/nand_window.c
     src/devices/pcmcia_attr.c
@@ -186,6 +207,12 @@ option(BUILD_CLI "Build the host command-line emulator" ON)
 if(BUILD_CLI)
     add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${EMBEDDED_ASSET_HEADERS})
     target_link_libraries(be300 m ${SDL2_LIBRARIES} ${PNG_LIBRARIES})
+    if(WIN32)
+        target_compile_options(be300 PRIVATE
+            "-include" "${CMAKE_SOURCE_DIR}/src/win32_compat.h")
+        target_link_libraries(be300 ws2_32)
+        target_link_options(be300 PRIVATE -static-libgcc)
+    endif()
     if(APPLE)
         target_link_libraries(be300 "-framework Cocoa" "-framework CoreGraphics" "-framework QuartzCore" objc)
     endif()
@@ -265,7 +292,7 @@ if(BUILD_WEB)
         "-sNO_EXIT_RUNTIME=1"
         "-sFORCE_FILESYSTEM=1"
         "-sSTACK_SIZE=2MB"
-        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_be300_web_create','_be300_web_create_ex','_be300_web_create_ex2','_be300_web_load_nand','_be300_web_load_cf','_be300_web_stowaway_key','_be300_web_set_net_bridge_enabled','_be300_web_net_rx','_be300_web_net_tx_pending','_be300_web_net_tx_pop','_be300_step','_be300_copy_frame_rgba8888','_be300_drain_serial','_be300_set_touch','_be300_set_buttons','_be300_stop','_be300_destroy']"
+        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_be300_web_create','_be300_web_create_ex','_be300_web_create_ex2','_be300_web_load_nand','_be300_web_load_backup','_be300_web_load_cf','_be300_web_stowaway_key','_be300_web_set_net_bridge_enabled','_be300_web_net_rx','_be300_web_net_tx_pending','_be300_web_net_tx_pop','_be300_step','_be300_copy_frame_rgba8888','_be300_drain_serial','_be300_set_touch','_be300_set_buttons','_be300_stop','_be300_destroy']"
         "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU32','FS','cwrap','ccall']")
 endif()
 
