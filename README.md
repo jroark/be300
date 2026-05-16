@@ -2,8 +2,7 @@
 
 Casio Cassiopeia BE-300 emulator using a lightly integrated GXemul 0.7.0 MIPS
 CPU core. The active target is accurate cold boot of Windows CE 3.0 from the
-real masked boot ROM and a raw NAND restore image, or from a Casio backup file
-overlaid onto the embedded WinCE 3.0 SPL/NK boot template.
+real masked boot ROM and a raw NAND restore image.
 
 NAND restore images, Casio backup images, restore-package binaries, and vendor
 PDFs are not distributed in this repository. Place local copies at the expected
@@ -19,7 +18,7 @@ ROM reset vector -> SPL/Kloader from NAND -> NK.exe decompression -> WinCE 3.0
 
 ## Current Status
 
-The primary boot target is a full NAND restore image:
+The primary boot target is:
 
 ```bash
 ./be300 --nand ../ce/restore_images/All_nand_300.bin
@@ -88,15 +87,6 @@ cd build-host
 ./be300 --nand ../ce/restore_images/All_nand_300.bin
 ```
 
-Casio backup files can also be booted directly. They do not contain SPL or
-NK.exe; `--backup` grafts the backup FAT16 payload onto the embedded WinCE 3.0
-boot template in memory and leaves the source backup file unchanged:
-
-```bash
-cd build-host
-./be300 --backup ../backups/Backup.dat
-```
-
 Serial output is written to stdout. Emulator diagnostics are written to stderr.
 An SDL window opens for the framebuffer when SDL is available. The Casio
 piezo buzzer is rendered through SDL audio; set `BE300_AUDIO=0` to mute host
@@ -127,7 +117,6 @@ These paths remain implemented for targeted investigation, but they are not the
 primary regression target:
 
 - `--restore --cf` — CompactFlash recovery path using a local NANDWRITER tool
-- `--backup` — direct boot of `backup.dat` / `backup.bin` user-data backups
 - `--ppsh` — WinCE PPSH debug-shell probe path
 - `--ne2000` — PCMCIA NE2000 Ethernet card model
 - `--rtc-host-time` — initialize the guest RTC from host local time
