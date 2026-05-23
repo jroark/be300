@@ -84,16 +84,30 @@ bool launcher_screenshot_refresh(screenshot_cache_t *cache,
 {
     if (!cache || !ren || !bundle_path || !*bundle_path) return false;
 
-    char dir[1024];
-#ifdef _WIN32
-    snprintf(dir, sizeof dir, "%s\\screenshots", bundle_path);
-#else
-    snprintf(dir, sizeof dir, "%s/screenshots", bundle_path);
-#endif
+    /* The emulator's ui_save_screenshot() writes screenshot_YYYYMMDD_*.bmp
+     * to its working directory. launcher_main.c::run_vm_in_process() chdirs
+     * into the bundle root before the run, so the BMPs land at
+     * <bundle>/screenshot_*.bmp — not <bundle>/screenshots/*.bmp. Look in
+     * both places and pick the newest match (legacy bundles that pre-date
+     * the chdir change may have screenshots elsewhere). */
+    char path[1024], alt_path[1024];
+    time_t mtime = 0, alt_mtime = 0;
+    int root_ok = newest_bmp_in(bundle_path, path, sizeof path, &mtime);
 
-    char path[1024];
-    time_t mtime = 0;
-    if (newest_bmp_in(dir, path, sizeof path, &mtime) != 0) {
+    char sub[1024];
+#ifdef _WIN32
+    snprintf(sub, sizeof sub, "%s\\screenshots", bundle_path);
+#else
+    snprintf(sub, sizeof sub, "%s/screenshots", bundle_path);
+#endif
+    int sub_ok = newest_bmp_in(sub, alt_path, sizeof alt_path, &alt_mtime);
+
+    if (sub_ok == 0 && (root_ok != 0 || alt_mtime > mtime)) {
+        snprintf(path, sizeof path, "%s", alt_path);
+        mtime = alt_mtime;
+        root_ok = 0;
+    }
+    if (root_ok != 0) {
         launcher_screenshot_release(cache);
         return false;
     }
