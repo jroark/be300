@@ -1194,11 +1194,20 @@ static void be300_buzzer_note_write(struct be300_vrc4173_latch *d,
     new_control = be300_buzzer_peek_le32(&b->blg[0]);
 
     /*
-     * The real idle dump seeds BLG[0] and CMM bit 0 as set. Boot-time driver
-     * configuration rewrites those registers without making real hardware
-     * beep, so host audio should only model the explicit off->on edge.
+     * Two strobe patterns are used by ce_buzzer.dll on real hardware:
+     *   - Clear-then-set: BLG[0] goes 0 -> 1 (caught by the edge arm below).
+     *   - Set-while-latched: BLG[0] stays at 1 and the driver just rewrites
+     *     the tone-config words (0x0984, 0x0988, 0x09A0, 0x09A4, 0x09A8).
+     * Writes confined to the 0x098C divider word are tone-shape adjustments
+     * mid-beep and must not retrigger. The 120ms gate inside ui_buzzer_pulse
+     * consolidates the burst of config writes per beep into one host tone.
      */
     if ((new_control & 1u) && !(old_control & 1u)) {
+        ui_buzzer_pulse(be300_buzzer_tone_hz(b), be300_buzzer_tone_ms(b));
+        return;
+    }
+    if ((new_control & 1u) && touched_blg &&
+        !be300_buzzer_range_overlap(off, len, 0x098Cu, 4u)) {
         ui_buzzer_pulse(be300_buzzer_tone_hz(b), be300_buzzer_tone_ms(b));
         return;
     }
