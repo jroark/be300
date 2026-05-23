@@ -274,7 +274,13 @@ if(BUILD_CLI)
         target_compile_options(be300 PRIVATE
             "-include" "${CMAKE_SOURCE_DIR}/src/win32_compat.h")
         target_link_libraries(be300 ws2_32)
-        target_link_options(be300 PRIVATE -static-libgcc)
+        # Static MinGW runtime so the .exe runs on a clean Windows host
+        # without libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll
+        # next to it. The launcher pulls in C++ (cimgui/imgui/NFDe), so
+        # libstdc++ is mandatory now; -static also covers winpthread which
+        # NFDe and imgui both touch.
+        target_link_options(be300 PRIVATE
+            -static-libgcc -static-libstdc++ -static)
     endif()
     if(APPLE)
         target_link_libraries(be300 "-framework Cocoa" "-framework CoreGraphics" "-framework QuartzCore" objc)
