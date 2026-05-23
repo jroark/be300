@@ -74,9 +74,19 @@ int vm_bundle_mkdir_p(const char *path)
     if (n >= sizeof buf) { errno = ENAMETOOLONG; return -1; }
     memcpy(buf, path, n + 1);
 
-    /* Walk components left-to-right, creating each parent. Preserve the
-     * leading '/' (POSIX) or drive prefix (Windows) untouched. */
-    for (size_t i = 1; i < n; i++) {
+    /* Skip the leading separator (POSIX absolute path) or drive prefix
+     * (Windows). On Windows, mkdir("C:") fails, so we have to step past
+     * "C:\" before walking. */
+    size_t start = 1;
+#ifdef _WIN32
+    if (n >= 3 && buf[1] == ':' &&
+        (buf[2] == '\\' || buf[2] == '/')) {
+        start = 3;
+    }
+#endif
+
+    /* Walk components left-to-right, creating each parent. */
+    for (size_t i = start; i < n; i++) {
         if (buf[i] == '/' || buf[i] == BE300_PATH_SEP) {
             char saved = buf[i];
             buf[i] = '\0';

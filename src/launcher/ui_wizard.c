@@ -12,6 +12,7 @@
 #include "vm_bundle.h"
 #include "vm_config_json.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -148,9 +149,14 @@ void launcher_wizard_draw(launcher_state_t *L)
     igBeginDisabled(!can_create);
     if (igButton("Create", (ImVec2){120, 0})) {
         vm_bundle_t vm;
+        errno = 0;
         if (vm_bundle_create(g_name, &vm) != 0) {
+            int e = errno;
+            const char *why = (e == EEXIST)
+                ? "a VM with that name already exists"
+                : (e ? strerror(e) : "unknown error");
             snprintf(g_status, sizeof g_status,
-                "Could not create bundle (already exists?).");
+                "Could not create bundle: %s", why);
         } else {
             apply_to_cfg(&vm.cfg);
             if (g_nand[0]) {
