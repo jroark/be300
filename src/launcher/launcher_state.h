@@ -4,6 +4,7 @@
 #include <SDL.h>
 #include <stdbool.h>
 #include "vm_bundle.h"
+#include "launcher_screenshot.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,13 +17,14 @@ typedef enum {
 } launcher_view_t;
 
 typedef struct launcher_state {
-    SDL_Window      *win;
-    SDL_Renderer    *ren;
-    vm_bundle_list_t vms;
-    int              selected_vm;     /* -1 = none */
-    launcher_view_t  view;
-    bool             quit;
-    bool             want_run;        /* manager → request to launch selected VM */
+    SDL_Window         *win;
+    SDL_Renderer       *ren;
+    vm_bundle_list_t    vms;
+    int                 selected_vm;  /* -1 = none */
+    launcher_view_t     view;
+    bool                quit;
+    bool                want_run;     /* manager -> request to launch selected VM */
+    screenshot_cache_t  shot;         /* cached most-recent screenshot */
 } launcher_state_t;
 
 /* Manager (left rail + details). Returns true if a draw happened. */

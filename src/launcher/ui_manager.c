@@ -7,6 +7,7 @@
 #include "cimgui.h"
 
 #include "launcher_state.h"
+#include "launcher_os.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -27,6 +28,7 @@ static const ImVec2 ZERO = {0.0f, 0.0f};
 static void draw_details_pane(launcher_state_t *L)
 {
     if (L->selected_vm < 0 || L->selected_vm >= (int)L->vms.count) {
+        launcher_screenshot_release(&L->shot);
         igTextDisabled("Select a VM on the left, or click \"New VM\" to create one.");
         return;
     }
@@ -38,6 +40,20 @@ static void draw_details_pane(launcher_state_t *L)
 
     igTextDisabled("%s", vm->path);
     igSeparator();
+
+    /* Most-recent screenshot, if any. The cache reloads the BMP whenever
+     * the bundle path or the file's mtime changes (e.g., after a Run). */
+    if (launcher_screenshot_refresh(&L->shot, L->ren, vm->path) &&
+        L->shot.tex && L->shot.tex_w > 0 && L->shot.tex_h > 0) {
+        const float max_w = 240.0f;
+        float scale = max_w / (float)L->shot.tex_w;
+        if (scale > 1.0f) scale = 1.0f;
+        ImVec2 size = { (float)L->shot.tex_w * scale,
+                        (float)L->shot.tex_h * scale };
+        ImTextureRef ref = { NULL, (ImTextureID)(uintptr_t)L->shot.tex };
+        igImage(ref, size, (ImVec2){0,0}, (ImVec2){1,1});
+        igSpacing();
+    }
 
     igText("NAND:        %s", vm->cfg.nand_path ? vm->cfg.nand_path : "(none)");
     igText("CF slots:    %u", vm->cfg.cf_count);
@@ -71,6 +87,8 @@ static void draw_details_pane(launcher_state_t *L)
     if (igButton("Run", btn)) L->want_run = true;
     igSameLine(0.0f, 6.0f);
     if (igButton("Edit", btn)) L->view = LAUNCHER_VIEW_SETTINGS;
+    igSameLine(0.0f, 6.0f);
+    if (igButton("Reveal", btn)) launcher_reveal_in_file_manager(vm->path);
     igSameLine(0.0f, 6.0f);
     if (igButton("Delete", btn)) {
         igOpenPopup_Str("Confirm Delete", 0);

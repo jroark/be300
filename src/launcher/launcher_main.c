@@ -65,7 +65,10 @@ static int run_vm_in_process(launcher_state_t *L, const vm_bundle_t *src_vm)
     memcpy(&vm, src_vm, sizeof vm);
     vm_bundle_rebind_strings(&vm);
 
-    /* 1. Shut down launcher ImGui + SDL window. Keep SDL_INIT_VIDEO up. */
+    /* 1. Shut down launcher ImGui + SDL window. Keep SDL_INIT_VIDEO up.
+     *    Also drop the cached screenshot texture — it belongs to the old
+     *    renderer and must not be presented to the new one after recreate. */
+    launcher_screenshot_release(&L->shot);
     launcher_imgui_shutdown();
     if (L->ren) { SDL_DestroyRenderer(L->ren); L->ren = NULL; }
     if (L->win) { SDL_DestroyWindow(L->win); L->win = NULL; }
@@ -229,6 +232,7 @@ int launcher_main(int argc, char *argv[])
 
     int rc = launcher_run_loop(&L);
 
+    launcher_screenshot_release(&L.shot);
     vm_bundle_list_free(&L.vms);
     if (L.win || L.ren) {
         launcher_imgui_shutdown();

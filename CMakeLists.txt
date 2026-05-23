@@ -225,6 +225,8 @@ if(BUILD_LAUNCHER)
         src/launcher/ui_settings.c
         src/launcher/ui_filepick.c
         src/launcher/ui_imgui_backend.cpp
+        src/launcher/launcher_os.c
+        src/launcher/launcher_screenshot.c
         src/launcher/vm_bundle.c
         src/launcher/vm_config_json.c
         third_party/cjson/cJSON.c
