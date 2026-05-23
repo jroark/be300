@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>BE-300</string>
+    <key>CFBundleExecutable</key>
+    <string>be300</string>
+    <key>CFBundleIconFile</key>
+    <string>be300.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>org.casio.be300</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>BE-300</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@BE300_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@BE300_VERSION@</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Open-source BE-300 emulator. See LICENSE in the source tree.</string>
+
+    <!--
+      Register the .be300vm package extension so Finder treats those
+      directories as a single bundle icon and double-clicking one launches
+      the emulator with the bundle as argv[1] (auto-runs that VM).
+    -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>BE-300 Virtual Machine</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>org.casio.be300.vm</string>
+            </array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.casio.be300.vm</string>
+            <key>UTTypeDescription</key>
+            <string>BE-300 Virtual Machine</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>com.apple.package</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>be300vm</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>

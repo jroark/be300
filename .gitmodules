@@ -2,3 +2,9 @@
 	path = gxemul
 	url = git@github.com:jroark/GXemul.git
 	branch = be300
+[submodule "third_party/cimgui"]
+	path = third_party/cimgui
+	url = https://github.com/cimgui/cimgui.git
+[submodule "third_party/nfde"]
+	path = third_party/nfde
+	url = https://github.com/btzy/nativefiledialog-extended.git

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>BE-300 Emulator</title>
+    <organization>org.casio.be300</organization>
+    <domains enable_localSystem="true"/>
+    <options customize="never" require-scripts="false" rootVolumeOnly="true"/>
+    <welcome    language="en" mime-type="text/plain">Installs BE-300 emulator and its VM manager into /Applications.
+
+After installation, double-click a .be300vm package in Finder to launch that VM directly, or open BE-300 from /Applications to create new ones.
+
+The .app is not currently code-signed. The first time you launch it, right-click the icon in Finder and choose "Open" to allow Gatekeeper to run it.</welcome>
+    <choices-outline>
+        <line choice="default">
+            <line choice="org.casio.be300"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="org.casio.be300" visible="false">
+        <pkg-ref id="org.casio.be300"/>
+    </choice>
+    <pkg-ref id="org.casio.be300" version="@BE300_VERSION@" auth="Root">BE300-component.pkg</pkg-ref>
+</installer-gui-script>

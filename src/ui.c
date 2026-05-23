@@ -1856,12 +1856,17 @@ int ui_init(machine_t *m)
     }
 #endif
 
+    /* If something upstream (e.g., the VM manager launcher) already owns
+     * SDL_INIT_VIDEO, init becomes a refcount bump and we must NOT call
+     * SDL_QuitSubSystem on teardown. Only claim ownership when we
+     * transition the subsystem from off → on. */
+    bool video_was_up = (SDL_WasInit(SDL_INIT_VIDEO) != 0);
     if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "[UI] SDL_Init failed: %s — continuing headless\n",
                 SDL_GetError());
         return 0;
     }
-    sdl_video_initialized = true;
+    sdl_video_initialized = !video_was_up;
 
     double scale = ui_scale(m);
 
@@ -2250,6 +2255,10 @@ void ui_destroy(machine_t *m)
 {
     ui_video_destroy(m);
     ui_audio_destroy();
+    /* SDL_Quit() shuts down every subsystem and tears down per-process state
+     * (event handlers etc.). Skip it when something upstream still holds
+     * subsystems open — e.g., the launcher keeps SDL_INIT_VIDEO live across
+     * launcher↔emulator transitions. */
     if (SDL_WasInit(0) == 0)
         SDL_Quit();
 }

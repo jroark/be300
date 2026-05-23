@@ -7,6 +7,13 @@ if(NOT MINGW_C_COMPILER)
 endif()
 set(CMAKE_C_COMPILER "${MINGW_C_COMPILER}")
 
+find_program(MINGW_CXX_COMPILER x86_64-w64-mingw32-g++)
+if(NOT MINGW_CXX_COMPILER)
+    message(FATAL_ERROR "x86_64-w64-mingw32-g++ not found in PATH "
+        "(needed for the C++ launcher dependencies imgui/cimgui/NFDe).")
+endif()
+set(CMAKE_CXX_COMPILER "${MINGW_CXX_COMPILER}")
+
 find_program(MINGW_RC_COMPILER x86_64-w64-mingw32-windres)
 if(MINGW_RC_COMPILER)
     set(CMAKE_RC_COMPILER "${MINGW_RC_COMPILER}")

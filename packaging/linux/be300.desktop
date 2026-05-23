@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=BE-300 VM Manager
+GenericName=BE-300 Emulator
+Comment=Run and manage Casio BE-300 virtual machines
+Exec=be300 %f
+Icon=be300
+Terminal=false
+Categories=System;Emulator;
+MimeType=application/x-be300-vm;

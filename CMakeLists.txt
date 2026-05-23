@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
-project(be300 C)
+project(be300 C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Auto-detect Apple Silicon even if running in Rosetta
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
@@ -201,11 +203,73 @@ set(BE300_SOURCES
     src/hw/aiu.c
 )
 
+# ============================================================
+# Launcher UI (VMware/UTM-style VM manager). Default ON for the host CLI,
+# forced OFF for web/Android builds (those targets reuse the emulator core
+# but have their own frontends and don't need an embedded launcher).
+# Phase 0: thin stub that prints a banner. Later phases add Dear ImGui
+# (via cimgui), a VM-bundle store under ~/Library/Application Support/BE300/VMs/,
+# and per-platform .app/.pkg/.exe/AppImage packaging.
+# ============================================================
+option(BUILD_LAUNCHER "Build the in-process VM launcher UI" ON)
+if(BUILD_ANDROID OR BUILD_WEB)
+    set(BUILD_LAUNCHER OFF CACHE BOOL "" FORCE)
+endif()
+
+set(BE300_LAUNCHER_SOURCES)
+if(BUILD_LAUNCHER)
+    list(APPEND BE300_LAUNCHER_SOURCES
+        src/launcher/launcher_main.c
+        src/launcher/ui_manager.c
+        src/launcher/ui_wizard.c
+        src/launcher/ui_settings.c
+        src/launcher/ui_filepick.c
+        src/launcher/ui_imgui_backend.cpp
+        src/launcher/vm_bundle.c
+        src/launcher/vm_config_json.c
+        third_party/cjson/cJSON.c
+    )
+    include_directories(third_party/cjson)
+    include(${CMAKE_SOURCE_DIR}/cmake/imgui.cmake)
+
+    # nativefiledialog-extended (NFDe) — native file pickers per OS.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/nfde/CMakeLists.txt")
+        set(NFD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(NFD_INSTALL OFF CACHE BOOL "" FORCE)
+        add_subdirectory(third_party/nfde EXCLUDE_FROM_ALL)
+        set(BE300_NFD_TARGET nfd)
+    else()
+        message(WARNING
+            "third_party/nfde missing — file picker disabled.\n"
+            "Run: git submodule update --init --recursive")
+        set(BE300_NFD_TARGET "")
+    endif()
+endif()
+
 # Native host CLI executable.
 option(BUILD_CLI "Build the host command-line emulator" ON)
 if(BUILD_CLI)
-    add_executable(be300 src/main.c ${GXEMUL_SOURCES} ${BE300_SOURCES} ${EMBEDDED_ASSET_HEADERS})
+    add_executable(be300
+        src/main.c
+        ${GXEMUL_SOURCES}
+        ${BE300_SOURCES}
+        ${BE300_LAUNCHER_SOURCES}
+        ${EMBEDDED_ASSET_HEADERS})
     target_link_libraries(be300 m ${SDL2_LIBRARIES} ${PNG_LIBRARIES})
+    if(BUILD_LAUNCHER)
+        target_compile_definitions(be300 PRIVATE BE300_HAVE_LAUNCHER=1)
+        target_link_libraries(be300 imgui_be300)
+        if(BE300_NFD_TARGET)
+            target_link_libraries(be300 ${BE300_NFD_TARGET})
+            target_include_directories(be300 PRIVATE
+                ${CMAKE_SOURCE_DIR}/third_party/nfde/src/include)
+        endif()
+        target_include_directories(be300 PRIVATE
+            ${CMAKE_SOURCE_DIR}/third_party/cimgui
+            ${CMAKE_SOURCE_DIR}/third_party/cimgui/imgui
+            ${CMAKE_SOURCE_DIR}/third_party/cimgui/imgui/backends)
+        target_compile_definitions(be300 PRIVATE CIMGUI_USE_SDL2)
+    endif()
     if(WIN32)
         target_compile_options(be300 PRIVATE
             "-include" "${CMAKE_SOURCE_DIR}/src/win32_compat.h")
@@ -295,5 +359,19 @@ if(BUILD_WEB)
         "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU32','FS','cwrap','ccall']")
 endif()
 
+if(APPLE AND BUILD_CLI)
+    include(${CMAKE_SOURCE_DIR}/cmake/macos_bundle.cmake)
+endif()
+
 # Tests
 enable_testing()
+
+if(BUILD_LAUNCHER AND BUILD_CLI)
+    add_executable(test_vm_config
+        tests/test_vm_config.c
+        src/launcher/vm_bundle.c
+        src/launcher/vm_config_json.c
+        third_party/cjson/cJSON.c)
+    target_include_directories(test_vm_config PRIVATE src third_party/cjson)
+    add_test(NAME vm_config COMMAND test_vm_config)
+endif()

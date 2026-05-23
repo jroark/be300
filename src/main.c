@@ -6,6 +6,9 @@
 #ifdef _WIN32
 #include "win32_compat.h"
 #endif
+#ifdef BE300_HAVE_LAUNCHER
+#include "launcher/launcher.h"
+#endif
 
 /* GXemul global verbosity gates — see gxemul/src/core/debugmsg.c.
  * debug() is silent while emul_executing unless verbose >= 1. */
@@ -166,6 +169,35 @@ int main(int argc, char *argv[])
     if (!be300_win32_init())
         return 1;
     atexit(be300_win32_shutdown);
+#endif
+
+#ifdef BE300_HAVE_LAUNCHER
+    /* Filter out macOS LaunchServices process-serial-number args
+     * (-psn_0_12345) that AppKit prepends when an .app is double-clicked.
+     * After filtering, if argv carries no payload (or just a single
+     * .be300vm bundle path), defer to the launcher UI. */
+    {
+        int filtered_argc = 0;
+        char *filtered_argv[64];
+        if (argc > 0)
+            filtered_argv[filtered_argc++] = argv[0];
+        for (int i = 1; i < argc && filtered_argc < 64; i++) {
+            if (strncmp(argv[i], "-psn_", 5) == 0)
+                continue;
+            filtered_argv[filtered_argc++] = argv[i];
+        }
+        bool defer_to_launcher = false;
+        if (filtered_argc <= 1) {
+            defer_to_launcher = true;
+        } else if (filtered_argc == 2) {
+            const char *a = filtered_argv[1];
+            size_t n = strlen(a);
+            if (n >= 8 && strcmp(a + n - 8, ".be300vm") == 0)
+                defer_to_launcher = true;
+        }
+        if (defer_to_launcher)
+            return launcher_main(filtered_argc, filtered_argv);
+    }
 #endif
 
     machine_config_t cfg = {

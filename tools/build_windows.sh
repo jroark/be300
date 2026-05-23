@@ -91,3 +91,19 @@ EOF
 (cd "$DIST_DIR" && zip -q -9 -r "be300-windows-amd64.zip" "be300-windows-amd64")
 
 echo "Built $DIST_DIR/be300-windows-amd64.zip"
+
+# Optional NSIS installer. Run `brew install makensis` (or apt install nsis)
+# to enable. The .nsi pulls files out of build-windows/dist/be300-windows-amd64/
+# (relative paths), so this step is happy whether makensis runs from the repo
+# root or from the .nsi's directory.
+if command -v makensis >/dev/null 2>&1; then
+    NSI_VERSION="${BE300_VERSION:-0.1.0}"
+    pushd "$ROOT_DIR/packaging/windows" >/dev/null
+    makensis -DPRODUCT_VERSION="$NSI_VERSION" be300.nsi
+    popd >/dev/null
+    if [[ -f "$DIST_DIR/be300-setup.exe" ]]; then
+        echo "Built $DIST_DIR/be300-setup.exe"
+    fi
+else
+    echo "(skipping installer build: makensis not on PATH)"
+fi
