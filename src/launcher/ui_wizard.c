@@ -2,9 +2,8 @@
  *
  * Sections (top to bottom):
  *   - Basics:        name, NAND, frame, scale (integer 1..4x)
- *   - Boot media:    CF slot 0
- *   - Advanced:      throttle MHz (default 0 = unthrottled), RTC, audio,
- *                    NE2000, Stowaway
+ *   - Advanced:      CF slot 0, throttle MHz (default 0 = unthrottled),
+ *                    RTC, audio, NE2000, Stowaway
  *   - Experimental:  SDRAM, framebuffer geometry, PPSH, recovery boot,
  *                    CF slot 1, MMIO coverage, stall detector,
  *                    PCConnect / serial0 / serial1 bridges
@@ -129,18 +128,13 @@ void launcher_wizard_draw(launcher_state_t *L)
 
     igSpacing();
 
-    if (igCollapsingHeader_TreeNodeFlags("Boot media", 0)) {
+    if (igCollapsingHeader_TreeNodeFlags("Advanced", 0)) {
         igInputText("CF slot 0", g_cf0, sizeof g_cf0, 0, NULL, NULL);
         igSameLine(0.0f, 4.0f);
         if (igButton("Browse...##cf0", (ImVec2){0,0})) {
             ui_filepick_open("Select CF image", "bin,img,iso", NULL,
                 g_cf0, sizeof g_cf0);
         }
-    }
-
-    igSpacing();
-
-    if (igCollapsingHeader_TreeNodeFlags("Advanced", 0)) {
         igSliderInt("Target MHz (0 = unthrottled)",
             &g_target_mhz, 0, 600, "%d", ImGuiSliderFlags_AlwaysClamp);
         igCheckbox("Initialise RTC from host time", &g_enable_rtc_host_time);

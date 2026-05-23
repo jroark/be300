@@ -1,6 +1,6 @@
-/* Edit an existing VM. Mirrors the wizard layout (Basics / Boot media /
- * Advanced / Experimental) and supports renaming the VM by moving its
- * bundle directory on Save. */
+/* Edit an existing VM. Mirrors the wizard layout (Basics / Advanced /
+ * Experimental) and supports renaming the VM by moving its bundle
+ * directory on Save. */
 
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
@@ -125,7 +125,7 @@ void launcher_settings_draw(launcher_state_t *L)
         }
     }
 
-    if (igCollapsingHeader_TreeNodeFlags("Boot media", 0)) {
+    if (igCollapsingHeader_TreeNodeFlags("Advanced", 0)) {
         igText("CF slot 0: %s",
             c->cf_paths[0] ? c->cf_paths[0] : "(empty)");
         igSameLine(0.0f, 8.0f);
@@ -140,9 +140,6 @@ void launcher_settings_draw(launcher_state_t *L)
                 }
             }
         }
-    }
-
-    if (igCollapsingHeader_TreeNodeFlags("Advanced", 0)) {
         int target_mhz = (int)c->target_mhz;
         if (igSliderInt("Target MHz (0 = unthrottled)", &target_mhz, 0, 600,
                 "%d", ImGuiSliderFlags_AlwaysClamp)) {
