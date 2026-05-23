@@ -97,7 +97,7 @@ echo "Built $DIST_DIR/be300-windows-amd64.zip"
 # (relative paths), so this step is happy whether makensis runs from the repo
 # root or from the .nsi's directory.
 if command -v makensis >/dev/null 2>&1; then
-    NSI_VERSION="${BE300_VERSION:-0.1.0}"
+    NSI_VERSION="${BE300_VERSION:-0.1.1}"
     pushd "$ROOT_DIR/packaging/windows" >/dev/null
     makensis -DPRODUCT_VERSION="$NSI_VERSION" be300.nsi
     popd >/dev/null

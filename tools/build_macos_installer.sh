@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
-VERSION="${BE300_VERSION:-0.1.0}"
+VERSION="${BE300_VERSION:-0.1.1}"
 APP="dist/BE300.app"
 DIST="dist"
 

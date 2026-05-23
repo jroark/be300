@@ -8,7 +8,7 @@
 !include "FileFunc.nsh"
 
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.1.0"
+  !define PRODUCT_VERSION "0.1.1"
 !endif
 
 Name        "BE-300 Emulator"
