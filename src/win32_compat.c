@@ -4,12 +4,37 @@
 
 static int winsock_initialized;
 
+/* If be300.exe was launched from cmd.exe / PowerShell / Windows Terminal,
+ * inherit that console so the CLI mode's stdout/stderr/stdin go to the
+ * shell that started us instead of vanishing. When launched from Explorer,
+ * Start Menu, or a .be300vm file association, no parent console exists and
+ * AttachConsole fails — that's the desired GUI-launcher case, and we leave
+ * stdio detached rather than popping a fresh console window. */
+static void try_attach_parent_console(void)
+{
+    if (!AttachConsole(ATTACH_PARENT_PROCESS))
+        return;
+
+    /* freopen_s is MSVC-flavoured; freopen works on every MinGW build. */
+    FILE *unused;
+    unused = freopen("CONOUT$", "w", stdout); (void)unused;
+    unused = freopen("CONOUT$", "w", stderr); (void)unused;
+    unused = freopen("CONIN$",  "r", stdin);  (void)unused;
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    /* Shell already printed its prompt on the line we now share; emit a
+     * leading newline so our first stdout/stderr line isn't glued to it. */
+    fputc('\n', stderr);
+}
+
 int be300_win32_init(void)
 {
     WSADATA wsa;
 
     if (winsock_initialized)
         return 1;
+
+    try_attach_parent_console();
 
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         fprintf(stderr, "Failed to initialize Winsock\n");

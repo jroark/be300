@@ -275,6 +275,12 @@ if(BUILD_CLI)
     if(WIN32)
         target_compile_options(be300 PRIVATE
             "-include" "${CMAKE_SOURCE_DIR}/src/win32_compat.h")
+        # Build as GUI subsystem so Windows does not pop a console window
+        # when the user double-clicks be300.exe from Explorer / Start Menu
+        # / a .be300vm file association. The CLI path still gets stdout/
+        # stderr via be300_win32_init -> AttachConsole(ATTACH_PARENT_PROCESS)
+        # when launched from cmd.exe or PowerShell.
+        target_link_options(be300 PRIVATE -mwindows)
         target_link_libraries(be300 ws2_32)
         # Static MinGW runtime so the .exe runs on a clean Windows host
         # without libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll
