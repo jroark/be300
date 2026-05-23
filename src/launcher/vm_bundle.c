@@ -430,3 +430,55 @@ int vm_bundle_delete(const vm_bundle_t *vm)
     }
     return rm_rf(vm->path);
 }
+
+static void rebase_owned_path(char *buf, size_t cap,
+                              const char *old_prefix, const char *new_prefix)
+{
+    if (!buf || !*buf) return;
+    size_t pn = strlen(old_prefix);
+    if (strncmp(buf, old_prefix, pn) != 0) return;
+    char tmp[BE300_VM_PATH_MAX];
+    snprintf(tmp, sizeof tmp, "%s%s", new_prefix, buf + pn);
+    snprintf(buf, cap, "%s", tmp);
+}
+
+int vm_bundle_rename(vm_bundle_t *vm, const char *new_name)
+{
+    if (!vm || !new_name) { errno = EINVAL; return -1; }
+
+    char clean[BE300_VM_NAME_MAX];
+    if (sanitize_name(new_name, clean, sizeof clean) != 0) return -1;
+    if (strcmp(clean, vm->name) == 0) return 0; /* no-op */
+
+    const char *root = vm_bundle_root_dir();
+    if (!root) { errno = ENOENT; return -1; }
+
+    char new_path[BE300_VM_PATH_MAX];
+    snprintf(new_path, sizeof new_path, "%s%c%s%s",
+        root, BE300_PATH_SEP, clean, BE300_VM_SUFFIX);
+    if (path_exists_dir(new_path)) { errno = EEXIST; return -1; }
+
+    /* rename(2) is atomic on the same volume on every supported host. */
+    if (rename(vm->path, new_path) != 0) return -1;
+
+    char old_path[BE300_VM_PATH_MAX];
+    snprintf(old_path, sizeof old_path, "%s", vm->path);
+
+    snprintf(vm->name, sizeof vm->name, "%s", clean);
+    snprintf(vm->path, sizeof vm->path, "%s", new_path);
+
+    rebase_owned_path(vm->nand_path_buf, sizeof vm->nand_path_buf, old_path, new_path);
+    rebase_owned_path(vm->rom_path_buf,  sizeof vm->rom_path_buf,  old_path, new_path);
+    for (unsigned s = 0; s < BE300_MAX_CF_SLOTS; s++) {
+        rebase_owned_path(vm->cf_path_buf[s], sizeof vm->cf_path_buf[s],
+                          old_path, new_path);
+    }
+    /* Bridges/tees may live outside the bundle; only rewrite if they
+     * actually point inside the old bundle dir. */
+    rebase_owned_path(vm->pcconnect_tee_buf, sizeof vm->pcconnect_tee_buf, old_path, new_path);
+    rebase_owned_path(vm->serial0_tee_buf,   sizeof vm->serial0_tee_buf,   old_path, new_path);
+    rebase_owned_path(vm->serial1_tee_buf,   sizeof vm->serial1_tee_buf,   old_path, new_path);
+
+    vm_bundle_rebind_strings(vm);
+    return 0;
+}

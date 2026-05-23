@@ -13,7 +13,10 @@ void vm_config_apply_defaults(machine_config_t *cfg)
     memset(cfg, 0, sizeof *cfg);
     /* Mirror main.c's defaults. Anything not set here defaults to 0/NULL/false. */
     cfg->sdram_size            = 16u * 1024u * 1024u;
-    cfg->target_mhz            = 166u;
+    /* 0 = unthrottled. The CLI default (main.c) is still 166 MHz for
+     * scripted runs; new launcher-created VMs run as fast as the host
+     * will go and rely on the WinCE idle loop to keep CPU sane. */
+    cfg->target_mhz            = 0u;
     cfg->scale                 = 1.0;
     cfg->stall_window          = 10000u;
     cfg->stall_unique_threshold = 64u;

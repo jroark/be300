@@ -84,6 +84,12 @@ int vm_bundle_import_cf(vm_bundle_t *vm, unsigned slot, const char *src_cf_path)
 /* Delete a bundle directory recursively. Returns 0 on success. */
 int vm_bundle_delete(const vm_bundle_t *vm);
 
+/* Rename the bundle directory and update the in-memory path/name as well
+ * as any cfg string fields that pointed into the old bundle dir.
+ * Returns 0 on success, -1 on error (EEXIST if a bundle with new_name is
+ * already there). */
+int vm_bundle_rename(vm_bundle_t *vm, const char *new_name);
+
 #ifdef __cplusplus
 }
 #endif
