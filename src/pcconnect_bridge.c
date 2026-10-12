@@ -34,6 +34,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
@@ -46,6 +47,14 @@
 #define PCC_PREOPEN_FIFO_CAP 64u
 #define PCC_GUEST_RX_FIFO_CAP 16u
 #define PCC_RX_PACE_BACKLOG_THRESHOLD 512u
+/*
+ * Guest-to-host queue. The emulated SIU reports THRE as always ready, and
+ * serial.dll on the companion SIU sends one byte per TX interrupt, so the
+ * guest can queue a frame far faster than the paced drain sends it. A
+ * PCConnect frame's length field is 16 bits (frames are at most 64 KB), so
+ * hold several whole frames instead of overwriting unsent bytes.
+ */
+#define PCC_TX_QUEUE_CAP (256u * 1024u)
 
 #ifdef _WIN32
 typedef intptr_t pcc_handle_t;
@@ -91,6 +100,11 @@ typedef struct pcc_br_state {
     bool cable_connected;
     bool guest_link_connected;
     bool guest_uart_ready;
+    /* Guest has configured the UART at least once since the last dock edge
+     * or guest reset. Until then only a UART-sized tail of host bytes is
+     * retained; afterwards a transient DLAB/LCR reprogram pauses delivery
+     * without discarding bytes already on the wire. */
+    bool guest_uart_configured;
     bool drop_initial_rx_idle;
     uint8_t guest_uart_lcr;
     uint8_t guest_uart_mcr;
@@ -103,6 +117,8 @@ typedef struct pcc_br_state {
 
     /* Reconnect throttle for TCP/Unix connect modes. */
     uint64_t next_reconnect_ns;
+    /* fd holds a non-blocking connect() that has not completed yet. */
+    bool connecting;
 
     /* G->H baud-rate throttle. 0 = unlimited. Otherwise wait at least
      * tx_ns_per_byte between successive bytes so PCConnect sees inter-byte
@@ -240,6 +256,16 @@ static bool bridge_errno_would_block(void)
 #endif
 }
 
+static bool bridge_errno_connect_pending(void)
+{
+#ifdef _WIN32
+    return bridge_errno_would_block();
+#else
+    return errno == EINPROGRESS || errno == EALREADY ||
+        bridge_errno_would_block();
+#endif
+}
+
 static const char *bridge_tag(const pcc_br_state_t *s)
 {
     /* serial0 / serial1 for stderr/tee logs; legacy name for WinCE bridge. */
@@ -280,7 +306,7 @@ static void bridge_trace(pcc_br_state_t *s, const char *fmt, ...)
 
 static bool queue_host_rx_pre(pcc_br_state_t *s, uint8_t byte)
 {
-    if (!s->guest_uart_ready &&
+    if (!s->guest_uart_configured &&
         pcc_ring_count(&s->rx_pre_ring) >= PCC_PREOPEN_FIFO_CAP)
         (void)pcc_ring_pop(&s->rx_pre_ring);
     if (pcc_ring_is_full(&s->rx_pre_ring))
@@ -424,7 +450,7 @@ static bool open_tcp_connect(pcc_br_state_t *s, const char *spec)
     if (rc < 0)
         errno = WSAGetLastError();
 #endif
-    if (rc < 0 && !bridge_errno_would_block()) {
+    if (rc < 0 && !bridge_errno_connect_pending()) {
         fprintf(stderr,
             "pcconnect-bridge: tcp connect %s:%d failed (%s); will retry\n",
             host, port, strerror(errno));
@@ -433,8 +459,10 @@ static bool open_tcp_connect(pcc_br_state_t *s, const char *spec)
         return true;
     }
     s->fd = sk;
-    fprintf(stderr, "[%s] tcp connected to %s:%d\n", bridge_tag(s),
-        host, port);
+    s->connecting = rc < 0;
+    if (!s->connecting)
+        fprintf(stderr, "[%s] tcp connected to %s:%d\n", bridge_tag(s),
+            host, port);
     return true;
 }
 
@@ -531,7 +559,7 @@ static bool open_unix_connect(pcc_br_state_t *s, const char *path)
     }
     strncpy(sa.sun_path, path, sizeof(sa.sun_path) - 1);
     int rc = connect(sk, (struct sockaddr *)&sa, sizeof(sa));
-    if (rc < 0 && errno != EINPROGRESS) {
+    if (rc < 0 && !bridge_errno_connect_pending()) {
         fprintf(stderr,
             "pcconnect-bridge: unix connect '%s' failed (%s); will retry\n",
             path, strerror(errno));
@@ -540,7 +568,9 @@ static bool open_unix_connect(pcc_br_state_t *s, const char *path)
         return true;
     }
     s->fd = sk;
-    fprintf(stderr, "[%s] unix connected to %s\n", bridge_tag(s), path);
+    s->connecting = rc < 0;
+    if (!s->connecting)
+        fprintf(stderr, "[%s] unix connected to %s\n", bridge_tag(s), path);
     return true;
 #endif
 }
@@ -646,8 +676,9 @@ static void try_reconnect(pcc_br_state_t *s)
         if (rc < 0)
             errno = WSAGetLastError();
 #endif
-        if (rc == 0 || (rc < 0 && bridge_errno_would_block())) {
+        if (rc == 0 || (rc < 0 && bridge_errno_connect_pending())) {
             s->fd = sk;
+            s->connecting = rc < 0;
             bridge_trace(s, "tcp reconnect to %s:%d in progress",
                 s->connect_host, s->connect_port);
         } else {
@@ -666,8 +697,9 @@ static void try_reconnect(pcc_br_state_t *s)
         sa.sun_family = AF_UNIX;
         strncpy(sa.sun_path, s->unix_path, sizeof(sa.sun_path) - 1);
         int rc = connect(sk, (struct sockaddr *)&sa, sizeof(sa));
-        if (rc == 0 || (rc < 0 && bridge_errno_would_block())) {
+        if (rc == 0 || (rc < 0 && bridge_errno_connect_pending())) {
             s->fd = sk;
+            s->connecting = rc < 0;
             bridge_trace(s, "unix reconnect to %s in progress", s->unix_path);
         } else {
             close(sk);
@@ -774,6 +806,7 @@ static void on_peer_gone(pcc_br_state_t *s, const char *why)
         why, (long long)s->fd,
         s->cable_connected ? "connected" : "disconnected");
     close_fd(&s->fd);
+    s->connecting = false;
     /*
      * Cable presence is a cradle state, not the lifetime of a TCP/Unix/PTY
      * peer. A 2026-05-06 PortMon connect-only capture of PCConnect.exe and
@@ -783,6 +816,48 @@ static void on_peer_gone(pcc_br_state_t *s, const char *why)
      * docked level intact so the guest remains connected.
      */
     clear_serial_queues(s);
+}
+
+/*
+ * Finish a pending non-blocking connect(). Returns true once the fd is a
+ * usable connected stream; false while still connecting or after failure
+ * (which closes the fd and lets try_reconnect() dial again).
+ */
+static bool bridge_finish_connect(pcc_br_state_t *s)
+{
+    fd_set wfds;
+    struct timeval tv = { 0, 0 };
+    int err = 0;
+    socklen_t len = sizeof(err);
+    int rc;
+
+    if (s->fd < 0)
+        return false;
+    if (!s->connecting)
+        return true;
+
+    FD_ZERO(&wfds);
+    FD_SET(s->fd, &wfds);
+    rc = select((int)s->fd + 1, NULL, &wfds, NULL, &tv);
+    if (rc == 0)
+        return false;
+    if (rc < 0 ||
+        getsockopt(s->fd, SOL_SOCKET, SO_ERROR, (char *)&err, &len) != 0)
+        err = errno;
+    s->connecting = false;
+    if (err != 0) {
+        bridge_trace(s, "connect failed (%s); will retry", strerror(err));
+        close_fd(&s->fd);
+        return false;
+    }
+    if (s->kind == PCC_BR_TCP_CONNECT)
+        fprintf(stderr, "[%s] tcp connected to %s:%d\n", bridge_tag(s),
+            s->connect_host, s->connect_port);
+    else
+        fprintf(stderr, "[%s] unix connected to %s\n", bridge_tag(s),
+            s->unix_path);
+    clear_serial_queues(s);
+    return true;
 }
 
 static void bridge_note_rx_released(pcc_br_state_t *s, bool was_empty,
@@ -872,7 +947,7 @@ static void bridge_release_rx_paced(pcc_br_state_t *s)
 
 static void bridge_drain_rx(pcc_br_state_t *s)
 {
-    if (s->fd < 0) {
+    if (s->fd < 0 || !bridge_finish_connect(s)) {
         bridge_release_rx_paced(s);
         return;
     }
@@ -880,7 +955,7 @@ static void bridge_drain_rx(pcc_br_state_t *s)
     uint8_t scratch[1024];
     bridge_release_rx_paced(s);
     for (;;) {
-        size_t cap = PCC_RING_CAP - pcc_ring_count(&s->rx_pre_ring);
+        size_t cap = pcc_ring_space(&s->rx_pre_ring);
         if (cap == 0)
             break;
         if (cap > sizeof(scratch))
@@ -951,6 +1026,8 @@ static void bridge_drain_tx(pcc_br_state_t *s)
         pcc_ring_clear(&s->tx_ring);
         return;
     }
+    if (!bridge_finish_connect(s))
+        return;
 
     /* Baud-throttled path: emit one byte per tx_ns_per_byte interval. */
     if (s->tx_ns_per_byte > 0) {
@@ -969,8 +1046,8 @@ static void bridge_drain_tx(pcc_br_state_t *s)
             }
             if (n < 0) {
                 if (bridge_errno_would_block()) {
-                    s->tx_ring.tail = (s->tx_ring.tail + PCC_RING_CAP - 1u)
-                        % PCC_RING_CAP;
+                    s->tx_ring.tail = (s->tx_ring.tail + s->tx_ring.cap - 1u)
+                        % s->tx_ring.cap;
                     s->tx_ring.count++;
                     return;
                 }
@@ -988,12 +1065,12 @@ static void bridge_drain_tx(pcc_br_state_t *s)
     /* Unthrottled bulk path. */
     while (!pcc_ring_is_empty(&s->tx_ring)) {
         size_t count = pcc_ring_count(&s->tx_ring);
-        size_t contig = PCC_RING_CAP - s->tx_ring.tail;
+        size_t contig = s->tx_ring.cap - s->tx_ring.tail;
         if (contig > count)
             contig = count;
         ssize_t n = bridge_write(s->fd, &s->tx_ring.buf[s->tx_ring.tail], contig);
         if (n > 0) {
-            s->tx_ring.tail = (s->tx_ring.tail + (size_t)n) % PCC_RING_CAP;
+            s->tx_ring.tail = (s->tx_ring.tail + (size_t)n) % s->tx_ring.cap;
             s->tx_ring.count -= (size_t)n;
             continue;
         }
@@ -1010,6 +1087,32 @@ static void bridge_drain_tx(pcc_br_state_t *s)
     }
 }
 
+static bool bridge_guest_tx_open(const pcc_br_state_t *s)
+{
+    return s && bridge_data_path_connected(s) && s->fd >= 0 &&
+        !s->connecting;
+}
+
+static void bridge_queue_guest_tx(pcc_br_state_t *s, uint8_t byte)
+{
+    if (!bridge_guest_tx_open(s)) {
+        if (s && s->tee)
+            tee_write_dir(s, "G>H:drop", &byte, 1);
+        return;
+    }
+    if (pcc_ring_is_full(&s->tx_ring)) {
+        /*
+         * More than PCC_TX_QUEUE_CAP unsent bytes: drop the new byte
+         * visibly rather than overwrite bytes not yet on the wire.
+         */
+        bridge_trace(s, "guest TX overflow; dropping byte 0x%02x", byte);
+        tee_write_dir(s, "G>H:overflow", &byte, 1);
+        return;
+    }
+    pcc_ring_push(&s->tx_ring, byte);
+    tee_write_dir(s, "G>H", &byte, 1);
+}
+
 static void bridge_tick_one(pcc_br_state_t *s)
 {
     if (!s->armed)
@@ -1020,6 +1123,13 @@ static void bridge_tick_one(pcc_br_state_t *s)
         try_reconnect(s);
     bridge_drain_tx(s);
     bridge_drain_rx(s);
+}
+
+static void bridge_free_rings(pcc_br_state_t *s)
+{
+    pcc_ring_free(&s->rx_ring);
+    pcc_ring_free(&s->rx_pre_ring);
+    pcc_ring_free(&s->tx_ring);
 }
 
 static void bridge_shutdown_one(pcc_br_state_t *s)
@@ -1040,6 +1150,7 @@ static void bridge_shutdown_one(pcc_br_state_t *s)
     s->unix_path = NULL;
     free(s->tee_path);
     s->tee_path = NULL;
+    bridge_free_rings(s);
     s->armed = false;
 }
 
@@ -1065,6 +1176,13 @@ bool pcconnect_bridge_configure(const pcc_bridge_config_t *cfg)
     }
 
     memset(s, 0, sizeof(*s));
+    if (!pcc_ring_init(&s->rx_ring, PCC_RING_CAP) ||
+        !pcc_ring_init(&s->rx_pre_ring, PCC_RING_CAP) ||
+        !pcc_ring_init(&s->tx_ring, PCC_TX_QUEUE_CAP)) {
+        fprintf(stderr, "pcconnect-bridge: oom\n");
+        bridge_free_rings(s);
+        return false;
+    }
     s->fd = PCC_INVALID_HANDLE;
     s->listen_fd = PCC_INVALID_HANDLE;
     s->pty_slave_fd = PCC_INVALID_HANDLE;
@@ -1102,6 +1220,7 @@ bool pcconnect_bridge_configure(const pcc_bridge_config_t *cfg)
                     cfg->tee_path, strerror(errno));
             free(s->target);
             s->target = NULL;
+            bridge_free_rings(s);
             return false;
         }
         s->tee_path = strdup(cfg->tee_path);
@@ -1127,6 +1246,7 @@ bool pcconnect_bridge_configure(const pcc_bridge_config_t *cfg)
         if (s->tee) { fclose(s->tee); s->tee = NULL; }
         free(s->target); s->target = NULL;
         free(s->tee_path); s->tee_path = NULL;
+        bridge_free_rings(s);
         return false;
     }
 
@@ -1140,6 +1260,7 @@ bool pcconnect_bridge_configure(const pcc_bridge_config_t *cfg)
         s->cable_connected = true;
         s->guest_link_connected = true;
         s->guest_uart_ready = true;
+        s->guest_uart_configured = true;
     }
 
     s->armed = true;
@@ -1205,27 +1326,30 @@ int pcconnect_bridge_uart_rx_pop(void)
     return pcc_ring_pop(&s->rx_ring);
 }
 
-void pcconnect_bridge_uart_rx_clear(void)
+/*
+ * FCR RCV_RST (VR4131 UM §20.2.7 SIUFC) resets the receive FIFO only.
+ * Host bytes still queued in rx_pre_ring model data that has not reached
+ * the BE-300's RX pin yet; a real FIFO reset cannot discard those, so keep
+ * them and let them arrive after the reset.
+ */
+static void bridge_guest_rx_fifo_reset(pcc_br_state_t *s)
 {
-    pcc_br_state_t *s = wince_bridge();
     if (!s)
         return;
+    if (!pcc_ring_is_empty(&s->rx_ring))
+        bridge_trace(s, "guest RX FIFO reset; discarding %zu unread byte(s)",
+            pcc_ring_count(&s->rx_ring));
     pcc_ring_clear(&s->rx_ring);
-    pcc_ring_clear(&s->rx_pre_ring);
-    s->rx_next_due_ns = 0;
-    s->rx_pace_active = false;
+}
+
+void pcconnect_bridge_uart_rx_clear(void)
+{
+    bridge_guest_rx_fifo_reset(wince_bridge());
 }
 
 void pcconnect_bridge_uart_tx_byte(uint8_t byte)
 {
-    pcc_br_state_t *s = wince_bridge();
-    if (!s || !bridge_data_path_connected(s) || s->fd < 0) {
-        if (s && s->tee)
-            tee_write_dir(s, "G>H:drop", &byte, 1);
-        return;
-    }
-    pcc_ring_push(&s->tx_ring, byte);
-    tee_write_dir(s, "G>H", &byte, 1);
+    bridge_queue_guest_tx(wince_bridge(), byte);
 }
 
 uint32_t pcconnect_bridge_uart_baud(void)
@@ -1250,6 +1374,7 @@ void pcconnect_bridge_set_cable_connected(bool connected)
         s->cable_connected = false;
         s->guest_link_connected = false;
         s->guest_uart_ready = false;
+        s->guest_uart_configured = false;
         clear_serial_queues(s);
         arm_initial_rx_idle_drop(s);
         bridge_trace(s, "cable disconnected");
@@ -1273,6 +1398,7 @@ void pcconnect_bridge_reset_guest_serial(void)
         return;
     s->guest_link_connected = false;
     s->guest_uart_ready = false;
+    s->guest_uart_configured = false;
     clear_serial_queues(s);
     arm_initial_rx_idle_drop(s);
     bridge_trace(s, "guest serial reset; cable %s",
@@ -1328,6 +1454,7 @@ void pcconnect_bridge_note_uart_config(const char *name, uint8_t lcr,
               name ? name : "", divisor);
     }
     s->guest_uart_ready = true;
+    s->guest_uart_configured = true;
     bridge_release_rx_paced(s);
 }
 
@@ -1376,23 +1503,10 @@ int serial_bridge_uart_rx_pop(const char *name)
 
 void serial_bridge_uart_rx_clear(const char *name)
 {
-    pcc_br_state_t *s = bridge_by_name(name);
-    if (!s)
-        return;
-    pcc_ring_clear(&s->rx_ring);
-    pcc_ring_clear(&s->rx_pre_ring);
-    s->rx_next_due_ns = 0;
-    s->rx_pace_active = false;
+    bridge_guest_rx_fifo_reset(bridge_by_name(name));
 }
 
 void serial_bridge_uart_tx_byte(const char *name, uint8_t byte)
 {
-    pcc_br_state_t *s = bridge_by_name(name);
-    if (!s || !bridge_data_path_connected(s) || s->fd < 0) {
-        if (s && s->tee)
-            tee_write_dir(s, "G>H:drop", &byte, 1);
-        return;
-    }
-    pcc_ring_push(&s->tx_ring, byte);
-    tee_write_dir(s, "G>H", &byte, 1);
+    bridge_queue_guest_tx(bridge_by_name(name), byte);
 }
