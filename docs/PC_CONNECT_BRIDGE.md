@@ -6,28 +6,17 @@ socket, or PTY. Pair it with a UTM Windows VM whose PC-facing USB dock
 device sits on the other end of that chardev, and real `PCConnect.exe`
 running in the VM can talk to the live WinCE 3.0 guest in the emulator.
 
-## Why this is still a bridge
+## Scope: RS-232 only
 
-The BE-300 uses the same dock connector for the RS-232 cable and the USB
-dock. On the BE-300 side, the byte stream still reaches the VRC4173 SIU
-and AtPcCnct. On the PC side, though, the USB dock is not an FTDI-style
-USB serial adapter: Windows binds it through `wceusbsh.inf` /
-`wceusbsh.sys` as a Windows CE USB sync device. The Casio driver accepts
-`USB\VID_07CF&PID_2001`, `USB\VID_07CF&PID_2002`, and
-`USB\VID_07CF&PID_2003`; the UTM model presents `07CF:2001`
-(`CASIO USB Sync 2001`).
+The bridge carries the RS-232 cable's byte stream: the VRC4173 SIU at
+`0xaa008680`, read by serial.dll and AtPcCnct.
 
-Neither the VR4131 SoC nor the VRC4173 companion chip has a USB function
-(gadget) controller, so the emulator does not add a PDA-internal USB
-controller. The UTM side models the external dock's PC-facing USB device
-and backs its raw bulk endpoints with the same host chardev used by the
-BE-300 UART bridge.
-
-Do not use QEMU's stock `usb-serial` device for USB sync. It presents
-FTDI IDs (`0403:6001`) and implements FTDI control requests plus 2-byte
-FTDI status headers on bulk IN. The patched UTM/QEMU device for this
-project is `usb-be300-dock`, which presents the Casio VID/PID and passes
-raw bytes over bulk endpoints.
+USB is a different path. The BE-300 itself is a USB 1.1 full-speed device
+(`USB\VID_07CF&PID_2002`, vendor class, bulk EP1 IN / EP2 OUT, interrupt EP3
+IN). `usb.dll` drives it through a USB function controller in the companion
+window, not the SIU (`docs/BE300_USB_FUNCTION.md`). The earlier idea of
+modelling the USB side as a QEMU device that passes raw bytes
+(`usb-be300-dock`, PID `2001`) does not match the hardware and is superseded.
 
 ## CLI
 
@@ -60,12 +49,11 @@ the WinCE USB dock entry. `usb-vcom` is accepted as a compatibility alias, but
 new commands should use `usb-sync`.
 
 **usb-sync has no guest-side data path yet.** With socket `0x000c` the guest
-loads `usb.dll` (XIP module at VA `0x01920000`), which programs registers in
-the VRC4173 USBU (OHCI host controller) area at companion offsets
-`0x1300`-`0x15xx` and never touches the companion SIU. A `--mmio-coverage` run
-on 2026-10-12 showed those accesses landing on register stubs only, so no
-bytes move between the bridge and the guest in this mode. Making usb-sync work
-needs a model of that USB path; the companion SIU bridge does not cover it.
+loads `usb.dll` (XIP module at VA `0x01920000`), which drives the BE-300 USB
+function controller (companion `0x1100`, `0x1300`-`0x161F`) and never touches
+the companion SIU. The emulator does not model that controller yet, so no
+bytes move in this mode. The register map, interrupt route (`AA000004` bit 7 →
+SYSINTR `0x12`) and data paths are in `docs/BE300_USB_FUNCTION.md`.
 
 `usb.dll` is also what raises `NOTIFICATION_EVENT_RS232_DETECTED` (event 9),
 the notification that auto-starts the device-side sync app. It does so only on
