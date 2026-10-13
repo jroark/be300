@@ -1,9 +1,11 @@
-import createBe300Module from "./be300_web.js?v=20261013c";
+import createBe300Module from "./be300_web.js?v=20261013d";
 
 const MAX_FRAME_WIDTH = 480;
 const MAX_FRAME_HEIGHT = 640;
 const MAX_FRAME_BYTES = MAX_FRAME_WIDTH * MAX_FRAME_HEIGHT * 4;
 const SERIAL_BYTES = 16384;
+const INSTALL_LOG_BYTES = 65536;
+const NAND_MEMFS_PATH = "/All_nand_300.bin";
 const NET_FRAME_BYTES = 2048;
 const AUDIO_DRAIN_SAMPLES = 8192;
 const DEFAULT_SPEED = 0;
@@ -417,7 +419,34 @@ function stageBytes(module, bytes, loadFn, failMessage) {
   }
 }
 
-async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes = null) {
+// Install .cbea packages into the NAND image staged in MEMFS (see
+// src/cbea_install.h). Each install is all-or-nothing; a failed package is
+// reported and skipped. Returns the number installed.
+function installPackagesIntoMemfs(module, packages) {
+  let installed = 0;
+  const logPtr = module._malloc(INSTALL_LOG_BYTES);
+  try {
+    for (const pkg of packages) {
+      const bytes = new Uint8Array(pkg.bytes);
+      const pkgPtr = allocBytes(module, bytes);
+      const rc = module._be300_web_install_cbea(pkgPtr, bytes.length, logPtr, INSTALL_LOG_BYTES);
+      module._free(pkgPtr);
+      const end = module.HEAPU8.indexOf(0, logPtr);
+      const log = textDecoder.decode(module.HEAPU8.slice(logPtr, end < 0 ? logPtr : end));
+      postSerial(`[INSTALL] ${pkg.name}\n${log}`);
+      if (rc === 0) {
+        installed++;
+      } else {
+        postSerial(`[INSTALL] ${pkg.name} failed; image unchanged.\n`);
+      }
+    }
+  } finally {
+    module._free(logPtr);
+  }
+  return installed;
+}
+
+async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes = null, packages = []) {
   const module = await ensureModule();
   const config = normalizeBootConfig(bootConfig);
   let flags = 0;
@@ -435,6 +464,10 @@ async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes
     (ptr, len) => module._be300_web_load_nand(ptr, len),
     "Failed to stage NAND image into MEMFS.",
   );
+  if (packages.length && installPackagesIntoMemfs(module, packages) > 0) {
+    // Keep the installed apps across Reset, which reboots from cachedNand.
+    nandBytes = module.FS.readFile(NAND_MEMFS_PATH);
+  }
 
   if (cfSlot0Bytes) {
     stageBytes(
@@ -546,7 +579,7 @@ self.addEventListener("message", async ({ data }) => {
         const nandBytes = await loadNandBytes(data);
         const cfSlot0Bytes = loadOptionalBytes(data.cfSlot0Bytes);
         const cfSlot1Bytes = loadOptionalBytes(data.cfSlot1Bytes);
-        await bootNand(nandBytes, data, cfSlot0Bytes, cfSlot1Bytes);
+        await bootNand(nandBytes, data, cfSlot0Bytes, cfSlot1Bytes, data.packages ?? []);
       } catch (error) {
         destroyMachine();
         postMessage({
@@ -566,6 +599,25 @@ self.addEventListener("message", async ({ data }) => {
           postMessage({
             type: "fatal",
             message: `Reset failed: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
+      break;
+    case "installPackages":
+      // Installing while the guest runs: destroying the machine flushes the
+      // guest's NAND writes back to MEMFS (be300_destroy), so the reboot
+      // keeps both the guest state and the new apps.
+      if (moduleInstance && machineHandle && cachedBootConfig) {
+        try {
+          postStatus("Installing apps and rebooting...", { bootInFlight: true });
+          destroyMachine();
+          const nandBytes = moduleInstance.FS.readFile(NAND_MEMFS_PATH);
+          await bootNand(nandBytes, cachedBootConfig, cachedCfSlot0, cachedCfSlot1, data.packages ?? []);
+        } catch (error) {
+          destroyMachine();
+          postMessage({
+            type: "fatal",
+            message: `Install failed: ${error instanceof Error ? error.message : String(error)}`,
           });
         }
       }

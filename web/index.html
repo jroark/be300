@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BE-300 Emulator</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20261013c">
+  <link rel="stylesheet" href="./styles.css?v=20261013d">
 </head>
 <body>
   <main class="shell">
@@ -37,6 +37,11 @@
         <span>NAND upload override</span>
         <input id="nandFile" type="file" accept=".bin,application/octet-stream">
         <small class="field-hint">Leave empty to boot the hosted image selected above.</small>
+      </label>
+      <label class="field">
+        <span>Install apps (.cbea)</span>
+        <input id="cbeaFile" type="file" accept=".cbea" multiple>
+        <small id="cbeaHint" class="field-hint">Casio app packages (use the MAIN/ variant). Installed into the NAND image at boot; you can also drop them on the page.</small>
       </label>
       <div class="boot-config-grid">
         <label class="field speed-field">
@@ -120,6 +125,6 @@
     </section>
   </main>
 
-  <script type="module" src="./app.js?v=20261013c"></script>
+  <script type="module" src="./app.js?v=20261013d"></script>
 </body>
 </html>

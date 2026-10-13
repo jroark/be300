@@ -296,6 +296,14 @@ if(BUILD_CLI)
     if(APPLE)
         target_link_libraries(be300 "-framework Cocoa" "-framework CoreGraphics" "-framework QuartzCore" objc)
     endif()
+
+    # Offline .cbea app installer (docs/INSTALLING_APPS.md).
+    add_executable(be300-install
+        src/be300_install_main.c
+        src/cbea_install.c)
+    if(WIN32)
+        target_link_options(be300-install PRIVATE -static-libgcc -static)
+    endif()
 endif()
 
 # Android JNI shared library. The Android app drives the same embeddable core
@@ -355,6 +363,7 @@ if(BUILD_WEB)
 
     add_executable(be300_web
         ${CMAKE_SOURCE_DIR}/web/main_web.c
+        ${CMAKE_SOURCE_DIR}/src/cbea_install.c
         ${GXEMUL_SOURCES} ${BE300_SOURCES} ${EMBEDDED_ASSET_HEADERS})
     set_target_properties(be300_web PROPERTIES
         OUTPUT_NAME "be300_web"
@@ -372,7 +381,7 @@ if(BUILD_WEB)
         "-sNO_EXIT_RUNTIME=1"
         "-sFORCE_FILESYSTEM=1"
         "-sSTACK_SIZE=2MB"
-        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_be300_web_create','_be300_web_create_ex','_be300_web_create_ex2','_be300_web_load_nand','_be300_web_load_cf','_be300_web_stowaway_key','_be300_web_set_net_bridge_enabled','_be300_web_set_audio_enabled','_be300_web_audio_drain','_be300_web_net_rx','_be300_web_net_tx_pending','_be300_web_net_tx_pop','_be300_step','_be300_copy_frame_rgba8888','_be300_drain_serial','_be300_set_touch','_be300_set_buttons','_be300_stop','_be300_destroy']"
+        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_be300_web_create','_be300_web_create_ex','_be300_web_create_ex2','_be300_web_load_nand','_be300_web_load_cf','_be300_web_install_cbea','_be300_web_stowaway_key','_be300_web_set_net_bridge_enabled','_be300_web_set_audio_enabled','_be300_web_audio_drain','_be300_web_net_rx','_be300_web_net_tx_pending','_be300_web_net_tx_pop','_be300_step','_be300_copy_frame_rgba8888','_be300_drain_serial','_be300_set_touch','_be300_set_buttons','_be300_stop','_be300_destroy']"
         "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP16','HEAPU32','FS','cwrap','ccall']")
 endif()
 
@@ -416,4 +425,10 @@ if(BUILD_CLI)
         src/hw/usbf.c)
     target_include_directories(test_usbredir_dev PRIVATE src)
     add_test(NAME usbredir_dev COMMAND test_usbredir_dev)
+
+    add_executable(test_cbea_install
+        tests/test_cbea_install.c
+        src/cbea_install.c)
+    target_include_directories(test_cbea_install PRIVATE src)
+    add_test(NAME cbea_install COMMAND test_cbea_install)
 endif()
