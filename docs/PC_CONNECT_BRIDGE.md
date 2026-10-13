@@ -1,22 +1,22 @@
 # PC Connect Bridge — Wire Dock Sync Bytes To A Host Chardev
 
-`--pcconnect-bridge` pipes the emulated VRC4173 SIU UART (the BE-300 dock
-serial port at PA `0xaa008680`) to a host-side chardev — TCP socket, Unix
-socket, or PTY. Pair it with a UTM Windows VM whose PC-facing USB dock
-device sits on the other end of that chardev, and real `PCConnect.exe`
-running in the VM can talk to the live WinCE 3.0 guest in the emulator.
+`--pcconnect-bridge` connects the BE-300 dock cable to a host-side chardev
+(TCP socket, Unix socket, or PTY) so real `PCConnect.exe` in a UTM Windows
+VM can sync with the live WinCE 3.0 guest. What travels over the chardev
+depends on `--pcconnect-dock`:
 
-## Scope: RS-232 only
+| Dock mode | Guest side | Host chardev carries | UTM/QEMU device |
+|---|---|---|---|
+| `rs232` (default) | VRC4173 SIU at `0xaa008680`, serial.dll | raw serial bytes | `isa-serial` (a COM port) |
+| `usb-sync` | USB function controller, usb.dll (`docs/BE300_USB_FUNCTION.md`) | usbredir protocol | stock `usb-redir` |
 
-The bridge carries the RS-232 cable's byte stream: the VRC4173 SIU at
-`0xaa008680`, read by serial.dll and AtPcCnct.
-
-USB is a different path. The BE-300 itself is a USB 1.1 full-speed device
+In USB mode the BE-300 itself is the USB 1.1 full-speed device
 (`USB\VID_07CF&PID_2002`, vendor class, bulk EP1 IN / EP2 OUT, interrupt EP3
-IN). `usb.dll` drives it through a USB function controller in the companion
-window, not the SIU (`docs/BE300_USB_FUNCTION.md`). The earlier idea of
-modelling the USB side as a QEMU device that passes raw bytes
-(`usb-be300-dock`, PID `2001`) does not match the hardware and is superseded.
+IN), exactly as on real hardware. `src/usbredir_dev.c` presents the
+controller model (`src/hw/usbf.c`) to QEMU's `usb-redir`; descriptors,
+control-request answers and bulk data all come from the unmodified guest
+`usb.dll`. No UTM/QEMU rebuild is needed. The earlier `usb-be300-dock` QEMU
+patch (PID `2001`, raw bytes) did not match the hardware and is retired.
 
 ## CLI
 
@@ -28,15 +28,17 @@ modelling the USB side as a QEMU device that passes raw bytes
                            | unix-listen:/PATH         (emulator listens)
                            | pty:auto                  (allocate a host PTY;
                                                         slave path printed)
---pcconnect-tee <P>      Mirror both directions of the byte stream to file P
-                         (annotated text). Requires --pcconnect-bridge.
+--pcconnect-tee <P>      Mirror both directions to file P (annotated bytes in
+                         rs232 mode, decoded usbredir packets in usb-sync).
+                         Requires --pcconnect-bridge.
 --pcconnect-baud <N>     Pace guest-to-host bytes to N baud (8N1).
-                         Default is 115200; 0 disables pacing.
+                         Default is 115200; 0 disables pacing. rs232 only.
 --pcconnect-dock <D>     Guest-visible dock socket identity.
                          D = rs232 (default) | usb-sync
 ```
 
-Set `BE300_PCC_TRACE=1` to enable bridge state-change logging on stderr.
+Set `BE300_PCC_TRACE=1` to enable bridge state-change logging on stderr, and
+`BE300_USBREDIR_TRACE=1` for usbredir connection logging.
 
 ## Dock mode
 
@@ -48,19 +50,22 @@ RS-232 serial path.
 the WinCE USB dock entry. `usb-vcom` is accepted as a compatibility alias, but
 new commands should use `usb-sync`.
 
-**usb-sync has no guest-side data path yet.** With socket `0x000c` the guest
-loads `usb.dll` (XIP module at VA `0x01920000`), which drives the BE-300 USB
-function controller (companion `0x1100`, `0x1300`-`0x161F`) and never touches
-the companion SIU. The emulator does not model that controller yet, so no
-bytes move in this mode. The register map, interrupt route (`AA000004` bit 7 →
-SYSINTR `0x12`) and data paths are in `docs/BE300_USB_FUNCTION.md`.
+With socket `0x000c` the guest loads `usb.dll` (XIP module at VA
+`0x01920000`), which drives the BE-300 USB function controller (companion
+`0x1100`, `0x1300`-`0x161F`) and never touches the companion SIU. The
+emulator offers the device to the usbredir peer once the dock edge has fired
+and `usb.dll` has written its descriptors and enabled the controller; a guest
+reset (KjCMU, e.g. after an OS update) disconnects it and re-init offers it
+again, so Windows re-enumerates as it would on real hardware.
 
 `usb.dll` is also what raises `NOTIFICATION_EVENT_RS232_DETECTED` (event 9),
 the notification that auto-starts the device-side sync app. It does so only on
 a DCD rising edge reported by its own modem-status source while the port is
 closed (`usb.dll` code near VA `0x01921b50`). `serial.dll`, used by the RS-232
 socket `0x0008`, has no such call, so in RS-232 mode the device-side PC
-Connect app has to be started on the device.
+Connect app has to be started on the device. In USB mode the PC's
+`SET_CONTROL_LINE_STATE` (DTR) reaches `usb.dll` through the controller and
+the app starts by itself.
 
 ## Tee log format
 
@@ -229,67 +234,58 @@ the listener first.
 
 ## UTM Windows VM setup
 
-The USB-sync path requires the UTM source changes in `../UTM`:
+Both setups use stock UTM and UTM → VM → Edit → QEMU → Arguments (or the
+equivalent device settings). Verified with a Windows 2000 VM (`-machine pc`,
+UTM System → USB 2.0); the generated command line is in UTM's log.
 
-- `patches/qemu-10.0.2-utm.patch` adds QEMU device `usb-be300-dock`.
-- `Configuration/QEMUConstantGenerated.swift` exposes that device in the
-  i386/x86_64 serial hardware picker.
+### USB (`--pcconnect-dock usb-sync`)
 
-After rebuilding UTM/QEMU with those changes, configure the VM serial
-device as the backend for the Casio USB dock model. Reference:
-`Configuration/UTMQemuConfiguration+Arguments.swift:347-385` (serial
-argument synthesis), `Configuration/UTMQemuConfigurationSerial.swift`
-(schema).
-
-If QEMU exits with `'usb-be300-dock' is not a valid device model name`,
-UTM is still running a QEMU binary/framework that was built before the
-patch. Verify the active dependency bundle before launching the VM:
-
-```bash
-DYLD_LIBRARY_PATH=../UTM/sysroot-macos-arm64/lib \
-  ../UTM/sysroot-macos-arm64/bin/qemu-system-i386 -device help |
-  rg usb-be300-dock
-
-strings -a \
-  ../UTM/sysroot-macos-arm64/Frameworks/qemu-i386-softmmu.framework/qemu-i386-softmmu |
-  rg 'usb-be300-dock|CASIO USB Sync'
-```
-
-Both commands must show the BE-300 dock strings. Updating only
-`QEMUConstantGenerated.swift` changes the UTM UI/configuration layer; it
-does not register the device inside QEMU.
-
-1. Boot a Windows 2000 / XP UTM VM.
-2. UTM → VM → Edit → Devices → New → **Serial**.
-   - **Mode:** TCP Server
-   - **Address:** `127.0.0.1`
-   - **Port:** `5555` (must match the emulator's `--pcconnect-bridge`)
-   - **Hardware:** `CASIO BE-300 USB Sync Dock (usb-be300-dock)`
-   - **Target:** Manual
-3. Start the VM. In Windows 2000, install the Casio USB sync driver from
-   `pccon.7z` if Device Manager asks for a driver. The device should show
-   as `CASIO USB Sync 2001` with hardware ID `USB\VID_07CF&PID_2001`, not
-   as HID and not as an FTDI COM port.
-4. Start the emulator with the matching bridge spec:
+1. VM → Edit → Input → USB Support: **USB 2.0**. UTM then creates
+   `ich9-usb-ehci1` (`id=usb-controller-0`) with UHCI companions; the
+   full-speed BE-300 is routed to a UHCI companion, which Win2K drives with
+   its in-box driver.
+2. Add QEMU arguments:
+   ```text
+   -chardev socket,id=be300usb,host=127.0.0.1,port=5556,server=on,wait=off
+   -device usb-redir,chardev=be300usb,id=be300usbdev,bus=usb-controller-0.0
+   ```
+3. Start the VM, then the emulator (it redials every 500 ms, so the order
+   does not matter):
    ```bash
    ./build-host/be300 --nand nand.bin \
-       --pcconnect-bridge tcp:127.0.0.1:5555 \
        --pcconnect-dock usb-sync \
-       --pcconnect-tee /tmp/pcc.tee
+       --pcconnect-bridge tcp:127.0.0.1:5556 \
+       --pcconnect-tee /tmp/usb.tee
    ```
-5. In the Windows VM, install Casio sync (`Setup.exe` from
-   `pccon.7z`) if not already present and launch `PCConnect.exe`.
+4. After the BE-300 boots, stderr shows
+   `[USB_REDIR] device 07cf:2002 offered to host`. Windows enumerates
+   `USB\VID_07CF&PID_2002`; install the Casio USB sync driver and
+   `Setup.exe` from `pccon.7z` the first time. PC Connect then starts on
+   both sides without touching the device.
 
-If the generated hardware picker has not been rebuilt yet, use UTM's
-Additional QEMU Arguments instead of adding a Serial device:
+Only one client can hold QEMU's chardev at a time: a second emulator
+pointed at the same port connects only after the first exits.
+
+### RS-232 (`--pcconnect-dock rs232`)
+
+Give the VM a COM port on a TCP chardev — a UTM Serial device in TCP Server
+mode, or:
 
 ```text
--chardev socket,id=be300pcc,host=127.0.0.1,port=5555,server=on,wait=off
--device usb-be300-dock,chardev=be300pcc
+-chardev socket,id=term0,host=127.0.0.1,port=5555,server=on,wait=off
+-device isa-serial,chardev=term0
 ```
 
-With those arguments, keep the emulator side as
-`--pcconnect-bridge tcp:127.0.0.1:5555 --pcconnect-dock usb-sync`.
+```bash
+./build-host/be300 --nand nand.bin \
+    --pcconnect-bridge tcp:127.0.0.1:5555 \
+    --pcconnect-tee /tmp/pcc.tee
+```
+
+Point PCConnect at that COM port and start PC Connect on the device (RS-232
+does not auto-launch it, see above).
+
+### Protocol check
 
 With the BE-300 configured to connect automatically, docking should show:
 
@@ -300,7 +296,10 @@ With the BE-300 configured to connect automatically, docking should show:
 - the matching guest ACK, typically
   `11 01 00 12 03 2d 00 00 00 54 ...`
 
-For protocol RE, `tail -f /tmp/pcc.tee` and exercise PCConnect features.
+The same frames appear in both modes; in the usbredir tee they are the data
+of `type=101` (bulk) packets on endpoints `02` (PC → BE-300) and `81`
+(BE-300 → PC). For protocol RE, `tail -f` the tee and exercise PCConnect
+features.
 Cross-reference against the original `pcconnect.log` captures.
 
 `tools/pcconnect_diff_tee.py` aligns a tee log against a real-hardware
@@ -321,7 +320,11 @@ accuracy guarantee.
 
 ## Implementation references
 
-- `src/pcconnect_bridge.c` — bridge state, openers, drain logic, tee
+- `src/pcconnect_bridge.c` — RS-232 bridge state, drain logic, tee
+- `src/host_chardev.c` — shared tcp/unix/pty openers, accept and redial
+- `src/usbredir_dev.c` — usbredir device side for `usb-sync`
+  (`tests/test_usbredir_dev.c`)
+- `src/hw/usbf.c` — USB function controller model (`tests/test_usbf.c`)
 - `src/pcconnect_bridge.h` — public API
 - `src/pcconnect.c` — backend dispatch shims at the four `pcconnect_uart_*`
   entry points called from `gxemul/src/devices/dev_ns16550.c`
