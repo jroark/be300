@@ -29,6 +29,8 @@
 #include "hw/cf.h"
 #include "hw/nand.h"
 #include "hw/siu.h"
+#include "hw/usbf.h"
+#include "usbredir_dev.h"
 #include "pcconnect.h"
 #include "ppsh.h"
 #include "stowaway.h"
@@ -93,9 +95,10 @@ struct be300_vrc4173_latch {
     uint8_t  bytes[0x20000];
     bool     log_mmio;
     struct be300_buzzer_state buzzer;
-    uint32_t usb_intr_status;
-    uint32_t usb_intr_enable;
-    uint32_t usb_port_status[2];
+    usbf_state_t usbf;
+    struct interrupt usb_irq;
+    bool     usb_irq_connected;
+    bool     usb_irq_asserted;
     struct interrupt pcconnect_irq;
     bool     pcconnect_irq_connected;
     bool     pcconnect_irq_asserted;
@@ -137,18 +140,6 @@ static uint16_t be300_latch_peek_u16(const struct be300_vrc4173_latch *d,
          | ((uint16_t)d->bytes[off + 1u] << 8);
 }
 
-static void be300_latch_poke_u32(struct be300_vrc4173_latch *d,
-    uint32_t off, uint32_t val)
-{
-    if (!d || off + 4u > VRC4173_LATCH_SIZE)
-        return;
-
-    d->bytes[off + 0u] = (uint8_t)(val >> 0);
-    d->bytes[off + 1u] = (uint8_t)(val >> 8);
-    d->bytes[off + 2u] = (uint8_t)(val >> 16);
-    d->bytes[off + 3u] = (uint8_t)(val >> 24);
-}
-
 void be300_cf_irq_update(struct be300_vrc4173_latch *d)
 {
     bool want;
@@ -171,6 +162,62 @@ void be300_cf_irq_update(struct be300_vrc4173_latch *d)
         INTERRUPT_DEASSERT(d->cf_irq);
         d->cf_irq_asserted = false;
     }
+}
+
+/*
+ * USB function controller interrupt: docs/BE300_USB_FUNCTION.md.  The OAL
+ * GIRQ0 dispatcher takes AA000004 bit 7 to handler 0x800aaab0, which clears
+ * the source enable AA00002C bit 3 before returning SYSINTR 0x12 and leaves
+ * it to InterruptDone to set it again (real-hardware idle value 0x0C,
+ * hw_dump_vrc4173.txt:26).  The dispatcher services only the lowest set
+ * AA000004 bit, so the bit must read clear while the enable is off.
+ */
+#define BE300_GIRQ0_USBF        0x00000080u
+#define BE300_USBF_SOURCE_EN    0x002Cu
+#define BE300_USBF_SOURCE_EN_BIT 0x00000008u
+
+static uint32_t be300_latch_peek_u32(struct be300_vrc4173_latch *d,
+    uint32_t off);
+
+static uint32_t be300_usbf_girq0_source_bits(struct be300_vrc4173_latch *d)
+{
+    if (!d || !usbf_irq_pending(&d->usbf) ||
+        !(be300_latch_peek_u32(d, BE300_USBF_SOURCE_EN) &
+          BE300_USBF_SOURCE_EN_BIT))
+        return 0;
+    return BE300_GIRQ0_USBF;
+}
+
+static void be300_usbf_irq_update(struct be300_vrc4173_latch *d)
+{
+    bool want;
+
+    if (!d || !d->usb_irq_connected)
+        return;
+
+    want = be300_usbf_girq0_source_bits(d) != 0;
+    if (want && !d->usb_irq_asserted) {
+        INTERRUPT_ASSERT(d->usb_irq);
+        d->usb_irq_asserted = true;
+    } else if (!want && d->usb_irq_asserted) {
+        INTERRUPT_DEASSERT(d->usb_irq);
+        d->usb_irq_asserted = false;
+    }
+}
+
+static void be300_usbf_irq_changed(void *ctx)
+{
+    be300_usbf_irq_update((struct be300_vrc4173_latch *)ctx);
+}
+
+static uint8_t *be300_usbf_ram(void *ctx, uint32_t pa, uint32_t len)
+{
+    (void)ctx;
+    (void)len;
+    if (!g_be300_machine || !g_be300_machine->gxe_machine)
+        return NULL;
+    return memory_paddr_to_hostaddr(g_be300_machine->gxe_machine->memory,
+        pa, MEM_WRITE);
 }
 
 void be300_vrc4173_update_cf_irq(void)
@@ -265,27 +312,6 @@ static uint32_t be300_buzzer_tone_ms(const struct be300_buzzer_state *b)
     return ms;
 }
 
-#define VRC4173_USB_OP_BASE       0x1440u
-#define VRC4173_USB_OP_END        0x14A0u
-#define VRC4173_USB_HC_REVISION   0x0010u
-#define VRC4173_USB_INTR_RHSC     0x00000040u
-#define VRC4173_USB_INTR_MIE      0x80000000u
-#define VRC4173_USB_PORT_CCS      0x00000001u
-#define VRC4173_USB_PORT_PES      0x00000002u
-#define VRC4173_USB_PORT_PSS      0x00000004u
-#define VRC4173_USB_PORT_POCI     0x00000008u
-#define VRC4173_USB_PORT_PRS      0x00000010u
-#define VRC4173_USB_PORT_PPS      0x00000100u
-#define VRC4173_USB_PORT_LSDA     0x00000200u
-#define VRC4173_USB_PORT_CSC      0x00010000u
-#define VRC4173_USB_PORT_PESC     0x00020000u
-#define VRC4173_USB_PORT_PSSC     0x00040000u
-#define VRC4173_USB_PORT_POCIC    0x00080000u
-#define VRC4173_USB_PORT_PRSC     0x00100000u
-#define VRC4173_USB_PORT_CHANGE_MASK \
-    (VRC4173_USB_PORT_CSC | VRC4173_USB_PORT_PESC | \
-     VRC4173_USB_PORT_PSSC | VRC4173_USB_PORT_POCIC | \
-     VRC4173_USB_PORT_PRSC)
 #define BE300_GIRQ0_COMMMODE       0x00000010u
 #define BE300_COMMMODE_STATUS_OFF  0x8004u
 #define BE300_COMMMODE_SOCKET_OFF  0x8010u
@@ -606,9 +632,7 @@ void be300_pcconnect_reset_for_cpu_reset(
     d->pcconnect_rx_wake_count = 0;
     d->serial_dock_pccard_status_pending = false;
     pcconnect_reset_guest_serial();
-    d->usb_intr_status = 0;
-    d->usb_port_status[0] &= ~VRC4173_USB_PORT_CHANGE_MASK;
-    d->usb_port_status[1] &= ~VRC4173_USB_PORT_CHANGE_MASK;
+    usbf_reset(&d->usbf);
     be300_pcconnect_arm_insert_after_reset(d);
 
     if (d->pcconnect_irq_connected && d->pcconnect_irq_asserted) {
@@ -998,160 +1022,6 @@ static uint32_t be300_pcconnect_girq0_source_bits(
 
     return be300_pcconnect_commmode_unmasked(d) ?
         BE300_GIRQ0_COMMMODE : 0;
-}
-
-static bool be300_vrc4173_usb_op_offset(uint32_t off)
-{
-    return off >= VRC4173_USB_OP_BASE && off < VRC4173_USB_OP_END;
-}
-
-static unsigned be300_vrc4173_usb_op_index(uint32_t off)
-{
-    return (unsigned)((off - VRC4173_USB_OP_BASE) >> 2);
-}
-
-static uint32_t be300_vrc4173_usb_port_read(
-    struct be300_vrc4173_latch *d, unsigned port)
-{
-    uint32_t status;
-
-    if (!d || port >= 2)
-        return 0;
-
-    status = d->usb_port_status[port];
-    status &= ~(VRC4173_USB_PORT_CCS | VRC4173_USB_PORT_PES |
-        VRC4173_USB_PORT_PSS | VRC4173_USB_PORT_PRS |
-        VRC4173_USB_PORT_PPS | VRC4173_USB_PORT_LSDA);
-
-    return status;
-}
-
-static void be300_vrc4173_usb_refresh_intr(struct be300_vrc4173_latch *d)
-{
-    if (!d)
-        return;
-
-    if ((be300_vrc4173_usb_port_read(d, 0) & VRC4173_USB_PORT_CHANGE_MASK) ||
-        (be300_vrc4173_usb_port_read(d, 1) & VRC4173_USB_PORT_CHANGE_MASK))
-        d->usb_intr_status |= VRC4173_USB_INTR_RHSC;
-    else
-        d->usb_intr_status &= ~VRC4173_USB_INTR_RHSC;
-
-    be300_latch_poke_u32(d, VRC4173_USB_OP_BASE + 0x0Cu,
-        d->usb_intr_status);
-    be300_latch_poke_u32(d, VRC4173_USB_OP_BASE + 0x10u,
-        d->usb_intr_enable);
-    be300_latch_poke_u32(d, VRC4173_USB_OP_BASE + 0x14u,
-        d->usb_intr_enable);
-    be300_latch_poke_u32(d, VRC4173_USB_OP_BASE + 0x54u,
-        be300_vrc4173_usb_port_read(d, 0));
-    be300_latch_poke_u32(d, VRC4173_USB_OP_BASE + 0x58u,
-        be300_vrc4173_usb_port_read(d, 1));
-}
-
-static uint32_t be300_vrc4173_usb_read(struct be300_vrc4173_latch *d,
-    uint32_t off)
-{
-    unsigned idx = be300_vrc4173_usb_op_index(off);
-
-    be300_vrc4173_usb_refresh_intr(d);
-
-    switch (idx) {
-    case 0x00 / 4:
-        return VRC4173_USB_HC_REVISION;
-    case 0x0C / 4:
-        return d->usb_intr_status;
-    case 0x10 / 4:
-    case 0x14 / 4:
-        return d->usb_intr_enable;
-    case 0x50 / 4:
-        return be300_latch_peek_u32(d, off);
-    case 0x54 / 4:
-        return be300_vrc4173_usb_port_read(d, 0);
-    case 0x58 / 4:
-        return be300_vrc4173_usb_port_read(d, 1);
-    default:
-        return be300_latch_peek_u32(d, off);
-    }
-}
-
-static void be300_vrc4173_usb_write(struct be300_vrc4173_latch *d,
-    uint32_t off, uint32_t val)
-{
-    unsigned idx = be300_vrc4173_usb_op_index(off);
-
-    /*
-     * VRC4173 UM §14.3 exposes an OpenHCI 1.0 operational-register
-     * window. usb.dll maps it at 0x0A001440. Serial PC Connect is routed
-     * through the Vic/CommMode page and companion SIU, so the OHCI root hub
-     * remains disconnected unless a separate USB-device model is added.
-     */
-    switch (idx) {
-    case 0x00 / 4:
-        /* HcRevision is read-only on the HC side. */
-        break;
-    case 0x08 / 4:
-        be300_latch_poke_u32(d, off, val & ~1u);
-        break;
-    case 0x0C / 4:
-        /*
-         * VRC4173 UM §14.3.5 says HcInterruptStatus bits clear when 0 is
-         * written. Also accept write-1-to-clear for driver compatibility.
-         */
-        if (val == 0)
-            d->usb_intr_status = 0;
-        else
-            d->usb_intr_status &= ~val;
-        break;
-    case 0x10 / 4:
-        d->usb_intr_enable |= val;
-        break;
-    case 0x14 / 4:
-        d->usb_intr_enable &= ~val;
-        break;
-    case 0x50 / 4:
-        if (val & 0x00010000u) {
-            d->usb_port_status[0] |= VRC4173_USB_PORT_PPS;
-            d->usb_port_status[1] |= VRC4173_USB_PORT_PPS;
-        }
-        if (val & 0x00000001u) {
-            d->usb_port_status[0] &= ~VRC4173_USB_PORT_PPS;
-            d->usb_port_status[1] &= ~VRC4173_USB_PORT_PPS;
-        }
-        be300_latch_poke_u32(d, off, val);
-        break;
-    case 0x54 / 4:
-    case 0x58 / 4: {
-        unsigned port = idx == (0x54 / 4) ? 0u : 1u;
-        uint32_t status = d->usb_port_status[port];
-
-        status &= ~(val & VRC4173_USB_PORT_CHANGE_MASK);
-        if (val & VRC4173_USB_PORT_PPS)
-            status |= VRC4173_USB_PORT_PPS;
-        if (val & VRC4173_USB_PORT_LSDA)
-            status &= ~VRC4173_USB_PORT_PPS;
-        if ((val & VRC4173_USB_PORT_PES) &&
-            (be300_vrc4173_usb_port_read(d, port) & VRC4173_USB_PORT_CCS))
-            status |= VRC4173_USB_PORT_PES;
-        if (val & VRC4173_USB_PORT_CCS)
-            status &= ~VRC4173_USB_PORT_PES;
-        if ((val & VRC4173_USB_PORT_PRS) &&
-            (be300_vrc4173_usb_port_read(d, port) & VRC4173_USB_PORT_CCS))
-            status |= VRC4173_USB_PORT_PES | VRC4173_USB_PORT_PRSC;
-        if (val & VRC4173_USB_PORT_PSS)
-            status |= VRC4173_USB_PORT_PSS;
-        if (val & VRC4173_USB_PORT_POCI)
-            status &= ~VRC4173_USB_PORT_PSS;
-
-        d->usb_port_status[port] = status;
-        break;
-    }
-    default:
-        be300_latch_poke_u32(d, off, val);
-        break;
-    }
-
-    be300_vrc4173_usb_refresh_intr(d);
 }
 
 static void be300_buzzer_note_write(struct be300_vrc4173_latch *d,
@@ -1591,11 +1461,11 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
-        if (be300_vrc4173_usb_op_offset(off)) {
-            be300_probe_note_mmio("vrc4173-usbu-ohci", off, 'W',
+        if (usbf_handles(off)) {
+            be300_probe_note_mmio("vrc4173-usbf", off, 'W',
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
                 BE300_MMIO_CLASS_KNOWN);
-            be300_vrc4173_usb_write(d, off, (uint32_t)val);
+            usbf_write(&d->usbf, off, (uint32_t)val);
             return 1;
         }
 
@@ -1665,6 +1535,9 @@ DEVICE_ACCESS(be300_vrc4173)
                 BE300_MMIO_CLASS_LATCHED);
             memcpy(&d->bytes[off], data, len);
         }
+        if (off <= BE300_USBF_SOURCE_EN &&
+            off + len > BE300_USBF_SOURCE_EN)
+            be300_usbf_irq_update(d);
         be300_pcconnect_note_comm_write(d, off, (unsigned)len, val,
             (uint32_t)cpu->pc);
         if (be300_serial_dock_socket_enabled() &&
@@ -1707,6 +1580,7 @@ DEVICE_ACCESS(be300_vrc4173)
             val |= cf_giu_source_bits(
                     &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT])
                 | be300_pcconnect_girq0_source_bits(d)
+                | be300_usbf_girq0_source_bits(d)
                 | button_girq0_source_bits(
                     (const struct be300_input_device *)
                     g_be300_machine->button_device)
@@ -1793,9 +1667,9 @@ DEVICE_ACCESS(be300_vrc4173)
             return 1;
         }
 
-        if (be300_vrc4173_usb_op_offset(off)) {
-            uint32_t val = be300_vrc4173_usb_read(d, off);
-            be300_probe_note_mmio("vrc4173-usbu-ohci", off, 'R',
+        if (usbf_handles(off)) {
+            uint32_t val = usbf_read(&d->usbf, off);
+            be300_probe_note_mmio("vrc4173-usbf", off, 'R',
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
                 BE300_MMIO_CLASS_KNOWN);
             memory_writemax64(cpu, data, len, (uint64_t)val);
@@ -2041,8 +1915,12 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
     be300_register_wince_aux(gxm, log_mmio, enable_ppsh);
     be300_buzzer_seed(latch);
     latch->pcconnect_insert_delay_ms = be300_pcconnect_connect_delay_ms();
-    be300_latch_poke_u32(latch, VRC4173_USB_OP_BASE + 0x00u,
-        VRC4173_USB_HC_REVISION);
+    latch->usbf.ram = be300_usbf_ram;
+    latch->usbf.irq_changed = be300_usbf_irq_changed;
+    latch->usbf.ctx = latch;
+    usbf_init(&latch->usbf);
+    if (usbredir_dev_active())
+        usbredir_dev_bind(&latch->usbf);
 
     /*
      * Pre-populate latch with real hardware register values from
@@ -2221,6 +2099,10 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         INTERRUPT_CONNECT(tmps, latch->cf_irq);
         latch->cf_irq_connected = true;
         latch->cf_irq_asserted = false;
+
+        INTERRUPT_CONNECT(tmps, latch->usb_irq);
+        latch->usb_irq_connected = true;
+        latch->usb_irq_asserted = false;
     }
 
     if (m->cfg.enable_stowaway_keyboard || m->cfg.pcconnect_bridge) {

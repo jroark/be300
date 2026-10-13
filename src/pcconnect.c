@@ -2,6 +2,7 @@
 
 #include "pcconnect.h"
 #include "pcconnect_bridge.h"
+#include "usbredir_dev.h"
 
 static void (*g_rx_ready_cb)(void *opaque);
 static void *g_rx_ready_opaque;
@@ -16,6 +17,7 @@ void pcconnect_set_rx_ready_callback(void (*cb)(void *opaque), void *opaque)
 void pcconnect_set_cable_connected(bool connected)
 {
     pcconnect_bridge_set_cable_connected(connected);
+    usbredir_dev_set_present(connected);
 }
 
 void pcconnect_reset_guest_serial(void)

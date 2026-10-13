@@ -17,6 +17,7 @@
 #include "host_io.h"
 #include "pcconnect.h"
 #include "pcconnect_bridge.h"
+#include "usbredir_dev.h"
 #include "ppsh.h"
 #include "stowaway.h"
 #include "ui.h"
@@ -463,7 +464,28 @@ machine_t *be300_create(const machine_config_t *cfg)
     const char *autostop_env;
     if (!m) return NULL;
     m->cfg = *cfg;
-    if (cfg->pcconnect_bridge) {
+    if (cfg->pcconnect_bridge &&
+        cfg->pcconnect_dock == BE300_PCC_DOCK_USB_SYNC) {
+        /*
+         * The USB cable does not use the SIU: the BE-300 is a USB device
+         * (docs/BE300_USB_FUNCTION.md), so the host link carries usbredir
+         * for QEMU's usb-redir instead of raw serial bytes.
+         */
+        usbredir_dev_config_t ur = {0};
+        const char *v = getenv("BE300_USBREDIR_TRACE");
+
+        if (!host_chardev_parse_spec(cfg->pcconnect_bridge, &ur.kind,
+                                     &ur.target)) {
+            free(m);
+            return NULL;
+        }
+        ur.tee_path = cfg->pcconnect_tee;
+        ur.trace = v && *v && strcmp(v, "0") != 0;
+        if (!usbredir_dev_configure(&ur)) {
+            free(m);
+            return NULL;
+        }
+    } else if (cfg->pcconnect_bridge) {
         pcc_bridge_config_t br = {0};
         if (!pcconnect_bridge_parse_spec(cfg->pcconnect_bridge, &br)) {
             free(m);
@@ -976,6 +998,7 @@ static bool be300_run_batch(machine_t *m)
     if (m->cfg.pcconnect_bridge || m->cfg.serial0_bridge ||
         m->cfg.serial1_bridge)
         pcconnect_bridge_tick();
+    usbredir_dev_tick();
 
     if (m->use_builtin_ui && ui_should_quit(m))
         return false;
@@ -1167,6 +1190,7 @@ void be300_destroy(machine_t *m)
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_destroy(&m->cf[i]);
     pcconnect_bridge_shutdown();
+    usbredir_dev_shutdown();
     stowaway_configure(false);
 
     free(m);

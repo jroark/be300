@@ -186,6 +186,8 @@ set(BE300_SOURCES
     src/host_io.c
     src/pcconnect.c
     src/pcconnect_bridge.c
+    src/host_chardev.c
+    src/usbredir_dev.c
     src/stowaway.c
     src/ui.c
     src/ui_stowaway.c
@@ -194,6 +196,7 @@ set(BE300_SOURCES
     src/hw/pmu.c
     src/hw/icu.c
     src/hw/siu.c
+    src/hw/usbf.c
     src/hw/rtc.c
     src/hw/gpio.c
     src/hw/nand.c
@@ -393,7 +396,24 @@ endif()
 if(BUILD_CLI AND NOT WIN32)
     add_executable(test_pcconnect_bridge
         tests/test_pcconnect_bridge.c
-        src/pcconnect_bridge.c)
+        src/pcconnect_bridge.c
+        src/host_chardev.c)
     target_include_directories(test_pcconnect_bridge PRIVATE src)
     add_test(NAME pcconnect_bridge COMMAND test_pcconnect_bridge)
+endif()
+
+if(BUILD_CLI)
+    add_executable(test_usbf
+        tests/test_usbf.c
+        src/hw/usbf.c)
+    target_include_directories(test_usbf PRIVATE src)
+    add_test(NAME usbf COMMAND test_usbf)
+
+    add_executable(test_usbredir_dev
+        tests/test_usbredir_dev.c
+        src/usbredir_dev.c
+        src/host_chardev.c
+        src/hw/usbf.c)
+    target_include_directories(test_usbredir_dev PRIVATE src)
+    add_test(NAME usbredir_dev COMMAND test_usbredir_dev)
 endif()

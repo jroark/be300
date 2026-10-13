@@ -120,7 +120,7 @@ primary regression target:
 - `--ppsh` — WinCE PPSH debug-shell probe path
 - `--ne2000` — PCMCIA NE2000 Ethernet card model
 - `--rtc-host-time` — initialize the guest RTC from host local time
-- `--pcconnect-bridge` — bridge the dock UART to a host chardev for real PCConnect
+- `--pcconnect-bridge` — bridge the dock cable to a host chardev for real PCConnect (serial bytes, or USB via QEMU `usb-redir` with `--pcconnect-dock usb-sync`)
 - `--trace`, `--log-mmio`, `--mmio-coverage`, `--detect-stall` — diagnostic
   options for controlled investigations
 

@@ -21,11 +21,12 @@ Do not reintroduce `resume_ctx` seeding, synthetic warm-boot state, or any other
   serial bridge via `--pcconnect-bridge` (pipes the VRC4173 SIU UART to a host
   TCP/Unix/PTY chardev so a UTM Windows VM running real `PCConnect.exe`
   can talk to the WinCE guest; see `docs/PC_CONNECT_BRIDGE.md`). The
-  RS-232 cable and USB dock share the BE-300 dock connector and SIU byte
-  stream. The PC-facing USB dock is a Casio Windows CE USB sync device
-  (`VID_07CF&PID_2001`, with the Casio driver also accepting `2002` and
-  `2003`), **not** QEMU/FTDI `usb-serial`; neither VR4131 nor VRC4173 has
-  a USBF block.
+  RS-232 cable and USB share the BE-300 dock connector, but USB does **not**
+  use the SIU: the BE-300 is itself a USB 1.1 full-speed *device*
+  (`VID_07CF&PID_2002`) driven by `usb.dll` through a USB function
+  controller in the companion window (`0x1100`, `0x1300`-`0x161F`, DMA
+  rings at PA `0x8000`). See `docs/BE300_USB_FUNCTION.md`. It is not
+  QEMU/FTDI `usb-serial`, and there is no dock bridge chip.
 - Non-3.0 WinCE images are local-only reference assets
 
 ## Reference & Documentation
