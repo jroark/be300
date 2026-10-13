@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20261013c";
+const ASSET_VERSION = "20261013d";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -21,6 +21,8 @@ const HOSTED_NAND_IMAGES = [
 
 const nandSelect = document.querySelector("#nandSelect");
 const nandFileInput = document.querySelector("#nandFile");
+const cbeaFileInput = document.querySelector("#cbeaFile");
+const cbeaHintEl = document.querySelector("#cbeaHint");
 const speedControlInput = document.querySelector("#speedControl");
 const speedValueEl = document.querySelector("#speedValue");
 const primarySocketSelect = document.querySelector("#primarySocket");
@@ -44,6 +46,8 @@ const screenCtx = screenEl.getContext("2d", { alpha: false });
 const controlButtons = Array.from(document.querySelectorAll("[data-set][data-mask]"));
 
 let uploadedNandFile = null;
+// .cbea app packages queued for the next boot (src/cbea_install.h).
+let pendingPackages = [];
 let running = false;
 let bootInFlight = false;
 let serialCollapsed = false;
@@ -321,7 +325,10 @@ function updateReadyStatus() {
   const active = getActiveNand();
   const accessories = describeAccessories(options);
   const suffix = accessories.length ? ` with ${accessories.join(", ")}` : "";
-  setStatus(`Ready to boot ${active.name} (${active.sdramMb} MB SDRAM)${suffix} at ${formatSpeed(options.speed)}.`);
+  const apps = pendingPackages.length
+    ? ` Installing ${pendingPackages.length} app package${pendingPackages.length === 1 ? "" : "s"} first.`
+    : "";
+  setStatus(`Ready to boot ${active.name} (${active.sdramMb} MB SDRAM)${suffix} at ${formatSpeed(options.speed)}.${apps}`);
 }
 
 function syncButtons() {
@@ -817,6 +824,85 @@ nandFileInput.addEventListener("change", () => {
   syncButtons();
 });
 
+const CBEA_HINT_DEFAULT = cbeaHintEl.textContent;
+
+function renderPendingPackages() {
+  cbeaHintEl.textContent = pendingPackages.length
+    ? `Queued for next boot: ${pendingPackages.map((file) => file.name).join(", ")}`
+    : CBEA_HINT_DEFAULT;
+}
+
+async function readPackages(files) {
+  return Promise.all(files.map(async (file) => ({
+    name: file.name,
+    bytes: await file.arrayBuffer(),
+  })));
+}
+
+// Before boot, packages are queued and installed into the NAND image when
+// Boot is pressed. While running, the worker installs them and reboots.
+async function addPackages(fileList) {
+  const files = Array.from(fileList).filter((file) => file.name.toLowerCase().endsWith(".cbea"));
+  if (!files.length) {
+    setStatus("Only Casio .cbea app packages can be installed (e.g. MAIN/wmp1.1.cbea).");
+    return;
+  }
+  if (running) {
+    const names = files.map((file) => file.name).join(", ");
+    if (!window.confirm(`Install ${names} and reboot the emulator?`)) {
+      return;
+    }
+    const packages = await readPackages(files);
+    worker.postMessage({ type: "installPackages", packages }, packages.map((pkg) => pkg.bytes));
+    return;
+  }
+  for (const file of files) {
+    pendingPackages = pendingPackages.filter((queued) => queued.name !== file.name);
+    pendingPackages.push(file);
+  }
+  renderPendingPackages();
+  updateReadyStatus();
+}
+
+cbeaFileInput.addEventListener("change", async () => {
+  if (cbeaFileInput.files?.length) {
+    await addPackages(cbeaFileInput.files);
+  }
+  cbeaFileInput.value = "";
+});
+
+function isFileDrag(event) {
+  return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+}
+
+function isFileInputTarget(event) {
+  return event.target instanceof HTMLInputElement && event.target.type === "file";
+}
+
+document.addEventListener("dragover", (event) => {
+  if (!isFileDrag(event) || isFileInputTarget(event)) {
+    return;
+  }
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  document.body.classList.add("drag-active");
+});
+
+document.addEventListener("dragleave", (event) => {
+  if (event.relatedTarget === null) {
+    document.body.classList.remove("drag-active");
+  }
+});
+
+document.addEventListener("drop", (event) => {
+  document.body.classList.remove("drag-active");
+  if (!isFileDrag(event) || isFileInputTarget(event)) {
+    return;
+  }
+  event.preventDefault();
+  addPackages(event.dataTransfer.files);
+});
+
 for (const input of [
   speedControlInput,
   primarySocketSelect,
@@ -898,6 +984,10 @@ bootBtn.addEventListener("click", async () => {
   const transfer = [];
 
   try {
+    if (pendingPackages.length) {
+      message.packages = await readPackages(pendingPackages);
+      transfer.push(...message.packages.map((pkg) => pkg.bytes));
+    }
     if (active.kind === "upload") {
       message.nandBytes = await active.file.arrayBuffer();
       transfer.push(message.nandBytes);
@@ -926,6 +1016,9 @@ bootBtn.addEventListener("click", async () => {
   } else {
     worker.postMessage(message);
   }
+  // Installed packages persist in the worker's cached NAND for Reset.
+  pendingPackages = [];
+  renderPendingPackages();
 });
 
 stopBtn.addEventListener("click", () => {
