@@ -126,7 +126,7 @@ inferred from GetIntrType reading only that pair before it dispatches.
 | `0x14CC` | R | SETUP FIFO; each read pops one byte. Two dump reads gave `0x21`, `0x22`, the start of SET_CONTROL_LINE_STATE. | `0x01922650`, `hw_dump_vrc4173.txt:102-103` |
 | `0x14D4` | R | EP2 OUT data FIFO; each read pops one byte | `0x019230a4` |
 | `0x14D8` | R | EP2 OUT current packet length (non-destructive) | `0x01922f50`, `0x01923078` |
-| `0x14E0` | W | EP3 data port: the DTR/RTS handlers (`0x01922070`-`0x01922150`) write the serial state, then 0, then commit with `0x1490` bit 2 | `0x01923334` |
+| `0x14E0` | W | EP3 data port: the DTR/RTS handlers (`0x01922070`-`0x01922150`) write the serial state, then 0, then commit with `0x1490` bit 2. The sender (`0x01923308`) skips the update while `0x1454` bit 4 (EP3 busy) is set, so at most one state per host poll (bInterval 1 ms) leaves the device; the TX service (`0x01922d5c`) sends `state \| 1` to announce pending EP1 data | `0x01923334` |
 
 ### 0x1500 block — descriptor RAM and hardware request state
 

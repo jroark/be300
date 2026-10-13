@@ -59,6 +59,7 @@ static int g_peer = -1;
 static size_t g_hl = 12;
 static uint8_t g_rx[8192];
 static size_t g_rx_len;
+static bool g_no_tick;
 
 typedef struct {
     uint32_t type;
@@ -139,7 +140,8 @@ static bool peer_recv(pkt_t *pk, int timeout_ms)
     for (int t = 0; t <= timeout_ms; t++) {
         ssize_t n;
 
-        usbredir_dev_tick();
+        if (!g_no_tick)
+            usbredir_dev_tick();
         n = read(g_peer, g_rx + g_rx_len, sizeof(g_rx) - g_rx_len);
         if (n > 0)
             g_rx_len += (size_t)n;
@@ -327,6 +329,28 @@ int main(void)
         CHECK(pk.p[0] == 0x83 && pk.p[1] == 0 && le16(pk.p + 2) == 2);
         CHECK(pk.p[4] == 0x81 && pk.p[5] == 0x00);
     }
+
+    /*
+     * The host polls EP3 at most once per bInterval (1 ms): a second state
+     * committed right after the first is not forwarded in the same tick,
+     * but one frame later.
+     */
+    sleep_ms(2);                      /* start of a fresh frame */
+    usbf_write(&g_u, USBF_EP3_FIFO, 0x06);
+    usbf_write(&g_u, USBF_EP3_FIFO, 0x00);
+    usbf_write(&g_u, USBF_EP_COMMIT, 4);
+    usbredir_dev_tick();
+    usbf_write(&g_u, USBF_EP3_FIFO, 0x04);
+    usbf_write(&g_u, USBF_EP3_FIFO, 0x00);
+    usbf_write(&g_u, USBF_EP_COMMIT, 4);
+    usbredir_dev_tick();
+    g_no_tick = true;
+    if (expect(&pk, T_INTERRUPT_PACKET))
+        CHECK(pk.p[4] == 0x06);
+    CHECK(quiet(5));                  /* 0x04 still waits for its frame */
+    g_no_tick = false;
+    if (expect(&pk, T_INTERRUPT_PACKET))
+        CHECK(pk.p[4] == 0x04);
 
     /* Bulk OUT of 100 bytes arrives as a 64 + 36 byte packet pair. */
     for (int i = 0; i < 100; i++)
