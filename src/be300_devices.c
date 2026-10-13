@@ -30,6 +30,7 @@
 #include "hw/nand.h"
 #include "hw/siu.h"
 #include "hw/usbf.h"
+#include "usbredir_dev.h"
 #include "pcconnect.h"
 #include "ppsh.h"
 #include "stowaway.h"
@@ -1918,6 +1919,8 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
     latch->usbf.irq_changed = be300_usbf_irq_changed;
     latch->usbf.ctx = latch;
     usbf_init(&latch->usbf);
+    if (usbredir_dev_active())
+        usbredir_dev_bind(&latch->usbf);
 
     /*
      * Pre-populate latch with real hardware register values from

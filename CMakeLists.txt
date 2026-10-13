@@ -187,6 +187,7 @@ set(BE300_SOURCES
     src/pcconnect.c
     src/pcconnect_bridge.c
     src/host_chardev.c
+    src/usbredir_dev.c
     src/stowaway.c
     src/ui.c
     src/ui_stowaway.c
@@ -407,4 +408,12 @@ if(BUILD_CLI)
         src/hw/usbf.c)
     target_include_directories(test_usbf PRIVATE src)
     add_test(NAME usbf COMMAND test_usbf)
+
+    add_executable(test_usbredir_dev
+        tests/test_usbredir_dev.c
+        src/usbredir_dev.c
+        src/host_chardev.c
+        src/hw/usbf.c)
+    target_include_directories(test_usbredir_dev PRIVATE src)
+    add_test(NAME usbredir_dev COMMAND test_usbredir_dev)
 endif()

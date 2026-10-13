@@ -156,14 +156,18 @@ typedef struct {
 
     bool     attached;
 
+    /* Guest side: RAM access and interrupt level changes. */
     usbf_ram_fn       ram;
     usbf_event_fn     irq_changed;
+    void             *ctx;
+    /* Host side: an IN packet was committed (EP1 or EP3), and a
+     * class/vendor control transfer handed to the guest completed. */
     usbf_event_fn     in_ready;
     usbf_ctrl_done_fn ctrl_done;
-    void             *ctx;
+    void             *host_ctx;
 } usbf_state_t;
 
-void     usbf_init(usbf_state_t *u);
+void     usbf_init(usbf_state_t *u);   /* keeps callbacks and contexts */
 void     usbf_reset(usbf_state_t *u);
 bool     usbf_handles(uint32_t off);
 uint32_t usbf_read(usbf_state_t *u, uint32_t off);

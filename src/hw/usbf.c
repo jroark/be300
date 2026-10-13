@@ -109,7 +109,7 @@ static void usbf_finish_control(usbf_state_t *u, int status)
         return;
     u->ctrl_pending = false;
     if (u->ctrl_done)
-        u->ctrl_done(u->ctx, status);
+        u->ctrl_done(u->host_ctx, status);
 }
 
 void usbf_init(usbf_state_t *u)
@@ -119,6 +119,7 @@ void usbf_init(usbf_state_t *u)
     usbf_event_fn in_ready = u->in_ready;
     usbf_ctrl_done_fn ctrl_done = u->ctrl_done;
     void *ctx = u->ctx;
+    void *host_ctx = u->host_ctx;
 
     memset(u, 0, sizeof(*u));
     u->ram = ram;
@@ -126,6 +127,7 @@ void usbf_init(usbf_state_t *u)
     u->in_ready = in_ready;
     u->ctrl_done = ctrl_done;
     u->ctx = ctx;
+    u->host_ctx = host_ctx;
     /* Masked until usb.dll programs INTMASK0..2 (init pc 0x019266f8). */
     u->intmask[0] = u->intmask[1] = u->intmask[2] = 0xFF;
 }
@@ -268,14 +270,14 @@ static void usbf_commit(usbf_state_t *u, uint32_t val)
         }
         u->in_stage.len = 0;
         if (u->in_ready)
-            u->in_ready(u->ctx);
+            u->in_ready(u->host_ctx);
     }
     if (val & USBF_COMMIT_EP3) {
         u->ep3 = u->ep3_stage;
         u->ep3_ready = true;
         u->ep3_stage.len = 0;
         if (u->in_ready)
-            u->in_ready(u->ctx);
+            u->in_ready(u->host_ctx);
     }
 }
 
