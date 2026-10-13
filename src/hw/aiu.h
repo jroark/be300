@@ -1,30 +1,24 @@
 #pragma once
 
 /*
- * AIU - Casio audio block exposed through the VRC4173 latch.
+ * AIU - Casio wave-output DMA block in the Kj companion window.
  *
- * Hardware path: the BE-300 does NOT use the VRC4173 UM Ch. 10 AIU at
- * VRC4173 base+0x0E0..+0x0FC (Pass 33 confirmed zero accesses there during
- * cold boot). The active audio path is a Casio-custom block at the
- * following VRC4173 latch offsets, captured at hardware-reset values in
- * src/be300_devices.c:2778-2817 (`audio_regs[]`):
+ * The BE-300 does NOT use the VRC4173 UM Ch. 10 AIU (Pass 33 saw zero
+ * accesses there).  wavedev.dll (XIP module, vbase 0x01910000) drives a
+ * Casio block at the companion offsets below; docs/BE300_AUDIO.md has the
+ * full register map with the wavedev/NK PCs each meaning was taken from.
  *
- *   +0x390..+0x3F4   control / mixer / status
- *   +0x880..+0x8CC   sample-rate, channels, width, DMA pointers
- *   +0x1114..+0x111C companion power/wake enables
+ * Playback is a two-buffer ping-pong DMA of signed 16-bit little-endian PCM
+ * (wavedev converts 8-bit and applies volume itself, 0x019114EC):
+ *   buffer 0 = [0x8B0, 0x8B4] (PA 0x4A000, end inclusive)
+ *   buffer 1 = [0x8B8, 0x8BC] (PA 0x4D000, end inclusive)
+ * When a buffer drains, status 0x8A8 bit 0 (buffer 0) or bit 1 (buffer 1)
+ * sets and the source raises companion GIRQ0 bit 8 (AA000004), which the
+ * OAL handler 0x800A8DCC turns into SYSINTR 0x14 for wavedev's IST.
  *
- * The wavedev.dll driver maps these via user VA 0x001B0000 (per the
- * comment at src/be300_devices.c:2774). On cold boot wavedev does NOT
- * load - it loads lazily when something user-mode plays a wav. Therefore
- * this device has zero boot-path regression risk and stays default-off
- * behind --audio until proven stable.
- *
- * Coexistence: GXemul memory_device_register() refuses overlapping
- * regions (gxemul/src/core/memory.c:368), so the AIU is NOT a separately
- * registered device. The latch's existing access function continues to
- * own the backing store; aiu_tick() polls the latch each main-loop
- * iteration, pulls PCM frames from guest RAM via the DMA pointers, and
- * queues them to the host SDL sink.
+ * The latch in be300_devices.c keeps the register backing store; it calls
+ * aiu_note_write() after storing a write in the audio range and routes
+ * status reads through aiu_read_status().
  */
 
 #include <stdint.h>
@@ -34,32 +28,45 @@
 struct be300_state;
 typedef struct be300_state machine_t;
 
-/* AIU register offsets within the VRC4173 latch (PA 0x0A000000 base). */
-#define AIU_REG_CTRL           0x03C0u  /* bit 0 = global enable (uncertain)   */
-#define AIU_REG_STATUS_W1C     0x03F4u  /* IRQ status, write-1-clear (uncertain)*/
-#define AIU_REG_RATE_INDEX     0x0880u  /* sample-rate lookup index (uncertain) */
-#define AIU_REG_CHANNELS       0x0884u  /* 1 = mono (uncertain)                 */
-#define AIU_REG_WIDTH          0x0888u  /* 3 = 16-bit (uncertain)               */
-#define AIU_REG_DMA_ENABLE     0x088Cu  /* bit 0 = DMA channel enable           */
-#define AIU_REG_PLAY_BASE_PA   0x08B0u  /* playback ring base PA                */
-#define AIU_REG_PLAY_END_PA    0x08B4u  /* playback ring end PA (exclusive)     */
-#define AIU_REG_CAPTURE_BASE   0x08B8u  /* capture ring base PA (out of scope)  */
-#define AIU_REG_CAPTURE_END    0x08BCu  /* capture ring end PA  (out of scope)  */
+/* Register offsets within the companion latch (PA 0x0A000000 base). */
+#define AIU_REG_CODEC_CMD      0x03C0u  /* codec serial command               */
+#define AIU_REG_CODEC_READY    0x03C4u  /* non-zero = codec ready             */
+#define AIU_REG_CTRL           0x0880u  /* bits 6:4 rate code, bit 3 enable   */
+#define AIU_REG_FORMAT         0x0888u  /* bit 1 = mono                       */
+#define AIU_REG_DMA_ENABLE     0x0898u  /* bit 0 = DMA run                    */
+#define AIU_REG_ARM            0x08A0u  /* bit 0 = output armed               */
+#define AIU_REG_STATUS         0x08A8u  /* bit 0/1 = buffer 0/1 drained       */
+#define AIU_REG_BUF0_START     0x08B0u
+#define AIU_REG_BUF0_END       0x08B4u  /* inclusive                          */
+#define AIU_REG_BUF1_START     0x08B8u
+#define AIU_REG_BUF1_END       0x08BCu  /* inclusive                          */
+#define AIU_REG_ACK0           0x08C8u  /* bit 0 written = clear status bit 0 */
+#define AIU_REG_ACK1           0x08CCu  /* bit 0 written = clear status bit 1 */
+
+/* Companion level-1 source bit (AA000004) and its enable (AA000030). */
+#define AIU_GIRQ0_SOURCE       0x00000100u
+#define AIU_SOURCE_EN_OFF      0x0030u
+#define AIU_SOURCE_EN_BIT      0x00000008u
 
 typedef struct aiu_state {
     bool     log_mmio;
-    bool     started;            /* true once we've observed a non-seed DMA base */
-    uint32_t prev_base;          /* last observed playback base (for change detect) */
-    uint32_t prev_end;
-    uint32_t play_pos;           /* current byte offset within [base, end) */
-    uint64_t pulled_bytes;       /* total PCM bytes pulled (logging) */
-    uint64_t tick_count;
+    bool     running;
+    uint8_t  cur_buf;            /* buffer being drained (0 or 1) */
+    uint32_t buf_start[2];       /* PA, latched when the buffer is entered */
+    uint32_t buf_len[2];
+    uint32_t pos;                /* byte offset within cur_buf */
+    uint32_t status;             /* 0x8A8 bits 0..1 */
+    bool     codec_double;       /* bit 7 of the last 0xDxxx codec command */
+    uint32_t rate_hz;
+    uint8_t  channels;
+    uint64_t start_ns;           /* wall-clock origin for the frame cursor */
+    uint64_t frames_done;        /* frames consumed since start_ns */
+    uint64_t irq_count;
 } aiu_state_t;
 
 void aiu_init(aiu_state_t *s, bool log_mmio);
 void aiu_tick(machine_t *m);
-
-/* Convert the 0x880 rate index to Hz. Returns 22050 for unknown indices.
- * Lookup table is best-guess (VRC4173 UM Ch. 10 ordering); refine when a
- * runtime wavedev trace lands. */
-uint32_t aiu_rate_index_to_hz(uint32_t index);
+void aiu_note_write(machine_t *m, uint32_t off, unsigned len, uint32_t val);
+uint32_t aiu_read_status(const aiu_state_t *s);
+bool aiu_irq_pending(const aiu_state_t *s);
+bool aiu_handles_write(uint32_t off, unsigned len);

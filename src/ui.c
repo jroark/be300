@@ -2331,12 +2331,30 @@ void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
     free(pcm);
 }
 
+static int32_t ui_audio_frame_mono(const int16_t *samples, size_t i,
+                                   uint8_t channels)
+{
+    if (channels == 2u)
+        return ((int32_t)samples[i * 2u] + (int32_t)samples[i * 2u + 1u]) / 2;
+    return samples[i];
+}
+
 void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
                         uint32_t guest_rate_hz, uint8_t channels)
 {
+    /* Linear-interpolating resampler whose phase and last input frame carry
+     * across calls, so the AIU can feed it arbitrarily small chunks without
+     * per-chunk rounding error (pitch drift) or boundary clicks. */
+    static uint32_t last_rate_hz;
+    static double phase;          /* next output position, in input frames
+                                   * relative to this chunk; -1..0 = between
+                                   * the previous chunk's last frame and
+                                   * this chunk's first */
+    static int32_t prev_frame;
     uint32_t queued_max;
-    int16_t *out;
-    size_t out_count;
+    int16_t out[1024];
+    size_t out_count = 0;
+    double step;
 
     if (!audio_device || !samples || count_frames == 0)
         return;
@@ -2346,62 +2364,55 @@ void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
         guest_rate_hz = AIU_HOST_SAMPLE_RATE;
 
     /* Backpressure: if the host queue is already deeper than our cap,
-     * drop this batch. Keeps wall-clock latency bounded even if the AIU
-     * tick over-pulls. */
+     * drop this batch. Keeps wall-clock latency bounded. */
     queued_max = (AIU_HOST_SAMPLE_RATE * (uint32_t)sizeof(int16_t) *
         AIU_MAX_QUEUE_MS) / 1000u;
-    if (SDL_GetQueuedAudioSize(audio_device) > queued_max)
+    if (SDL_GetQueuedAudioSize(audio_device) > queued_max) {
+        last_rate_hz = 0;
         return;
-
-    /* Resample guest_rate -> host_rate with a single-tap linear
-     * interpolator, downmix stereo to mono on the fly.  This is the
-     * simplest correct path; if the test wav is recorded at the host
-     * rate (44.1 kHz mono) it falls through as a straight copy. */
-    {
-        double ratio = (double)AIU_HOST_SAMPLE_RATE / (double)guest_rate_hz;
-        size_t expected = (size_t)((double)count_frames * ratio + 0.5);
-        if (expected == 0)
-            return;
-        out_count = expected;
     }
 
-    out = (int16_t *)malloc(out_count * sizeof(int16_t));
-    if (!out)
-        return;
+    if (guest_rate_hz != last_rate_hz) {
+        last_rate_hz = guest_rate_hz;
+        phase = 0.0;
+        prev_frame = ui_audio_frame_mono(samples, 0, channels);
+    }
+    step = (double)guest_rate_hz / (double)AIU_HOST_SAMPLE_RATE;
 
-    for (size_t i = 0; i < out_count; i++) {
-        double src_idx = (double)i * (double)guest_rate_hz /
-                         (double)AIU_HOST_SAMPLE_RATE;
-        size_t i0 = (size_t)src_idx;
-        size_t i1 = i0 + 1u;
+    while (phase < (double)(count_frames - 1u) + 1e-9 ||
+           phase < 0.0) {
+        int32_t s0, s1, mixed;
         double frac;
-        int32_t s0_l, s0_r, s1_l, s1_r, s0, s1, mixed;
 
-        if (i0 >= count_frames)
-            i0 = count_frames - 1u;
-        if (i1 >= count_frames)
-            i1 = count_frames - 1u;
-        frac = src_idx - (double)((size_t)src_idx);
-
-        if (channels == 2u) {
-            s0_l = samples[i0 * 2u];
-            s0_r = samples[i0 * 2u + 1u];
-            s1_l = samples[i1 * 2u];
-            s1_r = samples[i1 * 2u + 1u];
-            s0 = (s0_l + s0_r) / 2;
-            s1 = (s1_l + s1_r) / 2;
+        if (phase < 0.0) {
+            s0 = prev_frame;
+            s1 = ui_audio_frame_mono(samples, 0, channels);
+            frac = phase + 1.0;
         } else {
-            s0 = samples[i0];
-            s1 = samples[i1];
+            size_t i0 = (size_t)phase;
+            size_t i1 = (i0 + 1u < count_frames) ? i0 + 1u : i0;
+
+            s0 = ui_audio_frame_mono(samples, i0, channels);
+            s1 = ui_audio_frame_mono(samples, i1, channels);
+            frac = phase - (double)i0;
         }
-        mixed = (int32_t)((double)s0 + ((double)(s1 - s0)) * frac);
+        mixed = (int32_t)((double)s0 + (double)(s1 - s0) * frac);
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
-        out[i] = (int16_t)mixed;
+        out[out_count++] = (int16_t)mixed;
+        if (out_count == sizeof(out) / sizeof(out[0])) {
+            SDL_QueueAudio(audio_device, out,
+                (uint32_t)(out_count * sizeof(int16_t)));
+            out_count = 0;
+        }
+        phase += step;
     }
+    prev_frame = ui_audio_frame_mono(samples, count_frames - 1u, channels);
+    phase -= (double)count_frames;
 
-    SDL_QueueAudio(audio_device, out, (uint32_t)(out_count * sizeof(int16_t)));
-    free(out);
+    if (out_count > 0)
+        SDL_QueueAudio(audio_device, out,
+            (uint32_t)(out_count * sizeof(int16_t)));
 }
 
 #else  /* !HAVE_SDL2 — headless stubs */

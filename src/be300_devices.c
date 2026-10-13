@@ -99,6 +99,9 @@ struct be300_vrc4173_latch {
     struct interrupt usb_irq;
     bool     usb_irq_connected;
     bool     usb_irq_asserted;
+    struct interrupt aiu_irq;
+    bool     aiu_irq_connected;
+    bool     aiu_irq_asserted;
     struct interrupt pcconnect_irq;
     bool     pcconnect_irq_connected;
     bool     pcconnect_irq_asserted;
@@ -205,6 +208,38 @@ static void be300_usbf_irq_update(struct be300_vrc4173_latch *d)
     }
 }
 
+/*
+ * Wave-output DMA interrupt: docs/BE300_AUDIO.md.  The OAL GIRQ0 dispatcher
+ * takes AA000004 bit 8 to handler 0x800a8dcc, which clears the source enable
+ * AA000030 bit 3 and returns SYSINTR 0x14 (wavedev.dll) unless AA00089C
+ * bit 7 is set.  Real-hardware idle value of AA000030 is 0x0C
+ * (hw_dump_vrc4173.txt:27), i.e. the source enabled.
+ */
+static uint32_t be300_aiu_girq0_source_bits(struct be300_vrc4173_latch *d)
+{
+    if (!d || !g_be300_machine || !aiu_irq_pending(&g_be300_machine->aiu) ||
+        !(be300_latch_peek_u32(d, AIU_SOURCE_EN_OFF) & AIU_SOURCE_EN_BIT))
+        return 0;
+    return AIU_GIRQ0_SOURCE;
+}
+
+static void be300_aiu_irq_update(struct be300_vrc4173_latch *d)
+{
+    bool want;
+
+    if (!d || !d->aiu_irq_connected)
+        return;
+
+    want = be300_aiu_girq0_source_bits(d) != 0;
+    if (want && !d->aiu_irq_asserted) {
+        INTERRUPT_ASSERT(d->aiu_irq);
+        d->aiu_irq_asserted = true;
+    } else if (!want && d->aiu_irq_asserted) {
+        INTERRUPT_DEASSERT(d->aiu_irq);
+        d->aiu_irq_asserted = false;
+    }
+}
+
 static void be300_usbf_irq_changed(void *ctx)
 {
     be300_usbf_irq_update((struct be300_vrc4173_latch *)ctx);
@@ -218,6 +253,11 @@ static uint8_t *be300_usbf_ram(void *ctx, uint32_t pa, uint32_t len)
         return NULL;
     return memory_paddr_to_hostaddr(g_be300_machine->gxe_machine->memory,
         pa, MEM_WRITE);
+}
+
+void be300_vrc4173_update_audio_irq(void)
+{
+    be300_aiu_irq_update(g_be300_vrc4173_latch);
 }
 
 void be300_vrc4173_update_cf_irq(void)
@@ -1538,6 +1578,13 @@ DEVICE_ACCESS(be300_vrc4173)
         if (off <= BE300_USBF_SOURCE_EN &&
             off + len > BE300_USBF_SOURCE_EN)
             be300_usbf_irq_update(d);
+        if (g_be300_machine && aiu_handles_write(off, (unsigned)len)) {
+            aiu_note_write(g_be300_machine, off, (unsigned)len,
+                (uint32_t)val);
+            be300_aiu_irq_update(d);
+        }
+        if (off <= AIU_SOURCE_EN_OFF && off + len > AIU_SOURCE_EN_OFF)
+            be300_aiu_irq_update(d);
         be300_pcconnect_note_comm_write(d, off, (unsigned)len, val,
             (uint32_t)cpu->pc);
         if (be300_serial_dock_socket_enabled() &&
@@ -1563,6 +1610,12 @@ DEVICE_ACCESS(be300_vrc4173)
             piu_update_state(
                 (struct be300_input_device *)g_be300_machine->touch_device);
     } else {
+        if (g_be300_machine && off == AIU_REG_STATUS) {
+            memory_writemax64(cpu, data, len,
+                aiu_read_status(&g_be300_machine->aiu));
+            return 1;
+        }
+
         if (g_be300_machine && off == 0x0004u) {
             be300_probe_note_mmio("vrc4173-giu-src", off, 'R',
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
@@ -1581,6 +1634,7 @@ DEVICE_ACCESS(be300_vrc4173)
                     &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT])
                 | be300_pcconnect_girq0_source_bits(d)
                 | be300_usbf_girq0_source_bits(d)
+                | be300_aiu_girq0_source_bits(d)
                 | button_girq0_source_bits(
                     (const struct be300_input_device *)
                     g_be300_machine->button_device)
@@ -2103,6 +2157,10 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         INTERRUPT_CONNECT(tmps, latch->usb_irq);
         latch->usb_irq_connected = true;
         latch->usb_irq_asserted = false;
+
+        INTERRUPT_CONNECT(tmps, latch->aiu_irq);
+        latch->aiu_irq_connected = true;
+        latch->aiu_irq_asserted = false;
     }
 
     if (m->cfg.enable_stowaway_keyboard || m->cfg.pcconnect_bridge) {

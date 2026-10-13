@@ -52,7 +52,7 @@ boot:
 | `AA000004` bit 0 | `800a9790` | `0x15` |
 | `AA000004` bit 1 | `800a91bc` | `0x10` |
 | `AA000004` bit 7 | `800aaab0` | `0x12` (USB) |
-| `AA000004` bit 8 | `800a8dcc` | `0x14` / `0x20` |
+| `AA000004` bit 8 | `800a8dcc` | `0x14` / `0x20` (wave audio, see `BE300_AUDIO.md`) |
 | `AA000004` bit 9 | `800aa5d8` | `0x11` |
 | `AA000004` bits 2, 4, 6, 12, 16 | sub-tables | — |
 
