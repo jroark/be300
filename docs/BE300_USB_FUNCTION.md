@@ -1,7 +1,9 @@
 # BE-300 USB Function Controller (companion window 0x1100 / 0x1300-0x161F)
 
-Status: reverse-engineered from `usb.dll` and real-hardware dumps; not yet
-emulated (2026-10-12). This is the hardware behind `--pcconnect-dock usb-sync`.
+Status: reverse-engineered from `usb.dll` and real-hardware dumps. It is
+modelled in `src/hw/usbf.c` (test: `tests/test_usbf.c`), but nothing connects
+it to a host yet (2026-10-12). This is the hardware behind
+`--pcconnect-dock usb-sync`.
 
 ## What it is
 
@@ -89,7 +91,7 @@ Behaviour is cited by the `usb.dll` PC that relies on it.
 | `0x1318` | W | DMA high address / mode (written 0) | `0x01922b90` |
 | `0x131C` | W | DMA length in bytes (≤ 64) | `0x01922bb0`, `0x01922f7c` |
 | `0x1320` | W | DMA address. Written as kseg1 `0xA000xxxx`; the dump reads back the PA (`0x8040`, `0x9F80`). | `0x01922bd4` |
-| `0x1324` | R | Top-level status. Bit 0: RX DMA done. Bit 1: TX DMA done. Bit 2: EP2 OUT packet ready (level). Bit 3: DMA idle (level). Bit 4: USB core interrupt pending (level; OR of the three core status/mask pairs). | GetIntrType `0x01921d00` |
+| `0x1324` | R | Top-level status. Bit 0: RX DMA done. Bit 1: TX DMA done. Bit 2: EP2 OUT packet ready (level). Bit 3: EP1 DMA request (level, while `0x1488` bit 7 is set and EP1 has room). Bit 4: USB core interrupt pending (level; OR of the three core status/mask pairs). | GetIntrType `0x01921d00`; the dump has bit 3 clear with it enabled (`0x1324=0x01`, `0x132C=0x1E`) |
 | `0x1328` | W | Status clear (write 1 to clear): bit 0 = RX done, bit 1 = TX done | `0x019232ec`, `0x01922a7c` |
 | `0x132C` | RW | Top-level interrupt enable for the `0x1324` bits. Init: `0x1A` (board variant 2) or `0x1F`. | `0x019266d4` |
 | `0x1338` | W | Reset pulse (write 1, then 0) | `0x01923484` |
@@ -104,16 +106,16 @@ inferred from GetIntrType reading only that pair before it dispatches.
 | `0x1444` | RW | Core enable. Init writes 1 and polls until it reads non-zero, then writes 0 at the end of init. | `0x019235a8`-`0x019235cc`, `0x019237f4` |
 | `0x1448` | W | Written 2 on disable | `0x01923434` |
 | `0x1450` | R | Device state. Bit 7: configured (read on a config-change event). | `0x01922548` |
-| `0x1454` | R | Bit 3: EP2 OUT data pending (PIO) | `0x01923034` |
+| `0x1454` | R | Bit 3: EP2 OUT data pending (PIO). Bit 4: EP3 packet still pending. | `0x01923034`, `0x01923314` |
 | `0x1460` | RW | EP0 control. Bit 3: STALL. | `0x0192275c` |
 | `0x1464` | R | INTSTAT0. Bit 2: EP1 IN FIFO empty / TX ready. Bit 7: line event. | GetIntrType |
 | `0x1468` | R | INTSTAT1. Bit 0: class/vendor SETUP received. Bit 1: modem event. Bit 4: SETUP overwritten. Bit 5: EP0 status stage ready. | `0x019225c0` |
 | `0x146C` | R | INTSTAT2. Bit 1: event, clear only (bus reset or suspend?). Bit 2: configuration changed. Bit 3: EP0 status stage complete. | `0x019224e4`, `0x0192253c`, `0x01922844` |
 | `0x1470`/`0x1474`/`0x1478` | RW | INTMASK0/1/2 (1 = masked). Init: `0x7D` / `0x38` / `0x09`, which matches the dump. | `0x019266f8` |
 | `0x147C`/`0x1480`/`0x1484` | W | INTCLR0/1/2. Write `~bit` (0 = clear). The driver polls the status bit until it reads clear. | `0x0192250c`, `0x01922640` |
-| `0x1488` | W | EP1 IN control (values from a board table: `drv+0x84` / `drv+0x88`) | `0x01922a60` |
-| `0x148C` | RW | EP0 control. 1: stall response. 2: status-stage handshake. Bit 2: EP1 ZLP. | `0x01922764`, `0x019227e4`, `0x01922ad8` |
-| `0x1490` | RW | EP commit. Bit 0: EP0 status ACK. Bit 1: EP1 packet ready. Bit 4: ? | `0x019227fc`, `0x01922a04`, `0x01922c68` |
+| `0x1488` | W | EP1 DMA request control. For board `0x7100`, `0x01926680` gives `0x85` (request on, written while TX ring entries remain) and `0` (off, written when the ring is drained). | `0x01922a60`, `0x01922b54`, `0x01922c78` |
+| `0x148C` | W | FIFO-clear commands (self-clearing). Init writes `0x3F` (all). Bit 0 is written on an EP0 stall, bit 1 at the status stage, and bit 2 clears the EP1 FIFO before an empty commit that sends a ZLP. | `0x019237a8`, `0x01922764`, `0x019227e4`, `0x01922ad8` |
+| `0x1490` | W | EP commit (self-clearing). Bit 0: EP0 status ACK. Bit 1: EP1 packet ready; an empty commit is a ZLP. Bit 2: EP3 packet ready. Bit 4: written before EP1 DMA starts (meaning unknown). | `0x019227fc`, `0x01922a04`, `0x01923354`, `0x01922c68` |
 | `0x1494` | W | Written 1, then `~1`, at init | `0x01923590` |
 
 ### 0x14C0 block — FIFO ports
@@ -124,7 +126,7 @@ inferred from GetIntrType reading only that pair before it dispatches.
 | `0x14CC` | R | SETUP FIFO; each read pops one byte. Two dump reads gave `0x21`, `0x22`, the start of SET_CONTROL_LINE_STATE. | `0x01922650`, `hw_dump_vrc4173.txt:102-103` |
 | `0x14D4` | R | EP2 OUT data FIFO; each read pops one byte | `0x019230a4` |
 | `0x14D8` | R | EP2 OUT current packet length (non-destructive) | `0x01922f50`, `0x01923078` |
-| `0x14E0` | W | Pulse (value, then 0) | `0x01923334` |
+| `0x14E0` | W | EP3 data port: the DTR/RTS handlers (`0x01922070`-`0x01922150`) write the serial state, then 0, then commit with `0x1490` bit 2 | `0x01923334` |
 
 ### 0x1500 block — descriptor RAM and hardware request state
 
@@ -179,8 +181,11 @@ set in the USB class driver."
 2. On TX-done (`0x1324` bit 1), `0x0192298c` commits the packet
    (`0x1490 |= 2`).
 3. A 64-byte packet sets a ZLP-pending flag. The ZLP is later sent with
-   `0x148C |= 4`.
-4. INTSTAT0 bit 2 (EP1 empty) paces the next packet.
+   `0x148C |= 4` and an empty commit.
+4. `0x1488 = 0x85` keeps `0x1324` bit 3 (EP1 DMA request) raised while
+   ring entries remain; `0x01922a70` re-enables that source after every
+   TX-done. INTSTAT0 bit 2 (EP1 empty) restarts the flow after the ring
+   drains.
 
 ### RX (EP2 OUT)
 
@@ -204,7 +209,9 @@ set in the USB class driver."
 
 - Which INTSTAT0 bit 7 / INTSTAT2 bit 1 events correspond to bus reset and
   suspend. Watch them on a real enumeration.
-- Exact `0x1488` / `0x1490` bit 4 meaning. Model as written; nothing reads
-  them back.
+- `0x1490` bit 4 meaning. It is modelled as a no-op.
+- The OAL pulses the block at boot (`0x800a5cf0`: clock `0x1114`, unit
+  `0x1300`, reset `0x1338`, then off). In a usb-sync boot `usb.dll` then
+  enables it (`0x1300=1`, `0x132C=0x1A`, `0x1308=1`) and leaves it on.
 - Whether `AA00002C` bit 3 gates `AA000004` bit 7 (the ISR masks it before
   returning, so a level source must respect it to avoid an IRQ storm).

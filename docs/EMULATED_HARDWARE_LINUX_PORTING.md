@@ -495,7 +495,7 @@ Important platform identification and control offsets:
 | `0x0980-0x09E7` | Survey latch/emulator-modeled host effect | Buzzer/BLG registers. Writes can trigger host buzzer pulses. |
 | `0x0A00` | Compatibility shim | Display blit trigger/status. |
 | `0x1128` | Survey latch/emulator-modeled host effect | Buzzer/CMM word. |
-| `0x1440-0x149F` | Emulator-modeled/stub | VRC4173 USB OpenHCI operational registers. Root hub remains disconnected unless PC Connect mode uses related state. |
+| `0x1300-0x161F` | Emulator-modeled | BE-300 USB function (device) controller: DMA/top level, core status, FIFOs, descriptor RAM. See `docs/BE300_USB_FUNCTION.md`. |
 | `0x1B00-0x1B2F` | Mixed | Interrupt/status/mask area, W1C handling. |
 | `0x7800-0x783F` | Stub/unknown | ScCmcu companion MCU command area; reads return zero to mean instant command completion. |
 | `0x8004` | Emulator-modeled with PC Connect option | CommMode pending/mask word. |
@@ -506,27 +506,16 @@ Important platform identification and control offsets:
 Board ID `0x7100` is the main BE-300 companion-chip identity. A Linux board
 probe can use physical `0x0A00A0C0` to identify the emulated machine.
 
-### VRC4173 USB Operational Window
+### USB Function Controller
 
-Base: `0x0A001440`
+Base: `0x0A001300` (descriptor RAM up to `0x0A00161F`)
 
-Status: emulator-modeled/stub.
+Status: emulator-modeled (`src/hw/usbf.c`).
 
-This is modeled as an OpenHCI-like operational register window:
-
-| Offset | Meaning |
-| ---: | --- |
-| `0x00` | HcRevision, returns `0x0010`. |
-| `0x0C` | HcInterruptStatus. |
-| `0x10` | HcInterruptEnable. |
-| `0x14` | HcInterruptDisable/readback of enable state. |
-| `0x50` | Root hub descriptor/control-like register. |
-| `0x54` | Port 0 status. |
-| `0x58` | Port 1 status. |
-
-The root hub normally has no connected USB device. A generic OHCI driver may
-probe this, but useful USB device functionality is not implemented. Bring up
-serial/debug/storage first.
+This is a USB **device** controller, not OpenHCI: the BE-300 enumerates on a
+PC as `07CF:2002`. The register map, interrupt route (`AA000004` bit 7, enable
+`AA00002C` bit 3) and DMA rings are in `docs/BE300_USB_FUNCTION.md`. A Linux
+port would need a gadget (UDC) driver for it, not an OHCI host driver.
 
 ### Buzzer
 
@@ -1080,7 +1069,7 @@ This order minimizes dependency on incomplete companion-chip behavior.
 9. Optional devices:
    - PPSH mailbox for debug.
    - Buzzer host pulse support.
-   - USB OHCI probe only after a real USB device model exists.
+   - USB gadget (UDC) driver for the function controller in `docs/BE300_USB_FUNCTION.md`.
 
 ## Driver Inventory
 
@@ -1108,7 +1097,7 @@ Recommended Linux driver names are suggestions, not existing upstream bindings.
 - The VRC4173 PCMCIA bridge is not fully modeled. Runtime CF works through
   observed windows and compatibility routing.
 - VRC4173 display acceleration blocks are partial. Use the framebuffer first.
-- VRC4173 USB exposes OHCI-like registers but no useful connected USB device.
+- The USB block is a function (device) controller; there is no USB host port.
 - DSIU extension registers are stubbed.
 - The ScCmcu range `0x0A007800-0x0A00783F` returns instant completion and is
   not a real MCU model.

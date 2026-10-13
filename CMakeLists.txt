@@ -194,6 +194,7 @@ set(BE300_SOURCES
     src/hw/pmu.c
     src/hw/icu.c
     src/hw/siu.c
+    src/hw/usbf.c
     src/hw/rtc.c
     src/hw/gpio.c
     src/hw/nand.c
@@ -396,4 +397,12 @@ if(BUILD_CLI AND NOT WIN32)
         src/pcconnect_bridge.c)
     target_include_directories(test_pcconnect_bridge PRIVATE src)
     add_test(NAME pcconnect_bridge COMMAND test_pcconnect_bridge)
+endif()
+
+if(BUILD_CLI)
+    add_executable(test_usbf
+        tests/test_usbf.c
+        src/hw/usbf.c)
+    target_include_directories(test_usbf PRIVATE src)
+    add_test(NAME usbf COMMAND test_usbf)
 endif()
