@@ -303,6 +303,38 @@ static void test_ep3_and_reset(void)
     CHECK(usbf_descriptors_ready(&u));
 }
 
+/*
+ * usb.dll power-off (pc 0x01923398 with a0 = 0): 0x1444 = 1, 0x1448 = 2,
+ * then clear INTSTAT0 bit 2 until it reads clear (0x01923440-0x0192346c),
+ * then the 0x1338 reset pulse and unit off.  The loop must terminate.
+ */
+static void test_power_off(void)
+{
+    usbf_state_t u;
+    unsigned spins = 0;
+
+    setup_model(&u);
+    CHECK(usbf_read(&u, USBF_INTSTAT0) & USBF_I0_EP1_EMPTY);  /* idle 0x4C */
+
+    usbf_write(&u, USBF_TOP_EN, 0);
+    usbf_write(&u, USBF_DMA_EN, 0);
+    usbf_write(&u, USBF_UNIT_EN, 1);
+    usbf_write(&u, USBF_CORE_EN, 1);
+    usbf_write(&u, USBF_CORE_CMD, USBF_CORE_CMD_EP1_OFF);
+    while ((usbf_read(&u, USBF_INTSTAT0) & USBF_I0_EP1_EMPTY) && spins < 4) {
+        usbf_write(&u, USBF_INTCLR0, (uint8_t)~USBF_I0_EP1_EMPTY);
+        spins++;
+    }
+    CHECK(spins < 4);
+    usbf_write(&u, USBF_RESET, 1);
+    usbf_write(&u, USBF_RESET, 0);
+    usbf_write(&u, USBF_UNIT_EN, 0);
+
+    /* Power-on runs the reset pulse and init again; EP1 reports ready. */
+    guest_init(&u);
+    CHECK(usbf_read(&u, USBF_INTSTAT0) & USBF_I0_EP1_EMPTY);
+}
+
 int main(void)
 {
     test_enumeration();
@@ -310,6 +342,7 @@ int main(void)
     test_bulk_out();
     test_bulk_in();
     test_ep3_and_reset();
+    test_power_off();
     if (failures) {
         fprintf(stderr, "test_usbf: %d failure(s)\n", failures);
         return 1;

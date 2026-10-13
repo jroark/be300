@@ -104,7 +104,7 @@ inferred from GetIntrType reading only that pair before it dispatches.
 | Offset | Access | Meaning | Evidence |
 | --- | --- | --- | --- |
 | `0x1444` | RW | Core enable. Init writes 1 and polls until it reads non-zero, then writes 0 at the end of init. | `0x019235a8`-`0x019235cc`, `0x019237f4` |
-| `0x1448` | W | Written 2 on disable | `0x01923434` |
+| `0x1448` | W | Written 2 on power-off (`0x01923398` with `a0 = 0`). Bit 1 drops the INTSTAT0 bit 2 level until the `0x1338` reset pulse; the driver then spins until that bit reads clear, so a model that keeps the level set hangs `usb.dll` in a busy loop. | `0x01923434`-`0x0192346c` |
 | `0x1450` | R | Device state. Bit 7: configured (read on a config-change event). | `0x01922548` |
 | `0x1454` | R | Bit 3: EP2 OUT data pending (PIO). Bit 4: EP3 packet still pending. | `0x01923034`, `0x01923314` |
 | `0x1460` | RW | EP0 control. Bit 3: STALL. | `0x0192275c` |

@@ -49,8 +49,14 @@ static uint8_t usbf_intstat(const usbf_state_t *u, unsigned i)
 {
     uint8_t v = u->intstat[i];
 
-    /* Level sources: EP1 FIFO empty and EP2 OUT data pending. */
-    if (i == 0 && u->in_count == 0)
+    /*
+     * Level sources: EP1 FIFO empty and EP2 OUT data pending.  The idle
+     * dump has the EP1 level set (0x1464 = 0x4C, hw_dump_vrc4173.txt:98),
+     * but usb.dll's power-off path writes 0x1448 = 2 and then spins until
+     * the bit reads clear (pc 0x01923434-0x0192346c), so that command must
+     * drop it until the 0x1338 reset pulse that follows.
+     */
+    if (i == 0 && u->in_count == 0 && !u->ep1_off)
         v |= USBF_I0_EP1_EMPTY;
     if (i == 1 && usbf_out_pending(u))
         v |= USBF_I1_OUT_READY;
@@ -326,9 +332,14 @@ void usbf_write(usbf_state_t *u, uint32_t off, uint32_t val)
             usbf_flush_fifos(u);
             u->intstat[0] = u->intstat[1] = u->intstat[2] = 0;
             u->top_latched = 0;
+            u->ep1_off = false;
         }
         break;
     case USBF_CORE_EN:  u->core_en = b & 1u; break;
+    case USBF_CORE_CMD:
+        if (b & USBF_CORE_CMD_EP1_OFF)
+            u->ep1_off = true;
+        break;
     case USBF_EP0_CTRL:
         if ((b & USBF_EP0_STALL) && u->ctrl_pending)
             usbf_finish_control(u, USBF_CTRL_STALL);

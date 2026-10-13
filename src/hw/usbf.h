@@ -40,6 +40,7 @@
 
 /* 0x1440 block: USB core */
 #define USBF_CORE_EN       0x1444u
+#define USBF_CORE_CMD      0x1448u   /* power-off writes 2 */
 #define USBF_DEV_STATE     0x1450u
 #define USBF_OUT_STATE     0x1454u
 #define USBF_EP0_CTRL      0x1460u
@@ -56,6 +57,7 @@
 #define USBF_EP_CTRL       0x148Cu   /* FIFO-clear commands */
 #define USBF_EP_COMMIT     0x1490u
 
+#define USBF_CORE_CMD_EP1_OFF 0x02u   /* USBF_CORE_CMD */
 #define USBF_DEV_CONFIGURED 0x80u     /* USBF_DEV_STATE */
 #define USBF_OUT_PENDING    0x08u     /* USBF_OUT_STATE */
 #define USBF_EP3_BUSY       0x10u     /* USBF_OUT_STATE */
@@ -122,6 +124,7 @@ typedef struct {
 
     /* 0x1440 block */
     uint8_t  core_en;
+    bool     ep1_off;           /* 0x1448 bit 1 until the 0x1338 reset */
     uint8_t  ep0_ctrl;
     uint8_t  intstat[3];
     uint8_t  intmask[3];
