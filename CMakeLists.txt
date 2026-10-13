@@ -186,6 +186,7 @@ set(BE300_SOURCES
     src/host_io.c
     src/pcconnect.c
     src/pcconnect_bridge.c
+    src/host_chardev.c
     src/stowaway.c
     src/ui.c
     src/ui_stowaway.c
@@ -394,7 +395,8 @@ endif()
 if(BUILD_CLI AND NOT WIN32)
     add_executable(test_pcconnect_bridge
         tests/test_pcconnect_bridge.c
-        src/pcconnect_bridge.c)
+        src/pcconnect_bridge.c
+        src/host_chardev.c)
     target_include_directories(test_pcconnect_bridge PRIVATE src)
     add_test(NAME pcconnect_bridge COMMAND test_pcconnect_bridge)
 endif()

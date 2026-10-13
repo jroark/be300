@@ -4,14 +4,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef enum {
-    PCC_BR_NONE = 0,
-    PCC_BR_TCP_CONNECT,    /* tcp:host:port           */
-    PCC_BR_TCP_LISTEN,     /* tcp-listen:port[@addr]  */
-    PCC_BR_UNIX_CONNECT,   /* unix:/path              */
-    PCC_BR_UNIX_LISTEN,    /* unix-listen:/path       */
-    PCC_BR_PTY,            /* pty:auto                */
-} pcc_bridge_kind_t;
+#include "host_chardev.h"
+
+/* Bridge chardev kinds; see host_chardev.h. */
+typedef host_chardev_kind_t pcc_bridge_kind_t;
+#define PCC_BR_NONE         HOST_CHARDEV_NONE
+#define PCC_BR_TCP_CONNECT  HOST_CHARDEV_TCP_CONNECT    /* tcp:host:port          */
+#define PCC_BR_TCP_LISTEN   HOST_CHARDEV_TCP_LISTEN     /* tcp-listen:port[@addr] */
+#define PCC_BR_UNIX_CONNECT HOST_CHARDEV_UNIX_CONNECT   /* unix:/path             */
+#define PCC_BR_UNIX_LISTEN  HOST_CHARDEV_UNIX_LISTEN    /* unix-listen:/path      */
+#define PCC_BR_PTY          HOST_CHARDEV_PTY            /* pty:auto               */
 
 /* Bridge instance slot. There is one bridge per emulated UART. */
 typedef enum {
