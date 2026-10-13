@@ -52,7 +52,7 @@ boot:
 | `AA000004` bit 0 | `800a9790` | `0x15` |
 | `AA000004` bit 1 | `800a91bc` | `0x10` |
 | `AA000004` bit 7 | `800aaab0` | `0x12` (USB) |
-| `AA000004` bit 8 | `800a8dcc` | `0x14` / `0x20` |
+| `AA000004` bit 8 | `800a8dcc` | `0x14` / `0x20` (wave audio, see `BE300_AUDIO.md`) |
 | `AA000004` bit 9 | `800aa5d8` | `0x11` |
 | `AA000004` bits 2, 4, 6, 12, 16 | sub-tables | — |
 
@@ -126,7 +126,7 @@ inferred from GetIntrType reading only that pair before it dispatches.
 | `0x14CC` | R | SETUP FIFO; each read pops one byte. Two dump reads gave `0x21`, `0x22`, the start of SET_CONTROL_LINE_STATE. | `0x01922650`, `hw_dump_vrc4173.txt:102-103` |
 | `0x14D4` | R | EP2 OUT data FIFO; each read pops one byte | `0x019230a4` |
 | `0x14D8` | R | EP2 OUT current packet length (non-destructive) | `0x01922f50`, `0x01923078` |
-| `0x14E0` | W | EP3 data port: the DTR/RTS handlers (`0x01922070`-`0x01922150`) write the serial state, then 0, then commit with `0x1490` bit 2 | `0x01923334` |
+| `0x14E0` | W | EP3 data port: the DTR/RTS handlers (`0x01922070`-`0x01922150`) write the serial state, then 0, then commit with `0x1490` bit 2. The sender (`0x01923308`) skips the update while `0x1454` bit 4 (EP3 busy) is set, so at most one state per host poll (bInterval 1 ms) leaves the device; the TX service (`0x01922d5c`) sends `state \| 1` to announce pending EP1 data | `0x01923334` |
 
 ### 0x1500 block — descriptor RAM and hardware request state
 

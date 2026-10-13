@@ -1,25 +1,18 @@
 /*
- * aiu.c - Casio audio block on the BE-300 VRC4173 latch.
+ * aiu.c - Casio wave-output DMA block on the BE-300 Kj companion.
  *
- * See aiu.h for the architectural notes (why this isn't a separately
- * registered GXemul device, where the registers live, and what's
- * uncertain about the bit assignments).
+ * See aiu.h and docs/BE300_AUDIO.md for the register map.  This module
+ * owns the DMA cursor and the drained-buffer status; the companion latch
+ * (be300_devices.c) owns register storage and the GIRQ0 interrupt line.
  *
- * This module owns:
- *   - a small cursor / change-detection state struct (aiu_state_t),
- *   - a per-tick pull that reads PCM bytes from guest RAM at the
- *     wavedev-programmed DMA pointers and queues them to the host SDL
- *     audio sink via ui_audio_queue_pcm().
- *
- * It does NOT own any MMIO storage - the VRC4173 latch (be300_devices.c)
- * already holds the register backing store and seeds it at hardware-reset
- * values.  We read those backing bytes through the existing exported
- * helper be300_vrc4173_latch_read_u32() so the latch remains the single
- * source of truth.
+ * The DMA cursor is paced by host monotonic time, the same clock the
+ * main-loop throttle uses, so the guest sees buffer-drained interrupts at
+ * the real playback rate and the host SDL queue stays level.
  */
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "machine.h"
 #include "memory.h"
@@ -28,49 +21,73 @@
 #include "../ui.h"
 #include "aiu.h"
 
-/* Maximum PCM bytes pulled per tick.  At 22050 Hz / S16 mono this is a
- * little under 100 ms of audio per call, which keeps SDL's queue topped
- * up at ~30 Hz tick rate without monopolising the main loop. */
-#define AIU_MAX_BYTES_PER_TICK   4096u
+#define AIU_LATCH_BASE      0x0A000000u
+#define AIU_FRAME_STAGE     512u
 
-/* Sanity bound for the DMA ring length.  The hardware-captured ring is
- * 1532 bytes; real wavedev rings are typically up to ~16 KiB.  Anything
- * larger almost certainly means we picked up a stale/garbage base/end
- * pair the guest is mid-write on; ignore until it stabilises. */
-#define AIU_MAX_RING_BYTES       0x10000u
+/* The main loop runs far more often than the sample rate; batch pulls to
+ * roughly 6 ms at 11025 Hz unless a buffer boundary is due sooner. */
+#define AIU_MIN_BATCH       64u
 
-uint32_t aiu_rate_index_to_hz(uint32_t index)
+/* A ring buffer longer than this means the guest is mid-update. */
+#define AIU_MAX_BUF_BYTES   0x10000u
+
+/* Never consume more than this much wall time in one tick; a stalled host
+ * (debugger, SIGSTOP) resynchronizes instead of bursting interrupts. */
+#define AIU_MAX_CATCHUP_NS  100000000ULL
+
+static uint64_t aiu_now_ns(void)
 {
-    /*
-     * Best-guess lookup matching the VRC4173 UM Ch. 10 rate ordering.
-     * The cold-reset value seeded at +0x880 is 4 (-> 22050 Hz), which
-     * matches the most plausible default for a PDA wave codec.  Refine
-     * this table when a live wavedev trace pins down the encoding.
-     */
-    static const uint32_t table[] = {
-         8000, 11025, 12000, 16000,
-        22050, 24000, 32000, 44100,
-        48000,
-    };
-    if (index < sizeof(table) / sizeof(table[0]))
-        return table[index];
-    return 22050u;
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
-static uint8_t aiu_channels_from_reg(uint32_t value)
+static uint32_t aiu_reg(uint32_t off)
 {
-    return (value == 2u) ? 2u : 1u;
+    uint32_t v = 0;
+
+    be300_vrc4173_latch_read_u32(AIU_LATCH_BASE + off, &v);
+    return v;
 }
 
-static uint32_t aiu_bytes_per_sample_from_width(uint32_t value)
+/*
+ * wavedev 0x019111DC picks the code written to 0x880 bits 6:4 and a codec
+ * double-rate bit from the requested sample rate:
+ *   <10001 Hz -> 0x40       10001..15000 -> 0x10    15001..19000 -> 0x30
+ *   19001..26000 -> 0x00    26001..40000 -> 0x30+x2  >40000 -> 0x00+x2
+ * The x2 bit is bit 7 of the 0xDxxx command wavedev writes to 0x3C0.
+ */
+static uint32_t aiu_rate_hz(const aiu_state_t *s)
 {
-    /*
-     * The hardware reset seed uses width=3, which is interpreted here as
-     * signed 16-bit PCM. Unknown values are clamped to S16 until a wavedev
-     * trace proves another encoding.
-     */
-    (void)value;
-    return 2u;
+    uint32_t base;
+
+    switch (aiu_reg(AIU_REG_CTRL) & 0x70u) {
+    case 0x40: base = 8000;  break;
+    case 0x10: base = 11025; break;
+    case 0x30: base = 16000; break;
+    default:   base = 22050; break;
+    }
+    return s->codec_double ? base * 2u : base;
+}
+
+static uint8_t aiu_channels(void)
+{
+    /* wavedev 0x01911C0C clears 0x888 bit 1 for its stereo formats. */
+    return (aiu_reg(AIU_REG_FORMAT) & 0x2u) ? 1u : 2u;
+}
+
+static void aiu_load_buffer(aiu_state_t *s, unsigned idx)
+{
+    uint32_t start = aiu_reg(idx ? AIU_REG_BUF1_START : AIU_REG_BUF0_START);
+    uint32_t end = aiu_reg(idx ? AIU_REG_BUF1_END : AIU_REG_BUF0_END);
+
+    /* wavedev programs kseg1 addresses (0xA004A000); the bus uses the PA. */
+    start &= 0x1FFFFFFFu;
+    end &= 0x1FFFFFFFu;
+    s->buf_start[idx] = start;
+    s->buf_len[idx] = (end >= start && end - start < AIU_MAX_BUF_BYTES)
+        ? end - start + 1u : 0u;
 }
 
 void aiu_init(aiu_state_t *s, bool log_mmio)
@@ -81,157 +98,183 @@ void aiu_init(aiu_state_t *s, bool log_mmio)
     s->log_mmio = log_mmio;
 }
 
-/* Read 32 bits LE from the latch backing store at the given full PA. */
-static bool aiu_latch_read_u32(uint32_t pa, uint32_t *out)
+uint32_t aiu_read_status(const aiu_state_t *s)
 {
-    return be300_vrc4173_latch_read_u32(pa, out);
+    return s ? s->status : 0u;
+}
+
+bool aiu_irq_pending(const aiu_state_t *s)
+{
+    return s && (s->status & 0x3u) != 0;
+}
+
+bool aiu_handles_write(uint32_t off, unsigned len)
+{
+    uint32_t end = off + len;
+
+    return (off < AIU_REG_ACK1 + 4u && end > AIU_REG_DMA_ENABLE) ||
+           (off < AIU_REG_CODEC_CMD + 4u && end > AIU_REG_CODEC_CMD);
+}
+
+static void aiu_start(machine_t *m)
+{
+    aiu_state_t *s = &m->aiu;
+
+    s->running = true;
+    s->cur_buf = 0;
+    s->pos = 0;
+    s->rate_hz = aiu_rate_hz(s);
+    s->channels = aiu_channels();
+    aiu_load_buffer(s, 0);
+    aiu_load_buffer(s, 1);
+    s->start_ns = aiu_now_ns();
+    s->frames_done = 0;
+    if (s->log_mmio)
+        fprintf(stderr,
+            "[AIU] start rate=%u ch=%u buf0=0x%05x+%u buf1=0x%05x+%u\n",
+            s->rate_hz, s->channels, s->buf_start[0], s->buf_len[0],
+            s->buf_start[1], s->buf_len[1]);
+}
+
+static void aiu_stop(machine_t *m)
+{
+    aiu_state_t *s = &m->aiu;
+
+    s->running = false;
+    if (s->log_mmio)
+        fprintf(stderr, "[AIU] stop after %llu irqs\n",
+            (unsigned long long)s->irq_count);
+}
+
+void aiu_note_write(machine_t *m, uint32_t off, unsigned len, uint32_t val)
+{
+    aiu_state_t *s;
+    bool want_run;
+
+    if (!m)
+        return;
+    s = &m->aiu;
+
+    if (off == AIU_REG_CODEC_CMD && (val & 0xF000u) == 0xD000u)
+        s->codec_double = (val & 0x80u) != 0;
+
+    /* wavedev's IST decode (0x0191274C) writes 0x11 to both ack registers
+     * after reading 0x8A8. */
+    if (off == AIU_REG_ACK0 && (val & 0x1u))
+        s->status &= ~0x1u;
+    if (off == AIU_REG_ACK1 && (val & 0x1u))
+        s->status &= ~0x2u;
+
+    /* Start: 0x898=1 then 0x8A0=1 at the end of wavedev's start sequence
+     * (0x01911374).  Stop: 0x8A0=0 / 0x898&=~1 (0x01911CF0), or the OAL
+     * power-down at 0x800A8FDC which writes 0x898=0. */
+    (void)len;
+    want_run = (aiu_reg(AIU_REG_DMA_ENABLE) & 0x1u) &&
+               (aiu_reg(AIU_REG_ARM) & 0x1u);
+    if (want_run && !s->running)
+        aiu_start(m);
+    else if (!want_run && s->running)
+        aiu_stop(m);
+}
+
+/* Copy `frames` frames from guest RAM to the host sink. */
+static void aiu_emit(machine_t *m, uint32_t pa, uint32_t frames)
+{
+    aiu_state_t *s = &m->aiu;
+    uint32_t frame_bytes = 2u * s->channels;
+    int16_t stage[AIU_FRAME_STAGE * 2u];
+
+    if (!m->cfg.enable_audio)
+        return;
+
+    while (frames > 0) {
+        uint32_t n = frames < AIU_FRAME_STAGE ? frames : AIU_FRAME_STAGE;
+        uint32_t bytes = n * frame_bytes;
+        uint32_t page_left = 0x1000u - (pa & 0xFFFu);
+        unsigned char *src;
+
+        if (bytes > page_left) {
+            n = page_left / frame_bytes;
+            if (n == 0) {
+                /* Frame straddles a page; frames are 2- or 4-byte aligned
+                 * in practice, so just skip it. */
+                pa += frame_bytes;
+                frames--;
+                continue;
+            }
+            bytes = n * frame_bytes;
+        }
+        src = memory_paddr_to_hostaddr(m->gxe_machine->memory, pa,
+            MEM_READ);
+        if (!src)
+            return;
+        memcpy(stage, src, bytes);
+        ui_audio_queue_pcm(stage, n, s->rate_hz, s->channels);
+        pa += bytes;
+        frames -= n;
+    }
 }
 
 void aiu_tick(machine_t *m)
 {
     aiu_state_t *s;
-    uint32_t ctrl = 0;
-    uint32_t dma_en = 0;
-    uint32_t base = 0;
-    uint32_t end = 0;
-    uint32_t rate_idx = 0;
-    uint32_t channels = 0;
-    uint32_t width = 0;
-    uint8_t pcm_channels;
-    uint32_t sample_bytes;
+    uint64_t now, due;
     uint32_t frame_bytes;
-    uint32_t ring;
-    uint32_t budget;
+    bool raised = false;
 
-    if (!m || !m->cfg.enable_audio)
+    if (!m)
         return;
     s = &m->aiu;
-    s->tick_count++;
+    if (!s->running || s->rate_hz == 0)
+        return;
 
-    /* Read the wavedev-programmed control / DMA registers from the
-     * VRC4173 latch backing store. */
-    if (!aiu_latch_read_u32(0x0A000000u + AIU_REG_CTRL, &ctrl))
-        return;
-    if (!aiu_latch_read_u32(0x0A000000u + AIU_REG_DMA_ENABLE, &dma_en))
-        return;
-    if (!aiu_latch_read_u32(0x0A000000u + AIU_REG_PLAY_BASE_PA, &base))
-        return;
-    if (!aiu_latch_read_u32(0x0A000000u + AIU_REG_PLAY_END_PA, &end))
-        return;
-    aiu_latch_read_u32(0x0A000000u + AIU_REG_RATE_INDEX, &rate_idx);
-    aiu_latch_read_u32(0x0A000000u + AIU_REG_CHANNELS,   &channels);
-    aiu_latch_read_u32(0x0A000000u + AIU_REG_WIDTH,      &width);
-    pcm_channels = aiu_channels_from_reg(channels);
-    sample_bytes = aiu_bytes_per_sample_from_width(width);
-    frame_bytes = sample_bytes * (uint32_t)pcm_channels;
-
-    /*
-     * Gate on (a) global codec enable bit, (b) DMA-channel enable bit.
-     * Both bit assignments are uncertain (see aiu.h) - the cold-reset
-     * seed already has 0x3C0=0xD007 (LSB nibble = 7) so without further
-     * filtering this would fire from boot.  Suppress that by also
-     * requiring that the guest has changed the DMA base/end pair away
-     * from the hardware-capture seed values (0x4D000 / 0x4D5FC).
-     */
-    if (!(ctrl & 1u) || !(dma_en & 1u))
-        return;
-    if (!s->started) {
-        if (base == 0x0004D000u && end == 0x0004D5FCu) {
-            /* Still at cold-reset seed; wavedev hasn't programmed real
-             * pointers yet.  Don't pull stale RAM. */
-            return;
-        }
-        if (end <= base || (end - base) > AIU_MAX_RING_BYTES) {
-            /* In-flight base/end half-update; wait for it to settle. */
-            return;
-        }
-        s->started = true;
-        s->prev_base = base;
-        s->prev_end = end;
-        s->play_pos = 0;
-        if (s->log_mmio) {
-            fprintf(stderr,
-                "[AIU] play start: base=0x%08x end=0x%08x len=%u "
-                "rate_idx=%u channels=%u width=%u (ctrl=0x%08x dma_en=0x%08x)\n",
-                base, end, end - base, rate_idx, channels, width,
-                ctrl, dma_en);
-        }
-    } else if (base != s->prev_base || end != s->prev_end) {
-        if (end <= base || (end - base) > AIU_MAX_RING_BYTES)
-            return;
-        s->prev_base = base;
-        s->prev_end = end;
-        s->play_pos = 0;
-        if (s->log_mmio) {
-            fprintf(stderr,
-                "[AIU] ring change: base=0x%08x end=0x%08x len=%u\n",
-                base, end, end - base);
-        }
+    now = aiu_now_ns();
+    if (now - s->start_ns > AIU_MAX_CATCHUP_NS + (s->frames_done *
+            1000000000ULL) / s->rate_hz) {
+        /* Host stalled; restart the cursor clock at the current frame. */
+        s->start_ns = now - (s->frames_done * 1000000000ULL) / s->rate_hz;
     }
-
-    ring = end - base;
-    if (ring == 0)
+    due = ((now - s->start_ns) * (uint64_t)s->rate_hz) / 1000000000ULL;
+    if (due <= s->frames_done)
         return;
+    due -= s->frames_done;
 
-    /*
-     * Pull up to AIU_MAX_BYTES_PER_TICK from the active ring.  We treat
-     * the ring as raw little-endian S16 mono/stereo PCM - uncertain
-     * (see aiu.h), but the most likely shape for a WinCE waveOut driver.
-     * If the trace shows a different format, this is the one place to fix.
-     */
-    budget = AIU_MAX_BYTES_PER_TICK;
-    while (budget > 0u) {
-        uint32_t remain;
-        uint32_t chunk;
-        unsigned char *src;
+    frame_bytes = 2u * s->channels;
+    if (due < AIU_MIN_BATCH && s->buf_len[s->cur_buf] >= frame_bytes &&
+        due < (s->buf_len[s->cur_buf] - s->pos) / frame_bytes)
+        return;
+    while (due > 0) {
+        unsigned idx = s->cur_buf;
+        uint32_t left, n;
 
-        remain = ring - s->play_pos;
-        chunk = (remain < budget) ? remain : budget;
-        if (chunk == 0u)
-            break;
-        /* Whole-frame alignment so the int16_t cast and stereo indexing are
-         * well-defined. */
-        chunk -= chunk % frame_bytes;
-        if (chunk == 0u)
-            break;
-
-        src = memory_paddr_to_hostaddr(m->gxe_machine->memory,
-            base + s->play_pos, MEM_READ);
-        if (!src) {
-            if (s->log_mmio) {
-                fprintf(stderr,
-                    "[AIU] paddr->host failed at PA 0x%08x; pausing pull\n",
-                    base + s->play_pos);
+        if (s->buf_len[idx] < frame_bytes) {
+            /* Unprogrammed buffer: treat it as already drained. */
+            left = 0;
+        } else {
+            left = (s->buf_len[idx] - s->pos) / frame_bytes;
+        }
+        n = (uint32_t)(due < left ? due : left);
+        if (n > 0) {
+            aiu_emit(m, s->buf_start[idx] + s->pos, n);
+            s->pos += n * frame_bytes;
+            s->frames_done += n;
+            due -= n;
+        }
+        if (n == left) {
+            s->status |= 1u << idx;
+            s->irq_count++;
+            raised = true;
+            s->cur_buf ^= 1u;
+            s->pos = 0;
+            aiu_load_buffer(s, s->cur_buf);
+            if (left == 0) {
+                /* Avoid spinning on two empty buffers. */
+                s->frames_done += due;
+                break;
             }
-            break;
-        }
-
-        if (s->log_mmio && s->pulled_bytes < 64u) {
-            /* First few bytes per stream so wrong sample format is
-             * immediately visible in the log. */
-            uint32_t preview = (chunk < 8u) ? chunk : 8u;
-            fprintf(stderr,
-                "[AIU] pull pa=0x%08x len=%u first=", base + s->play_pos,
-                chunk);
-            for (uint32_t i = 0; i < preview; i++)
-                fprintf(stderr, "%s%02x", i ? " " : "", src[i]);
-            fprintf(stderr, "\n");
-        }
-
-        ui_audio_queue_pcm((const int16_t *)src, chunk / frame_bytes,
-            aiu_rate_index_to_hz(rate_idx), pcm_channels);
-
-        s->pulled_bytes += chunk;
-        s->play_pos += chunk;
-        budget -= chunk;
-
-        if (s->play_pos >= ring) {
-            s->play_pos = 0;
-            /* No status-bit poke here - see aiu.h note: the latch backing
-             * store doesn't model W1C semantics, and many wavedev drivers
-             * poll the cursor directly.  If trace shows the driver
-             * waiting on +0x3F4 bit 0, add the W1C handler in
-             * be300_devices.c at that point. */
         }
     }
+
+    if (raised)
+        be300_vrc4173_update_audio_irq();
 }

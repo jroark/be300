@@ -146,9 +146,11 @@ static struct {
     ur_queue_t bulk_in, bulk_out;
     bool intr_receiving;
     uint64_t intr_seq;
+    uint64_t intr_next_ns;      /* next interrupt IN poll (bInterval) */
 
     /* Endpoints from the guest's configuration descriptor. */
     uint8_t ep_bulk_in, ep_bulk_out, ep_intr_in;
+    uint8_t intr_interval_ms;
     uint16_t mps_bulk_in, mps_bulk_out;
 } g;
 
@@ -435,6 +437,7 @@ static void send_interface_and_ep_info(void)
                 g.mps_bulk_out = le16(d + 4);
             } else if (type == UR_TYPE_INTERRUPT && (ep & 0x80u)) {
                 g.ep_intr_in = ep;
+                g.intr_interval_ms = d[6];
             }
         }
     }
@@ -563,9 +566,19 @@ static void service_endpoints(void)
         queue_pop(&g.bulk_in);
     }
 
-    if (g.intr_receiving) {
+    /*
+     * A full-speed host polls an interrupt endpoint at most once per
+     * bInterval frames (1 ms each; USB 1.1 §9.6.6).  usb.dll drops a
+     * serial-state update while EP3 is still busy (pc 0x01923314), so
+     * draining EP3 faster than the bus would forward updates that real
+     * hardware discards.
+     */
+    if (g.intr_receiving && mono_ns() >= g.intr_next_ns) {
         int n = usbf_host_intr_in(g.u, pkt, sizeof(pkt));
 
+        g.intr_next_ns = mono_ns() +
+            (uint64_t)(g.intr_interval_ms ? g.intr_interval_ms : 1u) *
+            1000000ull;
         if (n >= 0) {
             uint8_t h[4] = { g.ep_intr_in, UR_SUCCESS, 0, 0 };
             put16(h + 2, (uint16_t)n);
