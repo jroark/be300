@@ -55,11 +55,24 @@ Set `BE300_PCC_TRACE=1` to enable bridge state-change logging on stderr.
 CommMode dock edge, socket.dll sees raw socket value `0x0008` and loads the
 RS-232 serial path.
 
-`--pcconnect-dock usb-sync` keeps the same BE-300-side byte transport but
-reports raw socket value `0x000c`, which selects the WinCE USB dock entry.
-Use this with NAND images configured to connect over USB, for example
-`./nand.bin`. `usb-vcom` is accepted as a compatibility alias, but new
-commands should use `usb-sync`.
+`--pcconnect-dock usb-sync` reports raw socket value `0x000c`, which selects
+the WinCE USB dock entry. `usb-vcom` is accepted as a compatibility alias, but
+new commands should use `usb-sync`.
+
+**usb-sync has no guest-side data path yet.** With socket `0x000c` the guest
+loads `usb.dll` (XIP module at VA `0x01920000`), which programs registers in
+the VRC4173 USBU (OHCI host controller) area at companion offsets
+`0x1300`-`0x15xx` and never touches the companion SIU. A `--mmio-coverage` run
+on 2026-10-12 showed those accesses landing on register stubs only, so no
+bytes move between the bridge and the guest in this mode. Making usb-sync work
+needs a model of that USB path; the companion SIU bridge does not cover it.
+
+`usb.dll` is also what raises `NOTIFICATION_EVENT_RS232_DETECTED` (event 9),
+the notification that auto-starts the device-side sync app. It does so only on
+a DCD rising edge reported by its own modem-status source while the port is
+closed (`usb.dll` code near VA `0x01921b50`). `serial.dll`, used by the RS-232
+socket `0x0008`, has no such call, so in RS-232 mode the device-side PC
+Connect app has to be started on the device.
 
 ## Tee log format
 
@@ -109,6 +122,16 @@ one-shot insert edge, matching the CF model's treatment of the same byte. It is
 not held as a storage-card present level after socket.dll has consumed the dock
 transition.
 
+Guest-to-host bytes are paced at the configured baud through a 256 KB queue.
+The emulated UART keeps reporting THRE as always ready: `serial.dll` sends one
+byte per TX interrupt on the companion SIU, and those interrupts reach it
+through the edge-triggered, write-1-to-clear CommMode latch. Gating THRE on the
+bridge backlog (tried 2026-10-12) lost TX-ready edges whenever the OAL
+acknowledged the latch. Replies then stalled for ~100 ms per byte, and the PC
+rejected the slow frames. The queue holds several maximum-size (64 KB)
+PCConnect frames. If it ever fills, new bytes are dropped and tee'd as
+`G>H:overflow`; queued bytes are never overwritten.
+
 Once the selected dock driver opens the companion UART, the bridge releases
 host-to-guest bytes through a finite guest-visible UART FIFO. Normal startup
 and poll traffic is
@@ -118,6 +141,12 @@ in the bridge backlog and then released at the configured serial cadence, so
 restore-time RAPI file-write payloads do not arrive at effectively infinite
 baud. If that backlog fills, the emulator stops reading the host fd so TCP
 applies backpressure instead of dropping or replaying sync payload bytes.
+
+A guest receive-FIFO reset (FCR1, VR4131 UM §20.2.7) clears only the 16-byte
+guest-visible FIFO; host bytes still in the bridge backlog are on the wire and
+arrive afterwards. Reprogramming the divisor (DLAB set, then cleared) pauses
+delivery without discarding anything. The 64-byte pre-open cap applies only
+until the guest first configures the UART after a dock edge or guest reset.
 
 The physical cable state is separate from the guest-visible serial data path.
 On a BE-300 CPU reset, the bridge clears transient UART FIFOs and marks the
@@ -309,6 +338,7 @@ accuracy guarantee.
 - `src/pcconnect.c` — backend dispatch shims at the four `pcconnect_uart_*`
   entry points called from `gxemul/src/devices/dev_ns16550.c`
 - `src/pcconnect_ring.h` — shared 4096-byte ring buffer
+- `tests/test_pcconnect_bridge.c` — bulk TX/RX transport tests (`ctest`)
 - `src/be300_devices.c` — dock socket selection and CommMode IRQ plumbing
 - `src/machine_be300.c` — `pcconnect_bridge_configure` at machine
   create, `pcconnect_bridge_tick` driven from `be300_pcconnect_poll`,

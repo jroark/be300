@@ -389,3 +389,11 @@ if(BUILD_LAUNCHER AND BUILD_CLI)
     target_include_directories(test_vm_config PRIVATE src third_party/cjson)
     add_test(NAME vm_config COMMAND test_vm_config)
 endif()
+
+if(BUILD_CLI AND NOT WIN32)
+    add_executable(test_pcconnect_bridge
+        tests/test_pcconnect_bridge.c
+        src/pcconnect_bridge.c)
+    target_include_directories(test_pcconnect_bridge PRIVATE src)
+    add_test(NAME pcconnect_bridge COMMAND test_pcconnect_bridge)
+endif()
