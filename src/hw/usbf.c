@@ -14,8 +14,9 @@
  *  - Class/vendor requests are queued in the SETUP FIFO (0x14CC, one byte per
  *    read; the dump shows it popping 0x21, 0x22) and completed when the guest
  *    commits the EP0 status stage (0x1490 bit 0) or stalls (0x1460 bit 3).
- *  - EP1 IN: the guest DMAs up to 64 bytes from RAM, then commits the packet
- *    (0x1490 bit 1); 0x1324 bit 3 requests the next DMA while 0x1488
+ *  - EP1 IN: the guest DMAs up to 64 bytes from RAM.  A full 64-byte fill
+ *    is sent as is; a short packet (or ZLP) is sent when the guest commits
+ *    it (0x1490 bit 1).  0x1324 bit 3 requests the next DMA while 0x1488
  *    bit 7 is set.  EP2 OUT: host packets are read by DMA into RAM or by PIO
  *    from 0x14D4 / 0x14D8.  EP3 IN: bytes written to 0x14E0 are committed as
  *    one interrupt packet (0x1490 bit 2).
@@ -227,6 +228,8 @@ uint32_t usbf_read(usbf_state_t *u, uint32_t off)
     }
 }
 
+static void usbf_queue_in(usbf_state_t *u);
+
 static void usbf_dma(usbf_state_t *u)
 {
     uint32_t pa = u->dma_addr & 0x1FFFFFFFu;
@@ -241,6 +244,14 @@ static void usbf_dma(usbf_state_t *u)
         u->in_stage.len = (uint8_t)len;
         if (ram)
             memcpy(u->in_stage.data, ram, len);
+        /*
+         * A max-packet fill is sent without a commit: usb.dll's TX-done
+         * handler (pc 0x0192298c) commits only entries shorter than 0x40;
+         * for a full entry it instead arms a ZLP and unmasks EP1-empty
+         * (pc 0x019229c0..0x019229e8).
+         */
+        if (len == USBF_EP_MAX_PACKET)
+            usbf_queue_in(u);
         u->top_latched |= USBF_TOP_TX_DONE;
     } else {
         for (uint32_t i = 0; i < len && usbf_out_pending(u); i++) {
@@ -253,6 +264,19 @@ static void usbf_dma(usbf_state_t *u)
     }
 }
 
+static void usbf_queue_in(usbf_state_t *u)
+{
+    if (u->in_count < USBF_IN_SLOTS) {
+        unsigned slot = (u->in_head + u->in_count) % USBF_IN_SLOTS;
+
+        u->in[slot] = u->in_stage;
+        u->in_count++;
+    }
+    u->in_stage.len = 0;
+    if (u->in_ready)
+        u->in_ready(u->host_ctx);
+}
+
 static void usbf_commit(usbf_state_t *u, uint32_t val)
 {
     if (val & USBF_COMMIT_EP0) {
@@ -261,16 +285,8 @@ static void usbf_commit(usbf_state_t *u, uint32_t val)
         usbf_finish_control(u, USBF_CTRL_OK);
     }
     if (val & USBF_COMMIT_EP1) {
-        /* An empty commit is a ZLP (clear + commit, pc 0x01922ad8). */
-        if (u->in_count < USBF_IN_SLOTS) {
-            unsigned slot = (u->in_head + u->in_count) % USBF_IN_SLOTS;
-
-            u->in[slot] = u->in_stage;
-            u->in_count++;
-        }
-        u->in_stage.len = 0;
-        if (u->in_ready)
-            u->in_ready(u->host_ctx);
+        /* Short packet, or a ZLP after clear (pc 0x01922ad8). */
+        usbf_queue_in(u);
     }
     if (val & USBF_COMMIT_EP3) {
         u->ep3 = u->ep3_stage;

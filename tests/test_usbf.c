@@ -253,6 +253,18 @@ static void test_bulk_in(void)
     CHECK(buf[0] == 0x11 && buf[19] == 0x11 + 19);
     CHECK(usbf_read(&u, USBF_INTSTAT0) & USBF_I0_EP1_EMPTY);
 
+    /* A full 64-byte fill is sent without a commit (pc 0x0192298c). */
+    for (int i = 0; i < 64; i++)
+        g_ram[0x8000 + 64 * 6 + i] = (uint8_t)(0x30 + i);
+    g_in_ready = 0;
+    usbf_write(&u, USBF_DMA_LEN, 64);
+    usbf_write(&u, USBF_DMA_ADDR, 0xA0008000u + 64u * 6u);
+    usbf_write(&u, USBF_DMA_START, 1);
+    CHECK(g_in_ready == 1);
+    CHECK(usbf_host_in(&u, buf, 64) == 64);
+    CHECK(buf[0] == 0x30 && buf[63] == 0x30 + 63);
+    CHECK(usbf_read(&u, USBF_INTSTAT0) & USBF_I0_EP1_EMPTY);
+
     /* ZLP after a full packet: clear EP1 FIFO, commit (pc 0x01922ad8). */
     usbf_write(&u, USBF_EP_CTRL, usbf_read(&u, USBF_EP_CTRL) | 4u);
     usbf_write(&u, USBF_EP_COMMIT, 2);

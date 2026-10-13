@@ -365,6 +365,27 @@ int main(void)
         CHECK(pk.p[10] == 0xA0 && pk.p[29] == 0xA0 + 19);
     }
 
+    /*
+     * A 72-byte reply: a full 64-byte fill goes out without a commit, then
+     * the 8-byte tail is committed.  One 4096-byte IN request (what Windows
+     * submits) gets all 72 bytes.
+     */
+    bulk(11, 0x81, 4096, NULL);
+    for (int i = 0; i < 72; i++)
+        g_ram[0x8040 + i] = (uint8_t)(0x40 + i);
+    usbf_write(&g_u, USBF_DMA_LEN, 64);
+    usbf_write(&g_u, USBF_DMA_ADDR, 0xA0008040u);
+    usbf_write(&g_u, USBF_DMA_START, 1);
+    usbf_write(&g_u, USBF_DMA_LEN, 8);
+    usbf_write(&g_u, USBF_DMA_ADDR, 0xA0008080u);
+    usbf_write(&g_u, USBF_DMA_START, 1);
+    usbf_write(&g_u, USBF_EP_COMMIT, 2);
+    if (expect(&pk, T_BULK_PACKET)) {
+        CHECK(pk.id == 11 && pk.p[1] == 0);
+        CHECK(le16(pk.p + 2) == 72 && pk.len == 10 + 72);
+        CHECK(pk.p[10] == 0x40 && pk.p[10 + 71] == 0x40 + 71);
+    }
+
     /* A cancelled IN request is answered with status cancelled. */
     bulk(8, 0x81, 64, NULL);
     peer_send(T_CANCEL_DATA_PACKET, 8, NULL, 0, NULL, 0);

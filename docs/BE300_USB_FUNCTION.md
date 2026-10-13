@@ -115,7 +115,7 @@ inferred from GetIntrType reading only that pair before it dispatches.
 | `0x147C`/`0x1480`/`0x1484` | W | INTCLR0/1/2. Write `~bit` (0 = clear). The driver polls the status bit until it reads clear. | `0x0192250c`, `0x01922640` |
 | `0x1488` | W | EP1 DMA request control. For board `0x7100`, `0x01926680` gives `0x85` (request on, written while TX ring entries remain) and `0` (off, written when the ring is drained). | `0x01922a60`, `0x01922b54`, `0x01922c78` |
 | `0x148C` | W | FIFO-clear commands (self-clearing). Init writes `0x3F` (all). Bit 0 is written on an EP0 stall, bit 1 at the status stage, and bit 2 clears the EP1 FIFO before an empty commit that sends a ZLP. | `0x019237a8`, `0x01922764`, `0x019227e4`, `0x01922ad8` |
-| `0x1490` | W | EP commit (self-clearing). Bit 0: EP0 status ACK. Bit 1: EP1 packet ready; an empty commit is a ZLP. Bit 2: EP3 packet ready. Bit 4: written before EP1 DMA starts (meaning unknown). | `0x019227fc`, `0x01922a04`, `0x01923354`, `0x01922c68` |
+| `0x1490` | W | EP commit (self-clearing). Bit 0: EP0 status ACK. Bit 1: EP1 short packet ready (a full 64-byte DMA fill is sent without it); an empty commit is a ZLP. Bit 2: EP3 packet ready. Bit 4: written before EP1 DMA starts (meaning unknown). | `0x019227fc`, `0x01922a04`, `0x01923354`, `0x01922c68` |
 | `0x1494` | W | Written 1, then `~1`, at init | `0x01923590` |
 
 ### 0x14C0 block — FIFO ports
@@ -178,10 +178,15 @@ set in the USB class driver."
    - `0x131C = len`
    - `0x1320 = PA 0x8000 + slot*64`
    - `0x130C = 1`
-2. On TX-done (`0x1324` bit 1), `0x0192298c` commits the packet
-   (`0x1490 |= 2`).
-3. A 64-byte packet sets a ZLP-pending flag. The ZLP is later sent with
-   `0x148C |= 4` and an empty commit.
+2. On TX-done (`0x1324` bit 1), `0x0192298c` commits a **short** packet
+   (`0x1490 |= 2`, `0x019229ec`-`0x01922a04`).
+3. A full 64-byte packet is **not** committed: the controller sends a full
+   FIFO by itself. The handler instead sets a ZLP-pending flag and unmasks
+   INTSTAT0 bit 2 (`0x019229c0`-`0x019229e8`); on EP1-empty the ZLP is sent
+   with `0x148C |= 4` and an empty commit (`0x01922ad8`). Modelling a full
+   packet as commit-only loses it: the next DMA overwrites it (observed
+   2026-10-12 against a real Win2K PC Connect session, a 72-byte reply
+   arrived as its 8-byte tail).
 4. `0x1488 = 0x85` keeps `0x1324` bit 3 (EP1 DMA request) raised while
    ring entries remain; `0x01922a70` re-enables that source after every
    TX-done. INTSTAT0 bit 2 (EP1 empty) restarts the flow after the ring
