@@ -210,7 +210,16 @@ Publish the freshly built bundle while preserving backups:
 
 ```bash
 aws s3 sync build-web/web/ s3://linux4be.com/ --delete \
-  --exclude "_backups/*"
+  --exclude "_backups/*" --exclude "index.html"
+aws s3 cp build-web/web/index.html s3://linux4be.com/index.html \
+  --content-type "text/html" --cache-control "no-cache"
 aws cloudfront create-invalidation --distribution-id E2LF6QBIW7PZR \
   --paths "/*"
 ```
+
+`index.html` is the only unversioned entry point, so it is served with
+`Cache-Control: no-cache`; everything it loads carries the `?v=` asset tag.
+Bump `ASSET_VERSION` in `web/app.js` together with the matching `?v=` tags
+in `web/index.html` and `web/worker.js` on every release, or browsers can
+pair a cached `be300_web.js` with a new `be300_web.wasm` and fail with a
+`LinkError`.
