@@ -23,4 +23,10 @@ void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms);
  * Safe to call when SDL audio is not initialized - the call becomes a no-op. */
 void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
                         uint32_t guest_rate_hz, uint8_t channels);
+#ifdef __EMSCRIPTEN__
+/* Web build: buzzer and PCM output land in a 44100 Hz mono S16 ring that
+ * web/worker.js drains, instead of an SDL device. Enabling resets the ring. */
+void   ui_web_audio_set_enabled(bool enabled);
+size_t ui_web_audio_drain(int16_t *dst, size_t max_samples);
+#endif
 void ui_set_frame_callback(ui_frame_callback_t cb, void *user_data);

@@ -145,6 +145,13 @@ The controls panel attaches optional boot-time accessories:
   dispatch, bytes would sit in the UART RX queue forever — see
   `src/be300_devices.c:be300_stowaway_signal_uart_irq`).
 
+- **Sound** defaults on and can be toggled while running. The buzzer and the
+  AIU wave output (the native `--audio` path) are written as 44100 Hz mono
+  S16 into a ring in `src/ui.c` instead of an SDL device, because Web Workers
+  have no `AudioContext`. `worker.js` drains it with `_be300_web_audio_drain`
+  after every slice and posts the chunks to `app.js`, which schedules them on
+  an `AudioContext` created from the Boot click (browser autoplay rules).
+
 If NE2000 is enabled without a bridge URL, the card uses GXemul's internal
 IPv4 gateway model. The controls default to `ws://127.0.0.1:8765`, matching
 the downloadable native `be300-net-bridge` helpers linked from the page.

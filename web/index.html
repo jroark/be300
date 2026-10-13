@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BE-300 Emulator</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20260511a">
+  <link rel="stylesheet" href="./styles.css?v=20261013b">
 </head>
 <body>
   <main class="shell">
@@ -76,6 +76,10 @@
           <input id="targusKeyboardEnabled" type="checkbox" checked>
           <span>Targus / Stowaway keyboard</span>
         </label>
+        <label class="checkbox-field checkbox-row">
+          <input id="audioEnabled" type="checkbox" checked>
+          <span>Sound (buzzer and speaker)</span>
+        </label>
       </div>
       <p id="status" class="status">Ready to boot hosted NAND image.</p>
     </section>
@@ -116,6 +120,6 @@
     </section>
   </main>
 
-  <script type="module" src="./app.js?v=20260511a"></script>
+  <script type="module" src="./app.js?v=20261013b"></script>
 </body>
 </html>

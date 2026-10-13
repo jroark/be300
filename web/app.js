@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20260511a";
+const ASSET_VERSION = "20261013b";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -29,6 +29,7 @@ const cf1FileInput = document.querySelector("#cf1File");
 const netMacInput = document.querySelector("#netMac");
 const netBridgeUrlInput = document.querySelector("#netBridgeUrl");
 const targusKeyboardEnabledInput = document.querySelector("#targusKeyboardEnabled");
+const audioEnabledInput = document.querySelector("#audioEnabled");
 const bootBtn = document.querySelector("#bootBtn");
 const stopBtn = document.querySelector("#stopBtn");
 const resetBtn = document.querySelector("#resetBtn");
@@ -195,6 +196,61 @@ function normalizeBridgeUrl(value) {
   }
 }
 
+// The worker posts buzzer + wave output as 44100 Hz mono S16 chunks. Each
+// chunk is scheduled back to back on an AudioContext created from a user
+// gesture (Boot click or the Sound checkbox), as browser autoplay rules need.
+const AUDIO_SAMPLE_RATE = 44100;
+const AUDIO_LEAD_S = 0.05;
+const AUDIO_MAX_AHEAD_S = 0.3;
+let audioCtx = null;
+let audioNextTime = 0;
+
+function ensureAudioContext() {
+  if (!audioEnabledInput.checked) {
+    return;
+  }
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) {
+    return;
+  }
+  if (!audioCtx) {
+    try {
+      audioCtx = new AudioContextCtor({ sampleRate: AUDIO_SAMPLE_RATE });
+    } catch {
+      // Buffers stay at 44100 Hz; the browser resamples them.
+      audioCtx = new AudioContextCtor();
+    }
+  }
+  if (audioCtx.state === "suspended") {
+    void audioCtx.resume();
+  }
+}
+
+function playAudio(samples) {
+  if (!audioCtx || audioCtx.state !== "running" || !audioEnabledInput.checked ||
+      !samples || samples.length === 0) {
+    return;
+  }
+  const now = audioCtx.currentTime;
+  if (audioNextTime < now + 0.01) {
+    audioNextTime = now + AUDIO_LEAD_S;
+  }
+  if (audioNextTime - now > AUDIO_MAX_AHEAD_S) {
+    // The guest is producing faster than real time; drop to bound latency.
+    return;
+  }
+  const buffer = audioCtx.createBuffer(1, samples.length, AUDIO_SAMPLE_RATE);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < samples.length; i++) {
+    channel[i] = samples[i] / 32768;
+  }
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioCtx.destination);
+  source.start(audioNextTime);
+  audioNextTime += buffer.duration;
+}
+
 function getBootOptions() {
   const mac = parseMacAddress(netMacInput.value);
   const bridge = normalizeBridgeUrl(netBridgeUrlInput.value);
@@ -207,6 +263,7 @@ function getBootOptions() {
     cf1: getActiveCf(1),
     enableNe2000: primarySocket === "ne2000",
     enableTargusKeyboard: targusKeyboardEnabledInput.checked,
+    enableAudio: audioEnabledInput.checked,
     mac,
     bridge,
   };
@@ -791,6 +848,11 @@ for (const input of [
   });
 }
 
+audioEnabledInput.addEventListener("change", () => {
+  ensureAudioContext();
+  worker.postMessage({ type: "setAudio", enabled: audioEnabledInput.checked });
+});
+
 cf0FileInput.addEventListener("change", () => {
   if (cf0FileInput.files?.[0]) {
     primarySocketSelect.value = "cf0";
@@ -810,6 +872,7 @@ bootBtn.addEventListener("click", async () => {
     return;
   }
 
+  ensureAudioContext();
   bootInFlight = true;
   running = false;
   activeTargusKeyboardEnabled = options.enableTargusKeyboard;
@@ -826,6 +889,7 @@ bootBtn.addEventListener("click", async () => {
     targetMhz: options.speed,
     enableNe2000: options.enableNe2000,
     enableTargusKeyboard: options.enableTargusKeyboard,
+    enableAudio: options.enableAudio,
     netMac: options.mac.bytes ? Array.from(options.mac.bytes) : null,
     netBridgeUrl: options.enableNe2000 ? options.bridge.url : "",
     cfSlot0Name: options.cf0?.name || "",
@@ -1043,6 +1107,9 @@ worker.addEventListener("message", ({ data }) => {
       break;
     case "serial":
       appendSerial(data.text);
+      break;
+    case "audio":
+      playAudio(data.samples);
       break;
     case "fatal":
       running = false;

@@ -212,6 +212,64 @@ static void ui_audio_destroy(void)
     }
 }
 
+/* Host audio sink: 44100 Hz mono S16. Native builds queue to the SDL
+ * device. The web build runs in a Web Worker, which has no AudioContext,
+ * so it fills a ring that web/worker.js drains and posts to the page. */
+#ifdef __EMSCRIPTEN__
+#define WEB_AUDIO_RING_SAMPLES (BUZZER_SAMPLE_RATE / 2u)
+static int16_t web_audio_ring[WEB_AUDIO_RING_SAMPLES];
+static size_t web_audio_head;
+static size_t web_audio_count;
+static bool web_audio_enabled;
+
+void ui_web_audio_set_enabled(bool enabled)
+{
+    web_audio_enabled = enabled;
+    web_audio_head = 0;
+    web_audio_count = 0;
+}
+
+size_t ui_web_audio_drain(int16_t *dst, size_t max_samples)
+{
+    size_t n = web_audio_count < max_samples ? web_audio_count : max_samples;
+    size_t tail = (web_audio_head + WEB_AUDIO_RING_SAMPLES - web_audio_count) %
+        WEB_AUDIO_RING_SAMPLES;
+
+    for (size_t i = 0; i < n; i++)
+        dst[i] = web_audio_ring[(tail + i) % WEB_AUDIO_RING_SAMPLES];
+    web_audio_count -= n;
+    return n;
+}
+
+static bool ui_audio_sink_ready(void) { return web_audio_enabled; }
+static uint32_t ui_audio_sink_queued_bytes(void)
+{
+    return (uint32_t)(web_audio_count * sizeof(int16_t));
+}
+static void ui_audio_sink_clear(void) { web_audio_count = 0; }
+static void ui_audio_sink_put(const int16_t *pcm, size_t count)
+{
+    /* Overwrite the oldest samples when the worker falls behind. */
+    for (size_t i = 0; i < count; i++) {
+        web_audio_ring[web_audio_head] = pcm[i];
+        web_audio_head = (web_audio_head + 1u) % WEB_AUDIO_RING_SAMPLES;
+        if (web_audio_count < WEB_AUDIO_RING_SAMPLES)
+            web_audio_count++;
+    }
+}
+#else
+static bool ui_audio_sink_ready(void) { return audio_device != 0; }
+static uint32_t ui_audio_sink_queued_bytes(void)
+{
+    return SDL_GetQueuedAudioSize(audio_device);
+}
+static void ui_audio_sink_clear(void) { SDL_ClearQueuedAudio(audio_device); }
+static void ui_audio_sink_put(const int16_t *pcm, size_t count)
+{
+    SDL_QueueAudio(audio_device, pcm, (uint32_t)(count * sizeof(*pcm)));
+}
+#endif
+
 static void ui_reset_button_regions(void)
 {
     memset(button_regions, 0, sizeof(button_regions));
@@ -2271,11 +2329,11 @@ void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
     uint32_t samples;
     int16_t *pcm;
 
-    if (!audio_device)
+    if (!ui_audio_sink_ready())
         return;
 
     now = SDL_GetTicks();
-    if (SDL_GetQueuedAudioSize(audio_device) > 0 ||
+    if (ui_audio_sink_queued_bytes() > 0 ||
         (last_buzzer_tick != 0 &&
          !ui_tick_reached(now, last_buzzer_tick + BUZZER_RETRIGGER_GAP_MS)))
         return;
@@ -2324,10 +2382,10 @@ void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
 
     queued_max = (BUZZER_SAMPLE_RATE * sizeof(int16_t) *
         BUZZER_MAX_QUEUE_MS) / 1000u;
-    if (SDL_GetQueuedAudioSize(audio_device) > queued_max)
-        SDL_ClearQueuedAudio(audio_device);
+    if (ui_audio_sink_queued_bytes() > queued_max)
+        ui_audio_sink_clear();
 
-    SDL_QueueAudio(audio_device, pcm, samples * sizeof(*pcm));
+    ui_audio_sink_put(pcm, samples);
     free(pcm);
 }
 
@@ -2356,7 +2414,7 @@ void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
     size_t out_count = 0;
     double step;
 
-    if (!audio_device || !samples || count_frames == 0)
+    if (!ui_audio_sink_ready() || !samples || count_frames == 0)
         return;
     if (channels == 0)
         channels = 1;
@@ -2367,7 +2425,7 @@ void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
      * drop this batch. Keeps wall-clock latency bounded. */
     queued_max = (AIU_HOST_SAMPLE_RATE * (uint32_t)sizeof(int16_t) *
         AIU_MAX_QUEUE_MS) / 1000u;
-    if (SDL_GetQueuedAudioSize(audio_device) > queued_max) {
+    if (ui_audio_sink_queued_bytes() > queued_max) {
         last_rate_hz = 0;
         return;
     }
@@ -2401,8 +2459,7 @@ void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
         if (mixed < -32768) mixed = -32768;
         out[out_count++] = (int16_t)mixed;
         if (out_count == sizeof(out) / sizeof(out[0])) {
-            SDL_QueueAudio(audio_device, out,
-                (uint32_t)(out_count * sizeof(int16_t)));
+            ui_audio_sink_put(out, out_count);
             out_count = 0;
         }
         phase += step;
@@ -2411,8 +2468,7 @@ void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
     phase -= (double)count_frames;
 
     if (out_count > 0)
-        SDL_QueueAudio(audio_device, out,
-            (uint32_t)(out_count * sizeof(int16_t)));
+        ui_audio_sink_put(out, out_count);
 }
 
 #else  /* !HAVE_SDL2 — headless stubs */

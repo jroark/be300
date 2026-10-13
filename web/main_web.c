@@ -18,7 +18,11 @@
  *   - `be300_web_stowaway_key`, `be300_web_net_rx`, and
  *     `be300_web_net_tx_pop` expose the browser-only keyboard and Ethernet
  *     bridge edges. `be300_web_set_net_bridge_enabled` lets the worker
- *     switch the bridge path on only after the WebSocket is connected. The
+ *     switch the bridge path on only after the WebSocket is connected.
+ *
+ *   - `be300_web_set_audio_enabled` and `be300_web_audio_drain` expose the
+ *     buzzer + AIU wave output as 44100 Hz mono S16 for the page to play
+ *     through Web Audio (workers have no AudioContext of their own). The
  *     worker still drives stepping/touch/serial through the existing public
  *     API in `src/be300.h`.
  */
@@ -46,6 +50,7 @@
  * so a bare "be300.h" would also work, but the relative form is unambiguous. */
 #include "../src/be300.h"
 #include "../src/stowaway.h"
+#include "../src/ui.h"
 #include "emul.h"
 
 static const char *NAND_PATH = "/All_nand_300.bin";
@@ -60,6 +65,7 @@ static const char *CF_PATHS[BE300_MAX_CF_SLOTS] = {
 #define WEB_FLAG_CF1             UINT32_C(0x00000008)
 #define WEB_FLAG_NET_MAC         UINT32_C(0x00000010)
 #define WEB_FLAG_NET_BRIDGE      UINT32_C(0x00000020)
+#define WEB_FLAG_AUDIO           UINT32_C(0x00000040)
 
 #define WEB_NET_FRAME_MAX 2048u
 #define WEB_NET_TX_QUEUE_CAP 64u
@@ -161,6 +167,7 @@ static machine_t *be300_web_create_with_fb(uint32_t sdram_mb,
         memcpy(cfg.net_mac, mac, sizeof(cfg.net_mac));
         cfg.net_mac_set = true;
     }
+    cfg.enable_audio = (flags & WEB_FLAG_AUDIO) != 0;
     if (flags & WEB_FLAG_CF0)
         cfg.cf_paths[0] = CF_PATHS[0];
     if (flags & WEB_FLAG_CF1)
@@ -183,6 +190,7 @@ static machine_t *be300_web_create_with_fb(uint32_t sdram_mb,
     m->web_mode = true;
     m->use_builtin_ui = false;
     m->mirror_serial_to_stdout = false;
+    ui_web_audio_set_enabled(cfg.enable_audio);
     g_current_machine = m;
     return m;
 }
@@ -212,6 +220,21 @@ int be300_web_stowaway_key(uint32_t scancode, uint32_t release) {
         !g_current_machine->cfg.enable_stowaway_keyboard)
         return -1;
     return stowaway_queue_key(scancode, release != 0) ? 0 : -1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void be300_web_set_audio_enabled(uint32_t enabled) {
+    if (!g_current_machine)
+        return;
+    g_current_machine->cfg.enable_audio = enabled != 0;
+    ui_web_audio_set_enabled(enabled != 0);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t be300_web_audio_drain(int16_t *dst, uint32_t max_samples) {
+    if (!dst)
+        return 0;
+    return (uint32_t)ui_web_audio_drain(dst, max_samples);
 }
 
 int be300_web_net_bridge_enabled(void) {

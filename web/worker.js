@@ -1,10 +1,11 @@
-import createBe300Module from "./be300_web.js?v=20260511a";
+import createBe300Module from "./be300_web.js?v=20261013b";
 
 const MAX_FRAME_WIDTH = 480;
 const MAX_FRAME_HEIGHT = 640;
 const MAX_FRAME_BYTES = MAX_FRAME_WIDTH * MAX_FRAME_HEIGHT * 4;
 const SERIAL_BYTES = 16384;
 const NET_FRAME_BYTES = 2048;
+const AUDIO_DRAIN_SAMPLES = 8192;
 const DEFAULT_SPEED = 0;
 const FULL_SPEED_BATCHES_PER_STEP = 128;
 const FULL_SPEED_SLICE_MS = 12;
@@ -15,6 +16,7 @@ const WEB_FLAG_TARGUS_KEYBOARD = 0x00000002;
 const WEB_FLAG_CF0 = 0x00000004;
 const WEB_FLAG_CF1 = 0x00000008;
 const WEB_FLAG_NET_MAC = 0x00000010;
+const WEB_FLAG_AUDIO = 0x00000040;
 
 const textDecoder = new TextDecoder();
 
@@ -29,6 +31,7 @@ let widthPtr = 0;
 let heightPtr = 0;
 let netTxPtr = 0;
 let netRxPtr = 0;
+let audioPtr = 0;
 let cachedNand = null;
 let cachedCfSlot0 = null;
 let cachedCfSlot1 = null;
@@ -57,6 +60,7 @@ function normalizeBootConfig(config = {}) {
     fbSize: config.fbSize === "480x640" ? "480x640" : "240x320",
     enableNe2000: config.enableNe2000 === true,
     enableTargusKeyboard: config.enableTargusKeyboard === true,
+    enableAudio: config.enableAudio === true,
     netMac: Array.isArray(config.netMac) && config.netMac.length === 6
       ? Uint8Array.from(config.netMac)
       : null,
@@ -84,7 +88,15 @@ function postStatus(message, extra = {}) {
 
 async function ensureModule() {
   if (!modulePromise) {
-    modulePromise = createBe300Module();
+    // Version the wasm fetch with the worker's own ?v= tag so a cached
+    // be300_web.wasm can never pair with a newer be300_web.js.
+    const assetVersion = new URL(import.meta.url).searchParams.get("v");
+    modulePromise = createBe300Module({
+      locateFile: (path, prefix) =>
+        assetVersion && path.endsWith(".wasm")
+          ? `${prefix}${path}?v=${assetVersion}`
+          : `${prefix}${path}`,
+    });
   }
   if (!moduleInstance) {
     moduleInstance = await modulePromise;
@@ -104,6 +116,9 @@ function ensureScratch(module) {
   }
   if (!heightPtr) {
     heightPtr = module._malloc(4);
+  }
+  if (!audioPtr) {
+    audioPtr = module._malloc(AUDIO_DRAIN_SAMPLES * 2);
   }
 }
 
@@ -305,6 +320,25 @@ function drainSerial(module) {
   }
 }
 
+// Buzzer + wave output arrive as 44100 Hz mono S16; the page plays them.
+function drainAudio(module) {
+  if (!machineHandle) {
+    return;
+  }
+  for (;;) {
+    const count = module._be300_web_audio_drain(audioPtr, AUDIO_DRAIN_SAMPLES);
+    if (count <= 0) {
+      return;
+    }
+    const start = audioPtr >> 1;
+    const samples = module.HEAP16.slice(start, start + count);
+    postMessage({ type: "audio", samples }, [samples.buffer]);
+    if (count < AUDIO_DRAIN_SAMPLES) {
+      return;
+    }
+  }
+}
+
 function drainFrame(module) {
   const now = performance.now();
   if (!machineHandle || now - lastFrameAt < FRAME_INTERVAL_MS) {
@@ -361,6 +395,7 @@ function runTick() {
     ? stepFullSpeedSlice(moduleInstance)
     : moduleInstance._be300_step(machineHandle, batchesPerTick);
   drainSerial(moduleInstance);
+  drainAudio(moduleInstance);
   drainFrame(moduleInstance);
   drainNetTx(moduleInstance);
 
@@ -425,6 +460,9 @@ async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes
   }
   if (config.enableTargusKeyboard) {
     flags |= WEB_FLAG_TARGUS_KEYBOARD;
+  }
+  if (config.enableAudio) {
+    flags |= WEB_FLAG_AUDIO;
   }
   if (config.netMac) {
     flags |= WEB_FLAG_NET_MAC;
@@ -558,6 +596,14 @@ self.addEventListener("message", async ({ data }) => {
       }
       break;
     }
+    case "setAudio":
+      if (cachedBootConfig) {
+        cachedBootConfig.enableAudio = data.enabled === true;
+      }
+      if (moduleInstance && machineHandle) {
+        moduleInstance._be300_web_set_audio_enabled(data.enabled ? 1 : 0);
+      }
+      break;
     case "stowawayKey":
       if (moduleInstance && machineHandle) {
         moduleInstance._be300_web_stowaway_key(data.scancode, data.release ? 1 : 0);
