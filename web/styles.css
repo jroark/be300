@@ -344,3 +344,9 @@ button[aria-pressed="true"]:not(:disabled) {
     height: clamp(260px, 40vh, 420px);
   }
 }
+
+/* Page-wide .cbea drop target (web/app.js addPackages). */
+body.drag-active .screen-panel {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+}

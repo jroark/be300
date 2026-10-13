@@ -20,6 +20,11 @@
  *     bridge edges. `be300_web_set_net_bridge_enabled` lets the worker
  *     switch the bridge path on only after the WebSocket is connected.
  *
+ *   - `be300_web_install_cbea(pkg, len, log, log_len)` installs a Casio
+ *     .cbea app package into the staged MEMFS NAND image (see
+ *     src/cbea_install.h). Call it after `be300_web_load_nand` and before
+ *     creating the machine. Returns 0 on success, -1 on error.
+ *
  *   - `be300_web_set_audio_enabled` and `be300_web_audio_drain` expose the
  *     buzzer + AIU wave output as 44100 Hz mono S16 for the page to play
  *     through Web Audio (workers have no AudioContext of their own). The
@@ -31,6 +36,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Use __has_include so IDE/LSP indexers without the emcc sysroot don't choke
@@ -49,6 +55,7 @@
  * The emcmake build adds `src/` via include_directories() in CMakeLists.txt
  * so a bare "be300.h" would also work, but the relative form is unambiguous. */
 #include "../src/be300.h"
+#include "../src/cbea_install.h"
 #include "../src/stowaway.h"
 #include "../src/ui.h"
 #include "emul.h"
@@ -115,6 +122,36 @@ int be300_web_load_cf(uint32_t slot, const uint8_t *data, uint32_t len) {
     if (slot >= BE300_MAX_CF_SLOTS)
         return -1;
     return web_write_file(CF_PATHS[slot], data, len);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int be300_web_install_cbea(const uint8_t *pkg, uint32_t len, char *log,
+                           uint32_t log_len) {
+    FILE *f = fopen(NAND_PATH, "rb");
+    uint8_t *nand = NULL;
+    long size = -1;
+    int rc = -1;
+
+    if (log && log_len)
+        log[0] = '\0';
+    if (!f) {
+        if (log && log_len)
+            snprintf(log, log_len, "error: no NAND image staged\n");
+        return -1;
+    }
+    if (fseek(f, 0, SEEK_END) == 0)
+        size = ftell(f);
+    if (size > 0 && fseek(f, 0, SEEK_SET) == 0)
+        nand = malloc((size_t)size);
+    if (nand && fread(nand, 1, (size_t)size, f) == (size_t)size)
+        rc = 0;
+    fclose(f);
+    if (rc == 0)
+        rc = cbea_install(nand, (size_t)size, pkg, len, log, log_len);
+    if (rc == 0)
+        rc = web_write_file(NAND_PATH, nand, (uint32_t)size);
+    free(nand);
+    return rc;
 }
 
 static bool web_configure_fb(machine_config_t *cfg, uint32_t width,

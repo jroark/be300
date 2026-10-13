@@ -27,6 +27,10 @@ Do not reintroduce `resume_ctx` seeding, synthetic warm-boot state, or any other
   controller in the companion window (`0x1100`, `0x1300`-`0x161F`, DMA
   rings at PA `0x8000`). See `docs/BE300_USB_FUNCTION.md`. It is not
   QEMU/FTDI `usb-serial`, and there is no dock bridge chip.
+- Offline app installs: `be300-install` (and the web frontend's `.cbea`
+  picker/drop) apply Casio `.cbea` packages straight to the NAND image
+  (`src/cbea_install.c`, `docs/INSTALLING_APPS.md`), replacing the
+  Windows `Setup.exe` -> PC Connect -> `CoInstall.exe` path.
 - Non-3.0 WinCE images are local-only reference assets
 
 ## Reference & Documentation
@@ -58,6 +62,7 @@ Primary local references:
 - `be300.h` — `be300_state_t`, `machine_config_t`, physical address map constants
 - `ui.c` / `ui.h` — SDL2 display, input handling, screenshot capture
 - `main.c` — CLI parsing for `--nand`, `--restore`, `--cf`, `--ppsh`, and other boot options
+- `cbea_install.c` / `be300_install_main.c` — offline `.cbea` app installer core and `be300-install` CLI
 - `host_io.c` / `host_io.h` — host stdin/stdout handling
 - `ppsh.h` — PPSH transport helpers
 - `be300_devices.c` — VRC4173 latch, CF window, PPSH debug shell, WinCE aux device
