@@ -293,11 +293,14 @@ final class Be300View extends View {
                 return handlePointerDown(event, event.getActionIndex());
             case MotionEvent.ACTION_POINTER_DOWN:
                 return true;
+            case MotionEvent.ACTION_POINTER_UP:
+                return handlePointerUp(event, event.getActionIndex());
             case MotionEvent.ACTION_MOVE:
                 return handlePointerMove(event);
             case MotionEvent.ACTION_UP:
+                return handlePointerUp(event, event.getActionIndex());
             case MotionEvent.ACTION_CANCEL:
-                return handlePointerUp(event);
+                return handlePointerCancel(event);
             default:
                 return true;
         }
@@ -361,20 +364,33 @@ final class Be300View extends View {
         return true;
     }
 
-    private boolean handlePointerUp(MotionEvent event) {
-        if (activePointerId == -1) {
+    private boolean handlePointerUp(MotionEvent event, int index) {
+        if (activePointerId == -1 || index < 0 ||
+                event.getPointerId(index) != activePointerId) {
             return true;
         }
 
+        finishActivePointer(event.getEventTime());
+        return true;
+    }
+
+    private boolean handlePointerCancel(MotionEvent event) {
+        if (activePointerId == -1) {
+            return true;
+        }
+        finishActivePointer(event.getEventTime());
+        return true;
+    }
+
+    private void finishActivePointer(long eventTimeMs) {
         if (pointerMode == PointerMode.TOUCH) {
-            scheduleTouchRelease(event.getEventTime());
+            scheduleTouchRelease(eventTimeMs);
         } else if (pointerMode == PointerMode.BUTTON) {
-            scheduleButtonRelease(event.getEventTime());
+            scheduleButtonRelease(eventTimeMs);
         }
 
         pointerMode = PointerMode.NONE;
         activePointerId = -1;
-        return true;
     }
 
     private TouchPoint mapToTouch(float x, float y) {

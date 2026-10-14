@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20261013d";
+const ASSET_VERSION = "20261013e";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -58,6 +58,8 @@ let activeTargusKeyboardEnabled = false;
 const pressedStowawayKeys = new Set();
 let frameButtonMask = null;
 let activeFrameButton = null;
+let activeTouchPointerId = null;
+let activeTouchPoint = { x: 0, y: 0 };
 const activeMomentaryButtons = new Map();
 const pendingMomentaryButtonReleases = new Map();
 
@@ -452,6 +454,7 @@ function releasePressedStowawayKeys() {
 }
 
 function requestStop() {
+  cancelActiveTouch();
   releasePressedStowawayKeys();
   clearGuestButtons();
   worker.postMessage({ type: "stop" });
@@ -958,6 +961,7 @@ bootBtn.addEventListener("click", async () => {
     return;
   }
 
+  cancelActiveTouch();
   ensureAudioContext();
   bootInFlight = true;
   running = false;
@@ -1026,6 +1030,7 @@ stopBtn.addEventListener("click", () => {
 });
 
 resetBtn.addEventListener("click", () => {
+  cancelActiveTouch();
   releasePressedStowawayKeys();
   clearGuestButtons();
   worker.postMessage({ type: "reset" });
@@ -1041,32 +1046,58 @@ toggleSerialBtn.addEventListener("click", () => {
 });
 
 screenEl.addEventListener("pointerdown", (event) => {
-  if (!running) {
+  if (!running || activeTouchPointerId !== null) {
     return;
   }
   const point = mapPointerToGuest(event);
+  activeTouchPointerId = event.pointerId;
+  activeTouchPoint = point;
   screenEl.setPointerCapture(event.pointerId);
   worker.postMessage({ type: "setTouch", down: true, ...point });
 });
 
 screenEl.addEventListener("pointermove", (event) => {
-  if (!running || !screenEl.hasPointerCapture(event.pointerId)) {
+  if (!running || event.pointerId !== activeTouchPointerId ||
+      !screenEl.hasPointerCapture(event.pointerId)) {
     return;
   }
   const point = mapPointerToGuest(event);
+  activeTouchPoint = point;
   worker.postMessage({ type: "setTouch", down: true, ...point });
 });
 
 function releaseTouch(event) {
-  const point = mapPointerToGuest(event);
+  if (event.pointerId !== activeTouchPointerId) {
+    return;
+  }
+  const point = event.type === "pointercancel" ?
+    activeTouchPoint : mapPointerToGuest(event);
+  activeTouchPointerId = null;
   if (screenEl.hasPointerCapture(event.pointerId)) {
     screenEl.releasePointerCapture(event.pointerId);
   }
   worker.postMessage({ type: "setTouch", down: false, ...point });
 }
 
+function cancelActiveTouch() {
+  if (activeTouchPointerId === null) {
+    return;
+  }
+  const pointerId = activeTouchPointerId;
+  activeTouchPointerId = null;
+  if (screenEl.hasPointerCapture(pointerId)) {
+    screenEl.releasePointerCapture(pointerId);
+  }
+  worker.postMessage({ type: "setTouch", down: false, ...activeTouchPoint });
+}
+
 screenEl.addEventListener("pointerup", releaseTouch);
 screenEl.addEventListener("pointercancel", releaseTouch);
+screenEl.addEventListener("lostpointercapture", (event) => {
+  if (event.pointerId === activeTouchPointerId) {
+    cancelActiveTouch();
+  }
+});
 
 function pressFrameButton(event) {
   if (!running || activeFrameButton || event.target === screenEl) {
