@@ -1,9 +1,11 @@
 # BE-300 USB Function Controller (companion window 0x1100 / 0x1300-0x161F)
 
 Status: reverse-engineered from `usb.dll` and real-hardware dumps. It is
-modelled in `src/hw/usbf.c` (test: `tests/test_usbf.c`), but nothing connects
-it to a host yet (2026-10-12). This is the hardware behind
-`--pcconnect-dock usb-sync`.
+modelled in `src/hw/usbf.c` (test: `tests/test_usbf.c`) and exposed to stock
+QEMU/UTM `usb-redir` by `src/usbredir_dev.c` (test:
+`tests/test_usbredir_dev.c`). This is the hardware behind
+`--pcconnect-dock usb-sync`; setup instructions are in
+`docs/PC_CONNECT_BRIDGE.md`.
 
 ## What it is
 

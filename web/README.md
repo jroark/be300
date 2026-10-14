@@ -119,6 +119,15 @@ boots default to NE2000 and the Targus / Stowaway serial keyboard dock, but
 both can be disabled from the controls panel. `opie.bin` boots with 64 MB
 SDRAM; all other hosted images use 16 MB.
 
+Casio `.cbea` application packages can be selected with **Install apps
+(.cbea)** or dropped anywhere on the page. Before boot they are queued and
+applied to the staged NAND image when **Boot** is pressed. While the emulator
+is running, accepting the reboot prompt first flushes guest NAND writes, then
+installs the packages and reboots the updated image. Install diagnostics are
+shown as `[INSTALL]` lines in the serial pane. See
+[`../docs/INSTALLING_APPS.md`](../docs/INSTALLING_APPS.md) for supported INF
+operations and limitations.
+
 The Speed control defaults to **Full speed** and can be changed while the
 emulator is running. Full speed uses a low-latency worker scheduler and a
 short time-budgeted execution slice. Non-zero values keep the older
@@ -179,15 +188,18 @@ access to guest services.
 
 1. The page fetches (or reads from upload) a 16,449,536-byte NAND restore
    image and posts the bytes plus any optional CF images to the worker.
-2. The worker calls `_be300_web_load_nand(ptr, len)` which writes the bytes
-   to `/All_nand_300.bin` in MEMFS, and calls `_be300_web_load_cf(slot, ptr,
-   len)` for selected CF uploads.
-3. The worker calls `_be300_web_create_ex(sdramMb, targetMhz, flags, mac)`.
-   The `targetMhz` name is legacy; in web mode the same value is used by the
-   worker as the step-batch pacing value. That glue builds a
-   `machine_config_t`, calls `be300_create()`, and flips `web_mode`,
-   `use_builtin_ui`, and `mirror_serial_to_stdout` on the returned
-   `machine_t *`. No SDL window is opened.
+2. The worker calls `_be300_web_load_nand(ptr, len)` to write the bytes to
+   `/All_nand_300.bin` in MEMFS. Queued packages are then applied with
+   `_be300_web_install_cbea`; selected CF uploads are staged with
+   `_be300_web_load_cf(slot, ptr, len)`.
+3. The worker calls `_be300_web_create_ex2(sdramMb, targetMhz, flags, mac,
+   fbWidth, fbHeight)`. The flags select optional CF slots, NE2000, the
+   Stowaway dock, host audio, and an explicit MAC address. The `targetMhz`
+   name is legacy; in web mode the same value is used by the worker as the
+   step-batch pacing value. The glue builds a `machine_config_t`, calls
+   `be300_create()`, and flips `web_mode`, `use_builtin_ui`, and
+   `mirror_serial_to_stdout` on the returned `machine_t *`. No SDL window is
+   opened.
 4. The worker drives `_be300_step`, `_be300_copy_frame_rgba8888`,
    `_be300_drain_serial`, `_be300_set_touch`, `_be300_set_buttons`,
    `_be300_web_stowaway_key`, `_be300_web_net_rx`, `_be300_web_net_tx_pop`,
