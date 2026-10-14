@@ -17,12 +17,15 @@ Do not reintroduce `resume_ctx` seeding, synthetic warm-boot state, or any other
 - Primary active target: WinCE 3.0 cold boot via `--nand ce/restore_images/All_nand_300.bin`
 - Secondary code paths still present in the tree: CF recovery boot via
   `--restore --cf`, PPSH debug-shell probing via `--ppsh`, PCMCIA NE2000 via
-  `--ne2000`, host RTC initialization via `--rtc-host-time`, and PC Connect
-  serial bridge via `--pcconnect-bridge` (pipes the VRC4173 SIU UART to a host
-  TCP/Unix/PTY chardev so a UTM Windows VM running real `PCConnect.exe`
-  can talk to the WinCE guest; see `docs/PC_CONNECT_BRIDGE.md`). The
-  RS-232 cable and USB share the BE-300 dock connector, but USB does **not**
-  use the SIU: the BE-300 is itself a USB 1.1 full-speed *device*
+  `--ne2000`, host RTC initialization via `--rtc-host-time`, wave-audio host
+  playback via `--audio`, the Stowaway serial keyboard via
+  `--stowaway-keyboard`, and PC Connect via `--pcconnect-bridge`. The bridge
+  carries VRC4173 SIU bytes in the default `rs232` dock mode or usbredir
+  protocol packets in `usb-sync` mode so a UTM Windows VM running real
+  `PCConnect.exe` can talk to the WinCE guest; see
+  `docs/PC_CONNECT_BRIDGE.md`. The RS-232 cable and USB share the BE-300 dock
+  connector, but USB does **not** use the SIU: the BE-300 is itself a USB 1.1
+  full-speed *device*
   (`VID_07CF&PID_2002`) driven by `usb.dll` through a USB function
   controller in the companion window (`0x1100`, `0x1300`-`0x161F`, DMA
   rings at PA `0x8000`). See `docs/BE300_USB_FUNCTION.md`. It is not
@@ -64,8 +67,14 @@ Primary local references:
 - `main.c` — CLI parsing for `--nand`, `--restore`, `--cf`, `--ppsh`, and other boot options
 - `cbea_install.c` / `be300_install_main.c` — offline `.cbea` app installer core and `be300-install` CLI
 - `host_io.c` / `host_io.h` — host stdin/stdout handling
+- `host_chardev.c` / `host_chardev.h` — shared TCP, Unix-socket, and PTY
+  transport for host serial and usbredir connections
+- `pcconnect_bridge.c` / `usbredir_dev.c` — RS-232 PC Connect transport and
+  USB-sync usbredir device transport
+- `stowaway.c` / `stowaway.h` — Stowaway serial keyboard protocol
 - `ppsh.h` — PPSH transport helpers
-- `be300_devices.c` — VRC4173 latch, CF window, PPSH debug shell, WinCE aux device
+- `be300_devices.c` and `src/devices/` — companion latch plus factored input,
+  NAND-window, PCMCIA-attribute, SIU-extra, and WinCE-aux devices
 
 **GXemul CPU engine (`gxemul/`)**
 - `gxemul/src/cpus/` — VR4131 MIPS CPU execution, CP0, TLB, dyntrans, MIPS16 support
@@ -76,15 +85,17 @@ Primary local references:
 - `gxemul/config.h` — MIPS-only build configuration
 
 **Hardware peripherals (`src/hw/`)**
-- `bcu.c/h` — Bus Control Unit
-- `icu.c/h` — Interrupt Control Unit
 - `rtc.c/h` — Real-Time Clock elapsed counter, long timers, interrupt-clear behavior, and WinCE-epoch host-time conversion
 - `siu.c/h` — Serial Interface Unit
-- `nand.c/h` — NAND flash controller and NANDWRITER restore-engine support
-- `cf.c/h` — CompactFlash image, ATA taskfile, CIS, recovery-boot support, and NE2000 PCMCIA card model
-- `gpio.c/h` — GPIO
+- `nand.c/h` / `nand_restore.c` — NAND flash controller and NANDWRITER restore-engine support
+- `cf.c/h` / `cf_ne2000.c` — CompactFlash image, ATA taskfile, CIS, recovery-boot support, and NE2000 PCMCIA card model
 - `cmu.c/h` — Clock Management Unit
 - `pmu.c/h` — Power Management Unit
+- `usbf.c/h` — BE-300 USB function controller used by USB-sync
+- `aiu.c/h` — Kj companion wave-audio DMA and interrupt model
+
+VR4131 BCU, ICU, and GPIO behavior lives in the active GXemul
+`dev_vr41xx.c` device rather than separate `src/hw/` shadow devices.
 
 ## Build, Tooling, And Logs
 
@@ -360,7 +371,9 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 ## Current Investigation Guidance
 
 - Primary active target: WinCE 3.0 cold boot via `--nand ce/restore_images/All_nand_300.bin`
-- Secondary implemented paths: `--restore --cf`, `--ppsh`, `--ne2000`, `--rtc-host-time`, and `--pcconnect-bridge`
+- Secondary implemented paths: `--restore --cf`, `--ppsh`, `--ne2000`,
+  `--rtc-host-time`, `--audio`, `--stowaway-keyboard`, serial bridges, and
+  RS-232/USB-sync `--pcconnect-bridge` modes
 - Do not solve cold boot with guest patches, RAM seeds, `resume_ctx` seeds, or forced handoff shortcuts
 - `docs/CURRENT_STATUS.md` is the current handoff for boot status, RTC/NE2000 notes, and any active investigation focus
 - Historical pass handoffs live under `docs/archive/`; do not treat them as current unless `docs/CURRENT_STATUS.md` explicitly points back to one
@@ -375,11 +388,17 @@ A Ghidra project containing the NK.exe dump is accessible via the MCP tools (`mc
 - `src/hw/nand.c` — NAND controller and NANDWRITER restore-engine behavior
 - `src/hw/cf.c` — CompactFlash emulation, NE2000 PCMCIA, and recovery-boot support
 - `src/hw/rtc.c` — RTC elapsed time, RTCL1 timer, interrupt-clear behavior, and WinCE-epoch host-time conversion
-- `src/hw/bcu.c` — BCU register behavior and noisy-probe suppression
-- `src/be300_devices.c` — VRC4173 latch, CF window, PPSH device, WinCE aux device
+- `src/hw/usbf.c` / `src/usbredir_dev.c` — USB function controller and
+  usbredir transport
+- `src/hw/aiu.c` — Kj companion wave-audio DMA and interrupt behavior
+- `src/cbea_install.c` — offline `.cbea` package application to NAND
+- `src/be300_devices.c` / `src/devices/` — VRC4173 latch and board-specific
+  device registration
 - `gxemul/src/devices/dev_vr41xx.c` — VR4131 ICU and timer behavior
 - `gxemul/src/devices/dev_ns16550.c` — SIU UART emulation
-- `web/main_web.c` / `web/worker.js` — browser frontend glue, web default RTC host-time behavior, optional NE2000 bridge plumbing
+- `web/main_web.c` / `web/worker.js` — browser frontend glue, web default RTC
+  host-time behavior, audio, package installation, and optional NE2000 bridge
+  plumbing
 
 ## Commit, Branch, And Push Rules
 

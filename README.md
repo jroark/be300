@@ -34,7 +34,11 @@ Historical pass handoffs and superseded investigation notes are archived in
 
 - CMake 3.10+
 - C11 compiler
-- SDL2 for the interactive framebuffer window and host buzzer audio
+- Git submodules for GXemul, Dear ImGui, and native file dialogs
+- SDL2 for the default native launcher, interactive framebuffer window, and
+  host audio. An asset-free headless CLI can instead be built with
+  `-DBUILD_LAUNCHER=OFF` when SDL2 is unavailable.
+- libpng is optional; it enables the rendered BE-300 bezel in SDL builds
 - `gtimeout` or GNU `timeout` for bounded boot smoke tests
 
 The GXemul CPU engine is a submodule. Fresh clones need:
@@ -54,6 +58,11 @@ make -j$(nproc)
 
 On macOS, replace `$(nproc)` with the number of jobs you want to run, or use a
 shell that provides `nproc`.
+
+Run `./build-host/be300` with no arguments to open the native VM manager. It
+creates reusable `.be300vm` bundles, remembers display and accessory settings,
+and can boot a selected NAND image without assembling the CLI options by hand.
+Pass `--nand` and other options to bypass the launcher and run directly.
 
 ### Windows x86_64 ZIP
 
@@ -111,6 +120,24 @@ gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
 Exit code `124` from `gtimeout` is expected for a long-running boot; WinCE does
 not exit on its own.
 
+## Install Applications Offline
+
+`be300-install` applies Casio `.cbea` application packages directly to a copy
+of the NAND image, without a Windows VM or PC Connect session:
+
+```bash
+./build-host/be300-install \
+  --output /tmp/All_nand_300_apps.bin \
+  ce/restore_images/All_nand_300.bin \
+  path/to/package.cbea
+./build-host/be300 --nand /tmp/All_nand_300_apps.bin
+```
+
+The web frontend provides the same operation through its **Install apps
+(.cbea)** picker and file-drop support. Package formats, transactional behavior,
+and current limitations are documented in
+[`docs/INSTALLING_APPS.md`](docs/INSTALLING_APPS.md).
+
 ## Regression Tests
 
 The asset-free unit suite covers the RTC, PMU, ROM/SPL NAND path, USB function
@@ -147,7 +174,14 @@ primary regression target:
 - `--ppsh` — WinCE PPSH debug-shell probe path
 - `--ne2000` — PCMCIA NE2000 Ethernet card model
 - `--rtc-host-time` — initialize the guest RTC from host local time
-- `--pcconnect-bridge` — bridge the dock cable to a host chardev for real PCConnect (serial bytes, or USB via QEMU `usb-redir` with `--pcconnect-dock usb-sync`)
+- `--audio` — route emulated wave-audio output to SDL (the buzzer is already
+  routed by the interactive frontend)
+- `--stowaway-keyboard` — attach the Targus/Think Outside serial keyboard dock
+- `--serial0-bridge` / `--serial1-bridge` — expose either emulated UART to a
+  host TCP, Unix-socket, or PTY chardev
+- `--pcconnect-bridge` — bridge the dock cable to a host chardev for real PC
+  Connect, carrying serial bytes by default or usbredir packets with
+  `--pcconnect-dock usb-sync`
 - `--trace`, `--log-mmio`, `--mmio-coverage`, `--detect-stall` — diagnostic
   options for controlled investigations
 

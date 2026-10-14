@@ -24,15 +24,26 @@ Secondary implemented paths, used for targeted investigation only:
 - `--ne2000` for the PCMCIA NE2000 Ethernet card path
 - `--rtc-host-time` for interactive boots that should start with the host
   local date/time instead of the first-boot default RTC value
-- `--pcconnect-bridge` pipes the VRC4173 SIU UART to a host
-  TCP/Unix/PTY chardev so real `PCConnect.exe` can talk to the guest;
-  `--serial0`/`--serial1` expose the VR4131 main SIU / VRC4173 companion
-  SIU as plain host serial bridges; see `docs/PC_CONNECT_BRIDGE.md`
+- `--pcconnect-bridge` connects the selected RS-232 or USB-sync dock path to a
+  host TCP/Unix/PTY chardev so real `PCConnect.exe` can talk to the guest;
+  USB-sync presents the emulated USB function controller through usbredir,
+  while the default RS-232 mode pipes the VRC4173 SIU byte stream;
+  `--serial0-bridge`/`--serial1-bridge` expose the VR4131 main SIU / VRC4173
+  companion SIU as plain host serial bridges; see
+  `docs/PC_CONNECT_BRIDGE.md`
 - `--stowaway-keyboard` attaches the Targus/Think Outside Stowaway dock
+- `--audio` routes the always-active Kj companion wave-DMA model to the host
+  SDL audio device; the browser frontend routes the same PCM plus buzzer audio
+  through Web Audio
 
 A portable Windows x86_64 build is produced from macOS by the MinGW
 cross-build helper `tools/build_windows.sh` (output
 `dist/be300-windows-amd64.zip`).
+
+Casio `.cbea` applications can be applied directly to a NAND image with
+`be300-install`, or queued through the web frontend's package picker/drop
+target. The installer updates the FAT16 filesystem and compact registry
+snapshot transactionally; see `docs/INSTALLING_APPS.md`.
 
 ## Regression Baseline
 
@@ -81,6 +92,13 @@ cross-build helper `tools/build_windows.sh` (output
   with the wrong RTC epoch and is gone after the 1850 epoch correction. Treat
   future NE2000 failures with a correct guest date as network/adapter binding
   issues, not as the old date-corruption crash.
+- The USB function controller is connected to stock QEMU/UTM `usb-redir` via
+  `--pcconnect-dock usb-sync`. The unmodified guest `usb.dll` supplies the
+  `VID_07CF&PID_2002` descriptors, control handling, and bulk traffic; no
+  custom QEMU dock device is required.
+- The Kj companion wave-audio model services the guest's ping-pong DMA and
+  SYSINTR `0x14`. Native `--audio` and the web Sound toggle control only host
+  playback, not the guest-visible DMA/interrupt behavior.
 
 ## Current Investigation Focus
 
