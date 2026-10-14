@@ -259,7 +259,10 @@ if(BUILD_CLI)
         ${BE300_SOURCES}
         ${BE300_LAUNCHER_SOURCES}
         ${EMBEDDED_ASSET_HEADERS})
-    target_link_libraries(be300 m ${SDL2_LIBRARIES} ${PNG_LIBRARIES})
+    target_link_libraries(be300 m ${SDL2_LIBRARIES})
+    if(PNG_FOUND)
+        target_link_libraries(be300 ${PNG_LIBRARIES})
+    endif()
     if(BUILD_LAUNCHER)
         target_compile_definitions(be300 PRIVATE BE300_HAVE_LAUNCHER=1)
         target_link_libraries(be300 imgui_be300)
