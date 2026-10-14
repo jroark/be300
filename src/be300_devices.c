@@ -1604,11 +1604,6 @@ DEVICE_ACCESS(be300_vrc4173)
             be300_vrc4173_a00_blit_maybe(cpu, d);
         if (off <= 0x0234u && off + len > 0x0234u)
             be300_vrc4173_200_display_op_maybe(d);
-        /* PIU control registers at offsets 0x000-0x05F: re-evaluate
-         * scan sequencer state when NK.exe configures the PIU. */
-        if (off < 0x060 && g_be300_machine && g_be300_machine->touch_device)
-            piu_update_state(
-                (struct be300_input_device *)g_be300_machine->touch_device);
     } else {
         if (g_be300_machine && off == AIU_REG_STATUS) {
             memory_writemax64(cpu, data, len,

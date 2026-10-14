@@ -47,6 +47,5 @@ void be300_register_wince_aux(struct machine *gxm, bool log_mmio,
 
 /* PIU/button cross-device callbacks (definitions in src/devices/input.c). */
 uint32_t piu_girq0_source_bits(const struct be300_input_device *d);
-void     piu_update_state(struct be300_input_device *d);
 uint32_t button_girq0_source_bits(const struct be300_input_device *d);
 void     button_ack_keyboard_source(struct be300_input_device *d);

@@ -195,6 +195,7 @@ set(BE300_SOURCES
     src/ui_stowaway.c
     src/hw/cmu.c
     src/hw/pmu.c
+    src/hw/piu.c
     src/hw/siu.c
     src/hw/usbf.c
     src/hw/rtc.c
@@ -423,6 +424,12 @@ if(BUILD_TESTING AND BUILD_CLI)
         src/hw/pmu.c)
     target_include_directories(test_pmu PRIVATE src)
     add_test(NAME pmu COMMAND test_pmu)
+
+    add_executable(test_piu
+        tests/test_piu.c
+        src/hw/piu.c)
+    target_include_directories(test_piu PRIVATE src)
+    add_test(NAME piu COMMAND test_piu)
 
     add_executable(test_nand_boot
         tests/test_nand_boot.c
