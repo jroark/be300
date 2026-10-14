@@ -295,9 +295,6 @@ static void be300_apply_rtc_host_time(machine_t *m)
         fprintf(stderr, "[BE300] Failed to initialize VR4131 RTC from host time\n");
         return;
     }
-    (void)rtc_init_from_ymdhms(&m->rtc, year, month, day, hour, minute,
-        second);
-
     fprintf(stderr,
         "[BE300] RTC initialized from host local time: "
         "%04d-%02d-%02d %02d:%02d:%02d\n",
@@ -657,15 +654,9 @@ machine_t *be300_create(const machine_config_t *cfg)
     machine_setup(gxm);
     device_set_exit_on_error(1);
 
-    /*
-     * Initialize our peripheral state structs.
-     */
-    bcu_init(&m->bcu);
-    cmu_init(&m->cmu);
-    icu_init(&m->icu);
+    /* Initialize board-owned peripheral state. VR4131 internal devices are
+     * initialized by dev_vr41xx during machine_setup() above. */
     siu_init(&m->siu);
-    rtc_init(&m->rtc);
-    gpio_init(&m->gpio);
     nand_init(&m->nand, NULL, 0, 0);
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_init(&m->cf[i]);

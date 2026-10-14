@@ -263,7 +263,8 @@ void rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val)
 
 void rtc_tick(rtc_state_t *s, uint64_t ticks)
 {
-    s->etime += ticks;
+    /* ETIME is a 48-bit hardware counter (VR4131 UM §13). */
+    s->etime = (s->etime + ticks) & rtc_48bit_mask();
     s->rtcl1 += (uint32_t)ticks;
     rtc_update_elapsed_irq(s);
 }

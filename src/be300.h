@@ -12,13 +12,7 @@
 #include <string.h>
 
 /* Hardware peripheral state */
-#include "hw/bcu.h"
-#include "hw/cmu.h"
-#include "hw/pmu.h"
-#include "hw/icu.h"
 #include "hw/siu.h"
-#include "hw/rtc.h"
-#include "hw/gpio.h"
 #include "hw/nand.h"
 #include "hw/cf.h"
 #include "hw/aiu.h"
@@ -137,13 +131,8 @@ typedef struct be300_state {
     /* CLI configuration */
     machine_config_t cfg;
 
-    /* Peripheral state (VR4131 internal I/O) */
-    bcu_state_t  bcu;
-    cmu_state_t  cmu;
-    icu_state_t  icu;
+    /* Companion SIU state. VR4131 internal devices live in dev_vr41xx. */
     siu_state_t  siu;
-    rtc_state_t  rtc;
-    gpio_state_t gpio;
 
     /* NAND flash controller (VRC4173) */
     nand_state_t nand;

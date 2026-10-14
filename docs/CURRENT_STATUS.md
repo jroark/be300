@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-05-16
+Last updated: 2026-10-13
 
 ## Active Target
 
@@ -33,6 +33,22 @@ Secondary implemented paths, used for targeted investigation only:
 A portable Windows x86_64 build is produced from macOS by the MinGW
 cross-build helper `tools/build_windows.sh` (output
 `dist/be300-windows-amd64.zip`).
+
+## Regression Baseline
+
+- Public CI performs an asset-free headless build and runs the maintained CTest
+  suite. The suite directly covers the active RTC, PMU, ROM/SPL NAND, USB,
+  bridge, configuration, and package-install paths.
+- A local-only `cold_boot` CTest is registered when CMake receives
+  `-DBE300_TEST_NAND=/absolute/path/All_nand_300.bin`. It boots a temporary copy
+  and requires ordered KLOADER, NK, WinCE kernel, and Casio shell serial
+  milestones. The source NAND hash must remain unchanged.
+- When SDL is available, the local test also requires an orderly-shutdown
+  screenshot that is nonblank and no longer matches `Initializing.bmp` or
+  `Starting.bmp`. Artifacts live in `build-host/cold-boot-artifacts/`.
+- The BE-300 machine object owns only board/companion device state. VR4131 RTC,
+  CMU, PMU, ICU, BCU, and GPIO state live on the active GXemul `dev_vr41xx`
+  path rather than in unused shadow structs.
 
 ## Current Behavior
 

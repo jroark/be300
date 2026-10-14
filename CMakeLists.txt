@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(be300 C CXX)
 
+include(CTest)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 11)
@@ -191,14 +193,11 @@ set(BE300_SOURCES
     src/stowaway.c
     src/ui.c
     src/ui_stowaway.c
-    src/hw/bcu.c
     src/hw/cmu.c
     src/hw/pmu.c
-    src/hw/icu.c
     src/hw/siu.c
     src/hw/usbf.c
     src/hw/rtc.c
-    src/hw/gpio.c
     src/hw/nand.c
     src/hw/nand_restore.c
     src/hw/cf.c
@@ -390,9 +389,7 @@ if(APPLE AND BUILD_CLI)
 endif()
 
 # Tests
-enable_testing()
-
-if(BUILD_LAUNCHER AND BUILD_CLI)
+if(BUILD_TESTING AND BUILD_CLI)
     add_executable(test_vm_config
         tests/test_vm_config.c
         src/launcher/vm_bundle.c
@@ -402,7 +399,7 @@ if(BUILD_LAUNCHER AND BUILD_CLI)
     add_test(NAME vm_config COMMAND test_vm_config)
 endif()
 
-if(BUILD_CLI AND NOT WIN32)
+if(BUILD_TESTING AND BUILD_CLI AND NOT WIN32)
     add_executable(test_pcconnect_bridge
         tests/test_pcconnect_bridge.c
         src/pcconnect_bridge.c
@@ -411,7 +408,26 @@ if(BUILD_CLI AND NOT WIN32)
     add_test(NAME pcconnect_bridge COMMAND test_pcconnect_bridge)
 endif()
 
-if(BUILD_CLI)
+if(BUILD_TESTING AND BUILD_CLI)
+    add_executable(test_rtc
+        tests/test_rtc.c
+        src/hw/rtc.c)
+    target_include_directories(test_rtc PRIVATE src)
+    add_test(NAME rtc COMMAND test_rtc)
+
+    add_executable(test_pmu
+        tests/test_pmu.c
+        src/hw/pmu.c)
+    target_include_directories(test_pmu PRIVATE src)
+    add_test(NAME pmu COMMAND test_pmu)
+
+    add_executable(test_nand_boot
+        tests/test_nand_boot.c
+        src/hw/nand.c
+        src/hw/nand_restore.c)
+    target_include_directories(test_nand_boot PRIVATE src)
+    add_test(NAME nand_boot COMMAND test_nand_boot)
+
     add_executable(test_usbf
         tests/test_usbf.c
         src/hw/usbf.c)
@@ -431,4 +447,25 @@ if(BUILD_CLI)
         src/cbea_install.c)
     target_include_directories(test_cbea_install PRIVATE src)
     add_test(NAME cbea_install COMMAND test_cbea_install)
+endif()
+
+set(BE300_TEST_NAND "" CACHE FILEPATH
+    "Local WinCE 3.0 NAND image used by the optional cold-boot regression test")
+if(BUILD_TESTING AND BUILD_CLI AND BE300_TEST_NAND)
+    find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+    set(BE300_COLD_BOOT_SCREENSHOT_ARG)
+    if(SDL2_FOUND OR SDL2_LIBRARIES)
+        set(BE300_COLD_BOOT_SCREENSHOT_ARG --require-screenshot)
+    endif()
+    add_test(NAME cold_boot
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/tools/test_cold_boot.py
+            --emulator $<TARGET_FILE:be300>
+            --nand ${BE300_TEST_NAND}
+            --baselines-dir ${CMAKE_SOURCE_DIR}
+            --artifacts-dir ${CMAKE_BINARY_DIR}/cold-boot-artifacts
+            ${BE300_COLD_BOOT_SCREENSHOT_ARG})
+    set_tests_properties(cold_boot PROPERTIES
+        LABELS "integration;local"
+        TIMEOUT 150)
 endif()

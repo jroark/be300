@@ -16,7 +16,8 @@ ce/restore_images/All_nand_300.bin
 Expected shape:
 
 - raw logical NAND sector data
-- 16,449,536 bytes (`1004 * 32 * 512`)
+- either the 16,449,536-byte logical restore payload (`1004 * 32 * 512`) or a
+  16,777,216-byte chip-sized copy padded to 1024 blocks
 - `B000FF\n` SPL signature at offset `0x4000`
 - FAT16 filesystem partition at offset `0x3B4000`
 

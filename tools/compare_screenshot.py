@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
-"""Compare an emulator screenshot against baseline reference images.
+"""Compare an emulator BMP screenshot with the boot-stage BMP baselines.
 
-Usage:
-    python3 tools/compare_screenshot.py <screenshot.bmp> [--baselines-dir DIR]
-
-Compares the given BMP screenshot against baseline images (Starting.bmp,
-Initializing.bmp) in the project root (or specified directory).  Reports
-pixel-level similarity and whether the screenshot matches any baseline.
-
-Exit codes:
-    0 — matches a baseline
-    1 — no match (or error)
+The emulator saves RGB565 while the hardware reference images are RGB24, so
+both formats are normalized to RGB888 before calculating pixel similarity.
 """
 
 import argparse
@@ -19,116 +11,147 @@ import struct
 import sys
 
 
+def _scale_masked(value, mask):
+    if not mask:
+        return 0
+    shift = (mask & -mask).bit_length() - 1
+    maximum = mask >> shift
+    return ((value & mask) >> shift) * 255 // maximum
+
+
 def read_bmp_pixels(path):
-    """Read a BMP file and return (width, height, pixel_data_bytes)."""
-    with open(path, "rb") as f:
-        sig = f.read(2)
-        if sig != b"BM":
-            raise ValueError(f"{path}: not a BMP file")
-        f.seek(10)
-        offset = struct.unpack("<I", f.read(4))[0]
-        f.seek(18)
-        width = struct.unpack("<i", f.read(4))[0]
-        height = struct.unpack("<i", f.read(4))[0]
-        f.seek(28)
-        bpp = struct.unpack("<H", f.read(2))[0]
-        f.seek(offset)
-        data = f.read()
-    return width, height, bpp, data
+    """Return ``(width, height, source_bpp, rgb888_bytes)`` for a BMP."""
+    with open(path, "rb") as stream:
+        blob = stream.read()
+
+    if len(blob) < 54 or blob[:2] != b"BM":
+        raise ValueError(f"{path}: not a supported BMP file")
+    pixel_offset = struct.unpack_from("<I", blob, 10)[0]
+    dib_size = struct.unpack_from("<I", blob, 14)[0]
+    if dib_size < 40 or len(blob) < 14 + dib_size:
+        raise ValueError(f"{path}: unsupported BMP DIB header")
+
+    width, signed_height = struct.unpack_from("<ii", blob, 18)
+    planes, bpp = struct.unpack_from("<HH", blob, 26)
+    compression = struct.unpack_from("<I", blob, 30)[0]
+    if planes != 1 or width <= 0 or signed_height == 0:
+        raise ValueError(f"{path}: invalid BMP geometry")
+    if bpp not in (16, 24, 32):
+        raise ValueError(f"{path}: unsupported {bpp}-bpp BMP")
+    if compression not in (0, 3):
+        raise ValueError(f"{path}: unsupported BMP compression {compression}")
+
+    height = abs(signed_height)
+    top_down = signed_height < 0
+    row_size = ((width * bpp + 31) // 32) * 4
+    if pixel_offset + row_size * height > len(blob):
+        raise ValueError(f"{path}: truncated BMP pixel data")
+
+    if bpp == 16:
+        if compression == 3:
+            mask_offset = 14 + 40
+            if mask_offset + 12 > pixel_offset:
+                raise ValueError(f"{path}: missing RGB bit masks")
+            red_mask, green_mask, blue_mask = struct.unpack_from(
+                "<III", blob, mask_offset
+            )
+        else:
+            red_mask, green_mask, blue_mask = 0x7C00, 0x03E0, 0x001F
+
+    rgb = bytearray(width * height * 3)
+    for y in range(height):
+        source_y = y if top_down else height - 1 - y
+        row = pixel_offset + source_y * row_size
+        for x in range(width):
+            if bpp == 16:
+                value = struct.unpack_from("<H", blob, row + x * 2)[0]
+                r = _scale_masked(value, red_mask)
+                g = _scale_masked(value, green_mask)
+                b = _scale_masked(value, blue_mask)
+            elif bpp == 24:
+                b, g, r = blob[row + x * 3 : row + x * 3 + 3]
+            else:
+                b, g, r, _ = blob[row + x * 4 : row + x * 4 + 4]
+            dest = (y * width + x) * 3
+            rgb[dest : dest + 3] = bytes((r, g, b))
+    return width, height, bpp, bytes(rgb)
 
 
 def pixel_similarity(data_a, data_b):
-    """Return fraction of identical bytes between two pixel buffers."""
-    if len(data_a) != len(data_b):
-        return 0.0
-    if len(data_a) == 0:
-        return 1.0
-    matching = sum(1 for a, b in zip(data_a, data_b) if a == b)
-    return matching / len(data_a)
+    """Return RGB channel similarity from 0.0 to 1.0."""
+    if len(data_a) != len(data_b) or not data_a:
+        return 1.0 if data_a == data_b else 0.0
+    error = sum(abs(a - b) for a, b in zip(data_a, data_b))
+    return 1.0 - error / (255.0 * len(data_a))
 
 
 def nonzero_pct(data):
-    """Return percentage of non-zero bytes."""
-    if len(data) == 0:
+    if not data:
         return 0.0
-    return 100.0 * sum(1 for b in data if b != 0) / len(data)
+    pixels = len(data) // 3
+    nonblack = sum(
+        1 for i in range(0, len(data), 3) if data[i] or data[i + 1] or data[i + 2]
+    )
+    return 100.0 * nonblack / pixels
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Compare emulator screenshot against baselines"
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("screenshot", help="Path to screenshot BMP")
     parser.add_argument(
         "--baselines-dir",
-        default=None,
-        help="Directory containing baseline BMPs (default: project root)",
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
+        help="Directory containing Starting.bmp and Initializing.bmp",
     )
     parser.add_argument(
         "--threshold",
         type=float,
         default=99.5,
-        help="Similarity threshold for match (default: 99.5%%)",
+        help="Similarity threshold for a match (default: 99.5%%)",
     )
     args = parser.parse_args()
 
-    if args.baselines_dir is None:
-        # Default: project root (two levels up from tools/)
-        args.baselines_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), ".."
-        )
-
     baselines = {}
-    for name in ["Starting.bmp", "Initializing.bmp"]:
+    for name in ("Starting.bmp", "Initializing.bmp"):
         path = os.path.join(args.baselines_dir, name)
         if os.path.exists(path):
             try:
-                w, h, bpp, data = read_bmp_pixels(path)
-                baselines[name] = (w, h, bpp, data)
-            except Exception as e:
-                print(f"WARNING: could not read baseline {path}: {e}", file=sys.stderr)
-
+                baselines[name] = read_bmp_pixels(path)
+            except Exception as exc:
+                print(f"WARNING: could not read baseline {path}: {exc}", file=sys.stderr)
     if not baselines:
         print("ERROR: no baseline images found", file=sys.stderr)
-        return 1
+        return 2
 
     try:
         sw, sh, sbpp, sdata = read_bmp_pixels(args.screenshot)
-    except Exception as e:
-        print(f"ERROR: could not read screenshot: {e}", file=sys.stderr)
-        return 1
+    except Exception as exc:
+        print(f"ERROR: could not read screenshot: {exc}", file=sys.stderr)
+        return 2
 
-    snz = nonzero_pct(sdata)
     print(f"Screenshot: {args.screenshot}")
-    print(f"  Size: {sw}x{sh} {sbpp}bpp, {len(sdata)} bytes")
-    print(f"  Non-zero: {snz:.1f}%")
-    print()
+    print(f"  Size: {sw}x{sh} {sbpp}bpp, normalized RGB bytes={len(sdata)}")
+    print(f"  Non-black pixels: {nonzero_pct(sdata):.1f}%\n")
 
-    best_match = None
-    best_sim = 0.0
-
+    best_name = None
+    best_similarity = 0.0
     for name, (bw, bh, bbpp, bdata) in sorted(baselines.items()):
-        bnz = nonzero_pct(bdata)
-        if sw != bw or sh != bh or sbpp != bbpp:
+        if (sw, sh) != (bw, bh):
             print(f"  vs {name}: DIMENSION MISMATCH ({bw}x{bh} {bbpp}bpp)")
             continue
-        sim = pixel_similarity(sdata, bdata) * 100.0
-        exact = sdata == bdata
-        status = "EXACT MATCH" if exact else (
-            "MATCH" if sim >= args.threshold else "no match"
-        )
-        print(f"  vs {name}: {sim:.1f}% similar, non-zero={bnz:.1f}% [{status}]")
-        if sim > best_sim:
-            best_sim = sim
-            best_match = name if sim >= args.threshold else None
+        similarity = pixel_similarity(sdata, bdata) * 100.0
+        status = "MATCH" if similarity >= args.threshold else "no match"
+        print(f"  vs {name}: {similarity:.2f}% similar [{status}]")
+        if similarity > best_similarity:
+            best_similarity = similarity
+            best_name = name
 
     print()
-    if best_match:
-        print(f"RESULT: matches {best_match} ({best_sim:.1f}%)")
+    if best_name and best_similarity >= args.threshold:
+        print(f"RESULT: matches {best_name} ({best_similarity:.2f}%)")
         return 0
-    else:
-        print(f"RESULT: no baseline match (best={best_sim:.1f}%)")
-        return 1
+    print(f"RESULT: no baseline match (best={best_similarity:.2f}%)")
+    return 1
 
 
 if __name__ == "__main__":

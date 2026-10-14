@@ -1525,7 +1525,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
              * leak stack frames until execution falls into low RAM.
              */
             if (s->dma_cursor >= s->dma_total_bytes)
-            if (s->dma_cursor >= s->dma_total_bytes)
                 s->dma_active = false;
             goto out;
         }

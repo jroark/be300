@@ -111,6 +111,33 @@ gtimeout 60s ./be300 --nand ../ce/restore_images/All_nand_300.bin \
 Exit code `124` from `gtimeout` is expected for a long-running boot; WinCE does
 not exit on its own.
 
+## Regression Tests
+
+The asset-free unit suite covers the RTC, PMU, ROM/SPL NAND path, USB function
+controller, host bridges, launcher configuration, and `.cbea` installer:
+
+```bash
+cmake -S . -B build-host -DBUILD_TESTING=ON
+cmake --build build-host -j4
+ctest --test-dir build-host --output-on-failure -LE local
+```
+
+To register the full cold-boot regression, configure with the local WinCE 3.0
+image. The test copies the image before running, verifies that the source hash
+does not change, and checks the serial milestones through the Casio shell:
+
+```bash
+cmake -S . -B build-host \
+  -DBUILD_TESTING=ON \
+  -DBE300_TEST_NAND="$PWD/ce/restore_images/All_nand_300.bin"
+cmake --build build-host -j4
+ctest --test-dir build-host --output-on-failure -R cold_boot
+```
+
+Logs and the final screenshot are written under
+`build-host/cold-boot-artifacts/`. Public CI intentionally runs only the
+asset-free suite because the restore image cannot be redistributed.
+
 ## Secondary Paths
 
 These paths remain implemented for targeted investigation, but they are not the

@@ -1,0 +1,102 @@
+/* ROM/SPL NAND-path tests using a synthetic data-only image. */
+
+#include "hw/nand.h"
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+
+static int failures;
+static uint8_t image[4 * NAND_PAGE_DATA];
+
+/* nand.c's legacy UART diagnostic path is not exercised by these tests. */
+void host_io_emit_serial(int ch) { (void)ch; }
+bool host_io_stdout_enabled(void) { return false; }
+
+#define CHECK(cond) do { \
+    if (!(cond)) { \
+        fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
+        failures++; \
+    } \
+} while (0)
+
+static void fill_image(void)
+{
+    for (unsigned page = 0; page < 4; page++)
+        for (unsigned i = 0; i < NAND_PAGE_DATA; i++)
+            image[page * NAND_PAGE_DATA + i] = (uint8_t)(page * 0x40u + i);
+}
+
+static void test_rom_stream_and_oob(void)
+{
+    nand_state_t n;
+
+    nand_init(&n, image, sizeof(image), sizeof(image));
+    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 4, 0) == UINT32_C(0xFFFFFFFF));
+
+    nand_write(&n, NAND_REG_BOOT_CMD, 1, 0x06, 0);
+    nand_write(&n, NAND_REG_BOOT_ADDR, 1, 0x00, 0);
+    nand_write(&n, NAND_REG_BOOT_ADDR, 1, 0x01, 0);
+    nand_write(&n, NAND_REG_BOOT_ADDR, 1, 0x00, 0);
+    nand_write(&n, NAND_REG_BOOT_MODE, 1, 0x05, 0);
+    CHECK(nand_read(&n, NAND_REG_BOOT_STATUS, 4, 0) == 1);
+    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 4, 0) == UINT32_C(0x43424140));
+
+    n.stream_cursor = NAND_PAGE_DATA;
+    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 2, 0) == UINT16_C(0x55AA));
+    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 1, 0) == 0x0F);
+}
+
+static void test_rom_dma_fifo(void)
+{
+    nand_state_t n;
+    uint8_t command[8] = {0};
+
+    nand_init(&n, image, sizeof(image), sizeof(image));
+    command[2] = 1;
+    command[3] = 2;
+    command[6] = 0xE0;
+    command[7] = 0x20;
+    for (unsigned i = 0; i < sizeof(command); i++)
+        nand_write(&n, NAND_DMA_BASE + i, 1, command[i], 0);
+
+    CHECK(n.dma_active);
+    CHECK(nand_read(&n, NAND_DMA_BASE + 7, 1, UINT32_C(0x9FC01000)) == 0x58);
+    CHECK(nand_read(&n, NAND_DMA_BASE, 4, UINT32_C(0x9FC01000)) ==
+          UINT32_C(0x83828180));
+    for (unsigned i = 4; i < NAND_PAGE_DATA; i++)
+        (void)nand_read(&n, NAND_DMA_BASE, 1, UINT32_C(0x9FC01000));
+    CHECK(!n.dma_active);
+    CHECK(nand_read(&n, NAND_DMA_BASE + 7, 1, UINT32_C(0x9FC01000)) == 0x50);
+}
+
+static void test_clean_ecc_and_inactive_buffer(void)
+{
+    nand_state_t n;
+
+    nand_init(&n, image, sizeof(image), sizeof(image));
+    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 1, 0) == 0xFF);
+    nand_write(&n, NAND_REG_BOOT_MODE, 1, 0x01, 0);
+    for (unsigned i = 0; i < 6; i++)
+        nand_write(&n, NAND_REG_BOOT_ECC_IN, 2, 0x155 + i, 0);
+    CHECK(n.boot_ecc_count == 6);
+    for (uint32_t off = NAND_REG_BOOT_ECC_OUT_BASE;
+         off < NAND_REG_BOOT_ECC_OUT_END; off += 4)
+        CHECK(nand_read(&n, off, 4, 0) == 0);
+    CHECK(nand_read(&n, NAND_REG_BOOT_STATUS2, 4, 0) == 0);
+}
+
+int main(void)
+{
+    fill_image();
+    test_rom_stream_and_oob();
+    test_rom_dma_fifo();
+    test_clean_ecc_and_inactive_buffer();
+    if (failures) {
+        fprintf(stderr, "test_nand_boot: %d failure(s)\n", failures);
+        return 1;
+    }
+    puts("test_nand_boot: all tests passed");
+    return 0;
+}
