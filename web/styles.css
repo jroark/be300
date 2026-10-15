@@ -140,6 +140,59 @@ input[type="range"] {
   grid-column: 1 / -1;
 }
 
+.cf-blank-panel {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  border: 1px dashed var(--panel-border);
+  border-radius: 10px;
+}
+
+.cf-blank-panel.cf-drop-active {
+  border-color: var(--accent);
+}
+
+.boot-config-grid .cf-blank-panel > span {
+  min-height: auto;
+}
+
+.cf-blank-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cf-blank-row select {
+  width: auto;
+  flex: 1 1 96px;
+}
+
+.cf-blank-list {
+  max-height: 160px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.cf-blank-list li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.cf-blank-list .cf-path {
+  overflow-wrap: anywhere;
+}
+
+.cf-blank-list button {
+  min-height: 0;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
 .checkbox-row {
   display: flex;
   gap: 10px;

@@ -137,11 +137,23 @@ timer-paced step-batch model; they are pacing units, not MHz.
 
 The controls panel attaches optional boot-time accessories:
 
-- The primary PCMCIA dropdown chooses no card, CF slot 0, or NE2000. It
-  defaults to NE2000. Choosing CF slot 0 opens the file picker immediately;
-  the selected upload is written into MEMFS as `/cf0.img` before machine
-  creation. CF slot 0 and NE2000 are mutually exclusive because both use the
-  primary PCMCIA socket.
+- The primary PCMCIA dropdown chooses no card, a CompactFlash image file,
+  a blank CompactFlash card, or NE2000. It defaults to NE2000. Choosing the
+  image file opens the file picker immediately; the selected upload is
+  written into MEMFS as `/cf0.img` before machine creation. CF and NE2000 are
+  mutually exclusive because both use the primary PCMCIA socket.
+- "Blank CompactFlash card" builds a card in the browser: pick a size
+  (16-512 MB), then add files, a folder (its structure is kept), or drop
+  files/folders on the panel. At boot the worker formats a bare FAT16 volume
+  with `_be300_web_cf_create` (the same layout as `tools/make_cf_image.sh`),
+  writes each file with `_be300_web_cf_add_file`, and stages it with
+  `_be300_web_cf_commit`. The files appear under `\Storage Card`. Names are
+  stored as 8-bit FAT long names, so characters outside Latin-1 and the FAT
+  reserved set become `_`.
+- "Download CF" saves the slot-0 card (uploaded or blank) as
+  `be300-cf.img`, including the guest's writes (`_be300_web_cf_flush` pushes
+  them to MEMFS first). Reset and running `.cbea` installs reboot with the
+  guest's current CF contents rather than the originally selected bytes.
 - CF slot 1 uploads are written into MEMFS as `/cf1.img`. Slot 1 can be
   staged, but the native emulator still warns that secondary socket MMIO is
   not decoded yet, so current WinCE visibility is limited.
@@ -191,7 +203,8 @@ access to guest services.
 2. The worker calls `_be300_web_load_nand(ptr, len)` to write the bytes to
    `/All_nand_300.bin` in MEMFS. Queued packages are then applied with
    `_be300_web_install_cbea`; selected CF uploads are staged with
-   `_be300_web_load_cf(slot, ptr, len)`.
+   `_be300_web_load_cf(slot, ptr, len)`, and a blank card is built with
+   `_be300_web_cf_create` / `_be300_web_cf_add_file` / `_be300_web_cf_commit`.
 3. The worker calls `_be300_web_create_ex2(sdramMb, targetMhz, flags, mac,
    fbWidth, fbHeight)`. The flags select optional CF slots, NE2000, the
    Stowaway dock, host audio, and an explicit MAC address. The `targetMhz`

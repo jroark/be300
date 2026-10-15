@@ -204,6 +204,40 @@ static const char k_inf_bad_dest[] =
     "[Copy Files]\r\n"
     "\"%INSTALL_DIR%\\x.bin\" , \"x.bin\", COPYFLG_REPLACEONLY\r\n";
 
+/* Blank CF images: format, then write and read back through the FAT API. */
+static void check_cf_format(uint32_t size_mb, unsigned want_spc)
+{
+    size_t len = (size_t)size_mb * 1024u * 1024u;
+    uint8_t *img = calloc(1, len);
+    static const char payload[] = "hello from the host";
+    unsigned total, spc, fat_sectors, clusters;
+    size_t got = 0;
+    uint8_t *buf;
+
+    CHECK(cbea_fat_format(img, len, "Cf Card") == 0);
+    spc = img[0x0D];
+    total = rd16(img + 0x13) ? rd16(img + 0x13) : rd32(img + 0x20);
+    fat_sectors = rd16(img + 0x16);
+    clusters = (total - 1 - 32 - 2 * fat_sectors) / spc;
+    CHECK(spc == want_spc);
+    CHECK(total * 512u == len);
+    CHECK(clusters >= 4085 && clusters <= 65524);
+    CHECK(fat_sectors * 256u >= clusters + 2);
+    CHECK(memcmp(img + 0x36, "FAT16   ", 8) == 0);
+    CHECK(memcmp(img + 0x2B, "CF CARD    ", 11) == 0);
+    CHECK(cbea_fat_write_file(img, len, "Program Files\\Long Name Dir\\read me.txt",
+                              (const uint8_t *)payload, sizeof(payload) - 1,
+                              g_log, sizeof(g_log)) == 0);
+    CHECK(cbea_fat_write_file(img, len, "empty.bin", NULL, 0, g_log, sizeof(g_log)) == 0);
+    buf = cbea_fat_read_file(img, len, "program files\\long name dir\\READ ME.TXT", &got);
+    CHECK(buf && got == sizeof(payload) - 1 && memcmp(buf, payload, got) == 0);
+    free(buf);
+    buf = cbea_fat_read_file(img, len, "empty.bin", &got);
+    CHECK(buf && got == 0);
+    free(buf);
+    free(img);
+}
+
 int main(void)
 {
     static uint8_t big[5000];
@@ -335,6 +369,18 @@ int main(void)
     free(before);
 
     free(g_img);
+
+    check_cf_format(8, 2);
+    check_cf_format(16, 4);
+    check_cf_format(64, 4);
+    check_cf_format(128, 4);
+    check_cf_format(512, 16);
+    CHECK(cbea_fat_format(NULL, 0, "X") != 0);
+    {
+        uint8_t small[4096];
+        CHECK(cbea_fat_format(small, sizeof(small), "X") != 0);
+    }
+
     if (failures) {
         fprintf(stderr, "%d failure(s)\n", failures);
         return 1;

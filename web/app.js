@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20261013e";
+const ASSET_VERSION = "20261014a";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -28,6 +28,15 @@ const speedValueEl = document.querySelector("#speedValue");
 const primarySocketSelect = document.querySelector("#primarySocket");
 const cf0FileInput = document.querySelector("#cf0File");
 const cf1FileInput = document.querySelector("#cf1File");
+const cfBlankPanel = document.querySelector("#cfBlankPanel");
+const cfBlankSizeSelect = document.querySelector("#cfBlankSize");
+const cfBlankFilesInput = document.querySelector("#cfBlankFiles");
+const cfBlankFolderInput = document.querySelector("#cfBlankFolder");
+const cfBlankAddFilesBtn = document.querySelector("#cfBlankAddFilesBtn");
+const cfBlankAddFolderBtn = document.querySelector("#cfBlankAddFolderBtn");
+const cfBlankClearBtn = document.querySelector("#cfBlankClearBtn");
+const cfBlankListEl = document.querySelector("#cfBlankList");
+const cfBlankSummaryEl = document.querySelector("#cfBlankSummary");
 const netMacInput = document.querySelector("#netMac");
 const netBridgeUrlInput = document.querySelector("#netBridgeUrl");
 const targusKeyboardEnabledInput = document.querySelector("#targusKeyboardEnabled");
@@ -35,6 +44,7 @@ const audioEnabledInput = document.querySelector("#audioEnabled");
 const bootBtn = document.querySelector("#bootBtn");
 const stopBtn = document.querySelector("#stopBtn");
 const resetBtn = document.querySelector("#resetBtn");
+const downloadCfBtn = document.querySelector("#downloadCfBtn");
 const toggleSerialBtn = document.querySelector("#toggleSerialBtn");
 const clearSerialBtn = document.querySelector("#clearSerialBtn");
 const statusEl = document.querySelector("#status");
@@ -48,6 +58,10 @@ const controlButtons = Array.from(document.querySelectorAll("[data-set][data-mas
 let uploadedNandFile = null;
 // .cbea app packages queued for the next boot (src/cbea_install.h).
 let pendingPackages = [];
+// Files for a blank CF card, as { path, file } with backslash card paths.
+let cfBlankFiles = [];
+// Whether the worker's current machine has a slot-0 CF card to download.
+let cfAttached = false;
 let running = false;
 let bootInFlight = false;
 let serialCollapsed = false;
@@ -126,6 +140,16 @@ function getActiveNand() {
 }
 
 function getActiveCf(slot) {
+  if (slot === 0 && primarySocketSelect.value === "cfblank") {
+    const sizeMb = getCfBlankSizeMb();
+    const count = cfBlankFiles.length;
+    return {
+      kind: "blank",
+      name: `blank ${sizeMb} MB card (${count} file${count === 1 ? "" : "s"})`,
+      sizeMb,
+      files: cfBlankFiles.slice(),
+    };
+  }
   if (slot === 0 && primarySocketSelect.value !== "cf0") {
     return null;
   }
@@ -160,6 +184,128 @@ function syncPrimarySocketControls() {
 
   netMacInput.disabled = !usingNe2000;
   netBridgeUrlInput.disabled = !usingNe2000;
+  cfBlankPanel.hidden = primarySocket !== "cfblank";
+}
+
+function getCfBlankSizeMb() {
+  return Number.parseInt(cfBlankSizeSelect.value, 10) || 64;
+}
+
+// Cluster size cbea_fat_format() picks for each card size (src/cbea_install.c).
+function getCfClusterBytes(sizeMb) {
+  if (sizeMb <= 128) {
+    return 2048;
+  }
+  return sizeMb <= 256 ? 4096 : 8192;
+}
+
+// Rough space the files take on the card: whole clusters per file plus a
+// cluster per directory, against the data area left after FATs/root dir.
+function estimateCfBlankUsage(sizeMb = getCfBlankSizeMb()) {
+  const cluster = getCfClusterBytes(sizeMb);
+  const dirs = new Set();
+  let used = 0;
+  for (const { path, file } of cfBlankFiles) {
+    used += Math.ceil(file.size / cluster) * cluster;
+    const parts = path.split("\\");
+    for (let i = 1; i < parts.length; i++) {
+      dirs.add(parts.slice(0, i).join("\\").toLowerCase());
+    }
+  }
+  used += dirs.size * cluster;
+  const capacity = sizeMb * 1024 * 1024 - 300 * 1024;
+  return { used, capacity };
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return bytes >= 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${bytes} B`;
+}
+
+// FAT long names here are 8-bit (src/cbea_install.c dir_create), so drop
+// characters FAT forbids or the card can't store.
+function sanitizeCfComponent(name) {
+  let out = "";
+  for (const ch of name) {
+    const code = ch.codePointAt(0);
+    out += code < 0x20 || code > 0xFF || '\\/:*?"<>|'.includes(ch) ? "_" : ch;
+  }
+  out = out.replace(/[. ]+$/, "");
+  return out || "_";
+}
+
+function toCfPath(relativePath) {
+  return relativePath
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..")
+    .map(sanitizeCfComponent)
+    .join("\\");
+}
+
+function addCfBlankFiles(entries) {
+  for (const { path, file } of entries) {
+    const cfPath = toCfPath(path);
+    if (!cfPath) {
+      continue;
+    }
+    const key = cfPath.toLowerCase();
+    cfBlankFiles = cfBlankFiles.filter((queued) => queued.path.toLowerCase() !== key);
+    cfBlankFiles.push({ path: cfPath, file });
+  }
+  cfBlankFiles.sort((a, b) => a.path.localeCompare(b.path));
+  renderCfBlankFiles();
+  updateReadyStatus();
+  syncButtons();
+}
+
+function renderCfBlankFiles() {
+  cfBlankListEl.replaceChildren(...cfBlankFiles.map((entry) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.className = "cf-path";
+    label.textContent = `\\${entry.path} (${formatBytes(entry.file.size)})`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      cfBlankFiles = cfBlankFiles.filter((queued) => queued !== entry);
+      renderCfBlankFiles();
+      updateReadyStatus();
+      syncButtons();
+    });
+    item.append(label, remove);
+    return item;
+  }));
+  const { used, capacity } = estimateCfBlankUsage();
+  cfBlankSummaryEl.textContent = cfBlankFiles.length
+    ? `${cfBlankFiles.length} file(s), about ${formatBytes(used)} of ${formatBytes(capacity)}. ` +
+      "Files appear under \\Storage Card. Drop files or folders here."
+    : "Empty card. Add files or folders, or drop them here; they appear under \\Storage Card.";
+  cfBlankClearBtn.disabled = cfBlankFiles.length === 0;
+}
+
+// Walk dropped folders through the FileSystemEntry API.
+async function collectDroppedEntries(entry, prefix, out) {
+  if (entry.isFile) {
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    out.push({ path: `${prefix}${entry.name}`, file });
+    return;
+  }
+  if (!entry.isDirectory) {
+    return;
+  }
+  const reader = entry.createReader();
+  for (;;) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+    if (!batch.length) {
+      break;
+    }
+    for (const child of batch) {
+      await collectDroppedEntries(child, `${prefix}${entry.name}/`, out);
+    }
+  }
 }
 
 function parseMacAddress(value) {
@@ -276,6 +422,15 @@ function getBootOptions() {
 }
 
 function validateBootOptions(options = getBootOptions()) {
+  if (options.cf0?.kind === "blank") {
+    const { used, capacity } = estimateCfBlankUsage(options.cf0.sizeMb);
+    if (used > capacity) {
+      return {
+        valid: false,
+        message: `The CF files need about ${formatBytes(used)}, more than a ${options.cf0.sizeMb} MB card holds. Choose a bigger card or remove files.`,
+      };
+    }
+  }
   if (options.primarySocket === "cf0" && !options.cf0) {
     return {
       valid: false,
@@ -341,6 +496,7 @@ function syncButtons() {
   bootBtn.disabled = bootInFlight || !validation.valid;
   stopBtn.disabled = !running;
   resetBtn.disabled = bootInFlight;
+  downloadCfBtn.disabled = bootInFlight || !cfAttached;
 }
 
 function clamp(value, min, max) {
@@ -897,6 +1053,94 @@ document.addEventListener("dragleave", (event) => {
   }
 });
 
+cfBlankPanel.addEventListener("dragover", (event) => {
+  if (!isFileDrag(event)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  event.dataTransfer.dropEffect = "copy";
+  cfBlankPanel.classList.add("cf-drop-active");
+});
+
+cfBlankPanel.addEventListener("dragleave", (event) => {
+  if (!cfBlankPanel.contains(event.relatedTarget)) {
+    cfBlankPanel.classList.remove("cf-drop-active");
+  }
+});
+
+cfBlankPanel.addEventListener("drop", async (event) => {
+  cfBlankPanel.classList.remove("cf-drop-active");
+  document.body.classList.remove("drag-active");
+  if (!isFileDrag(event)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  // Grab the entries synchronously; DataTransfer is emptied after the event.
+  const items = Array.from(event.dataTransfer.items ?? []);
+  const entries = items.map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
+  const files = Array.from(event.dataTransfer.files);
+  const collected = [];
+  try {
+    if (entries.length) {
+      for (const entry of entries) {
+        await collectDroppedEntries(entry, "", collected);
+      }
+    } else {
+      collected.push(...files.map((file) => ({ path: file.name, file })));
+    }
+  } catch (error) {
+    setStatus(`Could not read dropped files: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  addCfBlankFiles(collected);
+});
+
+cfBlankAddFilesBtn.addEventListener("click", () => cfBlankFilesInput.click());
+cfBlankAddFolderBtn.addEventListener("click", () => cfBlankFolderInput.click());
+
+cfBlankFilesInput.addEventListener("change", () => {
+  addCfBlankFiles(Array.from(cfBlankFilesInput.files ?? [], (file) => ({ path: file.name, file })));
+  cfBlankFilesInput.value = "";
+});
+
+cfBlankFolderInput.addEventListener("change", () => {
+  addCfBlankFiles(Array.from(cfBlankFolderInput.files ?? [], (file) => ({
+    path: file.webkitRelativePath || file.name,
+    file,
+  })));
+  cfBlankFolderInput.value = "";
+});
+
+cfBlankClearBtn.addEventListener("click", () => {
+  cfBlankFiles = [];
+  renderCfBlankFiles();
+  updateReadyStatus();
+  syncButtons();
+});
+
+cfBlankSizeSelect.addEventListener("change", () => {
+  renderCfBlankFiles();
+  updateReadyStatus();
+  syncButtons();
+});
+
+downloadCfBtn.addEventListener("click", () => {
+  worker.postMessage({ type: "exportCf", slot: 0 });
+});
+
+function downloadCfImage(bytes) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "be300-cf.img";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 document.addEventListener("drop", (event) => {
   document.body.classList.remove("drag-active");
   if (!isFileDrag(event) || isFileInputTarget(event)) {
@@ -998,7 +1242,14 @@ bootBtn.addEventListener("click", async () => {
     } else {
       message.nandUrl = `${active.url}?v=${ASSET_VERSION}`;
     }
-    if (options.cf0) {
+    if (options.cf0?.kind === "blank") {
+      const files = await Promise.all(options.cf0.files.map(async ({ path, file }) => ({
+        path,
+        bytes: await file.arrayBuffer(),
+      })));
+      message.cfSlot0Blank = { sizeMb: options.cf0.sizeMb, files };
+      transfer.push(...files.map((file) => file.bytes));
+    } else if (options.cf0) {
       message.cfSlot0Bytes = await options.cf0.file.arrayBuffer();
       transfer.push(message.cfSlot0Bytes);
     }
@@ -1015,6 +1266,7 @@ bootBtn.addEventListener("click", async () => {
     return;
   }
 
+  cfAttached = Boolean(options.cf0);
   if (transfer.length) {
     worker.postMessage(message, transfer);
   } else {
@@ -1235,6 +1487,13 @@ worker.addEventListener("message", ({ data }) => {
     case "audio":
       playAudio(data.samples);
       break;
+    case "cfImage":
+      if (data.bytes) {
+        downloadCfImage(data.bytes);
+      } else {
+        setStatus("No CompactFlash card is attached to download.");
+      }
+      break;
     case "fatal":
       running = false;
       bootInFlight = false;
@@ -1254,6 +1513,7 @@ syncButtons();
 syncControlButtonStates();
 syncSpeedLabel();
 syncPrimarySocketControls();
+renderCfBlankFiles();
 setSerialCollapsed(false);
 loadFrameButtonMask();
 updateReadyStatus();

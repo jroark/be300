@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BE-300 Emulator</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20261013d">
+  <link rel="stylesheet" href="./styles.css?v=20261014a">
 </head>
 <body>
   <main class="shell">
@@ -20,6 +20,7 @@
         <button id="bootBtn" disabled>Boot</button>
         <button id="stopBtn" disabled>Stop</button>
         <button id="resetBtn" disabled>Reset</button>
+        <button id="downloadCfBtn" type="button" disabled title="Save the CompactFlash card, including the guest's changes, as a raw .img">Download CF</button>
       </div>
       <label class="field">
         <span>Hosted NAND image</span>
@@ -53,11 +54,32 @@
           <span>Primary PCMCIA socket</span>
           <select id="primarySocket">
             <option value="none">No card</option>
-            <option value="cf0">CompactFlash slot 0</option>
+            <option value="cf0">CompactFlash image file</option>
+            <option value="cfblank">Blank CompactFlash card</option>
             <option value="ne2000" selected>NE2000 Ethernet</option>
           </select>
           <input id="cf0File" type="file" accept=".img,.bin,application/octet-stream" hidden>
         </label>
+        <div id="cfBlankPanel" class="field cf-blank-panel" hidden>
+          <span>Blank CF card</span>
+          <div class="cf-blank-row">
+            <select id="cfBlankSize" aria-label="CF card size">
+              <option value="16">16 MB</option>
+              <option value="32">32 MB</option>
+              <option value="64" selected>64 MB</option>
+              <option value="128">128 MB</option>
+              <option value="256">256 MB</option>
+              <option value="512">512 MB</option>
+            </select>
+            <button id="cfBlankAddFilesBtn" type="button">Add files</button>
+            <button id="cfBlankAddFolderBtn" type="button">Add folder</button>
+            <button id="cfBlankClearBtn" type="button">Clear</button>
+          </div>
+          <input id="cfBlankFiles" type="file" multiple hidden>
+          <input id="cfBlankFolder" type="file" webkitdirectory multiple hidden>
+          <ul id="cfBlankList" class="cf-blank-list"></ul>
+          <small id="cfBlankSummary" class="field-hint"></small>
+        </div>
         <label class="field">
           <span>CF slot 1</span>
           <input id="cf1File" type="file" accept=".img,.bin,application/octet-stream">
@@ -125,6 +147,6 @@
     </section>
   </main>
 
-  <script type="module" src="./app.js?v=20261013e"></script>
+  <script type="module" src="./app.js?v=20261014a"></script>
 </body>
 </html>

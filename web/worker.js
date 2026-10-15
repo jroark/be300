@@ -1,4 +1,4 @@
-import createBe300Module from "./be300_web.js?v=20261013d";
+import createBe300Module from "./be300_web.js?v=20261014a";
 
 const MAX_FRAME_WIDTH = 480;
 const MAX_FRAME_HEIGHT = 640;
@@ -6,6 +6,7 @@ const MAX_FRAME_BYTES = MAX_FRAME_WIDTH * MAX_FRAME_HEIGHT * 4;
 const SERIAL_BYTES = 16384;
 const INSTALL_LOG_BYTES = 65536;
 const NAND_MEMFS_PATH = "/All_nand_300.bin";
+const CF0_MEMFS_PATH = "/cf0.img";
 const NET_FRAME_BYTES = 2048;
 const AUDIO_DRAIN_SAMPLES = 8192;
 const DEFAULT_SPEED = 0;
@@ -446,7 +447,58 @@ function installPackagesIntoMemfs(module, packages) {
   return installed;
 }
 
-async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes = null, packages = []) {
+// Build a blank FAT16 CF card from user-picked files and stage it as the
+// slot-0 image (be300_web_cf_* in web/main_web.c). A file that fails to
+// write is reported and skipped.
+function buildBlankCf(module, blank) {
+  if (module._be300_web_cf_create(blank.sizeMb) !== 0) {
+    throw new Error(`Failed to format a ${blank.sizeMb} MB CF card.`);
+  }
+  let added = 0;
+  const logPtr = module._malloc(INSTALL_LOG_BYTES);
+  try {
+    for (const file of blank.files) {
+      const pathBytes = new Uint8Array(file.path.length + 1);
+      for (let i = 0; i < file.path.length; i++) {
+        pathBytes[i] = file.path.charCodeAt(i);
+      }
+      const bytes = new Uint8Array(file.bytes);
+      const pathPtr = allocBytes(module, pathBytes);
+      const dataPtr = allocBytes(module, bytes);
+      const rc = module._be300_web_cf_add_file(pathPtr, dataPtr, bytes.length, logPtr, INSTALL_LOG_BYTES);
+      module._free(dataPtr);
+      module._free(pathPtr);
+      if (rc === 0) {
+        added++;
+      } else {
+        const end = module.HEAPU8.indexOf(0, logPtr);
+        const log = textDecoder.decode(module.HEAPU8.slice(logPtr, end < 0 ? logPtr : end));
+        postSerial(`[CF] ${file.path} skipped: ${log}`);
+      }
+    }
+  } finally {
+    module._free(logPtr);
+  }
+  if (module._be300_web_cf_commit(0) !== 0) {
+    throw new Error("Failed to stage the blank CF card into MEMFS.");
+  }
+  postSerial(`[CF] Blank ${blank.sizeMb} MB card with ${added} of ${blank.files.length} file(s).\n`);
+  return module.FS.readFile(CF0_MEMFS_PATH);
+}
+
+// Write the guest's CF writes back to MEMFS and return the current card.
+function readCurrentCf0() {
+  if (!moduleInstance || !cachedCfSlot0) {
+    return null;
+  }
+  if (machineHandle) {
+    moduleInstance._be300_web_cf_flush(machineHandle, 0);
+  }
+  return moduleInstance.FS.readFile(CF0_MEMFS_PATH);
+}
+
+async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes = null, packages = [],
+                        cfSlot0Blank = null) {
   const module = await ensureModule();
   const config = normalizeBootConfig(bootConfig);
   let flags = 0;
@@ -469,7 +521,11 @@ async function bootNand(nandBytes, bootConfig, cfSlot0Bytes = null, cfSlot1Bytes
     nandBytes = module.FS.readFile(NAND_MEMFS_PATH);
   }
 
-  if (cfSlot0Bytes) {
+  if (cfSlot0Blank) {
+    // Reset reboots from the cached bytes instead of rebuilding the card.
+    cfSlot0Bytes = buildBlankCf(module, cfSlot0Blank);
+    flags |= WEB_FLAG_CF0;
+  } else if (cfSlot0Bytes) {
     stageBytes(
       module,
       cfSlot0Bytes,
@@ -579,7 +635,8 @@ self.addEventListener("message", async ({ data }) => {
         const nandBytes = await loadNandBytes(data);
         const cfSlot0Bytes = loadOptionalBytes(data.cfSlot0Bytes);
         const cfSlot1Bytes = loadOptionalBytes(data.cfSlot1Bytes);
-        await bootNand(nandBytes, data, cfSlot0Bytes, cfSlot1Bytes, data.packages ?? []);
+        await bootNand(nandBytes, data, cfSlot0Bytes, cfSlot1Bytes, data.packages ?? [],
+          data.cfSlot0Blank ?? null);
       } catch (error) {
         destroyMachine();
         postMessage({
@@ -593,7 +650,9 @@ self.addEventListener("message", async ({ data }) => {
       if (cachedNand && cachedBootConfig) {
         try {
           postStatus("Resetting emulator...", { bootInFlight: true });
-          await bootNand(cachedNand, cachedBootConfig, cachedCfSlot0, cachedCfSlot1);
+          // Keep the guest's CF writes across Reset.
+          const cfSlot0 = readCurrentCf0() ?? cachedCfSlot0;
+          await bootNand(cachedNand, cachedBootConfig, cfSlot0, cachedCfSlot1);
         } catch (error) {
           destroyMachine();
           postMessage({
@@ -612,7 +671,8 @@ self.addEventListener("message", async ({ data }) => {
           postStatus("Installing apps and rebooting...", { bootInFlight: true });
           destroyMachine();
           const nandBytes = moduleInstance.FS.readFile(NAND_MEMFS_PATH);
-          await bootNand(nandBytes, cachedBootConfig, cachedCfSlot0, cachedCfSlot1, data.packages ?? []);
+          const cfSlot0 = cachedCfSlot0 ? moduleInstance.FS.readFile(CF0_MEMFS_PATH) : null;
+          await bootNand(nandBytes, cachedBootConfig, cfSlot0, cachedCfSlot1, data.packages ?? []);
         } catch (error) {
           destroyMachine();
           postMessage({
@@ -622,6 +682,16 @@ self.addEventListener("message", async ({ data }) => {
         }
       }
       break;
+    case "exportCf": {
+      const bytes = readCurrentCf0();
+      if (bytes) {
+        const buffer = bytes.slice().buffer;
+        postMessage({ type: "cfImage", slot: 0, bytes: buffer }, [buffer]);
+      } else {
+        postMessage({ type: "cfImage", slot: 0, bytes: null });
+      }
+      break;
+    }
     case "stop":
       if (moduleInstance && machineHandle) {
         moduleInstance._be300_stop(machineHandle);
