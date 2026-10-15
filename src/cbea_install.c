@@ -646,7 +646,7 @@ static bool fat_mkdirs(fat_vol_t *v, const char *path, uint32_t *out_dir,
             uint32_t c = fat_alloc(v);
             uint8_t *e, *dot;
             if (!c) {
-                log_add(log, "error: NAND disk full creating %s\n", comp);
+                log_add(log, "error: disk full creating %s\n", comp);
                 return false;
             }
             e = dir_create(v, dir, comp, ATTR_DIR);
@@ -706,7 +706,7 @@ static bool fat_write_file(fat_vol_t *v, const char *path, const uint8_t *data,
         e = NULL;
     }
     if (fat_free_clusters(v) < nclusters + 1u) {
-        log_add(log, "error: NAND disk full writing %s (%zu bytes)\n", path, len);
+        log_add(log, "error: disk full writing %s (%zu bytes)\n", path, len);
         return false;
     }
     if (!e) {
@@ -721,7 +721,7 @@ static bool fat_write_file(fat_vol_t *v, const char *path, const uint8_t *data,
         size_t off = (size_t)i * v->cluster_bytes;
         size_t chunk = len - off < v->cluster_bytes ? len - off : v->cluster_bytes;
         if (!c) {
-            log_add(log, "error: NAND disk full writing %s\n", path);
+            log_add(log, "error: disk full writing %s\n", path);
             return false;
         }
         memcpy(fat_cluster_ptr(v, c), data + off, chunk);
@@ -797,6 +797,93 @@ uint8_t *cbea_fat_read_file(const uint8_t *image, size_t image_len,
     if (!fat_locate((uint8_t *)image, image_len, &v))
         return NULL;
     return fat_read(&v, path, out_len);
+}
+
+int cbea_fat_write_file(uint8_t *image, size_t image_len, const char *path,
+                        const uint8_t *data, size_t len,
+                        char *log, size_t log_len)
+{
+    logbuf_t l = { log, log_len, 0 };
+    fat_vol_t v;
+
+    if (log && log_len)
+        log[0] = '\0';
+    if (!fat_locate(image, image_len, &v)) {
+        log_add(&l, "error: no FAT16 volume in image\n");
+        return -1;
+    }
+    return fat_write_file(&v, path, data, len, &l) ? 0 : -1;
+}
+
+/*
+ * Bare FAT16 "superfloppy" as tools/make_cf_image.sh builds with mformat:
+ * BPB at sector 0, no MBR, 512 root entries, 16 heads x 32 sectors/track.
+ * The cluster size is the smallest (from 4 sectors at 16 MB and up) that
+ * keeps the cluster count within the FAT16 range (4085..65524).
+ */
+int cbea_fat_format(uint8_t *image, size_t image_len, const char *label)
+{
+    const uint32_t reserved = 1, nfats = 2, root_entries = 512;
+    const uint32_t root_sectors = root_entries * DIRENT_SIZE / SECTOR_SIZE;
+    uint32_t total, spc, fat_sectors = 0, clusters = 0;
+    uint8_t name[11];
+    uint8_t *b = image, *e;
+    uint16_t d, t;
+
+    if (!image || image_len % SECTOR_SIZE != 0 ||
+        image_len < 8u * 1024u * 1024u || image_len > 1024u * 1024u * 1024u)
+        return -1;
+    total = (uint32_t)(image_len / SECTOR_SIZE);
+    /* 4 sectors/cluster from 16 MB up matches the script's mformat -c 4. */
+    for (spc = total >= 32768u ? 4 : 2; spc <= 64; spc *= 2) {
+        uint32_t avail = total - reserved - root_sectors;
+        fat_sectors = (avail + 256 * spc + nfats - 1) / (256 * spc + nfats);
+        clusters = (avail - nfats * fat_sectors) / spc;
+        if (clusters <= 65524)
+            break;
+    }
+    if (spc > 64 || clusters < 4085)
+        return -1;
+
+    memset(name, ' ', sizeof(name));
+    for (size_t i = 0; label && label[i] && i < sizeof(name); i++)
+        name[i] = (uint8_t)upper_ascii((unsigned char)label[i]);
+
+    memset(image, 0, (size_t)(reserved + nfats * fat_sectors + root_sectors) * SECTOR_SIZE);
+    b[0] = 0xEB; b[1] = 0x3C; b[2] = 0x90;
+    memcpy(b + 3, "BE300EMU", 8);
+    wr16(b + 0x0B, SECTOR_SIZE);
+    b[0x0D] = (uint8_t)spc;
+    wr16(b + 0x0E, reserved);
+    b[0x10] = (uint8_t)nfats;
+    wr16(b + 0x11, root_entries);
+    if (total < 0x10000u)
+        wr16(b + 0x13, total);
+    else
+        wr32(b + 0x20, total);
+    b[0x15] = 0xF8;
+    wr16(b + 0x16, fat_sectors);
+    wr16(b + 0x18, 32);
+    wr16(b + 0x1A, 16);
+    b[0x24] = 0x80;
+    b[0x26] = 0x29;
+    fat_now(&d, &t);
+    wr32(b + 0x27, ((uint32_t)d << 16) | t);
+    memcpy(b + 0x2B, name, 11);
+    memcpy(b + 0x36, "FAT16   ", 8);
+    b[0x1FE] = 0x55; b[0x1FF] = 0xAA;
+
+    for (uint32_t i = 0; i < nfats; i++) {
+        uint8_t *fat = b + (reserved + i * fat_sectors) * SECTOR_SIZE;
+        wr16(fat, 0xFFF8);
+        wr16(fat + 2, 0xFFFF);
+    }
+    e = b + (reserved + nfats * fat_sectors) * SECTOR_SIZE;
+    memcpy(e, name, 11);
+    e[11] = ATTR_VOLUME;
+    wr16(e + 22, t);
+    wr16(e + 24, d);
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */

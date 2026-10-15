@@ -39,4 +39,20 @@ int cbea_install(uint8_t *image, size_t image_len,
 uint8_t *cbea_fat_read_file(const uint8_t *image, size_t image_len,
                             const char *path, size_t *out_len);
 
+/*
+ * Write `data` to `path` (backslashes, relative to the volume root) in the
+ * image's FAT16 volume, creating intermediate directories and replacing an
+ * existing file. Error text goes to `log`. Returns 0 on success, -1 on error.
+ */
+int cbea_fat_write_file(uint8_t *image, size_t image_len, const char *path,
+                        const uint8_t *data, size_t len,
+                        char *log, size_t log_len);
+
+/*
+ * Format the whole buffer as an empty bare FAT16 volume (no MBR), the same
+ * layout tools/make_cf_image.sh produces for CF images. `image_len` must be
+ * a multiple of 512 between 8 MB and 1 GB. Returns 0 on success, -1 on error.
+ */
+int cbea_fat_format(uint8_t *image, size_t image_len, const char *label);
+
 #endif /* CBEA_INSTALL_H */

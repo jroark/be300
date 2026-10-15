@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20261013e";
+const ASSET_VERSION = "20261014b";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -21,13 +21,30 @@ const HOSTED_NAND_IMAGES = [
 
 const nandSelect = document.querySelector("#nandSelect");
 const nandFileInput = document.querySelector("#nandFile");
+const nandFileRowEl = document.querySelector("#nandFileRow");
+const nandFileNameEl = document.querySelector("#nandFileName");
+const nandFileChangeBtn = document.querySelector("#nandFileChangeBtn");
 const cbeaFileInput = document.querySelector("#cbeaFile");
-const cbeaHintEl = document.querySelector("#cbeaHint");
+const cbeaAddBtn = document.querySelector("#cbeaAddBtn");
+const cbeaListEl = document.querySelector("#cbeaList");
 const speedControlInput = document.querySelector("#speedControl");
 const speedValueEl = document.querySelector("#speedValue");
 const primarySocketSelect = document.querySelector("#primarySocket");
 const cf0FileInput = document.querySelector("#cf0File");
+const cf0PanelEl = document.querySelector("#cf0Panel");
+const cf0FileNameEl = document.querySelector("#cf0FileName");
+const cf0ChooseBtn = document.querySelector("#cf0ChooseBtn");
+const netPanelEl = document.querySelector("#netPanel");
 const cf1FileInput = document.querySelector("#cf1File");
+const cfBlankPanel = document.querySelector("#cfBlankPanel");
+const cfBlankSizeSelect = document.querySelector("#cfBlankSize");
+const cfBlankFilesInput = document.querySelector("#cfBlankFiles");
+const cfBlankFolderInput = document.querySelector("#cfBlankFolder");
+const cfBlankAddFilesBtn = document.querySelector("#cfBlankAddFilesBtn");
+const cfBlankAddFolderBtn = document.querySelector("#cfBlankAddFolderBtn");
+const cfBlankClearBtn = document.querySelector("#cfBlankClearBtn");
+const cfBlankListEl = document.querySelector("#cfBlankList");
+const cfBlankSummaryEl = document.querySelector("#cfBlankSummary");
 const netMacInput = document.querySelector("#netMac");
 const netBridgeUrlInput = document.querySelector("#netBridgeUrl");
 const targusKeyboardEnabledInput = document.querySelector("#targusKeyboardEnabled");
@@ -35,11 +52,12 @@ const audioEnabledInput = document.querySelector("#audioEnabled");
 const bootBtn = document.querySelector("#bootBtn");
 const stopBtn = document.querySelector("#stopBtn");
 const resetBtn = document.querySelector("#resetBtn");
-const toggleSerialBtn = document.querySelector("#toggleSerialBtn");
+const downloadCfBtn = document.querySelector("#downloadCfBtn");
 const clearSerialBtn = document.querySelector("#clearSerialBtn");
+const nextBootNoteEl = document.querySelector("#nextBootNote");
 const statusEl = document.querySelector("#status");
 const serialEl = document.querySelector("#serial");
-const serialPanelEl = document.querySelector(".serial-panel");
+const consoleEl = document.querySelector("#console");
 const deviceFrameEl = document.querySelector(".device-frame");
 const screenEl = document.querySelector("#screen");
 const screenCtx = screenEl.getContext("2d", { alpha: false });
@@ -48,9 +66,18 @@ const controlButtons = Array.from(document.querySelectorAll("[data-set][data-mas
 let uploadedNandFile = null;
 // .cbea app packages queued for the next boot (src/cbea_install.h).
 let pendingPackages = [];
+// Files for a blank CF card, as { path, file } with backslash card paths.
+let cfBlankFiles = [];
+// Whether the worker's current machine has a slot-0 CF card to download.
+let cfAttached = false;
 let running = false;
 let bootInFlight = false;
-let serialCollapsed = false;
+// Last fatal/boot error or invalid settings; drives the status dot.
+let statusError = false;
+// Restart reuses the worker's cached machine, so it needs one boot first.
+let hasBooted = false;
+// Hosted image to fall back to when "Your own image file…" is cancelled.
+let lastHostedNand = nandSelect.value;
 let imageData = screenCtx.createImageData(screenEl.width, screenEl.height);
 let btnSet1 = 0;
 let btnSet2 = 0;
@@ -62,11 +89,19 @@ let activeTouchPointerId = null;
 let activeTouchPoint = { x: 0, y: 0 };
 const activeMomentaryButtons = new Map();
 const pendingMomentaryButtonReleases = new Map();
+// Host keys held as device buttons while the Stowaway keyboard is off.
+const pressedDeviceKeys = new Map();
 
 const FRAME_BUTTON_MASK_URL = `./buttons_dpad_bw_mask.png?v=${ASSET_VERSION}`;
 const BUTTON_MASK_THRESHOLD = 128;
 const BUTTON_MASK_MIN_AREA = 500;
 const BUTTON_MIN_DWELL_MS = 120;
+
+// Device buttons on the host keyboard when the Stowaway keyboard is off.
+const DEVICE_KEY_MASKS = new Map([
+  ["ArrowUp", 16], ["ArrowDown", 32], ["ArrowRight", 64], ["ArrowLeft", 128],
+  ["Enter", 4], ["NumpadEnter", 4], ["Escape", 8],
+]);
 
 const STOWAWAY_KEY_CODES = new Map([
   ["Digit1", 0], ["Digit2", 1], ["Digit3", 2], ["KeyZ", 3],
@@ -107,10 +142,11 @@ function getUploadedSdramMb(file) {
 }
 
 function getActiveNand() {
-  if (uploadedNandFile) {
+  if (nandSelect.value === "upload") {
     return {
       kind: "upload",
-      name: uploadedNandFile.name,
+      name: uploadedNandFile?.name ?? "",
+      label: uploadedNandFile?.name ?? "your image",
       file: uploadedNandFile,
       sdramMb: getUploadedSdramMb(uploadedNandFile),
     };
@@ -126,12 +162,23 @@ function getActiveNand() {
 }
 
 function getActiveCf(slot) {
+  if (slot === 0 && primarySocketSelect.value === "cfblank") {
+    const sizeMb = getCfBlankSizeMb();
+    const count = cfBlankFiles.length;
+    return {
+      kind: "blank",
+      name: `blank ${sizeMb} MB card (${count} file${count === 1 ? "" : "s"})`,
+      label: `a blank ${sizeMb} MB CF card`,
+      sizeMb,
+      files: cfBlankFiles.slice(),
+    };
+  }
   if (slot === 0 && primarySocketSelect.value !== "cf0") {
     return null;
   }
   const input = slot === 0 ? cf0FileInput : cf1FileInput;
   const file = input?.files?.[0] ?? null;
-  return file ? { name: file.name, file } : null;
+  return file ? { name: file.name, label: `CF card ${file.name}`, file } : null;
 }
 
 function getSpeedValue() {
@@ -156,10 +203,142 @@ function sendSpeed() {
 
 function syncPrimarySocketControls() {
   const primarySocket = primarySocketSelect.value;
-  const usingNe2000 = primarySocket === "ne2000";
+  netPanelEl.hidden = primarySocket !== "ne2000";
+  cf0PanelEl.hidden = primarySocket !== "cf0";
+  cfBlankPanel.hidden = primarySocket !== "cfblank";
+  const cf0File = cf0FileInput.files?.[0];
+  cf0FileNameEl.textContent = cf0File
+    ? `${cf0File.name} (${formatBytes(cf0File.size)})`
+    : "No image chosen.";
+}
 
-  netMacInput.disabled = !usingNe2000;
-  netBridgeUrlInput.disabled = !usingNe2000;
+function syncNandControls() {
+  const usingUpload = nandSelect.value === "upload";
+  nandFileRowEl.hidden = !usingUpload || !uploadedNandFile;
+  nandFileNameEl.textContent = uploadedNandFile
+    ? `${uploadedNandFile.name} (${formatBytes(uploadedNandFile.size)})`
+    : "";
+}
+
+function getCfBlankSizeMb() {
+  return Number.parseInt(cfBlankSizeSelect.value, 10) || 64;
+}
+
+// Cluster size cbea_fat_format() picks for each card size (src/cbea_install.c).
+function getCfClusterBytes(sizeMb) {
+  if (sizeMb <= 128) {
+    return 2048;
+  }
+  return sizeMb <= 256 ? 4096 : 8192;
+}
+
+// Rough space the files take on the card: whole clusters per file plus a
+// cluster per directory, against the data area left after FATs/root dir.
+function estimateCfBlankUsage(sizeMb = getCfBlankSizeMb()) {
+  const cluster = getCfClusterBytes(sizeMb);
+  const dirs = new Set();
+  let used = 0;
+  for (const { path, file } of cfBlankFiles) {
+    used += Math.ceil(file.size / cluster) * cluster;
+    const parts = path.split("\\");
+    for (let i = 1; i < parts.length; i++) {
+      dirs.add(parts.slice(0, i).join("\\").toLowerCase());
+    }
+  }
+  used += dirs.size * cluster;
+  const capacity = sizeMb * 1024 * 1024 - 300 * 1024;
+  return { used, capacity };
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return bytes >= 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${bytes} B`;
+}
+
+// FAT long names here are 8-bit (src/cbea_install.c dir_create), so drop
+// characters FAT forbids or the card can't store.
+function sanitizeCfComponent(name) {
+  let out = "";
+  for (const ch of name) {
+    const code = ch.codePointAt(0);
+    out += code < 0x20 || code > 0xFF || '\\/:*?"<>|'.includes(ch) ? "_" : ch;
+  }
+  out = out.replace(/[. ]+$/, "");
+  return out || "_";
+}
+
+function toCfPath(relativePath) {
+  return relativePath
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..")
+    .map(sanitizeCfComponent)
+    .join("\\");
+}
+
+function addCfBlankFiles(entries) {
+  for (const { path, file } of entries) {
+    const cfPath = toCfPath(path);
+    if (!cfPath) {
+      continue;
+    }
+    const key = cfPath.toLowerCase();
+    cfBlankFiles = cfBlankFiles.filter((queued) => queued.path.toLowerCase() !== key);
+    cfBlankFiles.push({ path: cfPath, file });
+  }
+  cfBlankFiles.sort((a, b) => a.path.localeCompare(b.path));
+  renderCfBlankFiles();
+  updateReadyStatus();
+  syncButtons();
+}
+
+function renderCfBlankFiles() {
+  cfBlankListEl.replaceChildren(...cfBlankFiles.map((entry) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.className = "file-name";
+    label.textContent = `\\${entry.path} (${formatBytes(entry.file.size)})`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      cfBlankFiles = cfBlankFiles.filter((queued) => queued !== entry);
+      renderCfBlankFiles();
+      updateReadyStatus();
+      syncButtons();
+    });
+    item.append(label, remove);
+    return item;
+  }));
+  const { used, capacity } = estimateCfBlankUsage();
+  cfBlankSummaryEl.textContent = cfBlankFiles.length
+    ? `${cfBlankFiles.length} file(s), about ${formatBytes(used)} of ${formatBytes(capacity)}. ` +
+      "Files appear under \\Storage Card. Drop files or folders here."
+    : "Empty card. Add files or folders, or drop them here. They appear under \\Storage Card.";
+  cfBlankClearBtn.disabled = cfBlankFiles.length === 0;
+}
+
+// Walk dropped folders through the FileSystemEntry API.
+async function collectDroppedEntries(entry, prefix, out) {
+  if (entry.isFile) {
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    out.push({ path: `${prefix}${entry.name}`, file });
+    return;
+  }
+  if (!entry.isDirectory) {
+    return;
+  }
+  const reader = entry.createReader();
+  for (;;) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+    if (!batch.length) {
+      break;
+    }
+    for (const child of batch) {
+      await collectDroppedEntries(child, `${prefix}${entry.name}/`, out);
+    }
+  }
 }
 
 function parseMacAddress(value) {
@@ -276,10 +455,25 @@ function getBootOptions() {
 }
 
 function validateBootOptions(options = getBootOptions()) {
+  if (options.cf0?.kind === "blank") {
+    const { used, capacity } = estimateCfBlankUsage(options.cf0.sizeMb);
+    if (used > capacity) {
+      return {
+        valid: false,
+        message: `The CF files need about ${formatBytes(used)}, more than a ${options.cf0.sizeMb} MB card holds. Choose a bigger card or remove files.`,
+      };
+    }
+  }
+  if (nandSelect.value === "upload" && !uploadedNandFile) {
+    return {
+      valid: false,
+      message: "Choose a system image file, or pick one of the hosted images.",
+    };
+  }
   if (options.primarySocket === "cf0" && !options.cf0) {
     return {
       valid: false,
-      message: "Choose CompactFlash slot 0 again to select a CF image, or choose a different primary PCMCIA card.",
+      message: "Choose a CF card image file, or pick a different card.",
     };
   }
   if (options.enableNe2000 && !options.mac.valid) {
@@ -300,18 +494,32 @@ function validateBootOptions(options = getBootOptions()) {
 function describeAccessories(options = getBootOptions()) {
   const parts = [];
   if (options.cf0) {
-    parts.push(`CF0 ${options.cf0.name}`);
+    parts.push(options.cf0.label);
   }
   if (options.cf1) {
-    parts.push(`CF1 ${options.cf1.name}`);
+    parts.push(`a second CF card`);
   }
   if (options.enableNe2000) {
-    parts.push(options.bridge.url ? "NE2000 bridge" : "NE2000 internal net");
+    parts.push(options.bridge.url ? "a bridged NE2000 card" : "an NE2000 card");
   }
   if (options.enableTargusKeyboard) {
-    parts.push("Targus KB");
+    parts.push("the keyboard");
   }
   return parts;
+}
+
+function joinList(parts) {
+  if (parts.length <= 1) {
+    return parts.join("");
+  }
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+function syncStatusState() {
+  statusEl.dataset.state = bootInFlight ? "booting"
+    : running ? "running"
+    : statusError ? "error"
+    : "idle";
 }
 
 function updateReadyStatus() {
@@ -320,17 +528,21 @@ function updateReadyStatus() {
   }
   const options = getBootOptions();
   const validation = validateBootOptions(options);
+  statusError = !validation.valid;
+  syncStatusState();
   if (!validation.valid) {
     setStatus(validation.message);
     return;
   }
   const active = getActiveNand();
   const accessories = describeAccessories(options);
-  const suffix = accessories.length ? ` with ${accessories.join(", ")}` : "";
+  const suffix = accessories.length ? ` with ${joinList(accessories)}` : "";
+  const memory = active.sdramMb !== DEFAULT_SDRAM_MB ? ` (${active.sdramMb} MB RAM)` : "";
+  const speed = options.speed ? ` at ${formatSpeed(options.speed)}` : "";
   const apps = pendingPackages.length
-    ? ` Installing ${pendingPackages.length} app package${pendingPackages.length === 1 ? "" : "s"} first.`
+    ? ` ${pendingPackages.length} app${pendingPackages.length === 1 ? "" : "s"} will be installed first.`
     : "";
-  setStatus(`Ready to boot ${active.name} (${active.sdramMb} MB SDRAM)${suffix} at ${formatSpeed(options.speed)}.${apps}`);
+  setStatus(`Ready to boot ${active.label}${memory}${suffix}${speed}.${apps}`);
 }
 
 function syncButtons() {
@@ -340,7 +552,11 @@ function syncButtons() {
   // will surface the error.
   bootBtn.disabled = bootInFlight || !validation.valid;
   stopBtn.disabled = !running;
-  resetBtn.disabled = bootInFlight;
+  resetBtn.disabled = bootInFlight || !hasBooted;
+  downloadCfBtn.disabled = bootInFlight;
+  downloadCfBtn.hidden = !cfAttached || !(running || bootInFlight);
+  nextBootNoteEl.hidden = !running;
+  syncStatusState();
 }
 
 function clamp(value, min, max) {
@@ -426,6 +642,7 @@ function cancelMomentaryButtonTimers() {
 
 function clearGuestButtons() {
   cancelMomentaryButtonTimers();
+  pressedDeviceKeys.clear();
   btnSet1 = 0;
   btnSet2 = 0;
   syncControlButtonStates();
@@ -470,7 +687,8 @@ function isEditableTarget(target) {
     tagName === "input" ||
     tagName === "select" ||
     tagName === "textarea" ||
-    tagName === "button";
+    tagName === "button" ||
+    tagName === "summary";
 }
 
 function mapPointerToGuest(event) {
@@ -807,32 +1025,68 @@ function appendSerial(text) {
     serialEl.textContent = serialEl.textContent.slice(-80000);
   }
   serialEl.scrollTop = serialEl.scrollHeight;
+  if (!consoleEl.open) {
+    consoleEl.classList.add("has-new");
+  }
 }
 
-function setSerialCollapsed(collapsed) {
-  serialCollapsed = collapsed;
-  serialPanelEl.classList.toggle("collapsed", collapsed);
-  toggleSerialBtn.textContent = collapsed ? "Expand" : "Collapse";
-  toggleSerialBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
-}
+consoleEl.addEventListener("toggle", () => {
+  if (consoleEl.open) {
+    consoleEl.classList.remove("has-new");
+    serialEl.scrollTop = serialEl.scrollHeight;
+  }
+});
 
 nandSelect.addEventListener("change", () => {
+  if (nandSelect.value === "upload") {
+    nandFileInput.click();
+  } else {
+    lastHostedNand = nandSelect.value;
+  }
+  syncNandControls();
   updateReadyStatus();
   syncButtons();
 });
 
 nandFileInput.addEventListener("change", () => {
-  uploadedNandFile = nandFileInput.files?.[0] ?? null;
+  const file = nandFileInput.files?.[0] ?? null;
+  if (file) {
+    uploadedNandFile = file;
+  }
+  syncNandControls();
   updateReadyStatus();
   syncButtons();
 });
 
-const CBEA_HINT_DEFAULT = cbeaHintEl.textContent;
+// Dismissing the picker without a file goes back to the last hosted image.
+nandFileInput.addEventListener("cancel", () => {
+  if (!uploadedNandFile) {
+    nandSelect.value = lastHostedNand;
+  }
+  syncNandControls();
+  updateReadyStatus();
+  syncButtons();
+});
+
+nandFileChangeBtn.addEventListener("click", () => nandFileInput.click());
 
 function renderPendingPackages() {
-  cbeaHintEl.textContent = pendingPackages.length
-    ? `Queued for next boot: ${pendingPackages.map((file) => file.name).join(", ")}`
-    : CBEA_HINT_DEFAULT;
+  cbeaListEl.replaceChildren(...pendingPackages.map((file) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.className = "file-name";
+    label.textContent = file.name;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      pendingPackages = pendingPackages.filter((queued) => queued !== file);
+      renderPendingPackages();
+      updateReadyStatus();
+    });
+    item.append(label, remove);
+    return item;
+  }));
 }
 
 async function readPackages(files) {
@@ -867,6 +1121,8 @@ async function addPackages(fileList) {
   updateReadyStatus();
 }
 
+cbeaAddBtn.addEventListener("click", () => cbeaFileInput.click());
+
 cbeaFileInput.addEventListener("change", async () => {
   if (cbeaFileInput.files?.length) {
     await addPackages(cbeaFileInput.files);
@@ -896,6 +1152,94 @@ document.addEventListener("dragleave", (event) => {
     document.body.classList.remove("drag-active");
   }
 });
+
+cfBlankPanel.addEventListener("dragover", (event) => {
+  if (!isFileDrag(event)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  event.dataTransfer.dropEffect = "copy";
+  cfBlankPanel.classList.add("drop-active");
+});
+
+cfBlankPanel.addEventListener("dragleave", (event) => {
+  if (!cfBlankPanel.contains(event.relatedTarget)) {
+    cfBlankPanel.classList.remove("drop-active");
+  }
+});
+
+cfBlankPanel.addEventListener("drop", async (event) => {
+  cfBlankPanel.classList.remove("drop-active");
+  document.body.classList.remove("drag-active");
+  if (!isFileDrag(event)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  // Grab the entries synchronously; DataTransfer is emptied after the event.
+  const items = Array.from(event.dataTransfer.items ?? []);
+  const entries = items.map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
+  const files = Array.from(event.dataTransfer.files);
+  const collected = [];
+  try {
+    if (entries.length) {
+      for (const entry of entries) {
+        await collectDroppedEntries(entry, "", collected);
+      }
+    } else {
+      collected.push(...files.map((file) => ({ path: file.name, file })));
+    }
+  } catch (error) {
+    setStatus(`Could not read dropped files: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  addCfBlankFiles(collected);
+});
+
+cfBlankAddFilesBtn.addEventListener("click", () => cfBlankFilesInput.click());
+cfBlankAddFolderBtn.addEventListener("click", () => cfBlankFolderInput.click());
+
+cfBlankFilesInput.addEventListener("change", () => {
+  addCfBlankFiles(Array.from(cfBlankFilesInput.files ?? [], (file) => ({ path: file.name, file })));
+  cfBlankFilesInput.value = "";
+});
+
+cfBlankFolderInput.addEventListener("change", () => {
+  addCfBlankFiles(Array.from(cfBlankFolderInput.files ?? [], (file) => ({
+    path: file.webkitRelativePath || file.name,
+    file,
+  })));
+  cfBlankFolderInput.value = "";
+});
+
+cfBlankClearBtn.addEventListener("click", () => {
+  cfBlankFiles = [];
+  renderCfBlankFiles();
+  updateReadyStatus();
+  syncButtons();
+});
+
+cfBlankSizeSelect.addEventListener("change", () => {
+  renderCfBlankFiles();
+  updateReadyStatus();
+  syncButtons();
+});
+
+downloadCfBtn.addEventListener("click", () => {
+  worker.postMessage({ type: "exportCf", slot: 0 });
+});
+
+function downloadCfImage(bytes) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "be300-cf.img";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 
 document.addEventListener("drop", (event) => {
   document.body.classList.remove("drag-active");
@@ -942,6 +1286,8 @@ audioEnabledInput.addEventListener("change", () => {
   worker.postMessage({ type: "setAudio", enabled: audioEnabledInput.checked });
 });
 
+cf0ChooseBtn.addEventListener("click", () => cf0FileInput.click());
+
 cf0FileInput.addEventListener("change", () => {
   if (cf0FileInput.files?.[0]) {
     primarySocketSelect.value = "cf0";
@@ -963,13 +1309,15 @@ bootBtn.addEventListener("click", async () => {
 
   cancelActiveTouch();
   ensureAudioContext();
+  statusError = false;
+  hasBooted = true;
   bootInFlight = true;
   running = false;
   activeTargusKeyboardEnabled = options.enableTargusKeyboard;
   releasePressedStowawayKeys();
   clearGuestButtons();
   serialEl.textContent = "";
-  setStatus(`Booting ${active.name}...`);
+  setStatus(`Booting ${active.label}...`);
   syncButtons();
 
   const message = {
@@ -998,7 +1346,14 @@ bootBtn.addEventListener("click", async () => {
     } else {
       message.nandUrl = `${active.url}?v=${ASSET_VERSION}`;
     }
-    if (options.cf0) {
+    if (options.cf0?.kind === "blank") {
+      const files = await Promise.all(options.cf0.files.map(async ({ path, file }) => ({
+        path,
+        bytes: await file.arrayBuffer(),
+      })));
+      message.cfSlot0Blank = { sizeMb: options.cf0.sizeMb, files };
+      transfer.push(...files.map((file) => file.bytes));
+    } else if (options.cf0) {
       message.cfSlot0Bytes = await options.cf0.file.arrayBuffer();
       transfer.push(message.cfSlot0Bytes);
     }
@@ -1008,6 +1363,7 @@ bootBtn.addEventListener("click", async () => {
     }
   } catch (error) {
     bootInFlight = false;
+    statusError = true;
     const messageText = `Boot failed: ${error instanceof Error ? error.message : String(error)}`;
     setStatus(messageText);
     appendSerial(`\n[FATAL] ${messageText}\n`);
@@ -1015,6 +1371,7 @@ bootBtn.addEventListener("click", async () => {
     return;
   }
 
+  cfAttached = Boolean(options.cf0);
   if (transfer.length) {
     worker.postMessage(message, transfer);
   } else {
@@ -1037,12 +1394,12 @@ resetBtn.addEventListener("click", () => {
   setStatus("Resetting emulator...");
 });
 
-clearSerialBtn.addEventListener("click", () => {
+clearSerialBtn.addEventListener("click", (event) => {
+  // The button sits in the console's <summary>; don't toggle the drawer.
+  event.preventDefault();
+  event.stopPropagation();
   serialEl.textContent = "";
-});
-
-toggleSerialBtn.addEventListener("click", () => {
-  setSerialCollapsed(!serialCollapsed);
+  consoleEl.classList.remove("has-new");
 });
 
 screenEl.addEventListener("pointerdown", (event) => {
@@ -1134,6 +1491,41 @@ function releaseFrameButton(event) {
 deviceFrameEl.addEventListener("pointerdown", pressFrameButton);
 deviceFrameEl.addEventListener("pointerup", releaseFrameButton);
 deviceFrameEl.addEventListener("pointercancel", releaseFrameButton);
+
+function releasePressedDeviceKeys() {
+  for (const mask of pressedDeviceKeys.values()) {
+    releaseMomentaryButton("btn1", mask);
+  }
+  pressedDeviceKeys.clear();
+}
+
+window.addEventListener("keydown", (event) => {
+  if (!running || activeTargusKeyboardEnabled || isEditableTarget(event.target)) {
+    return;
+  }
+  const mask = DEVICE_KEY_MASKS.get(event.code);
+  if (typeof mask !== "number") {
+    return;
+  }
+  event.preventDefault();
+  if (event.repeat || pressedDeviceKeys.has(event.code)) {
+    return;
+  }
+  pressedDeviceKeys.set(event.code, mask);
+  pressMomentaryButton("btn1", mask);
+});
+
+window.addEventListener("keyup", (event) => {
+  const mask = pressedDeviceKeys.get(event.code);
+  if (typeof mask !== "number") {
+    return;
+  }
+  event.preventDefault();
+  pressedDeviceKeys.delete(event.code);
+  releaseMomentaryButton("btn1", mask);
+});
+
+window.addEventListener("blur", releasePressedDeviceKeys);
 
 window.addEventListener("keydown", (event) => {
   if (!running || !activeTargusKeyboardEnabled || isEditableTarget(event.target)) {
@@ -1235,9 +1627,17 @@ worker.addEventListener("message", ({ data }) => {
     case "audio":
       playAudio(data.samples);
       break;
+    case "cfImage":
+      if (data.bytes) {
+        downloadCfImage(data.bytes);
+      } else {
+        setStatus("No CompactFlash card is attached to download.");
+      }
+      break;
     case "fatal":
       running = false;
       bootInFlight = false;
+      statusError = true;
       activeTargusKeyboardEnabled = false;
       releasePressedStowawayKeys();
       clearGuestButtons();
@@ -1254,6 +1654,8 @@ syncButtons();
 syncControlButtonStates();
 syncSpeedLabel();
 syncPrimarySocketControls();
-setSerialCollapsed(false);
+syncNandControls();
+renderCfBlankFiles();
+renderPendingPackages();
 loadFrameButtonMask();
 updateReadyStatus();
