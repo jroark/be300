@@ -5,65 +5,107 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BE-300 Emulator</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20261014a">
+  <link rel="stylesheet" href="./styles.css?v=20261014b">
 </head>
 <body>
-  <main class="shell">
-    <section class="panel controls">
-      <h1>BE-300 Emulator</h1>
-      <p class="field-hint">
-        Cold-boots BE-300 NAND images with NE2000, Stowaway keyboard, and
-        host-time RTC enabled. The worker writes the selected image into
-        MEMFS before calling <code>be300_create()</code>.
-      </p>
-      <div class="actions">
-        <button id="bootBtn" disabled>Boot</button>
-        <button id="stopBtn" disabled>Stop</button>
-        <button id="resetBtn" disabled>Reset</button>
-        <button id="downloadCfBtn" type="button" disabled title="Save the CompactFlash card, including the guest's changes, as a raw .img">Download CF</button>
+  <header class="topbar">
+    <h1>BE-300 Emulator</h1>
+    <p id="status" class="status" data-state="idle" role="status">Ready to boot.</p>
+    <div class="actions">
+      <button id="bootBtn" class="primary" type="button" title="Boot with these settings" disabled>Boot</button>
+      <button id="resetBtn" type="button" title="Restart the current machine, keeping its changes" disabled>Restart</button>
+      <button id="stopBtn" type="button" disabled>Stop</button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <div class="device-column">
+      <div class="device-frame">
+        <div class="screen-viewport">
+          <canvas id="screen" width="240" height="320"></canvas>
+        </div>
+        <img class="device-frame-overlay" src="./be300_frame.png" alt="" aria-hidden="true">
       </div>
-      <label class="field">
-        <span>Hosted NAND image</span>
-        <select id="nandSelect">
-          <option value="300">WinCE 3.0 (300.bin)</option>
-          <option value="beshell">BEshell (beshell.bin)</option>
-          <option value="expod">Expod (expod.bin)</option>
-          <option value="mw">Microwindows (mw.bin)</option>
-          <option value="net">Net (net.bin)</option>
-          <option value="opie">OPIE Linux (opie.bin, 64 MB SDRAM)</option>
-          <option value="picogui">PicoGUI (picogui.bin)</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>NAND upload override</span>
-        <input id="nandFile" type="file" accept=".bin,application/octet-stream">
-        <small class="field-hint">Leave empty to boot the hosted image selected above.</small>
-      </label>
-      <label class="field">
-        <span>Install apps (.cbea)</span>
-        <input id="cbeaFile" type="file" accept=".cbea" multiple>
-        <small id="cbeaHint" class="field-hint">Casio app packages (use the MAIN/ variant). Installed into the NAND image at boot; you can also drop them on the page.</small>
-      </label>
-      <div class="boot-config-grid">
-        <label class="field speed-field">
-          <span>Speed</span>
-          <input id="speedControl" type="range" min="0" max="64" step="1" value="0">
-          <output id="speedValue" for="speedControl">Full speed</output>
-        </label>
+      <p class="device-hint">Tap the screen with the pointer. Click the device buttons, or use the arrow keys, Enter and Esc when the keyboard accessory is off.</p>
+    </div>
+
+    <aside class="settings" aria-label="Settings">
+      <p id="nextBootNote" class="note" hidden>Changes take effect the next time you boot.</p>
+
+      <section>
         <label class="field">
-          <span>Primary PCMCIA socket</span>
+          <span class="label">System image</span>
+          <select id="nandSelect">
+            <option value="300">WinCE 3.0</option>
+            <option value="beshell">BEshell</option>
+            <option value="expod">Expod</option>
+            <option value="mw">Microwindows</option>
+            <option value="net">Net</option>
+            <option value="opie">OPIE Linux</option>
+            <option value="picogui">PicoGUI</option>
+            <option value="upload">Your own image file…</option>
+          </select>
+        </label>
+        <input id="nandFile" type="file" accept=".bin,application/octet-stream" hidden>
+        <div id="nandFileRow" class="file-row" hidden>
+          <span id="nandFileName" class="file-name"></span>
+          <button id="nandFileChangeBtn" type="button" class="small">Change</button>
+        </div>
+      </section>
+
+      <section id="appsSection" class="drop-zone">
+        <div class="section-head">
+          <span class="label">Apps</span>
+          <button id="cbeaAddBtn" type="button" class="small">Add .cbea packages</button>
+        </div>
+        <input id="cbeaFile" type="file" accept=".cbea" multiple hidden>
+        <ul id="cbeaList" class="file-list"></ul>
+        <p id="cbeaHint" class="hint">Casio app packages (use the MAIN/ variant). They are installed before boot. You can also drop them on the device.</p>
+      </section>
+
+      <section>
+        <label class="field">
+          <span class="label">Card slot</span>
           <select id="primarySocket">
             <option value="none">No card</option>
-            <option value="cf0">CompactFlash image file</option>
-            <option value="cfblank">Blank CompactFlash card</option>
-            <option value="ne2000" selected>NE2000 Ethernet</option>
+            <option value="ne2000" selected>NE2000 network card</option>
+            <option value="cf0">CF card from image file</option>
+            <option value="cfblank">New blank CF card</option>
           </select>
-          <input id="cf0File" type="file" accept=".img,.bin,application/octet-stream" hidden>
         </label>
-        <div id="cfBlankPanel" class="field cf-blank-panel" hidden>
-          <span>Blank CF card</span>
+
+        <div id="netPanel" class="subpanel">
+          <label class="field">
+            <span class="label">MAC address</span>
+            <input id="netMac" type="text" inputmode="text" placeholder="10:20:30:00:00:10" spellcheck="false">
+          </label>
+          <label class="field">
+            <span class="label">Bridge URL</span>
+            <input id="netBridgeUrl" type="text" inputmode="url" value="ws://127.0.0.1:8765" spellcheck="false">
+          </label>
+          <details class="inline-details">
+            <summary>Connect to your real network</summary>
+            <p class="hint">Download and run the bridge helper, then boot with the URL above. Leave the URL empty to use the emulator's internal network.</p>
+            <div class="download-links" aria-label="Network bridge downloads">
+              <a href="./downloads/be300-net-bridge-macos-arm64.tar.gz" download>macOS Apple Silicon</a>
+              <a href="./downloads/be300-net-bridge-macos-amd64.tar.gz" download>macOS Intel</a>
+              <a href="./downloads/be300-net-bridge-windows-amd64.zip" download>Windows</a>
+              <a href="./downloads/be300-net-bridge-linux-amd64.tar.gz" download>Linux</a>
+            </div>
+          </details>
+        </div>
+
+        <div id="cf0Panel" class="subpanel" hidden>
+          <input id="cf0File" type="file" accept=".img,.bin,application/octet-stream" hidden>
+          <div class="file-row">
+            <span id="cf0FileName" class="file-name">No image chosen.</span>
+            <button id="cf0ChooseBtn" type="button" class="small">Choose file</button>
+          </div>
+        </div>
+
+        <div id="cfBlankPanel" class="subpanel drop-zone" hidden>
           <div class="cf-blank-row">
-            <select id="cfBlankSize" aria-label="CF card size">
+            <select id="cfBlankSize" aria-label="Card size">
               <option value="16">16 MB</option>
               <option value="32">32 MB</option>
               <option value="64" selected>64 MB</option>
@@ -71,82 +113,57 @@
               <option value="256">256 MB</option>
               <option value="512">512 MB</option>
             </select>
-            <button id="cfBlankAddFilesBtn" type="button">Add files</button>
-            <button id="cfBlankAddFolderBtn" type="button">Add folder</button>
-            <button id="cfBlankClearBtn" type="button">Clear</button>
+            <button id="cfBlankAddFilesBtn" type="button" class="small">Add files</button>
+            <button id="cfBlankAddFolderBtn" type="button" class="small">Add folder</button>
+            <button id="cfBlankClearBtn" type="button" class="small">Clear</button>
           </div>
           <input id="cfBlankFiles" type="file" multiple hidden>
           <input id="cfBlankFolder" type="file" webkitdirectory multiple hidden>
-          <ul id="cfBlankList" class="cf-blank-list"></ul>
-          <small id="cfBlankSummary" class="field-hint"></small>
+          <ul id="cfBlankList" class="file-list"></ul>
+          <p id="cfBlankSummary" class="hint"></p>
         </div>
-        <label class="field">
-          <span>CF slot 1</span>
-          <input id="cf1File" type="file" accept=".img,.bin,application/octet-stream">
-        </label>
-        <label class="field">
-          <span>NE2000 MAC</span>
-          <input id="netMac" type="text" inputmode="text" placeholder="10:20:30:00:00:10">
-        </label>
-        <label class="field">
-          <span>Bridge URL (optional)</span>
-          <input id="netBridgeUrl" type="text" inputmode="url" value="ws://127.0.0.1:8765">
-          <small class="field-hint">Run the local bridge helper first, then boot with this URL.</small>
-          <div class="download-links" aria-label="Network bridge downloads">
-            <a class="field-link" href="./downloads/be300-net-bridge-macos-arm64.tar.gz" download>macOS Apple Silicon</a>
-            <a class="field-link" href="./downloads/be300-net-bridge-macos-amd64.tar.gz" download>macOS Intel</a>
-            <a class="field-link" href="./downloads/be300-net-bridge-windows-amd64.zip" download>Windows</a>
-            <a class="field-link" href="./downloads/be300-net-bridge-linux-amd64.tar.gz" download>Linux</a>
-          </div>
-        </label>
-        <label class="checkbox-field checkbox-row">
+
+        <button id="downloadCfBtn" type="button" class="small" title="Save the CF card, including the guest's changes, as a raw .img" hidden>Download card image</button>
+      </section>
+
+      <section>
+        <span class="label">Accessories</span>
+        <label class="check">
           <input id="targusKeyboardEnabled" type="checkbox" checked>
-          <span>Targus / Stowaway keyboard</span>
+          <span>Stowaway keyboard (type on your keyboard)</span>
         </label>
-        <label class="checkbox-field checkbox-row">
+        <label class="check">
           <input id="audioEnabled" type="checkbox" checked>
-          <span>Sound (buzzer and speaker)</span>
+          <span>Sound</span>
         </label>
-      </div>
-      <p id="status" class="status">Ready to boot hosted NAND image.</p>
-    </section>
+        <button type="button" class="small toggle" data-set="btn2" data-mask="16" data-toggle="true" aria-pressed="false">Hold Rocket button</button>
+      </section>
 
-    <section class="panel screen-panel">
-      <div class="screen-wrap">
-        <div class="device-frame">
-          <div class="screen-viewport">
-            <canvas id="screen" width="240" height="320"></canvas>
-          </div>
-          <img class="device-frame-overlay" src="./be300_frame.png" alt="" aria-hidden="true">
-        </div>
-      </div>
-      <div class="controls-grid">
-        <div class="dpad">
-          <button data-set="btn1" data-mask="16">Up</button>
-          <button data-set="btn1" data-mask="128">Left</button>
-          <button data-set="btn1" data-mask="64">Right</button>
-          <button data-set="btn1" data-mask="32">Down</button>
-        </div>
-        <div class="action-buttons">
-          <button data-set="btn1" data-mask="4">OK</button>
-          <button data-set="btn1" data-mask="8">Esc</button>
-          <button data-set="btn2" data-mask="16" data-toggle="true" aria-pressed="false">Rocket</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel serial-panel">
-      <div class="serial-header">
-        <h2>Serial Output</h2>
-        <div class="serial-actions">
-          <button id="toggleSerialBtn" type="button" aria-controls="serial" aria-expanded="true">Collapse</button>
-          <button id="clearSerialBtn" type="button">Clear</button>
-        </div>
-      </div>
-      <pre id="serial"></pre>
-    </section>
+      <section>
+        <details class="inline-details">
+          <summary>Advanced</summary>
+          <label class="field">
+            <span class="label">Speed: <output id="speedValue" for="speedControl">Full speed</output></span>
+            <input id="speedControl" type="range" min="0" max="64" step="1" value="0">
+          </label>
+          <label class="field">
+            <span class="label">Second CF slot image (experimental)</span>
+            <input id="cf1File" type="file" accept=".img,.bin,application/octet-stream">
+          </label>
+        </details>
+      </section>
+    </aside>
   </main>
 
-  <script type="module" src="./app.js?v=20261014a"></script>
+  <details id="console" class="console">
+    <summary>
+      <span>Serial console</span>
+      <span class="new-marker">new output</span>
+      <button id="clearSerialBtn" type="button" class="small">Clear</button>
+    </summary>
+    <pre id="serial"></pre>
+  </details>
+
+  <script type="module" src="./app.js?v=20261014b"></script>
 </body>
 </html>

@@ -108,19 +108,30 @@ python3 -m http.server --directory build-web/web 8000
 Then open <http://127.0.0.1:8000>, choose a hosted NAND image, and click
 **Boot**. The build copies every local `nand/*.bin` file into
 `build-web/web/nand/`; the page currently exposes `300.bin`, `beshell.bin`,
-`expod.bin`, `mw.bin`, `net.bin`, `opie.bin`, and `picogui.bin`. You can
-also upload a local override through the file input; the worker writes the
-selected bytes into MEMFS at `/All_nand_300.bin` before calling
-`be300_create()`.
+`expod.bin`, `mw.bin`, `net.bin`, `opie.bin`, and `picogui.bin`. Choosing
+**Your own image file…** in the **System image** dropdown boots a local NAND
+image instead; the worker writes the selected bytes into MEMFS at
+`/All_nand_300.bin` before calling `be300_create()`.
+
+**Boot** starts a fresh machine with the current settings. **Restart**
+reboots the current machine and keeps its NAND and CF changes. **Stop** halts
+it. Settings changed while running apply on the next boot. The serial
+console is a collapsed drawer below the device; it shows a "new output"
+marker when the guest prints while it is closed.
+
+The device frame's buttons (Rocket, OK, Esc, Power and the D-pad) are
+clickable. When the Stowaway keyboard is off, the arrow keys, Enter and Esc
+press the D-pad, OK and Esc buttons. **Hold Rocket button** latches the
+Rocket key.
 
 Web boots initialize the guest RTC from the browser host's local date/time by
 default, matching the native emulator's `--rtc-host-time` option. Hosted
 boots default to NE2000 and the Targus / Stowaway serial keyboard dock, but
-both can be disabled from the controls panel. `opie.bin` boots with 64 MB
+both can be disabled from the settings panel. `opie.bin` boots with 64 MB
 SDRAM; all other hosted images use 16 MB.
 
-Casio `.cbea` application packages can be selected with **Install apps
-(.cbea)** or dropped anywhere on the page. Before boot they are queued and
+Casio `.cbea` application packages can be added with **Add .cbea
+packages** or dropped anywhere on the page. Before boot they are queued and
 applied to the staged NAND image when **Boot** is pressed. While the emulator
 is running, accepting the reboot prompt first flushes guest NAND writes, then
 installs the packages and reboots the updated image. Install diagnostics are
@@ -128,21 +139,22 @@ shown as `[INSTALL]` lines in the serial pane. See
 [`../docs/INSTALLING_APPS.md`](../docs/INSTALLING_APPS.md) for supported INF
 operations and limitations.
 
-The Speed control defaults to **Full speed** and can be changed while the
+The Speed control (under **Advanced**) defaults to **Full speed** and can be changed while the
 emulator is running. Full speed uses a low-latency worker scheduler and a
 short time-budgeted execution slice. Non-zero values keep the older
 timer-paced step-batch model; they are pacing units, not MHz.
 
 ## Accessories
 
-The controls panel attaches optional boot-time accessories:
+The settings panel attaches optional boot-time accessories:
 
-- The primary PCMCIA dropdown chooses no card, a CompactFlash image file,
-  a blank CompactFlash card, or NE2000. It defaults to NE2000. Choosing the
-  image file opens the file picker immediately; the selected upload is
+- The **Card slot** dropdown chooses no card, an NE2000 network card, a CF
+  card from an image file, or a new blank CF card. It defaults to NE2000, and
+  only the selected card's options are shown. Choosing the image file opens
+  the file picker immediately; the selected upload is
   written into MEMFS as `/cf0.img` before machine creation. CF and NE2000 are
   mutually exclusive because both use the primary PCMCIA socket.
-- "Blank CompactFlash card" builds a card in the browser: pick a size
+- "New blank CF card" builds a card in the browser: pick a size
   (16-512 MB), then add files, a folder (its structure is kept), or drop
   files/folders on the panel. At boot the worker formats a bare FAT16 volume
   with `_be300_web_cf_create` (the same layout as `tools/make_cf_image.sh`),
@@ -150,11 +162,11 @@ The controls panel attaches optional boot-time accessories:
   `_be300_web_cf_commit`. The files appear under `\Storage Card`. Names are
   stored as 8-bit FAT long names, so characters outside Latin-1 and the FAT
   reserved set become `_`.
-- "Download CF" saves the slot-0 card (uploaded or blank) as
+- "Download card image" (shown while a CF card is attached) saves the slot-0 card (uploaded or blank) as
   `be300-cf.img`, including the guest's writes (`_be300_web_cf_flush` pushes
-  them to MEMFS first). Reset and running `.cbea` installs reboot with the
+  them to MEMFS first). Restart and running `.cbea` installs reboot with the
   guest's current CF contents rather than the originally selected bytes.
-- CF slot 1 uploads are written into MEMFS as `/cf1.img`. Slot 1 can be
+- Second CF slot uploads (under **Advanced**) are written into MEMFS as `/cf1.img`. Slot 1 can be
   staged, but the native emulator still warns that secondary socket MMIO is
   not decoded yet, so current WinCE visibility is limited.
 - Targus / Stowaway keyboard defaults on. It uses the existing COM1 serial
