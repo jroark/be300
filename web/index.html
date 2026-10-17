@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BE-300 Emulator</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20261014b">
+  <link rel="stylesheet" href="./styles.css?v=20261017b">
 </head>
 <body>
   <header class="topbar">
@@ -36,13 +36,27 @@
         <label class="field">
           <span class="label">System image</span>
           <select id="nandSelect">
-            <option value="300">WinCE 3.0</option>
-            <option value="beshell">BEshell</option>
-            <option value="expod">Expod</option>
-            <option value="mw">Microwindows</option>
-            <option value="net">Net</option>
-            <option value="opie">OPIE Linux</option>
-            <option value="picogui">PicoGUI</option>
+            <optgroup label="Windows CE">
+              <option value="300">WinCE 3.0</option>
+              <option value="beshell">BEshell</option>
+              <option value="expod">Expod</option>
+              <option value="net">CE.Net</option>
+            </optgroup>
+            <optgroup label="Microwindows">
+              <option value="mw-2.4">Linux 2.4.18</option>
+              <option value="mw-2.6">Linux 2.6.8.1</option>
+              <option value="mw-4.2">Linux 4.2.9</option>
+            </optgroup>
+            <optgroup label="OPIE">
+              <option value="opie-2.4">Linux 2.4.18</option>
+              <option value="opie-2.6">Linux 2.6.8.1</option>
+              <option value="opie-4.2">Linux 4.2.9</option>
+            </optgroup>
+            <optgroup label="PicoGUI">
+              <option value="picogui-2.4">Linux 2.4.18</option>
+              <option value="picogui-2.6">Linux 2.6.8.1</option>
+              <option value="picogui-4.2">Linux 4.2.9</option>
+            </optgroup>
             <option value="upload">Your own image file…</option>
           </select>
         </label>
@@ -164,6 +178,6 @@
     <pre id="serial"></pre>
   </details>
 
-  <script type="module" src="./app.js?v=20261014b"></script>
+  <script type="module" src="./app.js?v=20261017b"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-import createBe300Module from "./be300_web.js?v=20261014b";
+import createBe300Module from "./be300_web.js?v=20261017b";
 
 const MAX_FRAME_WIDTH = 480;
 const MAX_FRAME_HEIGHT = 640;
@@ -631,7 +631,10 @@ self.addEventListener("message", async ({ data }) => {
   switch (data.type) {
     case "bootNand": {
       try {
-        postStatus("Loading NAND image...", { bootInFlight: true });
+        postStatus("Loading NAND image...", {
+          bootInFlight: true,
+          running: false,
+        });
         const nandBytes = await loadNandBytes(data);
         const cfSlot0Bytes = loadOptionalBytes(data.cfSlot0Bytes);
         const cfSlot1Bytes = loadOptionalBytes(data.cfSlot1Bytes);
@@ -649,7 +652,10 @@ self.addEventListener("message", async ({ data }) => {
     case "reset":
       if (cachedNand && cachedBootConfig) {
         try {
-          postStatus("Resetting emulator...", { bootInFlight: true });
+          postStatus("Resetting emulator...", {
+            bootInFlight: true,
+            running: false,
+          });
           // Keep the guest's CF writes across Reset.
           const cfSlot0 = readCurrentCf0() ?? cachedCfSlot0;
           await bootNand(cachedNand, cachedBootConfig, cfSlot0, cachedCfSlot1);
@@ -668,7 +674,10 @@ self.addEventListener("message", async ({ data }) => {
       // keeps both the guest state and the new apps.
       if (moduleInstance && machineHandle && cachedBootConfig) {
         try {
-          postStatus("Installing apps and rebooting...", { bootInFlight: true });
+          postStatus("Installing apps and rebooting...", {
+            bootInFlight: true,
+            running: false,
+          });
           destroyMachine();
           const nandBytes = moduleInstance.FS.readFile(NAND_MEMFS_PATH);
           const cfSlot0 = cachedCfSlot0 ? moduleInstance.FS.readFile(CF0_MEMFS_PATH) : null;
