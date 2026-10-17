@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20261017a";
+const ASSET_VERSION = "20261017b";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -1607,7 +1607,14 @@ worker.addEventListener("message", ({ data }) => {
       if (typeof data.bootInFlight === "boolean") {
         bootInFlight = data.bootInFlight;
       }
-      if (wasRunning && !running) {
+      /*
+       * Replacing or resetting a machine briefly reports running=false while
+       * the worker stages the new image and reconnects networking.  Keep the
+       * selected Stowaway backend across that transition; clearing it here
+       * made only the first image booted by a page accept browser key events.
+       * A genuine stop still has bootInFlight=false and follows this path.
+       */
+      if (wasRunning && !running && !bootInFlight) {
         releasePressedStowawayKeys();
         activeTargusKeyboardEnabled = false;
       }
