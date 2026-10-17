@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20261016a";
+const ASSET_VERSION = "20261016b";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -13,7 +13,7 @@ const HOSTED_NAND_IMAGES = [
   { id: "300", name: "300.bin", label: "WinCE 3.0", url: "./nand/300.bin", sdramMb: 16 },
   { id: "beshell", name: "beshell.bin", label: "BEshell", url: "./nand/beshell.bin", sdramMb: 16 },
   { id: "expod", name: "expod.bin", label: "Expod", url: "./nand/expod.bin", sdramMb: 16 },
-  { id: "net", name: "net.bin", label: "Net", url: "./nand/net.bin", sdramMb: 16 },
+  { id: "net", name: "net.bin", label: "CE.Net", url: "./nand/net.bin", sdramMb: 16 },
   { id: "mw-2.4", name: "mw-2.4.bin", label: "Microwindows (Linux 2.4.18)", url: "./nand/mw-2.4.bin", sdramMb: 16 },
   { id: "mw-2.6", name: "mw-2.6.bin", label: "Microwindows (Linux 2.6.8.1)", url: "./nand/mw-2.6.bin", sdramMb: 16 },
   { id: "mw-4.2", name: "mw-4.2.bin", label: "Microwindows (Linux 4.2.9)", url: "./nand/mw-4.2.bin", sdramMb: 16 },
