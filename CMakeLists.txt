@@ -354,6 +354,9 @@ if(BUILD_WEB)
                        ${WEB_OUTPUT_DIR}/${asset}
                        COPYONLY)
     endforeach()
+    # Recreate the generated NAND directory so images removed from the source
+    # set cannot survive as stale assets in an incremental web build.
+    file(REMOVE_RECURSE ${WEB_OUTPUT_DIR}/nand)
     file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR}/nand)
     file(GLOB WEB_NAND_ASSETS CONFIGURE_DEPENDS
          ${CMAKE_SOURCE_DIR}/nand/*.bin)

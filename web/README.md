@@ -107,8 +107,9 @@ python3 -m http.server --directory build-web/web 8000
 
 Then open <http://127.0.0.1:8000>, choose a hosted NAND image, and click
 **Boot**. The build copies every local `nand/*.bin` file into
-`build-web/web/nand/`; the page currently exposes `300.bin`, `beshell.bin`,
-`expod.bin`, `mw.bin`, `net.bin`, `opie.bin`, and `picogui.bin`. Choosing
+`build-web/web/nand/`; the page exposes the WinCE images plus a nine-image
+Linux matrix: Microwindows, OPIE, and PicoGUI on Linux 2.4.18, 2.6.8.1, and
+4.2.9 (`mw-*.bin`, `opie-*.bin`, and `picogui-*.bin`). Choosing
 **Your own image file…** in the **System image** dropdown boots a local NAND
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.
@@ -127,8 +128,9 @@ Rocket key.
 Web boots initialize the guest RTC from the browser host's local date/time by
 default, matching the native emulator's `--rtc-host-time` option. Hosted
 boots default to NE2000 and the Targus / Stowaway serial keyboard dock, but
-both can be disabled from the settings panel. `opie.bin` boots with 64 MB
-SDRAM; all other hosted images use 16 MB.
+both can be disabled from the settings panel. All hosted images use the
+BE-300's stock 16 MB SDRAM configuration. An uploaded image whose filename
+contains `opie64` still selects the emulator-only 64 MB profile.
 
 Casio `.cbea` application packages can be added with **Add .cbea
 packages** or dropped anywhere on the page. Before boot they are queued and

@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20261014b";
+const ASSET_VERSION = "20261016a";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -13,10 +13,16 @@ const HOSTED_NAND_IMAGES = [
   { id: "300", name: "300.bin", label: "WinCE 3.0", url: "./nand/300.bin", sdramMb: 16 },
   { id: "beshell", name: "beshell.bin", label: "BEshell", url: "./nand/beshell.bin", sdramMb: 16 },
   { id: "expod", name: "expod.bin", label: "Expod", url: "./nand/expod.bin", sdramMb: 16 },
-  { id: "mw", name: "mw.bin", label: "Microwindows", url: "./nand/mw.bin", sdramMb: 16 },
   { id: "net", name: "net.bin", label: "Net", url: "./nand/net.bin", sdramMb: 16 },
-  { id: "opie", name: "opie.bin", label: "OPIE Linux", url: "./nand/opie.bin", sdramMb: 64 },
-  { id: "picogui", name: "picogui.bin", label: "PicoGUI", url: "./nand/picogui.bin", sdramMb: 16 },
+  { id: "mw-2.4", name: "mw-2.4.bin", label: "Microwindows (Linux 2.4.18)", url: "./nand/mw-2.4.bin", sdramMb: 16 },
+  { id: "mw-2.6", name: "mw-2.6.bin", label: "Microwindows (Linux 2.6.8.1)", url: "./nand/mw-2.6.bin", sdramMb: 16 },
+  { id: "mw-4.2", name: "mw-4.2.bin", label: "Microwindows (Linux 4.2.9)", url: "./nand/mw-4.2.bin", sdramMb: 16 },
+  { id: "opie-2.4", name: "opie-2.4.bin", label: "OPIE (Linux 2.4.18)", url: "./nand/opie-2.4.bin", sdramMb: 16 },
+  { id: "opie-2.6", name: "opie-2.6.bin", label: "OPIE (Linux 2.6.8.1)", url: "./nand/opie-2.6.bin", sdramMb: 16 },
+  { id: "opie-4.2", name: "opie-4.2.bin", label: "OPIE (Linux 4.2.9)", url: "./nand/opie-4.2.bin", sdramMb: 16 },
+  { id: "picogui-2.4", name: "picogui-2.4.bin", label: "PicoGUI (Linux 2.4.18)", url: "./nand/picogui-2.4.bin", sdramMb: 16 },
+  { id: "picogui-2.6", name: "picogui-2.6.bin", label: "PicoGUI (Linux 2.6.8.1)", url: "./nand/picogui-2.6.bin", sdramMb: 16 },
+  { id: "picogui-4.2", name: "picogui-4.2.bin", label: "PicoGUI (Linux 4.2.9)", url: "./nand/picogui-4.2.bin", sdramMb: 16 },
 ];
 
 const nandSelect = document.querySelector("#nandSelect");
@@ -138,7 +144,7 @@ function getSelectedHostedNand() {
 }
 
 function getUploadedSdramMb(file) {
-  return file?.name?.toLowerCase().includes("opie") ? 64 : DEFAULT_SDRAM_MB;
+  return file?.name?.toLowerCase().includes("opie64") ? 64 : DEFAULT_SDRAM_MB;
 }
 
 function getActiveNand() {
