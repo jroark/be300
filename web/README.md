@@ -110,7 +110,9 @@ Then open <http://127.0.0.1:8000>, choose a hosted NAND image, and click
 `build-web/web/nand/`; the page groups the Windows CE images together and
 exposes a nine-image Linux matrix: Microwindows, OPIE, and PicoGUI on Linux
 2.4.18, 2.6.8.1, and 4.2.9 (`mw-*.bin`, `opie-*.bin`, and
-`picogui-*.bin`). Choosing
+`picogui-*.bin`), plus Glaze (`glaze.bin`), a small microkernel OS with an
+early-iPhone-OS-style UI built from <https://github.com/jroark/glaze-os>.
+Choosing
 **Your own image file…** in the **System image** dropdown boots a local NAND
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.

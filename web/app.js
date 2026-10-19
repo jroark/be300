@@ -1,4 +1,4 @@
-const ASSET_VERSION = "20261017c";
+const ASSET_VERSION = "20261018a";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -23,6 +23,7 @@ const HOSTED_NAND_IMAGES = [
   { id: "picogui-2.4", name: "picogui-2.4.bin", label: "PicoGUI (Linux 2.4.18)", url: "./nand/picogui-2.4.bin", sdramMb: 16 },
   { id: "picogui-2.6", name: "picogui-2.6.bin", label: "PicoGUI (Linux 2.6.8.1)", url: "./nand/picogui-2.6.bin", sdramMb: 16 },
   { id: "picogui-4.2", name: "picogui-4.2.bin", label: "PicoGUI (Linux 4.2.9)", url: "./nand/picogui-4.2.bin", sdramMb: 16 },
+  { id: "glaze", name: "glaze.bin", label: "Glaze", url: "./nand/glaze.bin", sdramMb: 16 },
 ];
 
 const nandSelect = document.querySelector("#nandSelect");
