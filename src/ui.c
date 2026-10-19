@@ -2004,14 +2004,13 @@ int ui_init(machine_t *m)
         }
     }
 
+    /* Prefer the accelerated renderer even for the shaped frame window:
+     * sdl2-compat (SDL3) applies SDL_SetWindowShape at present time with a
+     * custom blend mode the software renderer lacks, which paints the opaque
+     * white shape surface over the whole window. */
     SDL_Renderer *ren = NULL;
-    if (have_frame_pixels)
-        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
-    else
-        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
-    if (!ren && have_frame_pixels)
-        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
-    if (!ren && !have_frame_pixels)
+    ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+    if (!ren)
         ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     if (!ren) {
         fprintf(stderr, "[UI] SDL_CreateRenderer failed: %s — continuing headless\n",
