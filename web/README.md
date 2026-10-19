@@ -117,6 +117,16 @@ Choosing
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.
 
+Release `20261019a` ships Glaze commit `96bc6b7` with native shared libraries
+and runtime loading. Build its factory NAND from the sibling `glaze-os` checkout
+with `./build.sh -s OUT=out/web-release-20261019 INIT=bin/springboard DYNAMIC=1
+LD_TESTS=0 MEM_TESTS=0`, then copy the resulting `glaze.bin` to this repo's
+`nand/glaze.bin` before building the web bundle. The 16 MiB release image has
+SHA-256 `692138bf6900ed6b017e5bb5d11af5a087014d05415b9f6ba4b5b972cabd8a30`.
+Keep development/test images outside `nand/`, since every `.bin` there is
+packaged for hosting. Save any image containing user data before replacing it
+with a fresh factory image.
+
 **Boot** starts a fresh machine with the current settings. **Restart**
 reboots the current machine and keeps its NAND and CF changes. **Stop** halts
 it. Settings changed while running apply on the next boot. The serial
