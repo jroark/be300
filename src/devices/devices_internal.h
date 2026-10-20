@@ -28,6 +28,15 @@ extern struct be300_wince_aux     *g_be300_wince_aux;
 #define BUTTON_GIRQ0_SOURCE  0x00000002u
 
 /* MMIO trace helper (used by every device handler when --log-mmio is on). */
+/*
+ * Copy between a host buffer and guest physical memory through the CPU's
+ * memory path: it crosses GXemul's 1 MiB RAM blocks, reaches devices (the
+ * framebuffer), ignores addresses past RAM, and drops dyntrans translations
+ * of the code it overwrites. Returns false if an access fails.
+ */
+bool be300_phys_copy(struct cpu *cpu, uint64_t pa, void *buf, size_t len,
+    int writeflag);
+
 void be300_log_mmio(const char *name, int writeflag, uint32_t off,
     unsigned len, const unsigned char *data, uint32_t pc);
 

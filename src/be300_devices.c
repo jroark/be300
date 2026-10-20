@@ -52,6 +52,26 @@ uint64_t be300_host_monotonic_ns(void)
  * --log-mmio: print one line per dispatched access. Volume-heavy by design
  * (every MMIO touch), matches the flag name in src/main.c usage text.
  */
+bool be300_phys_copy(struct cpu *cpu, uint64_t pa, void *buf, size_t len,
+    int writeflag)
+{
+    unsigned char *p = (unsigned char *)buf;
+
+    while (len > 0) {
+        size_t chunk = 0x1000u - (size_t)(pa & 0xFFFu);
+
+        if (chunk > len)
+            chunk = len;
+        if (cpu->memory_rw(cpu, cpu->mem, pa, p, chunk, writeflag,
+                PHYSICAL | NO_EXCEPTIONS | CACHE_NONE) != MEMORY_ACCESS_OK)
+            return false;
+        pa += chunk;
+        p += chunk;
+        len -= chunk;
+    }
+    return true;
+}
+
 void be300_log_mmio(const char *name, int writeflag, uint32_t off,
     unsigned len, const unsigned char *data, uint32_t pc)
 {
@@ -1189,7 +1209,7 @@ static void be300_vrc4173_a00_blit_maybe(struct cpu *cpu,
     uint32_t dst_off;
     uint64_t src_pa;
     size_t len, fb_size;
-    unsigned char *src, *dst;
+    unsigned char *staging;
 
     if (!cpu || !cpu->mem || !d || !m || !m->gxe_machine ||
         !m->gxe_machine->fb)
@@ -1249,28 +1269,28 @@ static void be300_vrc4173_a00_blit_maybe(struct cpu *cpu,
     if ((uint64_t)dst_off >= (uint64_t)fb_size)
         goto complete;
 
-    len = (size_t)count_words * 4u;
+    /* 64-bit so a huge word count can't wrap size_t on 32-bit hosts. */
+    if ((uint64_t)count_words * 4u > (uint64_t)(fb_size - (size_t)dst_off))
+        len = fb_size - (size_t)dst_off;
+    else
+        len = (size_t)count_words * 4u;
     if (len == 0)
         goto complete;
-    if (len > fb_size - (size_t)dst_off)
-        len = fb_size - (size_t)dst_off;
 
-    src = memory_paddr_to_hostaddr(cpu->mem, src_pa, MEM_READ);
-    if (!src)
-        goto complete;
-
-    dst = fb->framebuffer + dst_off;
     /*
-     * memmove (not memcpy): WinCE GDI also drives this engine for
-     * scroll/redraw with src and dst both inside the VRC4173 framebuffer
-     * window (PA 0x0A200000+). memory_paddr_to_hostaddr() resolves both
-     * to the same fb->framebuffer host buffer and the regions overlap.
-     * memcpy() is undefined for overlap; memmove() is required.
-     * Cold-boot SDRAM->FB paths are non-overlapping so behavior is
-     * byte-identical there.
+     * The source is low SDRAM (ddi.dll's staging rows) or, for GDI
+     * scroll/redraw, the framebuffer itself. Read it through the memory
+     * path, which spans RAM blocks and reaches dev_fb, into a staging
+     * buffer, so an overlapping framebuffer-to-framebuffer copy is safe.
      */
-    memmove(dst, src, len);
-    be300_fb_mark_dirty(m, dst_off, (uint32_t)len);
+    staging = malloc(len);
+    if (!staging)
+        goto complete;
+    if (be300_phys_copy(cpu, src_pa, staging, len, MEM_READ)) {
+        memcpy(fb->framebuffer + dst_off, staging, len);
+        be300_fb_mark_dirty(m, dst_off, (uint32_t)len);
+    }
+    free(staging);
 
 complete:
     d->bytes[0x0A00] &= ~(uint8_t)1u;   /* trigger/busy complete */
@@ -1757,11 +1777,12 @@ static int be300_vrc4173_handle(struct cpu *cpu, struct memory *mem,
                     uint32_t dest_pa = be300_latch_peek_u32(d, 0x1CDC);
                     uint32_t xfer_len = be300_latch_peek_u32(d, 0x1CD8);
                     if (xfer_len > 0 && xfer_len <= 0x2000u) {
-                        unsigned char *host = memory_paddr_to_hostaddr(
-                            cpu->mem, (uint64_t)dest_pa, MEM_WRITE);
-                        if (host)
-                            nand_stream_read_dma(&g_be300_machine->nand,
-                                host, xfer_len);
+                        unsigned char buf[0x2000];
+
+                        nand_stream_read_dma(&g_be300_machine->nand,
+                            buf, xfer_len);
+                        be300_phys_copy(cpu, dest_pa, buf, xfer_len,
+                            MEM_WRITE);
                     }
                     /* clear pending so subsequent polls don't re-trigger */
                     d->bytes[0x1CD0] &= ~(uint8_t)1u;
