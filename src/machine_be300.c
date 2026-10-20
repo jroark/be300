@@ -108,100 +108,6 @@ static void be300_ppsh_poll_host_input(machine_t *m)
     (void)queued;
 }
 
-static bool be300_read_phys_u32(machine_t *m, uint32_t pa, uint32_t *out)
-{
-    unsigned char *host;
-
-    if (!m || !m->gxe_machine || !m->gxe_machine->memory || !out)
-        return false;
-
-    host = memory_paddr_to_hostaddr(m->gxe_machine->memory, pa, MEM_READ);
-    if (!host)
-        return false;
-
-    memcpy(out, host, sizeof(*out));
-    return true;
-}
-
-static void be300_maybe_apply_nk_override(machine_t *m)
-{
-    static const uint32_t mailbox_pa = 0x000024FCu;
-    static const uint32_t nk_base_pa = 0x00060000u;
-    static const uint32_t nk_base_va = 0x80060000u;
-    static const uint32_t nk_max_va = 0x81000000u;
-    uint32_t mailbox = 0;
-    uint32_t norm_mailbox;
-    unsigned char *dst;
-    FILE *f;
-    long fsize;
-    char *buf;
-
-    if (!m || !m->nk_override_path || m->nk_override_applied || m->nk_override_failed)
-        return;
-
-    if (!be300_read_phys_u32(m, mailbox_pa, &mailbox))
-        return;
-
-    norm_mailbox = mailbox & ~UINT32_C(0x20000000);
-    if (norm_mailbox < nk_base_va || norm_mailbox >= nk_max_va)
-        return;
-
-    f = fopen(m->nk_override_path, "rb");
-    if (!f) {
-        fprintf(stderr, "[BE300] NK override open failed: %s\n", m->nk_override_path);
-        m->nk_override_failed = true;
-        return;
-    }
-
-    fseek(f, 0, SEEK_END);
-    fsize = ftell(f);
-    rewind(f);
-    if (fsize <= 0) {
-        fprintf(stderr, "[BE300] NK override is empty: %s\n", m->nk_override_path);
-        fclose(f);
-        m->nk_override_failed = true;
-        return;
-    }
-
-    buf = malloc((size_t)fsize);
-    if (!buf) {
-        fprintf(stderr, "[BE300] OOM reading NK override (%ld bytes)\n", fsize);
-        fclose(f);
-        m->nk_override_failed = true;
-        return;
-    }
-    if ((long)fread(buf, 1, (size_t)fsize, f) != fsize) {
-        fprintf(stderr, "[BE300] Short read from NK override: %s\n", m->nk_override_path);
-        free(buf);
-        fclose(f);
-        m->nk_override_failed = true;
-        return;
-    }
-    fclose(f);
-
-    dst = memory_paddr_to_hostaddr(m->gxe_machine->memory, nk_base_pa, MEM_WRITE);
-    if (!dst) {
-        fprintf(stderr, "[BE300] NK override target RAM is not writable yet\n");
-        free(buf);
-        return;
-    }
-
-    memcpy(dst, buf, (size_t)fsize);
-    free(buf);
-
-    /*
-     * Direct host writes into emulated RAM bypass the normal MEM_WRITE path,
-     * so flush any existing dyntrans blocks before guest execution resumes.
-     */
-    if (m->cpu)
-        cpu_create_or_reset_tc(m->cpu);
-
-    m->nk_override_applied = true;
-    fprintf(stderr, "[BE300] Applied flat NK override at pc=%08" PRIx64 ": %s\n",
-        m->cpu ? (uint64_t)m->cpu->pc : UINT64_C(0),
-        m->nk_override_path);
-}
-
 static bool be300_uses_rom_boot(const machine_config_t *cfg)
 {
     return cfg && (cfg->nand_path || cfg->restore);
@@ -457,7 +363,6 @@ machine_t *be300_create(const machine_config_t *cfg)
 {
     static bool subsystems_initialized = false;
     machine_t *m = calloc(1, sizeof(machine_t));
-    const char *nk_override_env;
     const char *autostop_env;
     if (!m) return NULL;
     m->cfg = *cfg;
@@ -538,10 +443,6 @@ machine_t *be300_create(const machine_config_t *cfg)
     m->use_builtin_ui = true;
     m->save_exit_screenshot = true;
     m->mirror_serial_to_stdout = true;
-
-    nk_override_env = getenv("BE300_NK_OVERRIDE");
-    if (nk_override_env && nk_override_env[0] != '\0')
-        m->nk_override_path = strdup(nk_override_env);
 
     autostop_env = getenv("BE300_AUTOSTOP_SEC");
     if (autostop_env && autostop_env[0] != '\0') {
@@ -933,7 +834,6 @@ static bool be300_run_batch(machine_t *m)
         return false;
 
     be300_probe_note_batch(m->cpu);
-    be300_maybe_apply_nk_override(m);
 
 #ifdef _WIN32
     timer_tick_manual();
@@ -1173,10 +1073,6 @@ void be300_destroy(machine_t *m)
     if (m->nand_data) {
         free(m->nand_data);
         m->nand_data = NULL;
-    }
-    if (m->nk_override_path) {
-        free(m->nk_override_path);
-        m->nk_override_path = NULL;
     }
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_destroy(&m->cf[i]);

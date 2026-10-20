@@ -194,11 +194,6 @@ typedef struct be300_state {
     size_t       serial_head;
     size_t       serial_tail;
     size_t       serial_count;
-
-    /* Optional emulator-only flat NK override for diagnostic payload testing */
-    char        *nk_override_path;
-    bool         nk_override_applied;
-    bool         nk_override_failed;
 } be300_state_t;
 
 typedef be300_state_t machine_t;
