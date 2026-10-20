@@ -2143,16 +2143,22 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
     {
         char tmps[200];
 
-        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
+        /* One VRC4173 GIRQ0 gate pin per source, numbered after its
+         * AA000004 bit (machine_hpcmips.c be300_girq0_init). */
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.0.girq0.%i",
             gxm->path, gxm->bootstrap_cpu, 8, 0);
         INTERRUPT_CONNECT(tmps, latch->cf_irq);
         latch->cf_irq_connected = true;
         latch->cf_irq_asserted = false;
 
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.0.girq0.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 7);
         INTERRUPT_CONNECT(tmps, latch->usb_irq);
         latch->usb_irq_connected = true;
         latch->usb_irq_asserted = false;
 
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.0.girq0.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 8);
         INTERRUPT_CONNECT(tmps, latch->aiu_irq);
         latch->aiu_irq_connected = true;
         latch->aiu_irq_asserted = false;
@@ -2161,8 +2167,8 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
     if (m->cfg.enable_stowaway_keyboard || m->cfg.pcconnect_bridge) {
         char tmps[200];
 
-        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
-            gxm->path, gxm->bootstrap_cpu, 8, 0);
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.0.girq0.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 4);
         INTERRUPT_CONNECT(tmps, latch->pcconnect_irq);
         latch->pcconnect_irq_connected = true;
         latch->pcconnect_irq_asserted = false;

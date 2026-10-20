@@ -302,8 +302,8 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
      * VRC4173 offset 0x0004 bit 9 (GIRQ0-9) -> PIUINTREG. */
     {
         char tmps[300];
-        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
-            gxm->path, gxm->bootstrap_cpu, 8, 0);
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.0.girq0.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 9);
         INTERRUPT_CONNECT(tmps, touch_d->piu_irq);
         touch_d->piu_irq_connected = true;
         touch_d->piu_irq_asserted = false;
@@ -324,8 +324,8 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
      * VRC4173 offset 0x0004 bit 1 (GIRQ0-1). */
     {
         char tmps[300];
-        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
-            gxm->path, gxm->bootstrap_cpu, 8, 0);
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.0.girq0.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 1);
         INTERRUPT_CONNECT(tmps, btn_d->button_irq);
         btn_d->button_irq_connected = true;
         btn_d->button_irq_asserted = false;
