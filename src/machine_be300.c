@@ -932,6 +932,7 @@ static bool be300_run_batch(machine_t *m)
     if (!machine_run(gxm))
         return false;
 
+    be300_probe_note_batch(m->cpu);
     be300_maybe_apply_nk_override(m);
 
 #ifdef _WIN32

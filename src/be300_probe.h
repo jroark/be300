@@ -34,7 +34,13 @@ void be300_probe_set_options(bool mmio_coverage,
                              uint32_t stall_unique_threshold,
                              uint32_t stall_wall_secs);
 
-void be300_probe_note_exec(struct cpu *cpu, uint64_t pc);
+/*
+ * --detect-stall sampler. Called once per emulation batch (one dyntrans run,
+ * up to N_SAFE_DYNTRANS_LIMIT instructions) with the PC the batch ended at,
+ * so it costs nothing per instruction. A guest spinning on a small loop keeps
+ * landing on the same few PCs.
+ */
+void be300_probe_note_batch(struct cpu *cpu);
 
 /*
  * First-hit MMIO coverage logger. Handlers call this on every read/write; the
