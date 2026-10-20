@@ -1472,7 +1472,9 @@ struct be300_vrc4173_segment {
 };
 
 
-DEVICE_ACCESS(be300_vrc4173)
+static int be300_vrc4173_handle(struct cpu *cpu, struct memory *mem,
+    uint64_t relative_addr, unsigned char *data, size_t len, int writeflag,
+    void *extra)
 {
     struct be300_vrc4173_segment *seg = (struct be300_vrc4173_segment *)extra;
     struct be300_vrc4173_latch *d = seg->latch;
@@ -1481,9 +1483,6 @@ DEVICE_ACCESS(be300_vrc4173)
     if (off + len > VRC4173_LATCH_SIZE)
         return 0;
 
-    if (d->log_mmio)
-        be300_log_mmio("be300_vrc4173", writeflag, off, (unsigned)len,
-            data, (uint32_t)cpu->pc);
 
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
@@ -1918,6 +1917,19 @@ DEVICE_ACCESS(be300_vrc4173)
     }
 
     return 1;
+}
+
+/* --log-mmio logs after the access, so a read shows the value returned. */
+DEVICE_ACCESS(be300_vrc4173)
+{
+    struct be300_vrc4173_segment *seg = (struct be300_vrc4173_segment *)extra;
+    uint32_t pc = (uint32_t)cpu->pc;
+    int r = be300_vrc4173_handle(cpu, mem, relative_addr, data, len, writeflag,
+        extra);
+
+    if (r && seg && seg->latch->log_mmio)
+        be300_log_mmio("be300_vrc4173", writeflag, seg->offset_in_latch + (uint32_t)relative_addr, (unsigned)len, data, pc);
+    return r;
 }
 
 

@@ -63,15 +63,14 @@ struct be300_siu_device {
     bool         log_mmio;
 };
 
-DEVICE_ACCESS(be300_vr4131_siu)
+static int be300_vr4131_siu_handle(struct cpu *cpu, struct memory *mem,
+    uint64_t relative_addr, unsigned char *data, size_t len, int writeflag,
+    void *extra)
 {
     struct be300_siu_device *d = (struct be300_siu_device *)extra;
     uint32_t siu_offset = d->base_offset + (uint32_t)relative_addr;
     uint32_t pc = (uint32_t)cpu->pc;
 
-    if (d->log_mmio)
-        be300_log_mmio("be300_vr4131_siu", writeflag, siu_offset,
-            (unsigned)len, data, pc);
 
     be300_probe_note_mmio("vr4131-siu-ext", siu_offset,
         writeflag == MEM_WRITE ? 'W' : 'R',
@@ -88,15 +87,27 @@ DEVICE_ACCESS(be300_vr4131_siu)
     return 1;
 }
 
-DEVICE_ACCESS(be300_vr4131_dsiu)
+/* --log-mmio logs after the access, so a read shows the value returned. */
+DEVICE_ACCESS(be300_vr4131_siu)
+{
+    struct be300_siu_device *d = (struct be300_siu_device *)extra;
+    uint32_t pc = (uint32_t)cpu->pc;
+    int r = be300_vr4131_siu_handle(cpu, mem, relative_addr, data, len, writeflag,
+        extra);
+
+    if (r && d->log_mmio)
+        be300_log_mmio("be300_vr4131_siu", writeflag, d->base_offset + (uint32_t)relative_addr, (unsigned)len, data, pc);
+    return r;
+}
+
+static int be300_vr4131_dsiu_handle(struct cpu *cpu, struct memory *mem,
+    uint64_t relative_addr, unsigned char *data, size_t len, int writeflag,
+    void *extra)
 {
     struct be300_siu_device *d = (struct be300_siu_device *)extra;
     uint32_t offset = d->base_offset + (uint32_t)relative_addr;
     uint32_t pc = (uint32_t)cpu->pc;
 
-    if (d->log_mmio)
-        be300_log_mmio("be300_vr4131_dsiu", writeflag, offset,
-            (unsigned)len, data, pc);
 
     be300_probe_note_mmio("vr4131-dsiu-stub", offset,
         writeflag == MEM_WRITE ? 'W' : 'R',
@@ -109,6 +120,19 @@ DEVICE_ACCESS(be300_vr4131_dsiu)
     }
 
     return 1;
+}
+
+/* --log-mmio logs after the access, so a read shows the value returned. */
+DEVICE_ACCESS(be300_vr4131_dsiu)
+{
+    struct be300_siu_device *d = (struct be300_siu_device *)extra;
+    uint32_t pc = (uint32_t)cpu->pc;
+    int r = be300_vr4131_dsiu_handle(cpu, mem, relative_addr, data, len, writeflag,
+        extra);
+
+    if (r && d->log_mmio)
+        be300_log_mmio("be300_vr4131_dsiu", writeflag, d->base_offset + (uint32_t)relative_addr, (unsigned)len, data, pc);
+    return r;
 }
 
 void be300_register_vr4131_siu(struct machine *gxm, siu_state_t *siu,
