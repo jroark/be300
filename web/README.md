@@ -117,13 +117,13 @@ Choosing
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.
 
-Release `20261019b` ships Glaze commit `259fd81`, adding Music, Videos and
-the audio server alongside native shared libraries and runtime loading. Build
-its factory NAND from the sibling `glaze-os` checkout
-with `./build.sh -s OUT=out/web-release-20261019b INIT=bin/springboard DYNAMIC=1
+Release `20261019c` ships Glaze commit `87de58d`, adding installable app
+packages, HTTPS, notifications, CompactFlash support and passcode locking.
+Build its factory NAND from the sibling `glaze-os` checkout
+with `./build.sh -s OUT=out/web-release-20261019c INIT=bin/springboard DYNAMIC=1
 LD_TESTS=0 MEM_TESTS=0`, then copy the resulting `glaze.bin` to this repo's
 `nand/glaze.bin` before building the web bundle. The 16 MiB release image has
-SHA-256 `05a4b09e188ce3fcc443a266ed8737f83f7475940657ebf8074fd3ce2e0637c4`.
+SHA-256 `d31588631255a48863adde57b073cb146ccb35291296ed68cc51d014253df401`.
 Keep development/test images outside `nand/`, since every `.bin` there is
 packaged for hosting. Save any image containing user data before replacing it
 with a fresh factory image.
