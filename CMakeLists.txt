@@ -198,6 +198,8 @@ set(BE300_SOURCES
     src/serial_backends.c
     src/stowaway.c
     src/ui.c
+    src/ui_audio.c
+    src/ui_macos.c
     src/ui_stowaway.c
     src/hw/cmu.c
     src/hw/pmu.c

@@ -20,13 +20,6 @@
 
 #include <SDL.h>
 #include <SDL_shape.h>
-#ifdef __APPLE__
-#include <CoreGraphics/CoreGraphics.h>
-#include <SDL_syswm.h>
-#include <objc/message.h>
-#include <objc/objc.h>
-#include <objc/runtime.h>
-#endif
 #ifdef HAVE_PNG
 #include <png.h>
 #endif
@@ -39,8 +32,6 @@
 /* Quit flag */
 static bool quit_requested = false;
 static bool sdl_video_initialized = false;
-static bool sdl_audio_initialized = false;
-static SDL_AudioDeviceID audio_device = 0;
 static SDL_Texture *frame_texture = NULL;
 static bool frame_enabled = false;
 static uint32_t frame_width = 0;
@@ -138,134 +129,6 @@ static uint32_t last_frame_tick = 0;
 /* Staging buffer for visible rectangle extraction */
 static uint16_t *staging_buf = NULL;
 
-#define BUZZER_SAMPLE_RATE      44100
-#define BUZZER_MAX_QUEUE_MS       250
-#define BUZZER_RETRIGGER_GAP_MS   120
-#define BUZZER_DEFAULT_HZ        1200
-#define BUZZER_DEFAULT_MS          60
-static uint32_t last_buzzer_tick = 0;
-
-/* Real audio path (AIU codec). Streams continuously, so allow a deeper
- * queue than the buzzer's one-shot pulses. */
-#define AIU_HOST_SAMPLE_RATE     BUZZER_SAMPLE_RATE
-#define AIU_MAX_QUEUE_MS               120
-
-static bool ui_audio_env_enabled(void)
-{
-    const char *v = getenv("BE300_AUDIO");
-
-    if (!v || !*v)
-        return true;
-    return strcmp(v, "0") != 0 &&
-        strcmp(v, "false") != 0 &&
-        strcmp(v, "FALSE") != 0 &&
-        strcmp(v, "off") != 0 &&
-        strcmp(v, "OFF") != 0;
-}
-
-static void ui_audio_init(void)
-{
-    SDL_AudioSpec want, have;
-
-    if (!ui_audio_env_enabled())
-        return;
-
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
-        fprintf(stderr, "[UI] SDL audio init failed: %s — continuing silent\n",
-                SDL_GetError());
-        return;
-    }
-    sdl_audio_initialized = true;
-
-    memset(&want, 0, sizeof(want));
-    want.freq = BUZZER_SAMPLE_RATE;
-    want.format = AUDIO_S16SYS;
-    want.channels = 1;
-    want.samples = 512;
-
-    audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (!audio_device) {
-        fprintf(stderr,
-            "[UI] SDL_OpenAudioDevice failed: %s — continuing silent\n",
-            SDL_GetError());
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
-        sdl_audio_initialized = false;
-        return;
-    }
-
-    SDL_PauseAudioDevice(audio_device, 0);
-}
-
-static void ui_audio_destroy(void)
-{
-    if (audio_device) {
-        SDL_ClearQueuedAudio(audio_device);
-        SDL_CloseAudioDevice(audio_device);
-        audio_device = 0;
-    }
-    if (sdl_audio_initialized) {
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
-        sdl_audio_initialized = false;
-    }
-}
-
-/* Host audio sink: 44100 Hz mono S16. Native builds queue to the SDL
- * device. The web build runs in a Web Worker, which has no AudioContext,
- * so it fills a ring that web/worker.js drains and posts to the page. */
-#ifdef __EMSCRIPTEN__
-#define WEB_AUDIO_RING_SAMPLES (BUZZER_SAMPLE_RATE / 2u)
-static int16_t web_audio_ring[WEB_AUDIO_RING_SAMPLES];
-static size_t web_audio_head;
-static size_t web_audio_count;
-static bool web_audio_enabled;
-
-void ui_web_audio_set_enabled(bool enabled)
-{
-    web_audio_enabled = enabled;
-    web_audio_head = 0;
-    web_audio_count = 0;
-}
-
-size_t ui_web_audio_drain(int16_t *dst, size_t max_samples)
-{
-    size_t n = web_audio_count < max_samples ? web_audio_count : max_samples;
-    size_t tail = (web_audio_head + WEB_AUDIO_RING_SAMPLES - web_audio_count) %
-        WEB_AUDIO_RING_SAMPLES;
-
-    for (size_t i = 0; i < n; i++)
-        dst[i] = web_audio_ring[(tail + i) % WEB_AUDIO_RING_SAMPLES];
-    web_audio_count -= n;
-    return n;
-}
-
-static bool ui_audio_sink_ready(void) { return web_audio_enabled; }
-static uint32_t ui_audio_sink_queued_bytes(void)
-{
-    return (uint32_t)(web_audio_count * sizeof(int16_t));
-}
-static void ui_audio_sink_clear(void) { web_audio_count = 0; }
-static void ui_audio_sink_put(const int16_t *pcm, size_t count)
-{
-    /* Overwrite the oldest samples when the worker falls behind. */
-    for (size_t i = 0; i < count; i++) {
-        web_audio_ring[web_audio_head] = pcm[i];
-        web_audio_head = (web_audio_head + 1u) % WEB_AUDIO_RING_SAMPLES;
-        if (web_audio_count < WEB_AUDIO_RING_SAMPLES)
-            web_audio_count++;
-    }
-}
-#else
-static bool ui_audio_sink_ready(void) { return audio_device != 0; }
-static uint32_t ui_audio_sink_queued_bytes(void)
-{
-    return SDL_GetQueuedAudioSize(audio_device);
-}
-static void ui_audio_sink_clear(void) { SDL_ClearQueuedAudio(audio_device); }
-static void ui_audio_sink_put(const int16_t *pcm, size_t count)
-{
-    SDL_QueueAudio(audio_device, pcm, (uint32_t)(count * sizeof(*pcm)));
-}
-#endif
 
 static void ui_reset_button_regions(void)
 {
@@ -1254,182 +1117,6 @@ static bool ui_apply_frame_window_shape(SDL_Window *win,
     return ok;
 }
 
-#ifdef __APPLE__
-static void ui_macos_release_cg_data(void *info, const void *data,
-    size_t size)
-{
-    (void)info;
-    (void)size;
-    free((void *)data);
-}
-
-static void ui_macos_make_window_transparent(SDL_Window *win)
-{
-    SDL_SysWMinfo info;
-    Class ns_color_class;
-    id ns_window;
-    id content_view;
-    id layer;
-    id clear_color;
-    id clear_cg_color = NULL;
-
-    if (!win)
-        return;
-
-    SDL_VERSION(&info.version);
-    if (!SDL_GetWindowWMInfo(win, &info) ||
-        info.subsystem != SDL_SYSWM_COCOA)
-        return;
-
-    ns_window = (id)info.info.cocoa.window;
-    if (!ns_window)
-        return;
-
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(ns_window,
-        sel_registerName("setOpaque:"), (BOOL)0);
-
-    ns_color_class = (Class)objc_getClass("NSColor");
-    if (ns_color_class) {
-        clear_color = ((id (*)(Class, SEL))objc_msgSend)(ns_color_class,
-            sel_registerName("clearColor"));
-        if (clear_color) {
-            ((void (*)(id, SEL, id))objc_msgSend)(ns_window,
-                sel_registerName("setBackgroundColor:"), clear_color);
-            clear_cg_color = ((id (*)(id, SEL))objc_msgSend)(clear_color,
-                sel_registerName("CGColor"));
-        }
-    }
-
-    content_view = ((id (*)(id, SEL))objc_msgSend)(ns_window,
-        sel_registerName("contentView"));
-    if (!content_view)
-        return;
-
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(content_view,
-        sel_registerName("setWantsLayer:"), (BOOL)1);
-    layer = ((id (*)(id, SEL))objc_msgSend)(content_view,
-        sel_registerName("layer"));
-    if (!layer)
-        return;
-
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(layer,
-        sel_registerName("setOpaque:"), (BOOL)0);
-    if (clear_cg_color) {
-        ((void (*)(id, SEL, id))objc_msgSend)(layer,
-            sel_registerName("setBackgroundColor:"), clear_cg_color);
-    }
-}
-
-static void ui_macos_apply_window_mask(SDL_Window *win,
-    const uint8_t *window_mask, int win_w, int win_h)
-{
-    SDL_SysWMinfo info;
-    Class ca_layer_class;
-    id ns_window;
-    id content_view;
-    id layer;
-    id mask_layer;
-    CGColorSpaceRef color_space = NULL;
-    CGDataProviderRef provider = NULL;
-    CGImageRef image = NULL;
-    uint8_t *rgba = NULL;
-    size_t pixels;
-    CGRect bounds;
-
-    if (!win || !window_mask || win_w <= 0 || win_h <= 0)
-        return;
-
-    SDL_VERSION(&info.version);
-    if (!SDL_GetWindowWMInfo(win, &info) ||
-        info.subsystem != SDL_SYSWM_COCOA)
-        return;
-
-    ns_window = (id)info.info.cocoa.window;
-    if (!ns_window)
-        return;
-
-    content_view = ((id (*)(id, SEL))objc_msgSend)(ns_window,
-        sel_registerName("contentView"));
-    if (!content_view)
-        return;
-
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(content_view,
-        sel_registerName("setWantsLayer:"), (BOOL)1);
-    layer = ((id (*)(id, SEL))objc_msgSend)(content_view,
-        sel_registerName("layer"));
-    if (!layer)
-        return;
-
-    pixels = (size_t)win_w * (size_t)win_h;
-    rgba = malloc(pixels * 4u);
-    if (!rgba)
-        return;
-    for (size_t i = 0; i < pixels; i++) {
-        rgba[i * 4u + 0u] = 255;
-        rgba[i * 4u + 1u] = 255;
-        rgba[i * 4u + 2u] = 255;
-        rgba[i * 4u + 3u] = window_mask[i];
-    }
-
-    color_space = CGColorSpaceCreateDeviceRGB();
-    if (!color_space)
-        goto out;
-    provider = CGDataProviderCreateWithData(NULL, rgba, pixels * 4u,
-        ui_macos_release_cg_data);
-    if (!provider)
-        goto out;
-    rgba = NULL;  /* owned by provider */
-
-    image = CGImageCreate((size_t)win_w, (size_t)win_h, 8, 32,
-        (size_t)win_w * 4u, color_space,
-        kCGBitmapByteOrder32Big | kCGImageAlphaLast,
-        provider, NULL, false, kCGRenderingIntentDefault);
-    if (!image)
-        goto out;
-
-    ca_layer_class = (Class)objc_getClass("CALayer");
-    if (!ca_layer_class)
-        goto out;
-    mask_layer = ((id (*)(Class, SEL))objc_msgSend)(ca_layer_class,
-        sel_registerName("layer"));
-    if (!mask_layer)
-        goto out;
-
-    bounds = CGRectMake(0.0, 0.0, (CGFloat)win_w, (CGFloat)win_h);
-    ((void (*)(id, SEL, CGRect))objc_msgSend)(mask_layer,
-        sel_registerName("setFrame:"), bounds);
-    ((void (*)(id, SEL, id))objc_msgSend)(mask_layer,
-        sel_registerName("setContents:"), (id)image);
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(layer,
-        sel_registerName("setMasksToBounds:"), (BOOL)1);
-    ((void (*)(id, SEL, id))objc_msgSend)(layer,
-        sel_registerName("setMask:"), mask_layer);
-
-out:
-    free(rgba);
-    if (image)
-        CGImageRelease(image);
-    if (provider)
-        CGDataProviderRelease(provider);
-    if (color_space)
-        CGColorSpaceRelease(color_space);
-}
-#else
-static void ui_macos_make_window_transparent(SDL_Window *win)
-{
-    (void)win;
-}
-
-static void ui_macos_apply_window_mask(SDL_Window *win,
-    const uint8_t *window_mask, int win_w, int win_h)
-{
-    (void)win;
-    (void)window_mask;
-    (void)win_w;
-    (void)win_h;
-}
-#endif
-
 static bool ui_window_to_frame(machine_t *m, int win_x, int win_y,
     double *frame_x_out, double *frame_y_out)
 {
@@ -1505,11 +1192,6 @@ static bool ui_window_to_touch(machine_t *m, int win_x, int win_y,
     *x_out = (uint16_t)tx;
     *y_out = (uint16_t)ty;
     return true;
-}
-
-static bool ui_tick_reached(uint32_t now, uint32_t due)
-{
-    return (int32_t)(now - due) >= 0;
 }
 
 static uint32_t ui_later_tick(uint32_t a, uint32_t b)
@@ -1899,7 +1581,6 @@ int ui_init(machine_t *m)
     button_min_dwell_ms = ui_ms_from_env("BE300_BUTTON_MIN_DWELL_MS",
         BUTTON_MIN_DWELL_DEFAULT_MS, BUTTON_MIN_DWELL_MAX_MS);
     last_frame_tick = 0;
-    last_buzzer_tick = 0;
 
     ui_audio_init();
 
@@ -2311,156 +1992,6 @@ void ui_destroy(machine_t *m)
         SDL_Quit();
 }
 
-void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
-{
-    uint32_t queued_max;
-    uint32_t now;
-    uint32_t period;
-    uint32_t samples;
-    int16_t *pcm;
-
-    if (!ui_audio_sink_ready())
-        return;
-
-    now = SDL_GetTicks();
-    if (ui_audio_sink_queued_bytes() > 0 ||
-        (last_buzzer_tick != 0 &&
-         !ui_tick_reached(now, last_buzzer_tick + BUZZER_RETRIGGER_GAP_MS)))
-        return;
-    last_buzzer_tick = now;
-
-    if (frequency_hz == 0)
-        frequency_hz = BUZZER_DEFAULT_HZ;
-    if (duration_ms == 0)
-        duration_ms = BUZZER_DEFAULT_MS;
-
-    if (frequency_hz < 80)
-        frequency_hz = 80;
-    if (frequency_hz > 6000)
-        frequency_hz = 6000;
-    if (duration_ms > 500)
-        duration_ms = 500;
-
-    samples = (BUZZER_SAMPLE_RATE * duration_ms) / 1000u;
-    if (samples == 0)
-        return;
-
-    pcm = malloc((size_t)samples * sizeof(*pcm));
-    if (!pcm)
-        return;
-
-    period = BUZZER_SAMPLE_RATE / frequency_hz;
-    if (period < 2)
-        period = 2;
-
-    for (uint32_t i = 0; i < samples; i++) {
-        uint32_t edge = (i * 12u) / samples;
-        int32_t amp = 6500;
-
-        if (edge < 12u)
-            amp = (amp * (int32_t)edge) / 12;
-        if (i > samples - (samples / 8u + 1u)) {
-            uint32_t rem = samples - i;
-            uint32_t tail = samples / 8u + 1u;
-            amp = (amp * (int32_t)rem) / (int32_t)tail;
-        }
-
-        pcm[i] = ((i % period) < (period / 2u))
-            ? (int16_t)amp
-            : (int16_t)-amp;
-    }
-
-    queued_max = (BUZZER_SAMPLE_RATE * sizeof(int16_t) *
-        BUZZER_MAX_QUEUE_MS) / 1000u;
-    if (ui_audio_sink_queued_bytes() > queued_max)
-        ui_audio_sink_clear();
-
-    ui_audio_sink_put(pcm, samples);
-    free(pcm);
-}
-
-static int32_t ui_audio_frame_mono(const int16_t *samples, size_t i,
-                                   uint8_t channels)
-{
-    if (channels == 2u)
-        return ((int32_t)samples[i * 2u] + (int32_t)samples[i * 2u + 1u]) / 2;
-    return samples[i];
-}
-
-void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
-                        uint32_t guest_rate_hz, uint8_t channels)
-{
-    /* Linear-interpolating resampler whose phase and last input frame carry
-     * across calls, so the AIU can feed it arbitrarily small chunks without
-     * per-chunk rounding error (pitch drift) or boundary clicks. */
-    static uint32_t last_rate_hz;
-    static double phase;          /* next output position, in input frames
-                                   * relative to this chunk; -1..0 = between
-                                   * the previous chunk's last frame and
-                                   * this chunk's first */
-    static int32_t prev_frame;
-    uint32_t queued_max;
-    int16_t out[1024];
-    size_t out_count = 0;
-    double step;
-
-    if (!ui_audio_sink_ready() || !samples || count_frames == 0)
-        return;
-    if (channels == 0)
-        channels = 1;
-    if (guest_rate_hz == 0)
-        guest_rate_hz = AIU_HOST_SAMPLE_RATE;
-
-    /* Backpressure: if the host queue is already deeper than our cap,
-     * drop this batch. Keeps wall-clock latency bounded. */
-    queued_max = (AIU_HOST_SAMPLE_RATE * (uint32_t)sizeof(int16_t) *
-        AIU_MAX_QUEUE_MS) / 1000u;
-    if (ui_audio_sink_queued_bytes() > queued_max) {
-        last_rate_hz = 0;
-        return;
-    }
-
-    if (guest_rate_hz != last_rate_hz) {
-        last_rate_hz = guest_rate_hz;
-        phase = 0.0;
-        prev_frame = ui_audio_frame_mono(samples, 0, channels);
-    }
-    step = (double)guest_rate_hz / (double)AIU_HOST_SAMPLE_RATE;
-
-    while (phase < (double)(count_frames - 1u) + 1e-9 ||
-           phase < 0.0) {
-        int32_t s0, s1, mixed;
-        double frac;
-
-        if (phase < 0.0) {
-            s0 = prev_frame;
-            s1 = ui_audio_frame_mono(samples, 0, channels);
-            frac = phase + 1.0;
-        } else {
-            size_t i0 = (size_t)phase;
-            size_t i1 = (i0 + 1u < count_frames) ? i0 + 1u : i0;
-
-            s0 = ui_audio_frame_mono(samples, i0, channels);
-            s1 = ui_audio_frame_mono(samples, i1, channels);
-            frac = phase - (double)i0;
-        }
-        mixed = (int32_t)((double)s0 + (double)(s1 - s0) * frac);
-        if (mixed > 32767) mixed = 32767;
-        if (mixed < -32768) mixed = -32768;
-        out[out_count++] = (int16_t)mixed;
-        if (out_count == sizeof(out) / sizeof(out[0])) {
-            ui_audio_sink_put(out, out_count);
-            out_count = 0;
-        }
-        phase += step;
-    }
-    prev_frame = ui_audio_frame_mono(samples, count_frames - 1u, channels);
-    phase -= (double)count_frames;
-
-    if (out_count > 0)
-        ui_audio_sink_put(out, out_count);
-}
-
 #else  /* !HAVE_SDL2 — headless stubs */
 
 int  ui_init(machine_t *m)         { (void)m; return 0; }
@@ -2468,10 +1999,5 @@ void ui_update(machine_t *m)       { (void)m; }
 void ui_destroy(machine_t *m)      { (void)m; }
 bool ui_should_quit(machine_t *m)  { (void)m; return false; }
 void ui_save_screenshot(machine_t *m) { (void)m; }
-void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
-    { (void)frequency_hz; (void)duration_ms; }
-void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
-                        uint32_t guest_rate_hz, uint8_t channels)
-    { (void)samples; (void)count_frames; (void)guest_rate_hz; (void)channels; }
 
 #endif  /* HAVE_SDL2 */
