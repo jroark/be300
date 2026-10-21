@@ -4,6 +4,11 @@
  * Factored out of pcconnect_bridge.c; behaviour is unchanged.
  */
 
+/* glibc declares posix_openpt/grantpt/unlockpt/ptsname only for XSI; without
+ * this, ptsname() was implicitly int and truncated the slave name pointer
+ * on 64-bit Linux. */
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <signal.h>
 #include <stdarg.h>
