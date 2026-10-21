@@ -40,6 +40,19 @@
 
 struct be300_vrc4173_latch *g_be300_vrc4173_latch;
 
+uint64_t be300_emulated_ns(const machine_t *m)
+{
+    uint64_t hz, cycles;
+
+    if (!m || !m->cpu || !m->gxe_machine)
+        return 0;
+    hz = m->gxe_machine->emulated_hz > 0 ?
+        (uint64_t)m->gxe_machine->emulated_hz : UINT64_C(131072000);
+    cycles = m->cpu->ninstrs;
+    return cycles / hz * UINT64_C(1000000000) +
+        cycles % hz * UINT64_C(1000000000) / hz;
+}
+
 uint64_t be300_host_monotonic_ns(void)
 {
     struct timespec ts;
