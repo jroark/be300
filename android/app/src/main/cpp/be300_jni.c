@@ -237,10 +237,10 @@ Java_com_jroark_be300_NativeBe300_nativeStowawayKey(JNIEnv *env, jclass cls,
     android_be300_handle_t *handle = handle_from_jlong(ptr);
     if (!handle || !handle->machine ||
         !handle->machine->cfg.enable_stowaway_keyboard ||
-        scancode < 0 || scancode > 127)
+        scancode < 0 || scancode >= (jint)(2u * STOWAWAY_FN))
         return JNI_FALSE;
 
-    return stowaway_queue_key((unsigned)scancode, release == JNI_TRUE)
+    return stowaway_queue_mapped_key((unsigned)scancode, release == JNI_TRUE)
         ? JNI_TRUE : JNI_FALSE;
 }
 

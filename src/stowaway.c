@@ -9,6 +9,7 @@
 #define STOWAWAY_PROBE_ACK_0 0xfau
 #define STOWAWAY_PROBE_ACK_1 0xfdu
 #define STOWAWAY_MODEM_EVENT_LIMIT 2u
+#define STOWAWAY_SCANCODE_FN 8u
 
 typedef struct {
     bool enabled;
@@ -31,6 +32,8 @@ typedef struct {
 } stowaway_state_t;
 
 static stowaway_state_t g_stowaway;
+/* Host keys holding the dock's Fn key down; a guest UART reset keeps it. */
+static unsigned g_stowaway_fn_refs;
 
 static void stowaway_queue_byte(uint8_t byte)
 {
@@ -82,6 +85,7 @@ void stowaway_configure(bool enabled)
 {
     memset(&g_stowaway, 0, sizeof(g_stowaway));
     g_stowaway.enabled = enabled;
+    g_stowaway_fn_refs = 0;
     if (enabled)
         fprintf(stderr, "[STOWAWAY] serial keyboard dock enabled on COM1:\n");
 }
@@ -291,4 +295,28 @@ bool stowaway_queue_key(unsigned scancode, bool release)
      */
     be300_stowaway_signal_uart_irq(1);
     return true;
+}
+
+bool stowaway_queue_mapped_key(unsigned value, bool release)
+{
+    unsigned scancode = value & ~STOWAWAY_FN;
+    bool ok;
+
+    if (!(value & STOWAWAY_FN))
+        return stowaway_queue_key(scancode, release);
+
+    /* Fn is a modifier in Stowaway.dll (record at 0x10caa0): press it
+     * before the key and release it after, once per overlapping chord. */
+    if (release) {
+        ok = stowaway_queue_key(scancode, true);
+        if (g_stowaway_fn_refs > 0 && --g_stowaway_fn_refs == 0)
+            stowaway_queue_key(STOWAWAY_SCANCODE_FN, true);
+        return ok;
+    }
+    if (g_stowaway_fn_refs++ == 0 &&
+        !stowaway_queue_key(STOWAWAY_SCANCODE_FN, false)) {
+        g_stowaway_fn_refs = 0;
+        return false;
+    }
+    return stowaway_queue_key(scancode, false);
 }

@@ -463,6 +463,14 @@ if(BUILD_TESTING AND BUILD_CLI)
         src/cbea_install.c)
     target_include_directories(test_cbea_install PRIVATE src)
     add_test(NAME cbea_install COMMAND test_cbea_install)
+
+    add_executable(test_stowaway_keymap
+        tests/test_stowaway_keymap.c
+        src/stowaway.c)
+    target_include_directories(test_stowaway_keymap PRIVATE src)
+    target_compile_definitions(test_stowaway_keymap PRIVATE
+        BE300_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME stowaway_keymap COMMAND test_stowaway_keymap)
 endif()
 
 set(BE300_TEST_NAND "" CACHE FILEPATH

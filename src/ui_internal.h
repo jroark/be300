@@ -11,7 +11,7 @@
 #include <SDL.h>
 
 /* Stowaway dock keyboard event helpers (definition in src/ui_stowaway.c). */
-bool ui_stowaway_lookup_key(SDL_Keycode key, unsigned *scancode_out);
+bool ui_stowaway_lookup_key(SDL_Scancode key, unsigned *value_out);
 bool ui_stowaway_key_event(machine_t *m, const SDL_KeyboardEvent *key,
     bool release);
 

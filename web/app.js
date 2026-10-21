@@ -112,30 +112,28 @@ const DEVICE_KEY_MASKS = new Map([
   ["Enter", 4], ["NumpadEnter", 4], ["Escape", 8],
 ]);
 
+// Stowaway dock scancodes by KeyboardEvent.code; 256 + n sends n with the
+// dock's Fn key held. Canonical table: src/stowaway_keys.def (kept in step by
+// tests/test_stowaway_keymap.c).
 const STOWAWAY_KEY_CODES = new Map([
-  ["Digit1", 0], ["Digit2", 1], ["Digit3", 2], ["KeyZ", 3],
-  ["Digit4", 4], ["Digit5", 5], ["Digit6", 6], ["Digit7", 7],
-  ["KeyQ", 9], ["KeyW", 10], ["KeyE", 11], ["KeyR", 12],
-  ["KeyT", 13], ["KeyY", 14], ["Backquote", 15], ["KeyX", 16],
-  ["KeyA", 17], ["KeyS", 18], ["KeyD", 19], ["KeyF", 20],
-  ["KeyG", 21], ["KeyH", 22], ["Space", 23], ["CapsLock", 24],
-  ["Tab", 25], ["ControlLeft", 26], ["ControlRight", 26],
-  ["AltLeft", 35], ["AltRight", 35], ["KeyC", 44], ["KeyV", 45],
-  ["KeyB", 46], ["KeyN", 47], ["Minus", 48], ["Equal", 49],
-  ["Backspace", 50], ["Home", 51], ["Digit8", 52], ["Digit9", 53],
-  ["Digit0", 54], ["Escape", 55], ["BracketLeft", 56],
-  ["BracketRight", 57], ["Backslash", 58], ["End", 59],
-  ["KeyU", 60], ["KeyI", 61], ["KeyO", 62], ["KeyP", 63],
-  ["Quote", 64], ["Enter", 65], ["NumpadEnter", 65],
-  ["PageUp", 66], ["KeyJ", 68], ["KeyK", 69], ["KeyL", 70],
-  ["Semicolon", 71], ["Slash", 72], ["ArrowUp", 73],
-  ["PageDown", 74], ["KeyM", 76], ["Comma", 77], ["Period", 78],
-  ["Insert", 79], ["Delete", 80], ["ArrowLeft", 81],
-  ["ArrowDown", 82], ["ArrowRight", 83], ["ShiftLeft", 87],
-  ["ShiftRight", 88], ["F1", 105], ["F2", 106], ["F3", 107],
-  ["F4", 108], ["F5", 109], ["F6", 110], ["F7", 111],
-  ["F8", 112], ["F9", 113], ["F10", 114], ["F11", 115],
-  ["F12", 116],
+  ["Digit1", 0], ["Digit2", 1], ["Digit3", 2], ["KeyZ", 3], ["Digit4", 4],
+  ["Digit5", 5], ["Digit6", 6], ["Digit7", 7], ["KeyQ", 9], ["KeyW", 10],
+  ["KeyE", 11], ["KeyR", 12], ["KeyT", 13], ["KeyY", 14], ["Backquote", 15],
+  ["KeyX", 16], ["KeyA", 17], ["KeyS", 18], ["KeyD", 19], ["KeyF", 20],
+  ["KeyG", 21], ["KeyH", 22], ["Space", 23], ["CapsLock", 24], ["Tab", 25],
+  ["ControlLeft", 26], ["ControlRight", 26], ["AltLeft", 35],
+  ["AltRight", 35], ["KeyC", 44], ["KeyV", 45], ["KeyB", 46], ["KeyN", 47],
+  ["Minus", 48], ["Equal", 49], ["Backspace", 50], ["Digit8", 52],
+  ["Digit9", 53], ["Digit0", 54], ["BracketLeft", 56], ["BracketRight", 57],
+  ["Backslash", 58], ["KeyU", 60], ["KeyI", 61], ["KeyO", 62], ["KeyP", 63],
+  ["Quote", 64], ["Enter", 65], ["NumpadEnter", 65], ["KeyJ", 68],
+  ["KeyK", 69], ["KeyL", 70], ["Semicolon", 71], ["Slash", 72],
+  ["ArrowUp", 73], ["KeyM", 76], ["Comma", 77], ["Period", 78],
+  ["Delete", 80], ["ArrowLeft", 81], ["ArrowDown", 82], ["ArrowRight", 83],
+  ["ShiftLeft", 88], ["ShiftRight", 89], ["Home", 256 + 81],
+  ["End", 256 + 83], ["PageUp", 256 + 73], ["PageDown", 256 + 82], ["F1", 51],
+  ["F2", 59], ["F3", 66], ["F4", 74], ["F5", 256 + 51], ["F6", 256 + 59],
+  ["F7", 256 + 66], ["F8", 256 + 74],
 ]);
 
 function setStatus(text) {

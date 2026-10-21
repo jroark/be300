@@ -1,0 +1,106 @@
+/*
+ *  src/stowaway_keys.def — host key -> Stowaway dock scancode, the one table
+ *  the SDL, web and Android front ends share.
+ *
+ *  STOWAWAY_KEY(code, sdl, android, value)
+ *    code     W3C KeyboardEvent.code name (web/app.js STOWAWAY_KEY_CODES)
+ *    sdl      SDL_SCANCODE_<sdl> (src/ui_stowaway.c)
+ *    android  KeyEvent.KEYCODE_<android> (Be300View.java STOWAWAY_KEYS)
+ *    value    Stowaway scancode 0..95, | STOWAWAY_FN to send it with Fn held
+ *
+ *  Scancodes come from Stowaway.dll's built-in "English (US-Standard)"
+ *  tables (Stowaway.PPC300_4000.cab, image linked at 0x00100000):
+ *  - layouts at VA 0x106264, 11 x (u32 modifier state + 96 x u32 entry),
+ *    selected by 0x101d6c from the key handler at 0x102cc0, which drops
+ *    codes >= 96 (slti at 0x102cd4). An entry is flags << 16 | VK; flag
+ *    0x200 marks a driver action instead of a VK.
+ *  - modifiers at VA 0x10caa0 (12-byte records): 26 Ctrl, 88 LShift,
+ *    89 RShift, 35 Alt, 8 Fn, 24 Caps Lock (toggle), 34 Windows.
+ *  - the Fn layer (state 0x80000) turns Left/Right/Up/Down into
+ *    Home/End/PgUp/PgDn.
+ *  - 51/59/66/74 are app keys: actions 1-4, Fn+ them 5-8, which launch the
+ *    Drivers\BuiltIn\Stowaway HotKeyA1..A8 programs (pmail, addrbook,
+ *    calendar, tasks, notes, pword, pxl, moneyce; dispatcher 0x1020bc).
+ *
+ *  The keyboard has no Escape, Insert or F-keys, so those host keys are not
+ *  mapped; F1-F8 stand in for the eight app keys. Windows (34) is left off:
+ *  Super is the SDL screenshot chord and Meta is the browser's.
+ *  tests/test_stowaway_keymap.c keeps the web and Android tables in step.
+ */
+
+STOWAWAY_KEY(Digit1, 1, 1, 0)
+STOWAWAY_KEY(Digit2, 2, 2, 1)
+STOWAWAY_KEY(Digit3, 3, 3, 2)
+STOWAWAY_KEY(KeyZ, Z, Z, 3)
+STOWAWAY_KEY(Digit4, 4, 4, 4)
+STOWAWAY_KEY(Digit5, 5, 5, 5)
+STOWAWAY_KEY(Digit6, 6, 6, 6)
+STOWAWAY_KEY(Digit7, 7, 7, 7)
+STOWAWAY_KEY(KeyQ, Q, Q, 9)
+STOWAWAY_KEY(KeyW, W, W, 10)
+STOWAWAY_KEY(KeyE, E, E, 11)
+STOWAWAY_KEY(KeyR, R, R, 12)
+STOWAWAY_KEY(KeyT, T, T, 13)
+STOWAWAY_KEY(KeyY, Y, Y, 14)
+STOWAWAY_KEY(Backquote, GRAVE, GRAVE, 15)
+STOWAWAY_KEY(KeyX, X, X, 16)
+STOWAWAY_KEY(KeyA, A, A, 17)
+STOWAWAY_KEY(KeyS, S, S, 18)
+STOWAWAY_KEY(KeyD, D, D, 19)
+STOWAWAY_KEY(KeyF, F, F, 20)
+STOWAWAY_KEY(KeyG, G, G, 21)
+STOWAWAY_KEY(KeyH, H, H, 22)
+STOWAWAY_KEY(Space, SPACE, SPACE, 23)
+STOWAWAY_KEY(CapsLock, CAPSLOCK, CAPS_LOCK, 24)
+STOWAWAY_KEY(Tab, TAB, TAB, 25)
+STOWAWAY_KEY(ControlLeft, LCTRL, CTRL_LEFT, 26)
+STOWAWAY_KEY(ControlRight, RCTRL, CTRL_RIGHT, 26)
+STOWAWAY_KEY(AltLeft, LALT, ALT_LEFT, 35)
+STOWAWAY_KEY(AltRight, RALT, ALT_RIGHT, 35)
+STOWAWAY_KEY(KeyC, C, C, 44)
+STOWAWAY_KEY(KeyV, V, V, 45)
+STOWAWAY_KEY(KeyB, B, B, 46)
+STOWAWAY_KEY(KeyN, N, N, 47)
+STOWAWAY_KEY(Minus, MINUS, MINUS, 48)
+STOWAWAY_KEY(Equal, EQUALS, EQUALS, 49)
+STOWAWAY_KEY(Backspace, BACKSPACE, DEL, 50)
+STOWAWAY_KEY(Digit8, 8, 8, 52)
+STOWAWAY_KEY(Digit9, 9, 9, 53)
+STOWAWAY_KEY(Digit0, 0, 0, 54)
+STOWAWAY_KEY(BracketLeft, LEFTBRACKET, LEFT_BRACKET, 56)
+STOWAWAY_KEY(BracketRight, RIGHTBRACKET, RIGHT_BRACKET, 57)
+STOWAWAY_KEY(Backslash, BACKSLASH, BACKSLASH, 58)
+STOWAWAY_KEY(KeyU, U, U, 60)
+STOWAWAY_KEY(KeyI, I, I, 61)
+STOWAWAY_KEY(KeyO, O, O, 62)
+STOWAWAY_KEY(KeyP, P, P, 63)
+STOWAWAY_KEY(Quote, APOSTROPHE, APOSTROPHE, 64)
+STOWAWAY_KEY(Enter, RETURN, ENTER, 65)
+STOWAWAY_KEY(NumpadEnter, KP_ENTER, NUMPAD_ENTER, 65)
+STOWAWAY_KEY(KeyJ, J, J, 68)
+STOWAWAY_KEY(KeyK, K, K, 69)
+STOWAWAY_KEY(KeyL, L, L, 70)
+STOWAWAY_KEY(Semicolon, SEMICOLON, SEMICOLON, 71)
+STOWAWAY_KEY(Slash, SLASH, SLASH, 72)
+STOWAWAY_KEY(ArrowUp, UP, DPAD_UP, 73)
+STOWAWAY_KEY(KeyM, M, M, 76)
+STOWAWAY_KEY(Comma, COMMA, COMMA, 77)
+STOWAWAY_KEY(Period, PERIOD, PERIOD, 78)
+STOWAWAY_KEY(Delete, DELETE, FORWARD_DEL, 80)
+STOWAWAY_KEY(ArrowLeft, LEFT, DPAD_LEFT, 81)
+STOWAWAY_KEY(ArrowDown, DOWN, DPAD_DOWN, 82)
+STOWAWAY_KEY(ArrowRight, RIGHT, DPAD_RIGHT, 83)
+STOWAWAY_KEY(ShiftLeft, LSHIFT, SHIFT_LEFT, 88)
+STOWAWAY_KEY(ShiftRight, RSHIFT, SHIFT_RIGHT, 89)
+STOWAWAY_KEY(Home, HOME, MOVE_HOME, STOWAWAY_FN | 81)
+STOWAWAY_KEY(End, END, MOVE_END, STOWAWAY_FN | 83)
+STOWAWAY_KEY(PageUp, PAGEUP, PAGE_UP, STOWAWAY_FN | 73)
+STOWAWAY_KEY(PageDown, PAGEDOWN, PAGE_DOWN, STOWAWAY_FN | 82)
+STOWAWAY_KEY(F1, F1, F1, 51)
+STOWAWAY_KEY(F2, F2, F2, 59)
+STOWAWAY_KEY(F3, F3, F3, 66)
+STOWAWAY_KEY(F4, F4, F4, 74)
+STOWAWAY_KEY(F5, F5, F5, STOWAWAY_FN | 51)
+STOWAWAY_KEY(F6, F6, F6, STOWAWAY_FN | 59)
+STOWAWAY_KEY(F7, F7, F7, STOWAWAY_FN | 66)
+STOWAWAY_KEY(F8, F8, F8, STOWAWAY_FN | 74)
