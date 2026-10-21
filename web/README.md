@@ -84,6 +84,7 @@ The generated browser bundle is written to:
 
 - `build-web/web/index.html`
 - `build-web/web/app.js`
+- `build-web/web/launch-config.mjs`
 - `build-web/web/worker.js`
 - `build-web/web/styles.css`
 - `build-web/web/be300_frame.png`
@@ -163,6 +164,54 @@ The Speed control (under **Advanced**) defaults to **Full speed** and can be cha
 emulator is running. Full speed uses a low-latency worker scheduler and a
 short time-budgeted execution slice. Non-zero values keep the older
 timer-paced step-batch model; they are pacing units, not MHz.
+
+## Launch links
+
+Release `20261021a` adds URL settings and automatic boot. For example, this
+link boots Glaze with the on-screen keyboard and no network card or helper:
+
+<https://linux4be.com/?image=glaze&boot=1&card=none&keyboard=0>
+
+Omit `boot=1` to preselect the configuration and wait for the **Boot** button.
+Without URL settings, the existing image, card, keyboard and sound defaults
+are unchanged. Parameters override only the controls explicitly named.
+
+| Parameter | Accepted values |
+| --- | --- |
+| `image` | Hosted image ID: `300`, `beshell`, `expod`, `net`, `glaze`, or `mw-2.4`, `mw-2.6`, `mw-4.2`, `opie-2.4`, `opie-2.6`, `opie-4.2`, `picogui-2.4`, `picogui-2.6`, `picogui-4.2` |
+| `boot` | `1` or `true` starts automatically; `0` or `false` waits for Boot |
+| `card` | `none`, `ne2000`, or `cfblank` (an empty FAT16 card) |
+| `cfSize` | Blank CF size in MB: `16`, `32`, `64`, `128`, `256`, `512` |
+| `keyboard` | `1` / `true` attaches the Stowaway keyboard; `0` / `false` disables it |
+| `audio` | `1` / `true` enables sound; `0` / `false` disables it |
+| `speed` | An integer from `0` (full speed) through `64` (step-batch pacing units) |
+| `mac` | Unicast MAC such as `10:20:30:00:00:10`; empty uses the existing default |
+| `bridge` | A `ws://` or `wss://` bridge URL; `bridge=` selects the internal network |
+
+Use URL encoding for bridge addresses containing query strings. For example:
+
+```text
+https://linux4be.com/?image=beshell&boot=1&card=ne2000&bridge=ws%3A%2F%2F127.0.0.1%3A8765&keyboard=1
+https://linux4be.com/?image=glaze&boot=1&card=cfblank&cfSize=32&audio=0
+```
+
+Image IDs select only the hosted catalogue. Links cannot supply arbitrary
+NAND URLs, local uploads, CF image uploads, or `.cbea` packages; choose those
+files interactively. Unknown query parameters (such as campaign tags) are
+ignored. Invalid or repeated recognized parameters show an error and prevent
+automatic boot, so a misspelled image never silently boots the default OS.
+The valid settings still appear in the controls for manual adjustment.
+
+Automatic boot uses the same validation and worker boot path as the Boot
+button. Sound starts on the first pointer or keyboard interaction, subject to
+the browser's audio policy; it does not hold up boot. Restart and Stop retain
+their normal behavior and do not reapply URL settings.
+
+Run the dependency-free parser and frontend integration tests with Node 20+:
+
+```bash
+node --experimental-vm-modules --test tests/web_launch_config.mjs
+```
 
 ## Accessories
 

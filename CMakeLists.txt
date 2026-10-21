@@ -347,7 +347,7 @@ if(BUILD_WEB)
 
     set(WEB_OUTPUT_DIR ${CMAKE_BINARY_DIR}/web)
     file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR})
-    foreach(asset index.html app.js worker.js styles.css favicon.svg)
+    foreach(asset index.html app.js launch-config.mjs worker.js styles.css favicon.svg)
         configure_file(${CMAKE_SOURCE_DIR}/web/${asset}
                        ${WEB_OUTPUT_DIR}/${asset}
                        COPYONLY)

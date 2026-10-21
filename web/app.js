@@ -1,4 +1,6 @@
-const ASSET_VERSION = "20261020c";
+import { parseLaunchConfig, parseMacAddress, normalizeBridgeUrl } from "./launch-config.mjs?v=20261021a";
+
+const ASSET_VERSION = "20261021a";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -348,46 +350,6 @@ async function collectDroppedEntries(entry, prefix, out) {
   }
 }
 
-function parseMacAddress(value) {
-  const text = value.trim();
-  if (!text) {
-    return { valid: true, bytes: null };
-  }
-
-  const parts = text.split(":");
-  if (parts.length !== 6) {
-    return { valid: false, bytes: null };
-  }
-
-  const bytes = new Uint8Array(6);
-  for (let i = 0; i < parts.length; i++) {
-    if (!/^[0-9a-fA-F]{2}$/.test(parts[i])) {
-      return { valid: false, bytes: null };
-    }
-    bytes[i] = Number.parseInt(parts[i], 16);
-  }
-  if ((bytes[0] & 1) !== 0) {
-    return { valid: false, bytes: null };
-  }
-  return { valid: true, bytes };
-}
-
-function normalizeBridgeUrl(value) {
-  const text = value.trim();
-  if (!text) {
-    return { valid: true, url: "" };
-  }
-  try {
-    const url = new URL(text);
-    if (url.protocol !== "ws:" && url.protocol !== "wss:") {
-      return { valid: false, url: "" };
-    }
-    return { valid: true, url: url.href };
-  } catch {
-    return { valid: false, url: "" };
-  }
-}
-
 // The worker posts buzzer + wave output as 44100 Hz mono S16 chunks. Each
 // chunk is scheduled back to back on an AudioContext created from a user
 // gesture (Boot click or the Sound checkbox), as browser autoplay rules need.
@@ -414,7 +376,7 @@ function ensureAudioContext() {
     }
   }
   if (audioCtx.state === "suspended") {
-    void audioCtx.resume();
+    void audioCtx.resume().catch(() => {});
   }
 }
 
@@ -1304,7 +1266,8 @@ cf0FileInput.addEventListener("change", () => {
   syncButtons();
 });
 
-bootBtn.addEventListener("click", async () => {
+async function bootMachine(userInitiated = true) {
+  if (bootInFlight) return;
   const active = getActiveNand();
   const options = getBootOptions();
   const validation = validateBootOptions(options);
@@ -1315,7 +1278,7 @@ bootBtn.addEventListener("click", async () => {
   }
 
   cancelActiveTouch();
-  ensureAudioContext();
+  if (userInitiated) ensureAudioContext();
   statusError = false;
   hasBooted = true;
   bootInFlight = true;
@@ -1387,7 +1350,17 @@ bootBtn.addEventListener("click", async () => {
   // Installed packages persist in the worker's cached NAND for Reset.
   pendingPackages = [];
   renderPendingPackages();
-});
+}
+
+bootBtn.addEventListener("click", () => { void bootMachine(); });
+
+// Automatic boots run without a gesture. Start/resume sound on the first
+// pointer or keyboard interaction rather than delaying the guest boot.
+for (const type of ["pointerdown", "keydown"]) {
+  window.addEventListener(type, () => {
+    if (hasBooted) ensureAudioContext();
+  }, { capture: true });
+}
 
 stopBtn.addEventListener("click", () => {
   requestStop();
@@ -1664,6 +1637,18 @@ worker.addEventListener("message", ({ data }) => {
   }
 });
 
+const launch = parseLaunchConfig(window.location.search, HOSTED_NAND_IMAGES.map((image) => image.id));
+const launchControls = {
+  image: nandSelect, card: primarySocketSelect, cfSize: cfBlankSizeSelect,
+  speed: speedControlInput, keyboard: targusKeyboardEnabledInput,
+  audio: audioEnabledInput, mac: netMacInput, bridge: netBridgeUrlInput,
+};
+for (const [name, value] of Object.entries(launch.settings)) {
+  if (typeof value === "boolean") launchControls[name].checked = value;
+  else launchControls[name].value = value;
+}
+lastHostedNand = nandSelect.value;
+
 syncButtons();
 syncControlButtonStates();
 syncSpeedLabel();
@@ -1673,3 +1658,11 @@ renderCfBlankFiles();
 renderPendingPackages();
 loadFrameButtonMask();
 updateReadyStatus();
+
+if (launch.errors.length) {
+  statusError = true;
+  setStatus(launch.errors.join(" "));
+  syncStatusState();
+} else if (launch.boot) {
+  void bootMachine(false);
+}
