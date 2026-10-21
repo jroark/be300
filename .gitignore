@@ -84,3 +84,9 @@ Testing/
 
 # Local disasm cache
 .tmp_spl/
+
+# MSVC 6 build output and IDE state (tools/dumpcbea)
+tools/dumpcbea/Debug/
+*.ncb
+*.opt
+*.plg
