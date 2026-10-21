@@ -29,8 +29,9 @@ app-private storage on launch and boots from the private copy.
 The app enables the Stowaway serial keyboard dock by default. When an
 Android device with an attached or paired hardware keyboard has the
 emulator view focused, key down/up events are mapped to Stowaway scancodes
-in `Be300View.java` (mirroring the SDL and web frontends) and forwarded
-through `NativeBe300.stowawayKey` -> `stowaway_queue_key`. The dock probe
+in `Be300View.java` (the canonical table is `src/stowaway_keys.def`;
+`tests/test_stowaway_keymap.c` checks this copy) and forwarded through
+`NativeBe300.stowawayKey` -> `stowaway_queue_mapped_key`. The dock probe
 handshake completes during NK boot; subsequent keystrokes are dispatched
 to WinCE's `serial.dll` via the same CommMode modem-event path the probe
 uses, and arrive at the focused control once `WaitCommEvent` returns
