@@ -76,6 +76,11 @@ static inline void pcc_ring_push(pcc_ring_t *r, uint8_t byte)
     r->count++;
 }
 
+static inline int pcc_ring_peek(const pcc_ring_t *r)
+{
+    return r->count ? r->buf[r->tail] : -1;
+}
+
 static inline int pcc_ring_pop(pcc_ring_t *r)
 {
     uint8_t byte;

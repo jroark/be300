@@ -434,9 +434,12 @@ static void bridge_drain_tx(pcc_br_state_t *s)
         if (s->tx_next_due_ns == 0)
             s->tx_next_due_ns = now;
         while (!pcc_ring_is_empty(&s->tx_ring) && now >= s->tx_next_due_ns) {
-            uint8_t byte = (uint8_t)pcc_ring_pop(&s->tx_ring);
+            /* Pop only once the byte is written: EINTR retries it, and a
+             * short or would-block write leaves it queued. */
+            uint8_t byte = (uint8_t)pcc_ring_peek(&s->tx_ring);
             ssize_t n = host_chardev_write(&s->ch, &byte, 1);
             if (n == 1) {
+                (void)pcc_ring_pop(&s->tx_ring);
                 s->tx_next_due_ns += s->tx_ns_per_byte;
                 if (s->tx_next_due_ns + 10ull * s->tx_ns_per_byte < now)
                     s->tx_next_due_ns = now;
@@ -444,12 +447,8 @@ static void bridge_drain_tx(pcc_br_state_t *s)
                 continue;
             }
             if (n < 0) {
-                if (host_chardev_errno_would_block()) {
-                    s->tx_ring.tail = (s->tx_ring.tail + s->tx_ring.cap - 1u)
-                        % s->tx_ring.cap;
-                    s->tx_ring.count++;
+                if (host_chardev_errno_would_block())
                     return;
-                }
                 if (errno == EINTR)
                     continue;
                 on_peer_gone(s, strerror(errno));
