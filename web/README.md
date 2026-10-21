@@ -118,17 +118,24 @@ Choosing
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.
 
-Release `20261020c` ships Glaze from commit `cccc78e` (plus local WinCE
-compatibility updates), including demand-paged NAND romfs, WinCE app
-compatibility, and the AIM package work. Its App Store (`appstore.glaze-os.com`,
+Release `20261021b` pairs the bridge's acknowledged TCP delivery, receive-window
+handling and retransmissions with Glaze's HTTPS cross-signed certificate-chain
+fix. The web bundle, worker, NAND URLs and bridge downloads use the same asset
+tag, and each native helper prints `20261021b` at startup. Existing bridge
+users should download and restart the helper to receive the TCP fix.
+
+The release ships a fresh Glaze factory NAND assembled from the sibling
+`glaze-os` checkout's locally built springboard artifacts, including the TLS
+fix and local WinCE compatibility updates. It retains demand-paged NAND romfs,
+WinCE app compatibility, and the AIM package work. Its App Store (`appstore.glaze-os.com`,
 which needs networking, i.e. the net bridge) offers Minesweeper, Solitaire,
 Fifteen, Sketch, Task Manager and AIM; the factory image also has system
 sounds and NTP time with named time zones.
 Build its factory NAND from the sibling `glaze-os` checkout
-with `./build.sh -s OUT=out/web-release-20261020c INIT=bin/springboard DYNAMIC=1
+with `./build.sh -s OUT=out/web-release-20261021b INIT=bin/springboard DYNAMIC=1
 LD_TESTS=0 MEM_TESTS=0`, then copy the resulting `glaze.bin` to this repo's
 `nand/glaze.bin` before building the web bundle. The 16 MiB release image has
-SHA-256 `718d669ec649f5dfc69c514ceb22e954b18fe6a1d930b05fdeba3b50e5b53eb4`.
+SHA-256 `e515396384685a6a52c071148534a44fa9e7afc9afd96c05abc59c87053cb3fd`.
 Keep development/test images outside `nand/`, since every `.bin` there is
 packaged for hosting. Save any image containing user data before replacing it
 with a fresh factory image.
@@ -308,18 +315,18 @@ Back up the current site before overwriting it:
 
 ```bash
 BACKUP_PREFIX="_backups/$(date -u +%Y%m%dT%H%M%SZ)"
-aws s3 sync s3://linux4be.com "s3://linux4be.com/$BACKUP_PREFIX" \
+aws --profile linux4be s3 sync s3://linux4be.com "s3://linux4be.com/$BACKUP_PREFIX" \
   --exclude "_backups/*"
 ```
 
 Publish the freshly built bundle while preserving backups:
 
 ```bash
-aws s3 sync build-web/web/ s3://linux4be.com/ --delete \
+aws --profile linux4be s3 sync build-web/web/ s3://linux4be.com/ --delete \
   --exclude "_backups/*" --exclude "index.html"
-aws s3 cp build-web/web/index.html s3://linux4be.com/index.html \
+aws --profile linux4be s3 cp build-web/web/index.html s3://linux4be.com/index.html \
   --content-type "text/html" --cache-control "no-cache"
-aws cloudfront create-invalidation --distribution-id E2LF6QBIW7PZR \
+aws --profile linux4be cloudfront create-invalidation --distribution-id E2LF6QBIW7PZR \
   --paths "/*"
 ```
 

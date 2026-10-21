@@ -27,7 +27,7 @@ var (
 )
 
 const (
-	bridgeVersion    = "20261021a"
+	bridgeVersion    = "20261021b"
 	ethIPv4          = 0x0800
 	ethARP           = 0x0806
 	minEthernetFrame = 60
