@@ -890,7 +890,7 @@ static bool be300_run_batch(machine_t *m)
         if (now_ns - m->autostop_start_ns >= m->autostop_after_ns) {
             fprintf(stderr,
                 "[BE300] Autostop reached after %" PRIu64 " s\n",
-                m->autostop_after_ns / 1000000000ULL);
+                m->autostop_after_ns / UINT64_C(1000000000));
             emul_shutdown = true;
             __sync_synchronize();
             return false;
