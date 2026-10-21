@@ -124,6 +124,41 @@ binding/IP configuration, PCMCIA I/O window routing, and NE2000 IRQ delivery.
 Do not chase the resolved `Internet.exe` date/epoch crash unless the guest
 clock is wrong again.
 
+### CE.Net white screen after idle power-off (reference image, open)
+
+The CE.Net reference image (`net.bin`) boots to its shell, then about 45 s
+later turns the LCD white and stops responding. It happens with or without
+`--stowaway-keyboard` and `--ne2000`. Traced 2026-10-21:
+
+- CE.Net's idle power-off runs each driver's PowerDown in kernel mode on the
+  KData stack (device.exe's handler at slot-0 `0x1302C`, kernel stack
+  `0xFFFFD730`, CurAKey `0x5`, ASID 2).
+- The last driver called is the third-party `Stowaway.dll` (Think Outside,
+  Sep 2001), loaded at `0x01F2xxxx`. Its PowerDown is
+  `EscapeCommFunction(g_hCom = NULL, CLRDTR)`, a system call that drivers
+  must not make from PowerDown.
+- coredll's DeviceIoControl stub (`0x03F8D73C`) reads the current thread's
+  TLS through UserKData (`[0x5800] - 20` = `0x0A1FFEEC`). That page is in
+  slot 5 (access key `0x10`), which CurAKey `0x5` excludes. The refill
+  handler at `0x80000000` therefore sends the miss to the general exception
+  path.
+- There is no thread context during power-off, so the kernel's fault handler
+  dereferences NULL at `0x8003EF4C` (the `LOW reference` warning). The OAL
+  then loops at `0x8006B288`.
+- The access only succeeds if a TLB entry for `0x0A1FE000` with ASID 2 is
+  still resident from before power-off. In the emulator, that entry is
+  evicted by TLBWR refills before Stowaway runs. A diagnostic that pins the
+  entry lets CE.Net power off and resume normally, so this is the only
+  blocker on that path.
+
+**Open questions:**
+- Why the entry survives on hardware, if it does. TLBWR picks its slot with
+  host `random()` rather than the VR4131 Random register. A
+  per-instruction Random model at dyntrans-chunk granularity did not change
+  the outcome.
+- Whether a real device auto-suspends here at all. AC/battery state isn't
+  modeled, so CE.Net may be choosing its battery idle timeout.
+
 Do not revisit older Welcome.exe, launcher dependency, VirtualCopy, or
 framebuffer-alias hypotheses unless a new trace contradicts the current PIU
 evidence. Those investigations are archived under `docs/archive/`.
