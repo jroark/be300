@@ -182,9 +182,12 @@ set(BE300_SOURCES
     src/win32_compat.c
     src/file_util.c
     src/devices/boot_rom.c
+    src/devices/buzzer.c
+    src/devices/display_ops.c
     src/devices/input.c
     src/devices/nand_window.c
     src/devices/pcmcia_attr.c
+    src/devices/serial_dock.c
     src/devices/siu_extra.c
     src/devices/wince_aux.c
     src/host_io.c
