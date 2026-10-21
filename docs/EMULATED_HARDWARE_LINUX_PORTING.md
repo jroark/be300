@@ -698,8 +698,8 @@ Primary VRC4173 NAND register coverage:
 | `0x0A00B000-0x0A00B20F` | `0xB000-0xB20F` | SPL stream window. |
 | `0x0A00B100-0x0A00B10F` | `0xB100-0xB10F` | Enable registers. |
 | `0x0A00C000-0x0A00C0FF` | `0xC000-0xC0FF` | ROM transfer engine. |
-| `0x0A00C170-0x0A00C177` | `0xC170-0xC177` | ROM DMA command/status/FIFO block; also used as CF taskfile when CF windows are enabled. |
-| `0x0A00C376` | `0xC376` | ROM DMA control/ack; also CF alternate status when CF windows are enabled. |
+| `0x0A00C170-0x0A00C177` | `0xC170-0xC177` | CF ATA taskfile. With no ATA card answering, it reads `0xFF` (empty socket) and ignores writes. |
+| `0x0A00C376` | `0xC376` | CF ATA alternate status; `0xFF` with no ATA card. |
 | `0x0A00D200` | `0xD200` | Direct I/O data port. |
 | `0x0A00D202` | `0xD202` | Direct I/O control, CLE/ALE mode. |
 | `0x0A00D7F8-0x0A00D7FF` | `0xD7F8-0xD7FF` | Legacy indexed data/status/device-ID ports. |
