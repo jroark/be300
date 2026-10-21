@@ -31,7 +31,8 @@ GXemul-based emulator.
 
 ### CPU Pipeline Clock
 *   **CP0 Count ($9) / Compare ($11):** Snapshot shows `Count` trailing `Compare` by ~16,000 ticks.
-*   **Interpretation:** The VR4131 `Count` register increments at **half the PClock frequency**. At 166MHz, this is 83.3 million increments per second.
+*   **Interpretation:** `Count` increments at **TClock/4 = 10.368 MHz** (PClock 165.888 MHz / 16), not at half the PClock. WinCE 3.0's OAL programs `Compare = Count + 10368` for its 1 ms tick, Linux's vr41xx `plat_time_init()` uses tclock/4 for this VR4131 (PRId `0x0c80`), and Linux 4.2 reports a 10 MHz `sched_clock`. The snapshot's lead of ~16,600 ticks is WinCE's idle variable tick, which pushes `Compare` past one tick when idle.
+*   **Emulator Action:** GXemul runs one instruction per PClock cycle (`emulated_hz` 165.888 MHz) and advances `Count` once per 16 instructions (`count_div`).
 
 ---
 

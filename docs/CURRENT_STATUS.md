@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-10-13
+Last updated: 2026-10-21
 
 ## Active Target
 
@@ -80,6 +80,11 @@ snapshot transactionally; see `docs/INSTALLING_APPS.md`.
   hardware-captured timing defaults from `docs/hardware/hw_dump_vrc4173.txt`,
   and schedules conversion completion against emulated CP0 Count cycles instead
   of host wall-clock time.
+- Emulated time runs at the 165.888 MHz PClock (one instruction per cycle),
+  matching the default `--speed 166` throttle, and CP0 Count advances at
+  TClock/4 = 10.368 MHz, the rate WinCE's 1 ms tick (`Compare = Count + 10368`)
+  and Linux's vr41xx timer code assume. A Count rate 8x too fast made
+  GetTickCount run ~6x fast, so Stowaway keys auto-repeated after ~60 ms.
 - GXemul CP0 Compare delivery is now driven by emulated instruction progress,
   not host SIGALRM cadence. This removes the trace/logging dependency where
   WinCE scheduler ticks arrived only when diagnostics slowed the emulator.
@@ -143,8 +148,10 @@ clock is wrong again.
 
 ### CE.Net white screen after idle power-off (reference image, open)
 
-The CE.Net reference image (`net.bin`) boots to its shell, then about 45 s
-later turns the LCD white and stops responding. It happens with or without
+The CE.Net reference image (`net.bin`) boots to its shell, then after its
+idle power-off timeout turns the LCD white and stops responding. (Before the
+Count rate fix of 2026-10-21 the tick ran about 6x fast and this came about
+45 s after the shell; it now comes within 7 minutes.) It happens with or without
 `--stowaway-keyboard` and `--ne2000`. Traced 2026-10-21:
 
 - CE.Net's idle power-off runs each driver's PowerDown in kernel mode on the
