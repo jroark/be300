@@ -301,7 +301,7 @@ int be300_web_stowaway_key(uint32_t scancode, uint32_t release) {
     if (!g_current_machine ||
         !g_current_machine->cfg.enable_stowaway_keyboard)
         return -1;
-    return stowaway_queue_key(scancode, release != 0) ? 0 : -1;
+    return stowaway_queue_mapped_key(scancode, release != 0) ? 0 : -1;
 }
 
 EMSCRIPTEN_KEEPALIVE

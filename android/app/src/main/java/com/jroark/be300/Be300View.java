@@ -23,10 +23,9 @@ final class Be300View extends View {
     }
 
     /*
-     * Android keyCode -> Stowaway dock scancode. Mirrors the SDL/web map in
-     * src/ui.c:ui_stowaway_lookup_key and web/app.js:STOWAWAY_KEY_CODES.
-     * Only keys 0..95 are accepted by Stowaway.dll; F-keys (>= 96) are
-     * dropped by the driver but kept here for parity.
+     * Android keyCode -> Stowaway dock scancode; 256 + n sends n with the
+     * dock's Fn key held. Canonical table: src/stowaway_keys.def (kept in
+     * step by tests/test_stowaway_keymap.c).
      */
     private static final SparseIntArray STOWAWAY_KEYS = new SparseIntArray();
     static {
@@ -66,15 +65,12 @@ final class Be300View extends View {
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_MINUS, 48);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_EQUALS, 49);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_DEL, 50);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_MOVE_HOME, 51);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_8, 52);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_9, 53);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_0, 54);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_ESCAPE, 55);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_LEFT_BRACKET, 56);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_RIGHT_BRACKET, 57);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_BACKSLASH, 58);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_MOVE_END, 59);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_U, 60);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_I, 61);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_O, 62);
@@ -82,36 +78,33 @@ final class Be300View extends View {
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_APOSTROPHE, 64);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_ENTER, 65);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_NUMPAD_ENTER, 65);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_PAGE_UP, 66);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_J, 68);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_K, 69);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_L, 70);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SEMICOLON, 71);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SLASH, 72);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_DPAD_UP, 73);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_PAGE_DOWN, 74);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_M, 76);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_COMMA, 77);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_PERIOD, 78);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_INSERT, 79);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_FORWARD_DEL, 80);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_DPAD_LEFT, 81);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_DPAD_DOWN, 82);
         STOWAWAY_KEYS.put(KeyEvent.KEYCODE_DPAD_RIGHT, 83);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SHIFT_LEFT, 87);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SHIFT_RIGHT, 88);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F1, 105);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F2, 106);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F3, 107);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F4, 108);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F5, 109);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F6, 110);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F7, 111);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F8, 112);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F9, 113);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F10, 114);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F11, 115);
-        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F12, 116);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SHIFT_LEFT, 88);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_SHIFT_RIGHT, 89);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_MOVE_HOME, 256 + 81);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_MOVE_END, 256 + 83);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_PAGE_UP, 256 + 73);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_PAGE_DOWN, 256 + 82);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F1, 51);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F2, 59);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F3, 66);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F4, 74);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F5, 256 + 51);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F6, 256 + 59);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F7, 256 + 66);
+        STOWAWAY_KEYS.put(KeyEvent.KEYCODE_F8, 256 + 74);
     }
 
     private static final int TOUCH_DWELL_MS = 120;

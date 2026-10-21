@@ -19,6 +19,11 @@ bool stowaway_uart_take_modem_wait_request(void);
 bool stowaway_uart_take_modem_delta(void);
 bool stowaway_queue_key(unsigned scancode, bool release);
 
+/* A src/stowaway_keys.def value: a scancode, | STOWAWAY_FN to send it with
+ * the Fn key (scancode 8) held, as the dock does for Home/End/PgUp/PgDn. */
+#define STOWAWAY_FN 0x100u
+bool stowaway_queue_mapped_key(unsigned value, bool release);
+
 /* Implemented in be300_devices.c. Synthesizes a CommMode modem event so the
  * WinCE OAL dispatches GIRQ0-4-4, waking serial.dll's IST to poll the UART.
  * The ns16550 IRQ goes to GIU pin 0 alone, but on real BE-300 the OAL only
