@@ -48,27 +48,18 @@ static void test_rom_stream_and_oob(void)
     CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 1, 0) == 0x0F);
 }
 
-static void test_rom_dma_fifo(void)
+static void test_empty_ata_taskfile(void)
 {
     nand_state_t n;
-    uint8_t command[8] = {0};
 
     nand_init(&n, image, sizeof(image), sizeof(image));
-    command[2] = 1;
-    command[3] = 2;
-    command[6] = 0xE0;
-    command[7] = 0x20;
-    for (unsigned i = 0; i < sizeof(command); i++)
-        nand_write(&n, NAND_DMA_BASE + i, 1, command[i], 0);
-
-    CHECK(n.dma_active);
-    CHECK(nand_read(&n, NAND_DMA_BASE + 7, 1, UINT32_C(0x9FC01000)) == 0x58);
-    CHECK(nand_read(&n, NAND_DMA_BASE, 4, UINT32_C(0x9FC01000)) ==
-          UINT32_C(0x83828180));
-    for (unsigned i = 4; i < NAND_PAGE_DATA; i++)
-        (void)nand_read(&n, NAND_DMA_BASE, 1, UINT32_C(0x9FC01000));
-    CHECK(!n.dma_active);
-    CHECK(nand_read(&n, NAND_DMA_BASE + 7, 1, UINT32_C(0x9FC01000)) == 0x50);
+    /* A READ SECTORS command with no card latches nothing. */
+    nand_write(&n, NAND_ATA_TF_BASE + 2, 1, 1, 0);
+    nand_write(&n, NAND_ATA_TF_BASE + 6, 1, 0xE0, 0);
+    nand_write(&n, NAND_ATA_TF_BASE + 7, 1, 0x20, 0);
+    CHECK(nand_read(&n, NAND_ATA_TF_BASE + 7, 1, 0) == 0xFF);
+    CHECK(nand_read(&n, NAND_ATA_TF_BASE, 4, 0) == UINT32_C(0xFFFFFFFF));
+    CHECK(nand_read(&n, NAND_ATA_ALT_STATUS, 1, 0) == 0xFF);
 }
 
 static void test_clean_ecc_and_inactive_buffer(void)
@@ -91,7 +82,7 @@ int main(void)
 {
     fill_image();
     test_rom_stream_and_oob();
-    test_rom_dma_fifo();
+    test_empty_ata_taskfile();
     test_clean_ecc_and_inactive_buffer();
     if (failures) {
         fprintf(stderr, "test_nand_boot: %d failure(s)\n", failures);

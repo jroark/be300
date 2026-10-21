@@ -210,9 +210,8 @@ static bool fat_parse_bpb(uint8_t *base, size_t avail, fat_vol_t *v)
 /*
  * Locate \Nand Disk. Restore images start with a block-0 partition table of
  * 16-byte entries (8 x 0xFF, u32 start sector, u32 sector count); entry 3 is
- * the FAT16 volume (CLAUDE.md "Restore image partition table"). Scan the
- * same way as nand_build_sector0_mbr() in src/hw/nand.c. A bare FAT16
- * volume at sector 0 is also accepted.
+ * the FAT16 volume (CLAUDE.md "Restore image partition table"). A bare
+ * FAT16 volume at sector 0 is also accepted.
  */
 static bool fat_locate(uint8_t *img, size_t len, fat_vol_t *v)
 {

@@ -253,13 +253,15 @@ static void be300_sync_nand_image(machine_t *m)
 /* Image loaders — ROM and NAND                                        */
 /* ------------------------------------------------------------------ */
 
+int be300_register_boot_rom(struct machine *gxm, const uint8_t *image,
+    size_t len);
+
 static int be300_load_rom_image(machine_t *m, const char *path)
 {
     FILE *f;
     long fsize;
     void *buf;
     uint64_t max = PA_ROM_BASE + PA_ROM_SIZE - PA_RESET_VECTOR;
-    uint64_t kseg0_addr;
 
     f = fopen(path, "rb");
     if (!f) {
@@ -298,8 +300,7 @@ static int be300_load_rom_image(machine_t *m, const char *path)
     }
     fclose(f);
 
-    kseg0_addr = 0xffffffff80000000ULL | (uint64_t)PA_RESET_VECTOR;
-    store_buf(m->cpu, kseg0_addr, (const char *)buf, (size_t)fsize);
+    be300_register_boot_rom(m->gxe_machine, buf, (size_t)fsize);
     free(buf);
     return 0;
 }
@@ -662,31 +663,13 @@ machine_t *be300_create(const machine_config_t *cfg)
         }
 
         /*
-         * Map RAM at PA 0x1FC00000 for BEV=1 exception vectors.
-         *
-         * With prom_emulation=0 (NAND boot), CP0 Status has BEV=1.
-         * The SPL doesn't clear BEV, so NK.exe starts with BEV=1.
-         * Exception vectors (TLB refill, general, interrupt) go to
-         * PA 0x1FC00000 + offset.  Real BE-300 hardware has 16K ROM
-         * there (per docs/hardware/hardware.txt).  Without this RAM, exception
-         * handlers can't be installed and WinCE can't set up virtual
-         * memory or run the scheduler.
-         */
-        dev_ram_init(gxm, PA_RESET_VECTOR, 0x4000, DEV_RAM_RAM, 0, NULL);
-
-        /*
-         * Load the real BE-300 boot ROM into PA 0x1FC00000, verbatim.
+         * The real BE-300 boot ROM at PA 0x1FC00000, verbatim and
+         * read-only (src/devices/boot_rom.c). With Status.BEV set the
+         * exception vectors are ROM code too.
          */
         {
 #include "boot_rom_embedded.h"
-            {
-                    uint64_t base_va = (uint64_t)(int64_t)(int32_t)VA_RESET_VECTOR;
-                    for (size_t i = 0; i < be300_boot_rom_len; i += 4) {
-                        uint32_t w = be300_boot_rom[i] | (be300_boot_rom[i+1] << 8) |
-                                     (be300_boot_rom[i+2] << 16) | (be300_boot_rom[i+3] << 24);
-                        store_32bit_word(m->cpu, base_va + i, w);
-                    }
-                }
+            be300_register_boot_rom(gxm, be300_boot_rom, be300_boot_rom_len);
         }
 
         extern void be300_register_cf_window(struct machine *, machine_t *, bool);

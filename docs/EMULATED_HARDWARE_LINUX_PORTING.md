@@ -220,11 +220,11 @@ emulator for these ranges:
 | --- | --- |
 | `0x0060` | VRC4173 `SYSINT1REG` aggregate. Read-only for writes in the emulator; writes to bytes `0x060/0x061` do not clear it. |
 | `0x0062-0x006A` | Level-2 status registers. W1C. |
-| `0x1100-0x113F` | GIU/wake/status area. W1C except selected suspend latches. |
-| `0x1B00-0x1B2F` | Interrupt status/mask/ack area. W1C. |
+| `0x1100-0x113F` | Clock/power/wake block (unit enables; `0x1120`/`0x112C` written 1 by interrupt handlers). Plain read/write storage, mirrored every `0x40` through `0x11FF`, seeded from the hardware dump. |
+| `0x1B00-0x1B2F` | CF socket status area (`src/hw/cf.c` companion page). |
 
 Linux driver implication: use normal mask/status/ack sequencing. Do not assume
-writing zero clears a status bit in these VRC4173 ranges.
+writing zero clears a level-2 status bit (`0x0062-0x006A`).
 
 ## VR4131 Internal Peripherals
 
@@ -698,8 +698,8 @@ Primary VRC4173 NAND register coverage:
 | `0x0A00B000-0x0A00B20F` | `0xB000-0xB20F` | SPL stream window. |
 | `0x0A00B100-0x0A00B10F` | `0xB100-0xB10F` | Enable registers. |
 | `0x0A00C000-0x0A00C0FF` | `0xC000-0xC0FF` | ROM transfer engine. |
-| `0x0A00C170-0x0A00C177` | `0xC170-0xC177` | ROM DMA command/status/FIFO block; also used as CF taskfile when CF windows are enabled. |
-| `0x0A00C376` | `0xC376` | ROM DMA control/ack; also CF alternate status when CF windows are enabled. |
+| `0x0A00C170-0x0A00C177` | `0xC170-0xC177` | CF ATA taskfile. With no ATA card answering, it reads `0xFF` (empty socket) and ignores writes. |
+| `0x0A00C376` | `0xC376` | CF ATA alternate status; `0xFF` with no ATA card. |
 | `0x0A00D200` | `0xD200` | Direct I/O data port. |
 | `0x0A00D202` | `0xD202` | Direct I/O control, CLE/ALE mode. |
 | `0x0A00D7F8-0x0A00D7FF` | `0xD7F8-0xD7FF` | Legacy indexed data/status/device-ID ports. |
@@ -817,7 +817,6 @@ The restore engine has buffers and sideband registers outside the normal
 | `0x0980-0x098F` | Sideband control. |
 | `0x0B00-0x0CFF` | Page buffer window. |
 | `0x0C00-0x0CC0` | Restore C-window registers. |
-| `0x1100`, `0x1104`, `0x1108`, `0x110C`, `0x1128`, `0x1B20`, `0x1CC0-0x1CCC` | Additional restore-related latches. |
 
 Seeded restore C-window values include:
 

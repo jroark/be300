@@ -181,6 +181,7 @@ set(BE300_SOURCES
     src/be300_devices.c
     src/win32_compat.c
     src/file_util.c
+    src/devices/boot_rom.c
     src/devices/input.c
     src/devices/nand_window.c
     src/devices/pcmcia_attr.c

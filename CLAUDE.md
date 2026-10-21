@@ -184,7 +184,7 @@ Recovery boot through `--restore --cf` is still implemented for NANDWRITER-path 
 - ROM initializes CP0, SDRAM timing, clocks, NAND, and SPL loading
 - Original ROM has no real BEV TLB refill handler at `+0x200`
 - The original bytes at the BEV general-exception vector overlap boot code continuation rather than a general exception handler
-- The emulator loads the ROM verbatim (`docs/hardware/be300_boot_rom.bin`, embedded at build time) into writable RAM at PA `0x1FC00000` (`machine_be300.c`); it does not patch BEV handlers into it
+- The emulator maps the ROM verbatim (`docs/hardware/be300_boot_rom.bin`, embedded at build time) read-only at PA `0x1FC00000` (`src/devices/boot_rom.c`); guest stores there are dropped and the first one is logged. It does not patch BEV handlers into it
 - The ROM contains about 5.5 KB of MIPS16 code from `0x0C20` to `0x219B`, and GXemul executes it natively
 - NK.exe is fully MIPS32
 

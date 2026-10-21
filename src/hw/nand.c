@@ -20,126 +20,6 @@ static bool nand_block_is_allocated(const nand_state_t *s, uint32_t block)
     return s->block_data_state[block] > 0;
 }
 
-static bool nand_sector_has_fat16_bpb(const nand_state_t *s, uint32_t sector)
-{
-    uint32_t off = sector * NAND_PAGE_DATA;
-
-    if (!s->image || off > s->image_size || s->image_size - off < NAND_PAGE_DATA)
-        return false;
-
-    return nand_image_byte(s, off + 0x1FEu) == 0x55u &&
-           nand_image_byte(s, off + 0x1FFu) == 0xAAu &&
-           nand_image_byte(s, off + 0x36u) == 'F' &&
-           nand_image_byte(s, off + 0x37u) == 'A' &&
-           nand_image_byte(s, off + 0x38u) == 'T' &&
-           nand_image_byte(s, off + 0x39u) == '1' &&
-           nand_image_byte(s, off + 0x3Au) == '6';
-}
-
-static bool nand_build_sector0_mbr(const nand_state_t *s,
-                                   uint8_t out[NAND_PAGE_DATA],
-                                   uint32_t *part_lba_out,
-                                   uint32_t *part_size_out)
-{
-    uint32_t part_lba = 0;
-    uint32_t part_size = 0;
-
-    if (!s->image || s->image_size < NAND_PAGE_DATA)
-        return false;
-
-    if (nand_image_byte(s, 0x1FEu) == 0x55u &&
-        nand_image_byte(s, 0x1FFu) == 0xAAu) {
-        return false;
-    }
-
-    for (uint32_t off = 0; off + 8 <= 0x40u; off += 4) {
-        uint32_t start;
-        uint32_t size;
-        uint64_t end_off;
-
-        start = (uint32_t)nand_image_byte(s, off) |
-                ((uint32_t)nand_image_byte(s, off + 1) << 8) |
-                ((uint32_t)nand_image_byte(s, off + 2) << 16) |
-                ((uint32_t)nand_image_byte(s, off + 3) << 24);
-        size = (uint32_t)nand_image_byte(s, off + 4) |
-               ((uint32_t)nand_image_byte(s, off + 5) << 8) |
-               ((uint32_t)nand_image_byte(s, off + 6) << 16) |
-               ((uint32_t)nand_image_byte(s, off + 7) << 24);
-
-        if (start == 0 || size == 0 || start == 0xFFFFFFFFu || size == 0xFFFFFFFFu)
-            continue;
-
-        end_off = ((uint64_t)start + (uint64_t)size) * NAND_PAGE_DATA;
-        if (end_off > s->image_size)
-            continue;
-
-        if (!nand_sector_has_fat16_bpb(s, start))
-            continue;
-
-        part_lba = start;
-        part_size = size;
-        break;
-    }
-
-    if (part_lba == 0 || part_size == 0)
-        return false;
-
-    memset(out, 0, NAND_PAGE_DATA);
-    out[0x1BEu + 0] = 0x80u;  /* active partition */
-    out[0x1BEu + 1] = 0xFFu;  /* CHS start (unused by ROM) */
-    out[0x1BEu + 2] = 0xFFu;
-    out[0x1BEu + 3] = 0xFFu;
-    out[0x1BEu + 4] = 0x06u;  /* FAT16 */
-    out[0x1BEu + 5] = 0xFFu;  /* CHS end */
-    out[0x1BEu + 6] = 0xFFu;
-    out[0x1BEu + 7] = 0xFFu;
-    out[0x1BEu + 8] = (uint8_t)(part_lba & 0xFFu);
-    out[0x1BEu + 9] = (uint8_t)((part_lba >> 8) & 0xFFu);
-    out[0x1BEu + 10] = (uint8_t)((part_lba >> 16) & 0xFFu);
-    out[0x1BEu + 11] = (uint8_t)((part_lba >> 24) & 0xFFu);
-    out[0x1BEu + 12] = (uint8_t)(part_size & 0xFFu);
-    out[0x1BEu + 13] = (uint8_t)((part_size >> 8) & 0xFFu);
-    out[0x1BEu + 14] = (uint8_t)((part_size >> 16) & 0xFFu);
-    out[0x1BEu + 15] = (uint8_t)((part_size >> 24) & 0xFFu);
-    out[0x1FEu] = 0x55u;
-    out[0x1FFu] = 0xAAu;
-
-    if (part_lba_out)
-        *part_lba_out = part_lba;
-    if (part_size_out)
-        *part_size_out = part_size;
-    return true;
-}
-
-static bool nand_pc_in_boot_rom(uint32_t pc)
-{
-    uint32_t norm_pc = pc & ~UINT32_C(0x20000000);
-
-    return norm_pc >= UINT32_C(0x9FC00000) &&
-           norm_pc < UINT32_C(0x9FC04000);
-}
-
-static uint8_t nand_dma_byte(nand_state_t *s, uint32_t byte_off,
-                             uint32_t pc)
-{
-    if (byte_off < NAND_PAGE_DATA && !nand_pc_in_boot_rom(pc)) {
-        uint8_t mbr[NAND_PAGE_DATA];
-
-        if (nand_build_sector0_mbr(s, mbr, NULL, NULL))
-            return mbr[byte_off];
-    }
-
-    /*
-     * DMA FIFO data read.  The caller supplies a fully resolved byte offset
-     * into the NAND image (dma_nand_addr + dma_cursor), where dma_nand_addr
-     * was converted from the page number in cmd[3..6] at trigger time.
-     *
-     * The ROM uses this path for ALL NAND regions: partition table (page 0),
-     * SPL (page 0x20 = offset 0x4000), and later the FAT filesystem.
-     */
-    return nand_image_byte(s, byte_off);
-}
-
 uint8_t nand_stream_oob_byte(nand_state_t *s,
                              uint32_t page, uint32_t oob_idx)
 {
@@ -833,69 +713,14 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         return;
     }
 
-    /* DMA command block (0xC170-0xC177): ROM writes address + command */
-    if (offset >= NAND_DMA_BASE && offset < NAND_DMA_END) {
-        uint32_t old_cursor = s->dma_cursor;
-        uint32_t old_total = s->dma_total_bytes;
-        uint32_t old_addr = s->dma_nand_addr;
-        bool old_active = s->dma_active;
-        for (unsigned i = 0; i < size; i++) {
-            uint32_t idx = (offset - NAND_DMA_BASE) + i;
-            if (idx < 8)
-                s->dma_cmd[idx] = (uint8_t)((value >> (8u * i)) & 0xFFu);
-        }
-        /* Byte 7 write triggers transfer setup.
-         * The ROM uses at least two command-byte values here:
-         *   0x20 = main sector-read path used by FUN_9fc010ec
-         *   0xEC = scratch-buffer read path used by FUN_9fc01360
-         * Both need to activate the FIFO over the already-latched
-         * page-count/address block. Treating only 0xEC as the trigger
-         * leaves the scratch helper with the only live transfer and the
-         * later parser sees zeros from 0xAA00C170. */
-        uint32_t last_byte = (offset - NAND_DMA_BASE) + size - 1;
-        if (last_byte >= 7) {
-            uint8_t cmd7 = s->dma_cmd[7];
-            if (cmd7 == 0x20u || cmd7 == 0xECu) {
-                /* Read trigger: decode page number and activate FIFO.
-                 *
-                 * FUN_9fc01318 splits a 32-bit page number across
-                 * cmd[3..6], with 0xE0 OR'd into cmd[6] (ATA drive/head
-                 * convention).  The page number × 512 gives the byte
-                 * offset into the NAND image. */
-                uint32_t page = (uint32_t)s->dma_cmd[3]
-                              | ((uint32_t)s->dma_cmd[4] << 8)
-                              | ((uint32_t)s->dma_cmd[5] << 16)
-                              | ((uint32_t)(s->dma_cmd[6] & 0x0Fu) << 24);
-                uint32_t pages = s->dma_cmd[2];
-                if (pages == 0) pages = 1;
-                s->dma_nand_addr = page * NAND_PAGE_DATA;
-                s->dma_page_count = pages;
-                s->dma_total_bytes = pages * NAND_PAGE_DATA;
-                s->dma_cursor = 0;
-                s->dma_active = true;
-            }
-        }
+    /*
+     * CF ATA taskfile (0xC170-0xC177) and alternate status (0xC376) with
+     * no ATA card answering: nothing latches a write
+     * (devices/nand_window.c routes them to the card when one is).
+     */
+    if ((offset >= NAND_ATA_TF_BASE && offset < NAND_ATA_TF_END) ||
+        offset == NAND_ATA_ALT_STATUS)
         return;
-    }
-
-    /* DMA control/acknowledge (0xC376)
-     *
-     * The ROM MIPS16 init path writes 0 here and then waits for status
-     * bit 6 ("idle") to become true before issuing the real read trigger
-     * via cmd byte 7 = 0xEC.  So 0xC376 is not itself the page-start
-     * trigger; treating every write as "start DMA now" leaves status at
-     * 0xD8 forever and wedges FUN_9fc013f0 in its pre-transfer wait. */
-    if (offset == NAND_DMA_CTRL) {
-        uint8_t ctrl = (uint8_t)(value & 0xFFu);
-
-        if (ctrl == 0) {
-            s->dma_active = false;
-            s->dma_cursor = 0;
-            s->dma_total_bytes = 0;
-        }
-        (void)ctrl;
-        return;
-    }
 
     /* Direct I/O control register (D002): sets CLE/ALE mode for D000 */
     if (offset == NAND_REG_DIO_CTRL) {
@@ -1500,59 +1325,19 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
         goto out;
     }
 
-    /* DMA command/status/FIFO registers (0xC170-0xC177).
-     * Offset 0 (0xC170): FIFO data port — sequential NAND page reads.
-     * Offset 7 (0xC177): Status byte — bit 6=idle/complete, bit 3=data ready.
-     * Other offsets: return latched command block bytes. */
-    if (offset >= NAND_DMA_BASE && offset < NAND_DMA_END) {
-        uint32_t reg_off = offset - NAND_DMA_BASE;
-        if (reg_off == 0 && s->dma_active) {
-            /* FIFO data port: return sequential NAND page data */
-            val = 0;
-            for (unsigned i = 0; i < size; i++) {
-                uint8_t byte;
-                if (s->dma_cursor < s->dma_total_bytes)
-                    byte = nand_dma_byte(s, s->dma_nand_addr + s->dma_cursor,
-                                         pc);
-                else
-                    byte = 0xFFu;
-                val |= (uint64_t)byte << (8u * i);
-                s->dma_cursor++;
-            }
-            /*
-             * Once the final FIFO byte has been consumed, transition back to
-             * the ROM's idle state. Returning a sticky synthetic "complete"
-             * status causes the ROM to recurse back through 0x9FC003DC and
-             * leak stack frames until execution falls into low RAM.
-             */
-            if (s->dma_cursor >= s->dma_total_bytes)
-                s->dma_active = false;
-            goto out;
-        }
-        /* Status and command block readback */
+    /*
+     * CF ATA taskfile (0xC170-0xC177) and alternate status (0xC376) with
+     * no ATA card answering. The socket's data lines float high, and an
+     * all-ones status byte is the ATA "no device" reading, which is how
+     * the ROM's CF probe sees an empty socket. These reads used to serve
+     * the NAND image as a phantom disk with a fabricated MBR; no boot in
+     * the regression set reaches them without a card.
+     */
+    if ((offset >= NAND_ATA_TF_BASE && offset < NAND_ATA_TF_END) ||
+        offset == NAND_ATA_ALT_STATUS) {
         val = 0;
-        for (unsigned i = 0; i < size && (reg_off + i) < 8; i++) {
-            uint8_t byte;
-            if ((reg_off + i) == 7) {
-                /* Status byte at offset 7 (0xC177):
-                 *   !dma_active             -> 0x50 (idle / transfer drained)
-                 *   dma_active             -> 0x58 (busy, data available)
-                 *
-                 * The old sticky 0x5F "complete" state was wrong for the ROM
-                 * path: bit0 and low nibble 0xF make the MIPS16 dispatcher
-                 * re-enter 0x9FC003DC, which accumulates recursive frames.
-                 * Clearing dma_active when the FIFO drains makes subsequent
-                 * status reads collapse back to 0x50 instead. */
-                if (!s->dma_active) {
-                    byte = 0x50u;        /* idle: no transfer in progress */
-                } else {
-                    byte = 0x58u;        /* busy: data available */
-                }
-            } else {
-                byte = s->dma_cmd[reg_off + i];
-            }
-            val |= (uint64_t)byte << (8u * i);
-        }
+        for (unsigned i = 0; i < size; i++)
+            val |= (uint64_t)0xFFu << (8u * i);
         goto out;
     }
 
