@@ -1494,6 +1494,35 @@ complete:
     d->bytes[0x0234] &= ~(uint8_t)1u;   /* trigger/busy complete */
 }
 
+/*
+ * AA001054 holds the serial dock's CommMode modem events, which the guest
+ * acknowledges by writing 1s to them (write-1-to-clear); its other bits are
+ * stored as written. The write lands in the 0x1000-0x1FFF CF companion
+ * path, so acknowledge here and keep the written event bits out of the
+ * stored register, or they read back as new events.
+ */
+static void be300_commmode_event_ack(struct be300_vrc4173_latch *d,
+    uint32_t off, unsigned len, uint64_t val)
+{
+    uint16_t written;
+
+    if (!be300_serial_dock_socket_enabled() ||
+        off > BE300_COMMMODE_MODEM_EVENT_OFF ||
+        off + len <= BE300_COMMMODE_MODEM_EVENT_OFF)
+        return;
+
+    written = be300_pcconnect_write_u16_at(off, len, val,
+        BE300_COMMMODE_MODEM_EVENT_OFF, 0) & BE300_COMMMODE_MODEM_EVENT_BITS;
+    d->bytes[BE300_COMMMODE_MODEM_EVENT_OFF] &= (uint8_t)~written;
+    d->bytes[BE300_COMMMODE_MODEM_EVENT_OFF + 1] &= (uint8_t)~(written >> 8);
+    d->stowaway_commmode_events &= (uint16_t)~written;
+    if (written != 0) {
+        d->pcconnect_commmode_pending &=
+            (uint16_t)~BE300_COMMMODE_MODEM_PENDING;
+        be300_pcconnect_irq_update(d);
+    }
+}
+
 struct be300_vrc4173_segment {
     struct be300_vrc4173_latch *latch;
     uint32_t offset_in_latch;    /* offset of this segment within the latch */
@@ -1544,6 +1573,7 @@ static int be300_vrc4173_handle(struct cpu *cpu, struct memory *mem,
                 &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT],
                 off - 0x1000u, (unsigned)len, val);
             memcpy(&d->bytes[off], data, len);
+            be300_commmode_event_ack(d, off, (unsigned)len, val);
             return 1;
         }
 
@@ -1614,19 +1644,6 @@ static int be300_vrc4173_handle(struct cpu *cpu, struct memory *mem,
             be300_aiu_irq_update(d);
         be300_pcconnect_note_comm_write(d, off, (unsigned)len, val,
             (uint32_t)cpu->pc);
-        if (be300_serial_dock_socket_enabled() &&
-            off <= BE300_COMMMODE_MODEM_EVENT_OFF &&
-            off + len > BE300_COMMMODE_MODEM_EVENT_OFF) {
-            uint16_t written = be300_pcconnect_write_u16_at(off,
-                (unsigned)len, val, BE300_COMMMODE_MODEM_EVENT_OFF, 0);
-            d->stowaway_commmode_events &=
-                (uint16_t)~(written & BE300_COMMMODE_MODEM_EVENT_BITS);
-            if ((written & BE300_COMMMODE_MODEM_EVENT_BITS) != 0) {
-                d->pcconnect_commmode_pending &=
-                    (uint16_t)~BE300_COMMMODE_MODEM_PENDING;
-                be300_pcconnect_irq_update(d);
-            }
-        }
         if (off <= 0x0A00u && off + len > 0x0A00u)
             be300_vrc4173_a00_blit_maybe(cpu, d);
         if (off <= 0x0234u && off + len > 0x0234u)
