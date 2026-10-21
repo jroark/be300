@@ -27,7 +27,7 @@ var (
 )
 
 const (
-	bridgeVersion    = "20260511e"
+	bridgeVersion    = "20261021a"
 	ethIPv4          = 0x0800
 	ethARP           = 0x0806
 	minEthernetFrame = 60
@@ -39,6 +39,7 @@ const (
 
 type bridge struct {
 	mu      sync.Mutex
+	writeMu sync.Mutex
 	flowsMu sync.Mutex
 	client  net.Conn
 	udp     map[string]*udpFlow
@@ -66,6 +67,12 @@ type tcpFlow struct {
 	remotePort uint16
 	clientNext uint32
 	serverNext uint32
+	serverAck  uint32
+	serverISN  uint32
+	peerWindow uint32
+	ackWake    chan struct{}
+	done       chan struct{}
+	clientFIN  bool
 	pending    [][]byte
 	connected  bool
 	lastActive time.Time
@@ -165,7 +172,9 @@ func (b *bridge) readWebSocket(conn net.Conn, r *bufio.Reader) {
 		case 0x8:
 			return
 		case 0x9:
+			b.writeMu.Lock()
 			_ = wsWriteFrame(conn, 0xA, payload)
+			b.writeMu.Unlock()
 		}
 	}
 }
@@ -242,7 +251,10 @@ func (b *bridge) sendEthernet(frame []byte) {
 	c := b.client
 	b.mu.Unlock()
 	if c != nil {
+		// Header and payload must stay together across all network goroutines.
+		b.writeMu.Lock()
 		_ = wsWriteFrame(c, 0x2, frame)
+		b.writeMu.Unlock()
 	}
 }
 
@@ -550,45 +562,67 @@ func (b *bridge) handleTCP(ip *ipv4Packet) {
 		if flow == nil {
 			flow = b.openTCP(key, ip, srcPort, dstPort, seq)
 		}
-		b.sendTCP(flow, 0x12, nil)
+		// A retransmitted SYN repeats the original sequence number.
 		flow.mu.Lock()
-		flow.serverNext++
+		flow.peerWindow = uint32(be16(ip.payload[14:16]))
+		synSeq := flow.serverISN
 		flow.mu.Unlock()
+		b.sendTCPAt(flow, synSeq, 0x12, nil)
 		return
 	}
 	if flow == nil {
 		return
 	}
-	flow.mu.Lock()
-	flow.lastActive = time.Now()
-	flow.mu.Unlock()
-	if len(data) > 0 {
-		var conn net.Conn
-		flow.mu.Lock()
-		flow.clientNext = seq + uint32(len(data))
-		if flow.connected && flow.conn != nil {
-			conn = flow.conn
-		} else {
-			flow.pending = append(flow.pending, clone(data))
-		}
-		flow.mu.Unlock()
-		if conn != nil {
-			_, _ = conn.Write(data)
-		}
-		b.sendTCP(flow, 0x10, nil)
-	}
-	if flags&0x01 != 0 {
-		flow.mu.Lock()
-		flow.clientNext = seq + uint32(len(data)) + 1
-		conn := flow.conn
-		flow.mu.Unlock()
-		b.sendTCP(flow, 0x10, nil)
-		if conn != nil {
-			_ = conn.Close()
-		}
-	}
 	if flags&0x04 != 0 {
 		b.closeTCP(key, true)
+		return
+	}
+	flow.mu.Lock()
+	flow.lastActive = time.Now()
+	if flags&0x10 != 0 {
+		ack := be32(ip.payload[8:12])
+		if int32(ack-flow.serverAck) >= 0 && int32(flow.serverNext-ack) >= 0 {
+			flow.serverAck = ack
+			flow.peerWindow = uint32(be16(ip.payload[14:16]))
+			select {
+			case flow.ackWake <- struct{}{}:
+			default:
+			}
+		}
+	}
+	// Only forward new, contiguous bytes: retransmissions are normal TCP,
+	// and writing duplicate TLS records to the host corrupts the stream.
+	if skip := int32(flow.clientNext - seq); skip >= 0 && int(skip) <= len(data) {
+		data = data[skip:]
+		flow.clientNext += uint32(len(data))
+	} else {
+		data = nil
+	}
+	conn := flow.conn
+	if len(data) > 0 && !flow.connected {
+		flow.pending = append(flow.pending, clone(data))
+		data = nil
+	}
+	fin := flags&0x01 != 0 && seq+uint32(len(ip.payload[off:])) == flow.clientNext && !flow.clientFIN
+	if fin {
+		flow.clientNext++
+		flow.clientFIN = true
+	}
+	flow.mu.Unlock()
+	if len(data) > 0 && conn != nil {
+		if _, err := conn.Write(data); err != nil {
+			b.sendTCP(flow, 0x14, nil)
+			b.closeTCP(key, true)
+			return
+		}
+	}
+	if len(ip.payload[off:]) > 0 || flags&0x01 != 0 {
+		b.sendTCP(flow, 0x10, nil)
+	}
+	if fin && conn != nil {
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.CloseWrite()
+		}
 	}
 }
 
@@ -608,7 +642,11 @@ func (b *bridge) openTCP(key string, ip *ipv4Packet, srcPort, dstPort uint16, se
 		remoteIP:   clone(ip.dstIP),
 		remotePort: dstPort,
 		clientNext: seq + 1,
-		serverNext: b.nextSeq,
+		serverNext: b.nextSeq + 1,
+		serverAck:  b.nextSeq,
+		serverISN:  b.nextSeq,
+		ackWake:    make(chan struct{}, 1),
+		done:       make(chan struct{}),
 		lastActive: time.Now(),
 	}
 	b.nextSeq += 0x10000
@@ -634,18 +672,32 @@ func (b *bridge) connectTCP(flow *tcpFlow) {
 	}
 	flow.mu.Lock()
 	flow.conn = conn
-	flow.connected = true
 	pending := flow.pending
 	flow.pending = nil
 	flow.timer = time.NewTicker(10 * time.Second)
 	timer := flow.timer
-	flow.mu.Unlock()
 	for _, p := range pending {
-		_, _ = conn.Write(p)
+		if _, err := conn.Write(p); err != nil {
+			flow.mu.Unlock()
+			b.closeTCP(flow.key, true)
+			return
+		}
 	}
+	flow.connected = true
+	if flow.clientFIN {
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.CloseWrite()
+		}
+	}
+	flow.mu.Unlock()
 	go b.readTCP(flow, conn)
 	go func() {
-		for range timer.C {
+		for {
+			select {
+			case <-flow.done:
+				return
+			case <-timer.C:
+			}
 			flow.mu.Lock()
 			lastActive := flow.lastActive
 			flow.mu.Unlock()
@@ -657,26 +709,86 @@ func (b *bridge) connectTCP(flow *tcpFlow) {
 	}()
 }
 
+// Keep a bounded flight of data until the guest acknowledges it. The web
+// worker can deliver bursts faster than the emulated NIC/guest can drain;
+// TCP's window and retransmissions must survive those dropped frames.
+func (b *bridge) writeTCP(flow *tcpFlow, data []byte, fin bool) bool {
+	flow.mu.Lock()
+	start := flow.serverNext
+	flow.mu.Unlock()
+	length := len(data)
+	if fin {
+		length++
+	}
+	sent := 0
+	retry := time.NewTicker(500 * time.Millisecond)
+	defer retry.Stop()
+	for {
+		flow.mu.Lock()
+		acked := int(int32(flow.serverAck - start))
+		window := int(flow.peerWindow)
+		flow.mu.Unlock()
+		if acked >= length {
+			return true
+		}
+		// The SYN must be acknowledged before sending application data.
+		if acked >= 0 {
+			for sent < length && sent < acked+window {
+				n := min(tcpMSS, min(length-sent, acked+window-sent))
+				flags := byte(0x18)
+				var part []byte
+				if fin {
+					flags = 0x11
+				} else {
+					part = data[sent : sent+n]
+				}
+				flow.mu.Lock()
+				flow.serverNext = start + uint32(sent+n)
+				flow.mu.Unlock()
+				b.sendTCPAt(flow, start+uint32(sent), flags, part)
+				sent += n
+			}
+		}
+		select {
+		case <-flow.done:
+			return false
+		case <-flow.ackWake:
+		case <-retry.C:
+			flow.mu.Lock()
+			acked = int(int32(flow.serverAck - start))
+			window = int(flow.peerWindow)
+			flow.mu.Unlock()
+			if acked < 0 {
+				continue
+			}
+			if window == 0 {
+				// Persist probe solicits the window update if it was lost.
+				b.sendTCPAt(flow, start+uint32(acked)-1, 0x10, []byte{0})
+			} else {
+				for off := acked; off < sent; {
+					n := min(tcpMSS, sent-off)
+					if fin {
+						b.sendTCPAt(flow, start+uint32(off), 0x11, nil)
+					} else {
+						b.sendTCPAt(flow, start+uint32(off), 0x18, data[off:off+n])
+					}
+					off += n
+				}
+			}
+		}
+	}
+}
+
 func (b *bridge) readTCP(flow *tcpFlow, conn net.Conn) {
+	defer b.closeTCP(flow.key, true)
 	buf := make([]byte, 4096)
 	for {
 		n, err := conn.Read(buf)
-		if n > 0 {
-			for off := 0; off < n; off += tcpMSS {
-				end := min(n, off+tcpMSS)
-				part := buf[off:end]
-				b.sendTCP(flow, 0x18, part)
-				flow.mu.Lock()
-				flow.serverNext += uint32(len(part))
-				flow.mu.Unlock()
-			}
+		if n > 0 && !b.writeTCP(flow, buf[:n], false) {
+			return
 		}
 		if err != nil {
-			b.sendTCP(flow, 0x11, nil)
-			flow.mu.Lock()
-			flow.serverNext++
-			flow.mu.Unlock()
-			b.closeTCP(flow.key, false)
+			b.writeTCP(flow, nil, true)
 			return
 		}
 	}
@@ -684,15 +796,21 @@ func (b *bridge) readTCP(flow *tcpFlow, conn net.Conn) {
 
 func (b *bridge) sendTCP(flow *tcpFlow, flags byte, data []byte) {
 	flow.mu.Lock()
+	seq := flow.serverNext
+	flow.mu.Unlock()
+	b.sendTCPAt(flow, seq, flags, data)
+}
+
+func (b *bridge) sendTCPAt(flow *tcpFlow, seq uint32, flags byte, data []byte) {
+	flow.mu.Lock()
 	remoteIP := clone(flow.remoteIP)
 	guestIP := clone(flow.guestIP)
 	guestMAC := clone(flow.guestMAC)
 	remotePort := flow.remotePort
 	guestPort := flow.guestPort
-	serverNext := flow.serverNext
 	clientNext := flow.clientNext
 	flow.mu.Unlock()
-	tcp := tcpPacket(remoteIP, guestIP, remotePort, guestPort, serverNext, clientNext, flags, data)
+	tcp := tcpPacket(remoteIP, guestIP, remotePort, guestPort, seq, clientNext, flags, data)
 	b.sendEthernet(ethernet(guestMAC, gatewayMAC, ethIPv4, tcp))
 }
 
@@ -706,6 +824,7 @@ func (b *bridge) closeTCP(key string, destroy bool) {
 	if flow == nil {
 		return
 	}
+	close(flow.done)
 	flow.mu.Lock()
 	timer := flow.timer
 	conn := flow.conn
