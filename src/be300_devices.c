@@ -815,11 +815,6 @@ static void be300_pcconnect_maybe_raise_uart_rx_level(
 static void be300_stowaway_maybe_raise_uart_rx_level(
     struct be300_vrc4173_latch *d);
 
-bool be300_pcconnect_irq_is_asserted(void)
-{
-    struct be300_vrc4173_latch *d = g_be300_vrc4173_latch;
-    return d && d->pcconnect_irq_asserted;
-}
 
 void be300_pcconnect_poll(void)
 {

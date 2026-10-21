@@ -672,18 +672,15 @@ machine_t *be300_create(const machine_config_t *cfg)
          * handlers can't be installed and WinCE can't set up virtual
          * memory or run the scheduler.
          */
-        dev_ram_init(gxm, 0x1FC00000, 0x4000, DEV_RAM_RAM, 0, NULL);
+        dev_ram_init(gxm, PA_RESET_VECTOR, 0x4000, DEV_RAM_RAM, 0, NULL);
 
         /*
-         * Load the real BE-300 boot ROM into PA 0x1FC00000.
-         * The image is used verbatim; if the emulator ever takes an
-         * unexpected early BEV exception, the single-shot trace above
-         * should capture it instead of patching the ROM in place.
+         * Load the real BE-300 boot ROM into PA 0x1FC00000, verbatim.
          */
         {
 #include "boot_rom_embedded.h"
             {
-                    uint64_t base_va = 0xffffffffBFC00000ULL;
+                    uint64_t base_va = (uint64_t)(int64_t)(int32_t)VA_RESET_VECTOR;
                     for (size_t i = 0; i < be300_boot_rom_len; i += 4) {
                         uint32_t w = be300_boot_rom[i] | (be300_boot_rom[i+1] << 8) |
                                      (be300_boot_rom[i+2] << 16) | (be300_boot_rom[i+3] << 24);

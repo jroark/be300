@@ -17,7 +17,6 @@ void pcconnect_trace_uart_access(const char *name, bool claimed,
     bool write, unsigned reg, uint8_t value, uint32_t pc,
     uint8_t ier, uint8_t iir, uint8_t lcr, uint8_t mcr,
     uint8_t lsr, uint8_t msr, int dlab, int divisor);
-bool pcconnect_uart_rx_available(void);
 size_t pcconnect_uart_rx_count(void);
 int  pcconnect_uart_rx_pop(void);
 void pcconnect_uart_rx_clear(void);

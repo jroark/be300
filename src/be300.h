@@ -24,24 +24,16 @@ struct memory;
 struct emul;
 
 /* Physical address map (VR4131 hardware manual §3.1) */
-#define PA_SDRAM_BASE    UINT32_C(0x00000000)
-#define PA_SDRAM_SIZE    (64u * 1024u * 1024u)
-#define PA_IO_BASE       UINT32_C(0x0F000000)
-#define PA_IO_SIZE       UINT32_C(0x00001000)
 #define PA_ROM_BASE      UINT32_C(0x1E000000)
 #define PA_ROM_SIZE      (32u * 1024u * 1024u)
 #define PA_RESET_VECTOR  UINT32_C(0x1FC00000)
 
 /* VRC4173 companion chip physical addresses */
 #define PA_VRC4173_BASE  UINT32_C(0x0A000000)
-#define PA_VRC4173_SIU   UINT32_C(0x0A008680)
 #define PA_VRC4173_FB    UINT32_C(0x0A200000)
 
 /* MIPS virtual addresses */
 #define VA_RESET_VECTOR  UINT32_C(0xBFC00000)
-
-/* VR4131 CP0 PRId */
-#define VR4131_PRID      UINT32_C(0x00000C80)
 
 #define BE300_MAX_CF_SLOTS 2u
 #define BE300_PRIMARY_CF_SLOT 0u
@@ -214,7 +206,6 @@ void       be300_buttons_host_update(machine_t *m, uint8_t old_set1,
                                      uint8_t old_set2);
 void       be300_touch_tick(machine_t *m);
 void       be300_pcconnect_poll(void);
-bool       be300_pcconnect_irq_is_asserted(void);
 void       be300_vrc4173_update_cf_irq(void);
 void       be300_vrc4173_update_audio_irq(void);
 void       be300_stop(machine_t *m);

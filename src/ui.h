@@ -2,12 +2,6 @@
 
 #include "be300.h"
 
-typedef void (*ui_frame_callback_t)(const uint16_t *pixels,
-                                    uint32_t width,
-                                    uint32_t height,
-                                    uint32_t stride,
-                                    void *user_data);
-
 int  ui_init(machine_t *m);
 void ui_update(machine_t *m);
 void ui_destroy(machine_t *m);
@@ -29,4 +23,3 @@ void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
 void   ui_web_audio_set_enabled(bool enabled);
 size_t ui_web_audio_drain(int16_t *dst, size_t max_samples);
 #endif
-void ui_set_frame_callback(ui_frame_callback_t cb, void *user_data);
