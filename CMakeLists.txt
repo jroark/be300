@@ -180,6 +180,7 @@ set(BE300_SOURCES
     src/be300_probe.c
     src/be300_devices.c
     src/win32_compat.c
+    src/file_util.c
     src/devices/input.c
     src/devices/nand_window.c
     src/devices/pcmcia_attr.c
@@ -303,7 +304,8 @@ if(BUILD_CLI)
     # Offline .cbea app installer (docs/INSTALLING_APPS.md).
     add_executable(be300-install
         src/be300_install_main.c
-        src/cbea_install.c)
+        src/cbea_install.c
+        src/file_util.c)
     if(WIN32)
         target_link_options(be300-install PRIVATE -static-libgcc -static)
     endif()

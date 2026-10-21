@@ -1,8 +1,10 @@
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "../file_util.h"
 #include "cf.h"
 #include "cf_internal.h"
 
@@ -377,23 +379,14 @@ int cf_load_image(cf_state_t *s, const char *path)
 
 int cf_save_image(cf_state_t *s)
 {
-    FILE *f;
-
     if (!s || !s->attached || !s->dirty || !s->image_path || !s->image)
         return 0;
 
-    f = fopen(s->image_path, "wb");
-    if (!f) {
-        fprintf(stderr, "[CF] Failed to save image: %s\n", s->image_path);
+    if (be300_write_file_atomic(s->image_path, s->image, s->image_size) != 0) {
+        fprintf(stderr, "[CF] Failed to save image %s: %s\n", s->image_path,
+            strerror(errno));
         return -1;
     }
-
-    if (fwrite(s->image, 1, s->image_size, f) != s->image_size) {
-        fclose(f);
-        fprintf(stderr, "[CF] Short write while saving image\n");
-        return -1;
-    }
-    fclose(f);
 
     s->dirty = false;
     return 0;

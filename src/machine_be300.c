@@ -12,7 +12,10 @@
 #include <inttypes.h>
 #include <time.h>
 
+#include <errno.h>
+
 #include "be300.h"
+#include "file_util.h"
 #include "be300_probe.h"
 #include "host_io.h"
 #include "pcconnect.h"
@@ -219,20 +222,30 @@ static bool be300_nand_image_looks_bootable(const machine_t *m)
 
 static void be300_sync_nand_image(machine_t *m)
 {
-    FILE *f;
+    size_t len;
 
     if (!m || !m->nand_data || !m->cfg.nand_path || !m->nand.dirty)
         return;
 
-    f = fopen(m->cfg.nand_path, "wb");
-    if (!f) {
-        fprintf(stderr, "[BE300] Failed to save NAND image: %s\n",
-            m->cfg.nand_path);
+    /*
+     * Keep the image's own length (a 16,449,536-byte restore image, or a
+     * short one) unless the guest programmed pages past it; the loader
+     * filled the rest of the chip with erased 0xFF.
+     */
+    len = m->nand_size;
+    if (m->nand_file_size > 0 && m->nand_file_size < m->nand_size) {
+        size_t tail = m->nand_file_size;
+
+        while (tail < m->nand_size && m->nand_data[tail] == 0xFFu)
+            tail++;
+        if (tail == m->nand_size)
+            len = m->nand_file_size;
+    }
+    if (be300_write_file_atomic(m->cfg.nand_path, m->nand_data, len) != 0) {
+        fprintf(stderr, "[BE300] Failed to save NAND image %s: %s\n",
+            m->cfg.nand_path, strerror(errno));
         return;
     }
-    if (fwrite(m->nand_data, 1, m->nand_size, f) != m->nand_size)
-        fprintf(stderr, "[BE300] Short write while saving NAND image\n");
-    fclose(f);
     m->nand.dirty = false;
 }
 
