@@ -41,6 +41,7 @@
 #include <time.h>
 
 #include "usbredir_dev.h"
+#include "host_time.h"
 
 /* usbredirproto.h packet types */
 enum {
@@ -161,14 +162,6 @@ static struct {
 
 /* ---------- helpers ---------- */
 
-static uint64_t mono_ns(void)
-{
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
-        return 0;
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-
 static void ur_trace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void ur_trace(const char *fmt, ...)
 {
@@ -217,7 +210,7 @@ static void tee_packet(const char *dir, uint32_t type, uint64_t id,
     if (!g.tee)
         return;
     fprintf(g.tee, "%llu %s type=%u id=%llu hdr:",
-        (unsigned long long)mono_ns(), dir, type, (unsigned long long)id);
+        (unsigned long long)be300_host_monotonic_ns(), dir, type, (unsigned long long)id);
     for (size_t i = 0; i < thlen; i++)
         fprintf(g.tee, " %02x", th[i]);
     if (dlen) {
@@ -579,10 +572,10 @@ static void service_endpoints(void)
      * draining EP3 faster than the bus would forward updates that real
      * hardware discards.
      */
-    if (g.intr_receiving && mono_ns() >= g.intr_next_ns) {
+    if (g.intr_receiving && be300_host_monotonic_ns() >= g.intr_next_ns) {
         int n = usbf_host_intr_in(g.u, pkt, sizeof(pkt));
 
-        g.intr_next_ns = mono_ns() +
+        g.intr_next_ns = be300_host_monotonic_ns() +
             (uint64_t)(g.intr_interval_ms ? g.intr_interval_ms : 1u) *
             1000000ull;
         if (n >= 0) {

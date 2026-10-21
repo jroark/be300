@@ -33,6 +33,7 @@
 #endif
 
 #include "host_chardev.h"
+#include "host_time.h"
 
 #ifdef _WIN32
 #define HC_SOCKOPT_PTR(p) ((const char *)(p))
@@ -41,14 +42,6 @@
 #endif
 
 #define HC_RECONNECT_NS 500000000ull
-
-static uint64_t mono_ns(void)
-{
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
-        return 0;
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
 
 static void hc_trace(host_chardev_t *c, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
@@ -266,7 +259,7 @@ static bool open_tcp_connect(host_chardev_t *c, const char *spec)
         fprintf(stderr, "[%s] tcp connect %s:%d failed (%s); will retry\n",
             c->tag, host, port, strerror(errno));
         close_fd(&sk);
-        c->next_reconnect_ns = mono_ns() + HC_RECONNECT_NS;
+        c->next_reconnect_ns = be300_host_monotonic_ns() + HC_RECONNECT_NS;
         return true;
     }
     c->fd = sk;
@@ -400,7 +393,7 @@ static bool open_unix(host_chardev_t *c, const char *path, bool listening)
         fprintf(stderr, "[%s] unix connect '%s' failed (%s); will retry\n",
             c->tag, path, strerror(errno));
         close(sk);
-        c->next_reconnect_ns = mono_ns() + HC_RECONNECT_NS;
+        c->next_reconnect_ns = be300_host_monotonic_ns() + HC_RECONNECT_NS;
         return true;
     }
     c->fd = sk;
@@ -585,7 +578,7 @@ static void try_reconnect(host_chardev_t *c)
 {
     if (c->fd >= 0)
         return;
-    uint64_t now = mono_ns();
+    uint64_t now = be300_host_monotonic_ns();
     if (now < c->next_reconnect_ns)
         return;
     c->next_reconnect_ns = now + HC_RECONNECT_NS;

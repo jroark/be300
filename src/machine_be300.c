@@ -18,6 +18,7 @@
 #include "file_util.h"
 #include "be300_probe.h"
 #include "host_io.h"
+#include "host_time.h"
 #include "pcconnect.h"
 #include "pcconnect_bridge.h"
 #include "usbredir_dev.h"
@@ -739,13 +740,6 @@ machine_t *be300_create(const machine_config_t *cfg)
 }
 
 
-static uint64_t monotonic_ns(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-
 static void be300_runtime_start(machine_t *m)
 {
     struct machine *gxm = m->gxe_machine;
@@ -775,7 +769,7 @@ static void be300_runtime_start(machine_t *m)
     m->throttle_target_ips = (uint64_t)m->cfg.target_mhz * 1000000ULL;
     m->throttle_wall_origin = 0;
     m->throttle_instr_origin = 0;
-    m->autostop_start_ns = monotonic_ns();
+    m->autostop_start_ns = be300_host_monotonic_ns();
     m->last_report = 0;
     m->loop_count = 0;
     m->runtime_initialized = true;
@@ -840,7 +834,7 @@ static bool be300_run_batch(machine_t *m)
 #endif
 
     if (!m->web_mode && m->throttle_target_ips > 0) {
-        uint64_t now_ns = monotonic_ns();
+        uint64_t now_ns = be300_host_monotonic_ns();
         uint64_t instrs  = (uint64_t)m->cpu->ninstrs;
 
         if (m->throttle_wall_origin == 0) {
@@ -865,7 +859,7 @@ static bool be300_run_batch(machine_t *m)
             }
 
             if (elapsed_instrs >= 1000000ULL) {
-                m->throttle_wall_origin = monotonic_ns();
+                m->throttle_wall_origin = be300_host_monotonic_ns();
                 m->throttle_instr_origin = instrs;
             }
         }
@@ -892,7 +886,7 @@ static bool be300_run_batch(machine_t *m)
         return false;
 
     if (m->autostop_after_ns > 0 && m->autostop_start_ns > 0) {
-        uint64_t now_ns = monotonic_ns();
+        uint64_t now_ns = be300_host_monotonic_ns();
         if (now_ns - m->autostop_start_ns >= m->autostop_after_ns) {
             fprintf(stderr,
                 "[BE300] Autostop reached after %" PRIu64 " s\n",

@@ -26,6 +26,7 @@
 #include "be300_probe.h"
 #include "devices.h"
 #include "devices/devices_internal.h"
+#include "host_time.h"
 #include "hw/cf.h"
 #include "hw/nand.h"
 #include "hw/siu.h"
@@ -51,14 +52,6 @@ uint64_t be300_emulated_ns(const machine_t *m)
     cycles = m->cpu->ninstrs;
     return cycles / hz * UINT64_C(1000000000) +
         cycles % hz * UINT64_C(1000000000) / hz;
-}
-
-uint64_t be300_host_monotonic_ns(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
 /*

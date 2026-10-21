@@ -42,7 +42,6 @@ void be300_log_mmio(const char *name, int writeflag, uint32_t off,
 
 /* CLOCK_MONOTONIC reader, for host-paced timing: the PC Connect insert
  * delay, a human-scale delay before the host link appears. */
-uint64_t be300_host_monotonic_ns(void);
 /* Emulated time: the CPU's cycle count at the machine's emulated_hz. Use
  * it for guest-visible device timing, so host speed doesn't change it. */
 uint64_t be300_emulated_ns(const machine_t *m);
