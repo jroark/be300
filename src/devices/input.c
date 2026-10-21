@@ -41,8 +41,6 @@ struct be300_input_device {
     bool       button_irq_asserted;
     /* PIU state (touch device only). */
     piu_state_t piu;
-    uint64_t   piu_clock_ns;       /* VRC4173 PIU peripheral timebase */
-    uint64_t   piu_last_host_ns;
     struct interrupt piu_irq;      /* BE-300 GIRQ0 cascaded interrupt */
     bool       piu_irq_connected;
     bool       piu_irq_asserted;
@@ -154,22 +152,11 @@ static void piu_refresh_irq(struct be300_input_device *d)
     piu_irq_update(d, piu_irq_pending(&d->piu));
 }
 
+/* The PIU's sample and conversion timing is guest-visible hardware time:
+ * run it on emulated time, not the host clock. */
 static uint64_t piu_now_ns(struct be300_input_device *d)
 {
-    uint64_t host_ns;
-
-    if (!d)
-        return 0;
-
-    host_ns = be300_host_monotonic_ns();
-    if (d->piu_last_host_ns == 0) {
-        d->piu_last_host_ns = host_ns;
-        return d->piu_clock_ns;
-    }
-    if (host_ns > d->piu_last_host_ns)
-        d->piu_clock_ns += host_ns - d->piu_last_host_ns;
-    d->piu_last_host_ns = host_ns;
-    return d->piu_clock_ns;
+    return d ? be300_emulated_ns(d->m) : 0;
 }
 
 /*

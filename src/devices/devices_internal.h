@@ -40,8 +40,12 @@ bool be300_phys_copy(struct cpu *cpu, uint64_t pa, void *buf, size_t len,
 void be300_log_mmio(const char *name, int writeflag, uint32_t off,
     unsigned len, const unsigned char *data, uint32_t pc);
 
-/* CLOCK_MONOTONIC reader, used for PIU timing and PCConnect deadlines. */
+/* CLOCK_MONOTONIC reader, for host-paced timing: the PC Connect insert
+ * delay, a human-scale delay before the host link appears. */
 uint64_t be300_host_monotonic_ns(void);
+/* Emulated time: the CPU's cycle count at the machine's emulated_hz. Use
+ * it for guest-visible device timing, so host speed doesn't change it. */
+uint64_t be300_emulated_ns(const machine_t *m);
 
 /* Helpers that cross device boundaries. */
 void be300_cf_irq_update(struct be300_vrc4173_latch *d);

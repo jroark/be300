@@ -174,9 +174,11 @@ uint32_t rtc_read(rtc_state_t *s, uint32_t offset, unsigned size)
     case RTC_ECMPMREG:  return  (uint32_t)((s->ecmp  >> 16) & 0xFFFF);
     case RTC_ECMPHREG:  return  (uint32_t)((s->ecmp  >> 32) & 0xFFFF);
     case RTC_RTCL1LREG: return  s->rtcl1 & 0xFFFF;
-    case RTC_RTCL1HREG: return (s->rtcl1 >> 16) & 0xFFFF;
-    case RTC_RTCL1CNTLREG: return (uint32_t)(s->etime & 0xFFFF);
-    case RTC_RTCL1CNTHREG: return (uint32_t)((s->etime >> 16) & 0xFFFF);
+    case RTC_RTCL1HREG: return (s->rtcl1 >> 16) & 0xFF;
+    /* The RTCL1 down-counter is timed by dev_vr41xx.c, which owns the
+     * timer; this state holds only the reload value. */
+    case RTC_RTCL1CNTLREG: return 0;
+    case RTC_RTCL1CNTHREG: return 0;
     case RTC_RTCL2LREG: return  s->rtcl2 & 0xFFFF;
     case RTC_RTCL2HREG: return (s->rtcl2 >> 16) & 0xFFFF;
     case RTC_RTCL2CNTLREG: return (uint32_t)(s->etime & 0xFFFF);
@@ -225,8 +227,8 @@ void rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case RTC_RTCL1LREG:
         s->rtcl1 = (s->rtcl1 & 0xFFFF0000) | (val & 0xFFFF);
         break;
-    case RTC_RTCL1HREG:
-        s->rtcl1 = (s->rtcl1 & 0x0000FFFF) | ((val & 0xFFFF) << 16);
+    case RTC_RTCL1HREG:  /* bits 23:16 of the 24-bit period */
+        s->rtcl1 = (s->rtcl1 & 0x0000FFFF) | ((val & 0xFF) << 16);
         break;
     case RTC_RTCL2LREG:
         s->rtcl2 = (s->rtcl2 & 0xFFFF0000) | (val & 0xFFFF);
@@ -265,6 +267,5 @@ void rtc_tick(rtc_state_t *s, uint64_t ticks)
 {
     /* ETIME is a 48-bit hardware counter (VR4131 UM §13). */
     s->etime = (s->etime + ticks) & rtc_48bit_mask();
-    s->rtcl1 += (uint32_t)ticks;
     rtc_update_elapsed_irq(s);
 }

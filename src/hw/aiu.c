@@ -35,6 +35,13 @@
  * (debugger, SIGSTOP) resynchronizes instead of bursting interrupts. */
 #define AIU_MAX_CATCHUP_NS  100000000ULL
 
+/*
+ * Wave DMA is paced on host time on purpose: its buffers feed the host's
+ * audio output, which plays in real time. Pacing it on emulated time
+ * would play audio too fast or too slow whenever emulation runs faster
+ * or slower than real time (--speed), at the cost of guest-visible DMA
+ * completion following the host clock.
+ */
 static uint64_t aiu_now_ns(void)
 {
     struct timespec ts;

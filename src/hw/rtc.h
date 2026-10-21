@@ -42,7 +42,7 @@
 typedef struct {
     uint64_t etime;       /* simulated elapsed ticks              */
     uint64_t ecmp;        /* compare register                     */
-    uint32_t rtcl1;       /* calendar long-1 (stub)               */
+    uint32_t rtcl1;       /* RTCL1 24-bit reload value            */
     uint32_t rtcl2;       /* calendar long-2 (stub)               */
     uint32_t tclock;      /* programmable tclock period (stub)    */
     uint16_t rtcint;      /* RTC interrupt status                 */
