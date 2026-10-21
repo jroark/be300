@@ -177,7 +177,9 @@ static bool ppsh_pop_host_byte(struct be300_wince_aux *d, uint8_t *out)
     return true;
 }
 
-DEVICE_ACCESS(be300_wince_aux)
+static int be300_wince_aux_handle(struct cpu *cpu, struct memory *mem,
+    uint64_t relative_addr, unsigned char *data, size_t len, int writeflag,
+    void *extra)
 {
     struct be300_wince_aux *d = (struct be300_wince_aux *)extra;
     uint32_t off = (uint32_t)relative_addr;
@@ -186,9 +188,6 @@ DEVICE_ACCESS(be300_wince_aux)
     if (off + len > WINCE_AUX_SIZE)
         return 0;
 
-    if (d->log_mmio)
-        be300_log_mmio("be300_wince_aux", writeflag, off, (unsigned)len,
-            data, (uint32_t)cpu->pc);
 
     be300_probe_note_mmio(d->ppsh_enabled ? "ppsh-active" : "ppsh-stub",
         off, writeflag == MEM_WRITE ? 'W' : 'R', (uint32_t)len,
@@ -326,6 +325,19 @@ DEVICE_ACCESS(be300_wince_aux)
     (void)val;
 
     return 1;
+}
+
+/* --log-mmio logs after the access, so a read shows the value returned. */
+DEVICE_ACCESS(be300_wince_aux)
+{
+    struct be300_wince_aux *d = (struct be300_wince_aux *)extra;
+    uint32_t pc = (uint32_t)cpu->pc;
+    int r = be300_wince_aux_handle(cpu, mem, relative_addr, data, len, writeflag,
+        extra);
+
+    if (r && d->log_mmio)
+        be300_log_mmio("be300_wince_aux", writeflag, (uint32_t)relative_addr, (unsigned)len, data, pc);
+    return r;
 }
 
 bool be300_ppsh_transport_ready(void)

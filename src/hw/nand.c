@@ -1296,7 +1296,8 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
                 if (s->state == NAND_STATE_READ_ID) {
                     /* NAND ID bytes: maker=0xEC (Samsung), device=0x73 (K9F2808U0B 16MB) */
                     static const uint8_t id_bytes[] = {0xEC, 0x73};
-                    val = (s->xfer_cursor < 4) ? id_bytes[s->xfer_cursor] : 0xFF;
+                    val = (s->xfer_cursor < sizeof(id_bytes)) ?
+                        id_bytes[s->xfer_cursor] : 0xFF;
                     s->xfer_cursor++;
                 } else if (s->state == NAND_STATE_READ_OOB) {
                     val = nand_stream_oob_byte(s, s->page_addr,

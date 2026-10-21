@@ -70,11 +70,6 @@ void pcconnect_trace_uart_access(const char *name, bool claimed,
         claimed ? 1u : 0u, ier, iir, lcr, mcr, lsr, msr, dlab, divisor);
 }
 
-bool pcconnect_uart_rx_available(void)
-{
-    return pcconnect_bridge_uart_rx_available();
-}
-
 size_t pcconnect_uart_rx_count(void)
 {
     return pcconnect_bridge_uart_rx_count();

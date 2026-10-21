@@ -293,12 +293,11 @@ static void nand_restore_buffer_write(nand_state_t *s, unsigned size,
     }
 }
 
-bool nand_restore_handles_offset(uint32_t offset)
+/* Companion registers NANDWRITER also drives, held in restore_regs and
+ * seeded with their hardware values (hw_dump_vrc4173.txt:49, :51, :171,
+ * :183). */
+static bool nand_restore_companion_reg(uint32_t offset)
 {
-    if ((offset >= NAND_RESTORE_BUF_BASE && offset < NAND_RESTORE_BUF_END) ||
-        (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END))
-        return true;
-
     switch (offset) {
     case 0x1100u:
     case 0x1104u:
@@ -316,6 +315,13 @@ bool nand_restore_handles_offset(uint32_t offset)
     }
 }
 
+bool nand_restore_handles_offset(uint32_t offset)
+{
+    return (offset >= NAND_RESTORE_BUF_BASE && offset < NAND_RESTORE_BUF_END) ||
+        (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END) ||
+        nand_restore_companion_reg(offset);
+}
+
 uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size)
 {
     uint64_t val = 0;
@@ -325,7 +331,8 @@ uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size)
         goto out;
     }
 
-    if (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END) {
+    if ((offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END) ||
+        nand_restore_companion_reg(offset)) {
         uint32_t reg = nand_restore_get_reg(s, offset);
         for (unsigned i = 0; i < size; i++)
             val |= (uint64_t)((reg >> (8u * i)) & 0xFFu) << (8u * i);
@@ -361,10 +368,7 @@ void nand_restore_write(nand_state_t *s, uint32_t offset, unsigned size,
         goto out;
     }
 
-    if (offset == 0x1100u || offset == 0x1104u || offset == 0x1108u ||
-        offset == 0x110Cu || offset == 0x1128u || offset == 0x1B20u ||
-        offset == 0x1CC0u || offset == 0x1CC4u || offset == 0x1CC8u ||
-        offset == 0x1CCCu) {
+    if (nand_restore_companion_reg(offset)) {
         nand_restore_set_reg(s, offset, (uint32_t)value);
         goto out;
     }

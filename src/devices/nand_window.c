@@ -66,14 +66,14 @@ struct be300_companion_ab_device {
     uint8_t     bytes[0x10000];
 };
 
-DEVICE_ACCESS(be300_nand)
+static int be300_nand_handle(struct cpu *cpu, struct memory *mem,
+    uint64_t relative_addr, unsigned char *data, size_t len, int writeflag,
+    void *extra)
 {
     struct be300_nand_device *d = (struct be300_nand_device *)extra;
     uint32_t offset = (uint32_t)relative_addr + 0xA000 + d->reg_offset;
     uint32_t pc = (uint32_t)cpu->pc;
 
-    if (d->log_mmio)
-        be300_log_mmio("be300_nand", writeflag, offset, (unsigned)len, data, pc);
 
     be300_probe_note_mmio("vrc4173-nand", offset,
         writeflag == MEM_WRITE ? 'W' : 'R',
@@ -290,15 +290,27 @@ DEVICE_ACCESS(be300_nand)
     return 1;
 }
 
-DEVICE_ACCESS(be300_cf_window)
+/* --log-mmio logs after the access, so a read shows the value returned. */
+DEVICE_ACCESS(be300_nand)
+{
+    struct be300_nand_device *d = (struct be300_nand_device *)extra;
+    uint32_t pc = (uint32_t)cpu->pc;
+    int r = be300_nand_handle(cpu, mem, relative_addr, data, len, writeflag,
+        extra);
+
+    if (r && d->log_mmio)
+        be300_log_mmio("be300_nand", writeflag, (uint32_t)relative_addr + 0xA000 + d->reg_offset, (unsigned)len, data, pc);
+    return r;
+}
+
+static int be300_cf_window_handle(struct cpu *cpu, struct memory *mem,
+    uint64_t relative_addr, unsigned char *data, size_t len, int writeflag,
+    void *extra)
 {
     struct be300_cf_window_device *d =
         (struct be300_cf_window_device *)extra;
     uint32_t offset = (uint32_t)relative_addr;
 
-    if (d->log_mmio)
-        be300_log_mmio("be300_cf_window", writeflag, offset,
-            (unsigned)len, data, (uint32_t)cpu->pc);
 
     be300_probe_note_mmio("cf-window", offset,
         writeflag == MEM_WRITE ? 'W' : 'R',
@@ -315,6 +327,19 @@ DEVICE_ACCESS(be300_cf_window)
     be300_cf_irq_update(g_be300_vrc4173_latch);
 
     return 1;
+}
+
+/* --log-mmio logs after the access, so a read shows the value returned. */
+DEVICE_ACCESS(be300_cf_window)
+{
+    struct be300_cf_window_device *d = (struct be300_cf_window_device *)extra;
+    uint32_t pc = (uint32_t)cpu->pc;
+    int r = be300_cf_window_handle(cpu, mem, relative_addr, data, len, writeflag,
+        extra);
+
+    if (r && d->log_mmio)
+        be300_log_mmio("be300_cf_window", writeflag, (uint32_t)relative_addr, (unsigned)len, data, pc);
+    return r;
 }
 
 static bool companion_ab_no_card_status_byte(uint32_t off)
@@ -336,7 +361,9 @@ static bool companion_ab_no_card_jacket_present_byte(uint32_t off)
     return off == 0x0150u;
 }
 
-DEVICE_ACCESS(be300_companion_ab)
+static int be300_companion_ab_handle(struct cpu *cpu, struct memory *mem,
+    uint64_t relative_addr, unsigned char *data, size_t len, int writeflag,
+    void *extra)
 {
     struct be300_companion_ab_device *d =
         (struct be300_companion_ab_device *)extra;
@@ -345,9 +372,6 @@ DEVICE_ACCESS(be300_companion_ab)
     if (!d || off + len > sizeof(d->bytes))
         return 0;
 
-    if (d->log_mmio)
-        be300_log_mmio("be300_companion_ab", writeflag, off,
-            (unsigned)len, data, (uint32_t)cpu->pc);
 
     if (writeflag == MEM_WRITE) {
         be300_probe_note_mmio("vrc4173-companion-ab", off, 'W',
@@ -397,6 +421,19 @@ DEVICE_ACCESS(be300_companion_ab)
     }
 
     return 1;
+}
+
+/* --log-mmio logs after the access, so a read shows the value returned. */
+DEVICE_ACCESS(be300_companion_ab)
+{
+    struct be300_companion_ab_device *d = (struct be300_companion_ab_device *)extra;
+    uint32_t pc = (uint32_t)cpu->pc;
+    int r = be300_companion_ab_handle(cpu, mem, relative_addr, data, len, writeflag,
+        extra);
+
+    if (r && d && d->log_mmio)
+        be300_log_mmio("be300_companion_ab", writeflag, (uint32_t)relative_addr, (unsigned)len, data, pc);
+    return r;
 }
 
 /*

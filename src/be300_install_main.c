@@ -5,6 +5,7 @@
  */
 
 #include "cbea_install.h"
+#include "file_util.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -164,15 +165,7 @@ static bool resolve_package(const char *arg, char *out, size_t cap)
 
 static int write_all(const char *path, const uint8_t *data, size_t len)
 {
-    FILE *f = fopen(path, "wb");
-    size_t w;
-
-    if (!f)
-        return -1;
-    w = fwrite(data, 1, len, f);
-    if (fclose(f) != 0 || w != len)
-        return -1;
-    return 0;
+    return be300_write_file_atomic(path, data, len);
 }
 
 int main(int argc, char **argv)

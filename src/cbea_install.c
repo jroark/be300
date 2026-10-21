@@ -182,14 +182,23 @@ static bool fat_parse_bpb(uint8_t *base, size_t avail, fat_vol_t *v)
     if ((uint64_t)total * SECTOR_SIZE > avail)
         return false;
 
+    /* 64-bit: nfats * fat_sectors * 512 can wrap 32 bits (255 FATs of
+     * 65535 sectors), which would put FAT writes past the image. */
+    {
+        uint64_t fat_off = (uint64_t)reserved * SECTOR_SIZE;
+        uint64_t root_off = fat_off +
+            (uint64_t)v->nfats * v->fat_sectors * SECTOR_SIZE;
+        uint64_t data_off = root_off + (uint64_t)v->root_entries * DIRENT_SIZE;
+
+        if (data_off >= (uint64_t)total * SECTOR_SIZE)
+            return false;
+        v->fat_off = (uint32_t)fat_off;
+        v->root_off = (uint32_t)root_off;
+        v->data_off = (uint32_t)data_off;
+    }
     v->base = base;
     v->size = (size_t)total * SECTOR_SIZE;
-    v->fat_off = reserved * SECTOR_SIZE;
-    v->root_off = v->fat_off + v->nfats * v->fat_sectors * SECTOR_SIZE;
-    v->data_off = v->root_off + v->root_entries * DIRENT_SIZE;
     v->cluster_bytes = v->spc * SECTOR_SIZE;
-    if (v->data_off >= v->size)
-        return false;
     data_sectors = (v->size - v->data_off) / SECTOR_SIZE;
     v->cluster_count = (uint32_t)(data_sectors / v->spc);
     if ((uint64_t)v->fat_sectors * SECTOR_SIZE / 2 < (uint64_t)v->cluster_count + 2)
@@ -307,6 +316,9 @@ static uint8_t *dir_slot(fat_vol_t *v, uint32_t dir, uint32_t idx, bool extend)
             return NULL;
         return v->base + v->root_off + idx * DIRENT_SIZE;
     }
+    /* The cluster comes from an on-disk directory entry. */
+    if (!fat_valid_cluster(v, dir))
+        return NULL;
     while (idx >= per) {
         uint32_t next = fat_get(v, c);
         if (!fat_valid_cluster(v, next)) {
@@ -395,7 +407,8 @@ static bool dir_find(fat_vol_t *v, uint32_t dir, const char *name, dir_hit_t *hi
                 expect = ord;
                 chk = e[13];
                 lfn_first = idx;
-            } else if (expect == 0 || ord != expect - 1 || e[13] != chk) {
+            } else if (expect == 0 || ord == 0 || ord != expect - 1 ||
+                       e[13] != chk) {
                 expect = 0;
                 continue;
             } else {

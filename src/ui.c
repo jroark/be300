@@ -16,9 +16,6 @@
 #include <time.h>
 #include <math.h>
 
-static ui_frame_callback_t frame_cb = NULL;
-static void *frame_cb_data = NULL;
-
 #ifdef HAVE_SDL2
 
 #include <SDL.h>
@@ -2255,12 +2252,6 @@ void ui_update(machine_t *m)
                        (SDL_Texture *)m->sdl_texture, NULL, NULL);
     }
     SDL_RenderPresent((SDL_Renderer *)m->sdl_renderer);
-
-    /* Invoke frame callback if set */
-    if (frame_cb) {
-        frame_cb(staging_buf, m->fb_width, m->fb_height,
-                 m->fb_width, frame_cb_data);
-    }
 }
 
 bool ui_should_quit(machine_t *m)
@@ -2484,9 +2475,3 @@ void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
     { (void)samples; (void)count_frames; (void)guest_rate_hz; (void)channels; }
 
 #endif  /* HAVE_SDL2 */
-
-void ui_set_frame_callback(ui_frame_callback_t cb, void *user_data)
-{
-    frame_cb = cb;
-    frame_cb_data = user_data;
-}

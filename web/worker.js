@@ -627,7 +627,7 @@ function loadOptionalBytes(buffer) {
   return buffer ? new Uint8Array(buffer) : null;
 }
 
-self.addEventListener("message", async ({ data }) => {
+async function handleMessage(data) {
   switch (data.type) {
     case "bootNand": {
       try {
@@ -742,5 +742,21 @@ self.addEventListener("message", async ({ data }) => {
       break;
     default:
       break;
+  }
+}
+
+// Boot, Reset, package installs and CF export await (NAND fetches, the
+// network bridge connect), so run them one at a time: a Reset arriving
+// while a boot awaited its bridge started a second machine, and the first
+// boot then overwrote the cached NAND and config with its own. Input,
+// speed, audio and stop messages act at once.
+const LIFECYCLE_MESSAGES = new Set(["bootNand", "reset", "installPackages", "exportCf"]);
+let lifecycleQueue = Promise.resolve();
+
+self.addEventListener("message", ({ data }) => {
+  if (LIFECYCLE_MESSAGES.has(data.type)) {
+    lifecycleQueue = lifecycleQueue.then(() => handleMessage(data), () => handleMessage(data));
+  } else {
+    handleMessage(data);
   }
 });

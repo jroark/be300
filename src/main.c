@@ -152,7 +152,7 @@ static void usage(const char *prog)
         "                        (default: 166, 0 = unthrottled)\n"
         "  --mmio-coverage       First-hit log per (device, offset, op) + shutdown coverage table\n"
         "  --detect-stall        Emit [BE300_STALL] when guest spins on a tight PC set\n"
-        "  --stall-window=N      Instructions per sampling bucket (default 10000)\n"
+        "  --stall-window=N      Batch-end PC samples per bucket (default 256)\n"
         "  --stall-threshold=K   Fire when unique PCs in window < K (default 64)\n"
         "  --stall-wall-secs=T   Sustained wall-seconds below threshold before firing (default 5)\n"
         "  -h, --help            Show this help\n"
@@ -220,7 +220,7 @@ int main(int argc, char *argv[])
          * VRC4173 latch offset 0x234. window=10000 + threshold=64 discriminates
          * tight loops (< 64 unique PCs) from kernel/scheduler activity
          * (>> 64 unique PCs per 10K-instruction window). */
-        .stall_window            = 10000u,
+        .stall_window            = 256u,
         .stall_unique_threshold  = 64u,
         .stall_wall_secs         = 5u,
         .rom_path       = NULL,

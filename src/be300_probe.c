@@ -16,7 +16,7 @@
  *
  * This file intentionally contains only reusable default-off diagnostics:
  *   - --mmio-coverage: first-hit and shutdown summary for modeled MMIO ranges
- *   - --detect-stall: low-overhead tight-PC-set sampler
+ *   - --detect-stall: tight-PC-set sampler, one PC per emulation batch
  *
  * Historical lifecycle/GDI investigation probes were removed because they were
  * pass-specific and produced bitmap artifacts in the repository root.
@@ -54,7 +54,7 @@ static uint32_t g_mmio_cov_overflow;
 static struct {
     uint32_t pcs[BE300_STALL_PC_CAP];
     uint32_t inserted;
-    uint64_t insn_in_bucket;
+    uint64_t samples_in_bucket;
     uint64_t low_run_start_ns;
     uint32_t consecutive_high_buckets;
     uint64_t last_fire_ns;
@@ -136,7 +136,7 @@ void be300_probe_set_options(bool mmio_coverage,
 {
     g_probe.mmio_coverage = mmio_coverage;
     g_probe.detect_stall = detect_stall;
-    g_probe.stall_window = stall_window ? stall_window : 10000u;
+    g_probe.stall_window = stall_window ? stall_window : 256u;
     g_probe.stall_unique_threshold =
         stall_unique_threshold ? stall_unique_threshold : 64u;
     g_probe.stall_wall_secs = stall_wall_secs ? stall_wall_secs : 5u;
@@ -216,8 +216,8 @@ static void be300_probe_stall_sample(uint32_t pc)
         slot = (slot + 1u) & (BE300_STALL_PC_CAP - 1u);
     }
 
-    g_stall.insn_in_bucket++;
-    if (g_stall.insn_in_bucket < g_probe.stall_window)
+    g_stall.samples_in_bucket++;
+    if (g_stall.samples_in_bucket < g_probe.stall_window)
         return;
 
     uint64_t now_ns = be300_probe_wall_ns();
@@ -247,13 +247,14 @@ static void be300_probe_stall_sample(uint32_t pc)
 
     memset(g_stall.pcs, 0, sizeof(g_stall.pcs));
     g_stall.inserted = 0;
-    g_stall.insn_in_bucket = 0;
+    g_stall.samples_in_bucket = 0;
 }
 
-void be300_probe_note_exec(struct cpu *cpu, uint64_t pc)
+void be300_probe_note_batch(struct cpu *cpu)
 {
-    if (g_probe.detect_stall && be300_probe_cpu_is_ours(cpu))
-        be300_probe_stall_sample(be300_probe_norm_pc(pc));
+    /* A batch that ended in WAIT/STANDBY is idling, not spinning. */
+    if (g_probe.detect_stall && be300_probe_cpu_is_ours(cpu) && !cpu->is_halted)
+        be300_probe_stall_sample(be300_probe_norm_pc(cpu->pc));
 }
 
 static int be300_mmio_cov_cmp_desc(const void *a, const void *b)

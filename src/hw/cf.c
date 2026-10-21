@@ -1,8 +1,10 @@
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "../file_util.h"
 #include "cf.h"
 #include "cf_internal.h"
 
@@ -377,23 +379,14 @@ int cf_load_image(cf_state_t *s, const char *path)
 
 int cf_save_image(cf_state_t *s)
 {
-    FILE *f;
-
     if (!s || !s->attached || !s->dirty || !s->image_path || !s->image)
         return 0;
 
-    f = fopen(s->image_path, "wb");
-    if (!f) {
-        fprintf(stderr, "[CF] Failed to save image: %s\n", s->image_path);
+    if (be300_write_file_atomic(s->image_path, s->image, s->image_size) != 0) {
+        fprintf(stderr, "[CF] Failed to save image %s: %s\n", s->image_path,
+            strerror(errno));
         return -1;
     }
-
-    if (fwrite(s->image, 1, s->image_size, f) != s->image_size) {
-        fclose(f);
-        fprintf(stderr, "[CF] Short write while saving image\n");
-        return -1;
-    }
-    fclose(f);
 
     s->dirty = false;
     return 0;
@@ -765,6 +758,11 @@ static uint64_t cf_data_read(cf_state_t *s, unsigned size)
     uint64_t val = 0;
     unsigned i;
 
+    /* No read transfer in progress: the bus floats, and nothing advances.
+     * (Reading here used to step transfer_lba and rewrite the taskfile.) */
+    if (s->data_length == 0 || s->pending_write)
+        return size >= 8 ? UINT64_MAX : (UINT64_C(1) << (8u * size)) - 1u;
+
     for (i = 0; i < size; i++) {
         uint8_t byte = 0xFFu;
 
@@ -1053,12 +1051,43 @@ void cf_companion_write(cf_state_t *s, uint32_t offset, unsigned size,
     cf_refresh_socket_status(s);
 }
 
+/*
+ * A 16- or 32-bit access to a taskfile register covers that register and the
+ * ones after it (PC Card I/O, byte lanes = consecutive addresses), up to the
+ * command/status register. The alternate-status port is a single byte.
+ */
+static uint64_t cf_read_regs(cf_state_t *s, int reg, bool is_alt,
+    bool boot_path, unsigned size)
+{
+    uint64_t val = 0;
+
+    for (unsigned i = 0; i < size; i++) {
+        uint8_t byte = 0xFFu;
+
+        if (i == 0 || (!is_alt && reg + (int)i <= 7))
+            byte = cf_read_reg8(s, reg + (is_alt ? 0 : (int)i), is_alt,
+                boot_path);
+        val |= (uint64_t)byte << (8u * i);
+    }
+    return val;
+}
+
+static void cf_write_regs(cf_state_t *s, int reg, bool is_alt,
+    bool boot_path, unsigned size, uint64_t value)
+{
+    for (unsigned i = 0; i < size; i++) {
+        if (i > 0 && (is_alt || reg + (int)i > 7))
+            break;
+        cf_write_reg8(s, reg + (int)i, is_alt, boot_path,
+            (uint8_t)((value >> (8u * i)) & 0xFFu));
+    }
+}
+
 uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size)
 {
     bool is_alt = false;
     int reg;
     uint64_t val = 0;
-    unsigned i;
 
     if (!s || size == 0)
         return 0;
@@ -1075,10 +1104,7 @@ uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size)
     if (reg == 0 && !is_alt) {
         val = cf_data_read(s, size);
     } else if (reg >= 0) {
-        for (i = 0; i < size; i++) {
-            uint8_t byte = cf_read_reg8(s, reg, is_alt, false);
-            val |= (uint64_t)byte << (8u * i);
-        }
+        val = cf_read_regs(s, reg, is_alt, false, size);
     } else {
         val = cf_cis_read(s, offset, size);
     }
@@ -1091,7 +1117,6 @@ void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
 {
     bool is_alt = false;
     int reg;
-    unsigned i;
 
     if (!s || size == 0 || !s->attached)
         return;
@@ -1104,9 +1129,7 @@ void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
     if (reg == 0 && !is_alt) {
         cf_data_write(s, size, value);
     } else if (reg >= 0) {
-        for (i = 0; i < size; i++)
-            cf_write_reg8(s, reg, is_alt, false,
-                (uint8_t)((value >> (8u * i)) & 0xFFu));
+        cf_write_regs(s, reg, is_alt, false, size, value);
     }
 
 }
@@ -1116,7 +1139,6 @@ uint64_t cf_boot_read(cf_state_t *s, uint32_t offset, unsigned size)
     bool is_alt = false;
     int reg;
     uint64_t val = 0;
-    unsigned i;
 
     if (!s || size == 0)
         return 0;
@@ -1128,10 +1150,7 @@ uint64_t cf_boot_read(cf_state_t *s, uint32_t offset, unsigned size)
         val = s->boot_visible ? cf_data_read(s, size)
                               : (size >= 4 ? UINT32_C(0xFFFFFFFF) : UINT64_C(0xFF));
     } else if (reg >= 0) {
-        for (i = 0; i < size; i++) {
-            uint8_t byte = cf_read_reg8(s, reg, is_alt, true);
-            val |= (uint64_t)byte << (8u * i);
-        }
+        val = cf_read_regs(s, reg, is_alt, true, size);
     } else {
         val = size >= 4 ? UINT32_C(0xFFFFFFFF) : UINT64_C(0xFF);
     }
@@ -1144,7 +1163,6 @@ void cf_boot_write(cf_state_t *s, uint32_t offset, unsigned size,
 {
     bool is_alt = false;
     int reg;
-    unsigned i;
 
     if (!s || size == 0 || !s->attached)
         return;
@@ -1154,10 +1172,7 @@ void cf_boot_write(cf_state_t *s, uint32_t offset, unsigned size,
         if (s->boot_visible)
             cf_data_write(s, size, value);
     } else if (reg >= 0) {
-        for (i = 0; i < size; i++) {
-            cf_write_reg8(s, reg, is_alt, true,
-                (uint8_t)((value >> (8u * i)) & 0xFFu));
-        }
+        cf_write_regs(s, reg, is_alt, true, size, value);
     }
 
 }

@@ -186,15 +186,14 @@ static uint64_t piu_now_ns(struct be300_input_device *d)
  *                   clears the low-byte pending bits with W1C writes.
  *  +0x20-0x2C, +0x50-0x5C: ADC coordinate buffers (y+, y-, x-, x+)
  */
-DEVICE_ACCESS(be300_touch)
+static int be300_touch_handle(struct cpu *cpu, struct memory *mem,
+    uint64_t relative_addr, unsigned char *data, size_t len, int writeflag,
+    void *extra)
 {
     struct be300_input_device *d = (struct be300_input_device *)extra;
     uint32_t off = (uint32_t)relative_addr;
     uint64_t val;
 
-    if (d->log_mmio)
-        be300_log_mmio("be300_touch", writeflag, off, (unsigned)len,
-            data, (uint32_t)cpu->pc);
 
     be300_probe_note_mmio("vrc4173-piu-touch", off,
         writeflag == MEM_WRITE ? 'W' : 'R',
@@ -212,6 +211,19 @@ DEVICE_ACCESS(be300_touch)
     piu_refresh_irq(d);
     memory_writemax64(cpu, data, len, val);
     return 1;
+}
+
+/* --log-mmio logs after the access, so a read shows the value returned. */
+DEVICE_ACCESS(be300_touch)
+{
+    struct be300_input_device *d = (struct be300_input_device *)extra;
+    uint32_t pc = (uint32_t)cpu->pc;
+    int r = be300_touch_handle(cpu, mem, relative_addr, data, len, writeflag,
+        extra);
+
+    if (r && d->log_mmio)
+        be300_log_mmio("be300_touch", writeflag, (uint32_t)relative_addr, (unsigned)len, data, pc);
+    return r;
 }
 
 /*
@@ -232,16 +244,15 @@ void be300_touch_tick(machine_t *m)
 }
 
 /* Button register device — PA 0x0A00A040, size 0x10 */
-DEVICE_ACCESS(be300_buttons)
+static int be300_buttons_handle(struct cpu *cpu, struct memory *mem,
+    uint64_t relative_addr, unsigned char *data, size_t len, int writeflag,
+    void *extra)
 {
     struct be300_input_device *d = (struct be300_input_device *)extra;
     machine_t *m = d->m;
     uint8_t reg[0x10] = { 0 };
     uint64_t val = 0;
 
-    if (d->log_mmio)
-        be300_log_mmio("be300_buttons", writeflag, (uint32_t)relative_addr,
-            (unsigned)len, data, (uint32_t)cpu->pc);
 
     be300_probe_note_mmio("vrc4173-buttons", (uint32_t)relative_addr,
         writeflag == MEM_WRITE ? 'W' : 'R',
@@ -281,6 +292,19 @@ DEVICE_ACCESS(be300_buttons)
     return 1;
 }
 
+/* --log-mmio logs after the access, so a read shows the value returned. */
+DEVICE_ACCESS(be300_buttons)
+{
+    struct be300_input_device *d = (struct be300_input_device *)extra;
+    uint32_t pc = (uint32_t)cpu->pc;
+    int r = be300_buttons_handle(cpu, mem, relative_addr, data, len, writeflag,
+        extra);
+
+    if (r && d->log_mmio)
+        be300_log_mmio("be300_buttons", writeflag, (uint32_t)relative_addr, (unsigned)len, data, pc);
+    return r;
+}
+
 /*
  *  be300_register_input():
  *
@@ -302,8 +326,8 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
      * VRC4173 offset 0x0004 bit 9 (GIRQ0-9) -> PIUINTREG. */
     {
         char tmps[300];
-        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
-            gxm->path, gxm->bootstrap_cpu, 8, 0);
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.0.girq0.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 9);
         INTERRUPT_CONNECT(tmps, touch_d->piu_irq);
         touch_d->piu_irq_connected = true;
         touch_d->piu_irq_asserted = false;
@@ -324,8 +348,8 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
      * VRC4173 offset 0x0004 bit 1 (GIRQ0-1). */
     {
         char tmps[300];
-        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.%i",
-            gxm->path, gxm->bootstrap_cpu, 8, 0);
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.0.girq0.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 1);
         INTERRUPT_CONNECT(tmps, btn_d->button_irq);
         btn_d->button_irq_connected = true;
         btn_d->button_irq_asserted = false;

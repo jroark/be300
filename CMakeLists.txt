@@ -180,6 +180,7 @@ set(BE300_SOURCES
     src/be300_probe.c
     src/be300_devices.c
     src/win32_compat.c
+    src/file_util.c
     src/devices/input.c
     src/devices/nand_window.c
     src/devices/pcmcia_attr.c
@@ -303,7 +304,8 @@ if(BUILD_CLI)
     # Offline .cbea app installer (docs/INSTALLING_APPS.md).
     add_executable(be300-install
         src/be300_install_main.c
-        src/cbea_install.c)
+        src/cbea_install.c
+        src/file_util.c)
     if(WIN32)
         target_link_options(be300-install PRIVATE -static-libgcc -static)
     endif()
@@ -387,7 +389,7 @@ if(BUILD_WEB)
         "-sNO_EXIT_RUNTIME=1"
         "-sFORCE_FILESYSTEM=1"
         "-sSTACK_SIZE=2MB"
-        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_be300_web_create','_be300_web_create_ex','_be300_web_create_ex2','_be300_web_load_nand','_be300_web_load_cf','_be300_web_install_cbea','_be300_web_cf_create','_be300_web_cf_add_file','_be300_web_cf_commit','_be300_web_cf_flush','_be300_web_stowaway_key','_be300_web_set_net_bridge_enabled','_be300_web_set_audio_enabled','_be300_web_audio_drain','_be300_web_net_rx','_be300_web_net_tx_pending','_be300_web_net_tx_pop','_be300_step','_be300_copy_frame_rgba8888','_be300_drain_serial','_be300_set_touch','_be300_set_buttons','_be300_stop','_be300_destroy']"
+        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_be300_web_create_ex2','_be300_web_load_nand','_be300_web_load_cf','_be300_web_install_cbea','_be300_web_cf_create','_be300_web_cf_add_file','_be300_web_cf_commit','_be300_web_cf_flush','_be300_web_stowaway_key','_be300_web_set_net_bridge_enabled','_be300_web_set_audio_enabled','_be300_web_audio_drain','_be300_web_net_rx','_be300_web_net_tx_pending','_be300_web_net_tx_pop','_be300_step','_be300_copy_frame_rgba8888','_be300_drain_serial','_be300_set_touch','_be300_set_buttons','_be300_stop','_be300_destroy']"
         "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP16','HEAPU32','FS','cwrap','ccall']")
 endif()
 

@@ -80,7 +80,6 @@ static const char *CF_PATHS[BE300_MAX_CF_SLOTS] = {
 #define WEB_FLAG_CF0             UINT32_C(0x00000004)
 #define WEB_FLAG_CF1             UINT32_C(0x00000008)
 #define WEB_FLAG_NET_MAC         UINT32_C(0x00000010)
-#define WEB_FLAG_NET_BRIDGE      UINT32_C(0x00000020)
 #define WEB_FLAG_AUDIO           UINT32_C(0x00000040)
 
 #define WEB_NET_FRAME_MAX 2048u
@@ -272,8 +271,8 @@ static machine_t *be300_web_create_with_fb(uint32_t sdram_mb,
     }
 
     web_net_tx_reset();
-    g_net_bridge_enabled =
-        cfg.enable_ne2000 && ((flags & WEB_FLAG_NET_BRIDGE) != 0);
+    /* worker.js turns the bridge on later (be300_web_set_net_bridge_enabled). */
+    g_net_bridge_enabled = false;
     g_current_machine = NULL;
 
     m = be300_create(&cfg);
@@ -295,17 +294,6 @@ machine_t *be300_web_create_ex2(uint32_t sdram_mb, uint32_t target_mhz,
                                 uint32_t fb_width, uint32_t fb_height) {
     return be300_web_create_with_fb(sdram_mb, target_mhz, flags, mac,
         fb_width, fb_height);
-}
-
-EMSCRIPTEN_KEEPALIVE
-machine_t *be300_web_create_ex(uint32_t sdram_mb, uint32_t target_mhz,
-                               uint32_t flags, const uint8_t *mac) {
-    return be300_web_create_with_fb(sdram_mb, target_mhz, flags, mac, 0, 0);
-}
-
-EMSCRIPTEN_KEEPALIVE
-machine_t *be300_web_create(uint32_t sdram_mb, uint32_t target_mhz) {
-    return be300_web_create_ex(sdram_mb, target_mhz, 0, NULL);
 }
 
 EMSCRIPTEN_KEEPALIVE

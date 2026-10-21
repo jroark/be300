@@ -238,6 +238,50 @@ static void check_cf_format(uint32_t size_mb, unsigned want_spc)
     free(img);
 }
 
+/*
+ * Corrupt volumes must be rejected without touching memory outside the
+ * image: an LFN entry with ordinal 0, a directory entry naming cluster 1,
+ * and a BPB whose FAT region size wraps 32 bits.
+ */
+static size_t root_dir_off(const uint8_t *img)
+{
+    return ((size_t)rd16(img + 0x0E) + (size_t)img[0x10] * rd16(img + 0x16)) * 512u;
+}
+
+static void check_corrupt_volumes(void)
+{
+    size_t len = 8u * 1024u * 1024u, got = 0;
+    uint8_t *img = calloc(1, len);
+    uint8_t *e;
+
+    /* LFN chain ending in ordinal 0 (lfn[(ord - 1) * 13] would be lfn[-13]). */
+    CHECK(cbea_fat_format(img, len, "X") == 0);
+    e = img + root_dir_off(img);
+    memset(e, 0xFF, 64);
+    e[0] = 0x41; e[11] = 0x0F; e[13] = 0x55;
+    e[32] = 0x00 | 0x00; e[32 + 11] = 0x0F; e[32 + 13] = 0x55;
+    e[64] = 0;
+    CHECK(cbea_fat_read_file(img, len, "anything", &got) == NULL);
+
+    /* A directory whose first cluster is 1 (not a data cluster). */
+    CHECK(cbea_fat_format(img, len, "X") == 0);
+    e = img + root_dir_off(img);
+    memcpy(e, "DIR        ", 11);
+    e[11] = 0x10;
+    wr16(e + 0x1A, 1);
+    CHECK(cbea_fat_read_file(img, len, "dir\\file", &got) == NULL);
+    CHECK(cbea_fat_write_file(img, len, "dir\\file", (const uint8_t *)"x", 1,
+                              g_log, sizeof(g_log)) != 0);
+
+    /* 255 FATs of 65535 sectors: the FAT region size wraps 32 bits. */
+    CHECK(cbea_fat_format(img, len, "X") == 0);
+    img[0x10] = 255;
+    wr16(img + 0x16, 0xFFFF);
+    CHECK(cbea_fat_write_file(img, len, "file", (const uint8_t *)"x", 1,
+                              g_log, sizeof(g_log)) != 0);
+    free(img);
+}
+
 int main(void)
 {
     static uint8_t big[5000];
@@ -375,6 +419,7 @@ int main(void)
     check_cf_format(64, 4);
     check_cf_format(128, 4);
     check_cf_format(512, 16);
+    check_corrupt_volumes();
     CHECK(cbea_fat_format(NULL, 0, "X") != 0);
     {
         uint8_t small[4096];
