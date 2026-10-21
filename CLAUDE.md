@@ -61,7 +61,7 @@ Primary local references:
 ## Source Code Layout
 
 **Core emulation (`src/`)**
-- `machine_be300.c` — machine setup, boot-mode selection, device registration, ROM and NAND image loading, RTC host-time setup, main emulation loop, NK dumping, runtime shutdown
+- `machine_be300.c` — machine setup, boot-mode selection, device registration, ROM and NAND image loading, RTC host-time setup, main emulation loop, runtime shutdown
 - `be300.h` — `be300_state_t`, `machine_config_t`, physical address map constants
 - `ui.c` / `ui.h` — SDL2 display, input handling, screenshot capture
 - `main.c` — CLI parsing for `--nand`, `--restore`, `--cf`, `--ppsh`, and other boot options
@@ -184,7 +184,7 @@ Recovery boot through `--restore --cf` is still implemented for NANDWRITER-path 
 - ROM initializes CP0, SDRAM timing, clocks, NAND, and SPL loading
 - Original ROM has no real BEV TLB refill handler at `+0x200`
 - The original bytes at the BEV general-exception vector overlap boot code continuation rather than a general exception handler
-- The emulator patches the ROM at load time with MIPS32 BEV handlers so exceptions during early boot are routed correctly
+- The emulator loads the ROM verbatim (`docs/hardware/be300_boot_rom.bin`, embedded at build time) into writable RAM at PA `0x1FC00000` (`machine_be300.c`); it does not patch BEV handlers into it
 - The ROM contains about 5.5 KB of MIPS16 code from `0x0C20` to `0x219B`, and GXemul executes it natively
 - NK.exe is fully MIPS32
 
@@ -345,9 +345,7 @@ Historical reverse-engineering found that NK reaches warm-resume-style logic dur
 
 ### NK Analysis Tools
 
-- The emulator dumps decompressed NK to `nk_decompressed.bin` in the working directory during WinCE NAND boots once PA `0x24FC` points into NK
-- `docs/nk_decompressed.bin` is a local ignored convenience copy of the verified WinCE 3.0 NK dump
-- `build-host/nk_decompressed.bin` reflects the most recent verified NAND boot
+- The emulator no longer writes an NK dump; `docs/nk_decompressed.bin` is a local ignored copy of the verified WinCE 3.0 NK image from an earlier build, which `tools/repack_nk_partition.py` and the Ghidra project use
 - `tools/scan_nk_producers.py` scans for stores to interesting VAs
 - `tools/disasm_nk_ctx.py` disassembles selected NK regions
 - In Docker:
@@ -434,8 +432,8 @@ When you need temporary diagnostics:
 
 The `gxemul/` submodule points at the `be300` branch of `jroark/GXemul`. Keep it thin.
 
-- Current layout: pristine GXemul 0.7.0 (`c35c056`) plus the BE-300 delta history on `be300`. As of this cleanup, `git -C gxemul log --oneline --reverse c35c056..HEAD` reports 17 commits ending at `93ee4a9` (`vr41xx: preserve shared IP2 level interrupts`).
-- The submodule history includes committed fixes for MIPS16/BE-300 platform glue, VR4131 timers/interrupts, reset and hibernate handling, GIUINTSTAT write-one-clear behavior, and shared IP2 level preservation. Use the git log as the authoritative ledger instead of copying a stale pass list into this file.
+- Current layout: pristine GXemul 0.7.0 (`c35c056`) plus the BE-300 delta history on `be300`; `git -C gxemul log --oneline --reverse c35c056..HEAD` lists it. Don't record a commit count here, it goes stale.
+- The submodule history includes committed fixes for MIPS16/BE-300 platform glue, VR4131 timers/interrupts, reset and hibernate handling, GIUINTSTAT write-one-clear behavior, shared IP2 level preservation, and the VRC4173 GIRQ0 OR gate (`machine_hpcmips.c`, each companion interrupt source on its own `giu.0.girq0.<n>` pin). Use the git log as the authoritative ledger instead of copying a stale pass list into this file.
 - Do not accumulate more without first documenting the justification.
 - Before adding a gxemul-side fix, **diff against 0.7.0**: `git -C gxemul show c35c056:<path>` versus the current file. Confirm the change actually improves on upstream behavior. Several historical "fixes" on the prior `be300` branch were identity transformations of existing 0.7.0 code.
 - Before adding a gxemul-side fix, **cite the VR4131 UM section or `docs/hardware/hw_dump_*.txt` line** that justifies it. If you can't, the fix might be a workaround for a different emulator bug — keep root-causing.
