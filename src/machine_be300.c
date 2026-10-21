@@ -372,6 +372,27 @@ static int be300_create_blank_nand(machine_t *m)
 }
 
 
+/*
+ * Undo a partly built machine: be300_create arms the host bridges, the
+ * usbredir device and the Stowaway dock first, and machine_setup registers
+ * GXemul interrupt handlers by name, so a failure that only freed m left
+ * them armed and made the next be300_create in this process fail (bind:
+ * address in use) or abort on duplicate handler names.
+ */
+static machine_t *be300_create_fail(machine_t *m)
+{
+    free(m->nand_data);
+    for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
+        cf_destroy(&m->cf[i]);
+    pcconnect_bridge_shutdown();
+    usbredir_dev_shutdown();
+    stowaway_configure(false);
+    interrupt_handler_clear_all();
+    timer_remove_all();
+    free(m);
+    return NULL;
+}
+
 machine_t *be300_create(const machine_config_t *cfg)
 {
     static bool subsystems_initialized = false;
@@ -391,20 +412,17 @@ machine_t *be300_create(const machine_config_t *cfg)
 
         if (!host_chardev_parse_spec(cfg->pcconnect_bridge, &ur.kind,
                                      &ur.target)) {
-            free(m);
-            return NULL;
+            return be300_create_fail(m);
         }
         ur.tee_path = cfg->pcconnect_tee;
         ur.trace = v && *v && strcmp(v, "0") != 0;
         if (!usbredir_dev_configure(&ur)) {
-            free(m);
-            return NULL;
+            return be300_create_fail(m);
         }
     } else if (cfg->pcconnect_bridge) {
         pcc_bridge_config_t br = {0};
         if (!pcconnect_bridge_parse_spec(cfg->pcconnect_bridge, &br)) {
-            free(m);
-            return NULL;
+            return be300_create_fail(m);
         }
         br.uart_id = PCC_UART_VRC4173_SIU;
         br.wince_mode = true;
@@ -413,15 +431,13 @@ machine_t *be300_create(const machine_config_t *cfg)
         br.trace = (getenv("BE300_PCC_TRACE") != NULL);
         br.baud = cfg->pcconnect_baud;
         if (!pcconnect_bridge_configure(&br)) {
-            free(m);
-            return NULL;
+            return be300_create_fail(m);
         }
     }
     if (cfg->serial0_bridge) {
         pcc_bridge_config_t br = {0};
         if (!pcconnect_bridge_parse_spec(cfg->serial0_bridge, &br)) {
-            free(m);
-            return NULL;
+            return be300_create_fail(m);
         }
         br.uart_id = PCC_UART_VR4131_SIU;
         br.wince_mode = false;
@@ -430,15 +446,13 @@ machine_t *be300_create(const machine_config_t *cfg)
         br.trace = (getenv("BE300_SERIAL0_TRACE") != NULL);
         br.baud = cfg->serial0_baud;
         if (!pcconnect_bridge_configure(&br)) {
-            free(m);
-            return NULL;
+            return be300_create_fail(m);
         }
     }
     if (cfg->serial1_bridge) {
         pcc_bridge_config_t br = {0};
         if (!pcconnect_bridge_parse_spec(cfg->serial1_bridge, &br)) {
-            free(m);
-            return NULL;
+            return be300_create_fail(m);
         }
         br.uart_id = PCC_UART_VRC4173_SIU;
         br.wince_mode = false;
@@ -447,8 +461,7 @@ machine_t *be300_create(const machine_config_t *cfg)
         br.trace = (getenv("BE300_SERIAL1_TRACE") != NULL);
         br.baud = cfg->serial1_baud;
         if (!pcconnect_bridge_configure(&br)) {
-            free(m);
-            return NULL;
+            return be300_create_fail(m);
         }
     }
     stowaway_configure(cfg->enable_stowaway_keyboard);
@@ -469,8 +482,7 @@ machine_t *be300_create(const machine_config_t *cfg)
         }
     }
     if (!be300_select_framebuffer_geometry(m)) {
-        free(m);
-        return NULL;
+        return be300_create_fail(m);
     }
 
     /*
@@ -504,15 +516,13 @@ machine_t *be300_create(const machine_config_t *cfg)
     m->emul = emul_new("be300");
     if (!m->emul) {
         fprintf(stderr, "[BE300] emul_new failed\n");
-        free(m);
-        return NULL;
+        return be300_create_fail(m);
     }
 
     struct machine *gxm = emul_add_machine(m->emul, "be300");
     if (!gxm) {
         fprintf(stderr, "[BE300] emul_add_machine failed\n");
-        free(m);
-        return NULL;
+        return be300_create_fail(m);
     }
     m->gxe_machine = gxm;
 
@@ -546,12 +556,12 @@ machine_t *be300_create(const machine_config_t *cfg)
 
     /* Create CPU */
     gxm->ncpus = 1;
-    gxm->cpus = malloc(sizeof(struct cpu *));
-    gxm->cpus[0] = cpu_new(gxm->memory, gxm, 0, gxm->cpu_name);
-    if (!gxm->cpus[0]) {
+    gxm->cpus = calloc(1, sizeof(struct cpu *));
+    if (gxm->cpus)
+        gxm->cpus[0] = cpu_new(gxm->memory, gxm, 0, gxm->cpu_name);
+    if (!gxm->memory || !gxm->cpus || !gxm->cpus[0]) {
         fprintf(stderr, "[BE300] cpu_new failed for VR4131\n");
-        free(m);
-        return NULL;
+        return be300_create_fail(m);
     }
     gxm->bootstrap_cpu = 0;
     m->cpu = gxm->cpus[0];
@@ -587,13 +597,11 @@ machine_t *be300_create(const machine_config_t *cfg)
         if (cfg->nand_path) {
             if (be300_load_nand_image_file(m, cfg->nand_path) != 0) {
                 fprintf(stderr, "[BE300] Failed to load NAND image\n");
-                free(m);
-                return NULL;
+                return be300_create_fail(m);
             }
         } else if (be300_create_blank_nand(m) != 0) {
             fprintf(stderr, "[BE300] Failed to create blank NAND image\n");
-            free(m);
-            return NULL;
+            return be300_create_fail(m);
         }
 
         bool cf_image_loaded = false;
@@ -603,8 +611,7 @@ machine_t *be300_create(const machine_config_t *cfg)
             if (cf_load_image(&m->cf[i], cfg->cf_paths[i]) != 0) {
                 fprintf(stderr, "[BE300] Failed to load CF image %u\n",
                     i + 1);
-                free(m);
-                return NULL;
+                return be300_create_fail(m);
             }
             cf_image_loaded = true;
         }
@@ -615,15 +622,13 @@ machine_t *be300_create(const machine_config_t *cfg)
                 NULL, 0, 0, NULL);
             if (!m->emul->net) {
                 fprintf(stderr, "[BE300] Failed to initialize emulated network\n");
-                free(m);
-                return NULL;
+                return be300_create_fail(m);
             }
             if (cf_attach_ne2000(&m->cf[BE300_PRIMARY_CF_SLOT], gxm,
                     m->emul->net,
                     cfg->net_mac_set ? cfg->net_mac : NULL) != 0) {
                 fprintf(stderr, "[BE300] Failed to attach NE2000 card\n");
-                free(m);
-                return NULL;
+                return be300_create_fail(m);
             }
         }
 
@@ -745,8 +750,7 @@ machine_t *be300_create(const machine_config_t *cfg)
     } else if (cfg->rom_path) {
         if (be300_load_rom_image(m, cfg->rom_path) != 0) {
             fprintf(stderr, "[BE300] Failed to load ROM image\n");
-            free(m);
-            return NULL;
+            return be300_create_fail(m);
         }
         m->boot_mode = BE300_BOOT_ROM;
     }
