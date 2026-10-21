@@ -492,6 +492,9 @@ static bool open_pty(host_chardev_t *c)
     }
     set_nonblocking(master);
     c->fd = master;
+    /* Whoever opens the slave is the peer; data written now waits in the
+     * pty for them (usbredir sends its hello on a new peer). */
+    c->new_peer = true;
     fprintf(stderr, "[%s] pty slave=%s\n", c->tag, slave);
     fprintf(stderr, "[%s]   attach with: screen %s 115200,cs8\n",
             c->tag, slave);

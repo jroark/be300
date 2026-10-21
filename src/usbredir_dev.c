@@ -107,6 +107,9 @@ enum {
 
 #define UR_MAX_PAYLOAD (4u * 1024u * 1024u)
 #define UR_QUEUE_LEN   64u
+/* Largest bulk IN a peer may ask for; the BE-300's bulk endpoints move
+ * 64-byte packets, and sync traffic is far below this. */
+#define UR_MAX_BULK_IN (64u * 1024u)
 #define UR_VERSION     "be300-usbredir-dev 1.0"
 
 typedef struct {
@@ -140,6 +143,8 @@ static struct {
     bool connected;
 
     bool ctrl_active;
+    bool ctrl_done;             /* guest finished it; reply from the tick */
+    int ctrl_status;
     uint64_t ctrl_id;
     uint8_t ctrl_hdr[10];
 
@@ -489,6 +494,7 @@ static void drop_transfers(void)
     queue_clear(&g.bulk_in);
     queue_clear(&g.bulk_out);
     g.ctrl_active = false;
+    g.ctrl_done = false;
     g.intr_receiving = false;
 }
 
@@ -588,14 +594,29 @@ static void service_endpoints(void)
     }
 }
 
+/*
+ * Called from inside the guest's register write that completes the
+ * request. Only record it: replying here could write the socket, and on
+ * a write error tear down the peer and flush the USB FIFOs under the
+ * usbf code that is still running. usbredir_dev_tick() sends the reply.
+ */
 static void on_ctrl_done(void *ctx, int status)
 {
     (void)ctx;
     if (!g.ctrl_active)
         return;
+    g.ctrl_done = true;
+    g.ctrl_status = status;
+}
+
+static void send_ctrl_reply(void)
+{
+    if (!g.ctrl_active || !g.ctrl_done)
+        return;
     g.ctrl_active = false;
+    g.ctrl_done = false;
     reply_control(g.ctrl_id, g.ctrl_hdr,
-        status == USBF_CTRL_OK ? UR_SUCCESS : UR_STALL, NULL, 0);
+        g.ctrl_status == USBF_CTRL_OK ? UR_SUCCESS : UR_STALL, NULL, 0);
 }
 
 static void on_in_ready(void *ctx)
@@ -624,6 +645,7 @@ static void handle_control(uint64_t id, const uint8_t *p, uint32_t len)
     rc = usbf_host_control(g.u, setup, in, &in_len);
     if (rc == USBF_CTRL_PENDING) {
         g.ctrl_active = true;
+        g.ctrl_done = false;
         g.ctrl_id = id;
         memcpy(g.ctrl_hdr, p, 10);
         return;
@@ -655,6 +677,10 @@ static void handle_bulk(uint64_t id, const uint8_t *p, uint32_t len)
     }
     if (!(ep & 0x80u))
         blen = len - (uint32_t)hl;
+    else if (blen > UR_MAX_BULK_IN) {
+        reply_bulk(id, ep, UR_INVAL, NULL, 0);
+        return;
+    }
     x = queue_push((ep & 0x80u) ? &g.bulk_in : &g.bulk_out);
     if (!x) {
         ur_trace("bulk queue full for ep 0x%02x", ep);
@@ -681,6 +707,7 @@ static void handle_cancel(uint64_t id)
     if (g.ctrl_active && g.ctrl_id == id) {
         /* The guest still owns the SETUP; its completion is ignored. */
         g.ctrl_active = false;
+        g.ctrl_done = false;
         reply_control(id, g.ctrl_hdr, UR_CANCELLED, NULL, 0);
         return;
     }
@@ -949,6 +976,7 @@ void usbredir_dev_tick(void)
     if (g.ch.fd < 0)
         return;
     update_connection();
+    send_ctrl_reply();
     service_endpoints();
     flush_tx();
 }
