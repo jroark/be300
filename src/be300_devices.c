@@ -1052,36 +1052,6 @@ static void be300_pcconnect_note_comm_write(struct be300_vrc4173_latch *d,
         be300_pcconnect_trace(d, "post-write", off, len, val, pc);
 }
 
-static void be300_pcconnect_note_comm_read(struct be300_vrc4173_latch *d,
-    uint16_t val, uint32_t pc)
-{
-    uint16_t active;
-
-    if (!d)
-        return;
-
-    active = val & (uint16_t)(val >> 8) & BE300_COMMMODE_PENDING_MASK;
-
-    /*
-     * The NK GIRQ0-4 dispatcher at 0x800b6db4 selects the lowest active
-     * AA008004 sub-bit. Sub-bit 4 is the route into serial.dll's modem/event
-     * IST; once the OAL has dispatched it, drop the CommMode routing bit and
-     * let AA001054 plus the UART RX level re-edge it if work remains.
-     * hardware.txt:122-130 documents the GIRQ0-4 sub-bits, and
-     * hardware.txt:189-191 places AA001054 in the companion serial block.
-     */
-    if (pc == 0x800b6db4u &&
-        (active & BE300_COMMMODE_SOCKET_PENDING) == 0 &&
-        (active & BE300_COMMMODE_MODEM_PENDING) != 0) {
-        d->pcconnect_commmode_pending &=
-            (uint16_t)~BE300_COMMMODE_MODEM_PENDING;
-        be300_pcconnect_irq_update(d);
-        be300_pcconnect_trace(d, "commmode-modem-dispatch",
-            BE300_COMMMODE_STATUS_OFF, 2, val, pc);
-        return;
-    }
-}
-
 static uint32_t be300_pcconnect_girq0_source_bits(
     const struct be300_vrc4173_latch *d)
 {
@@ -1717,7 +1687,6 @@ static int be300_vrc4173_handle(struct cpu *cpu, struct memory *mem,
                 (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
                 BE300_MMIO_CLASS_KNOWN);
             memory_writemax64(cpu, data, len, val);
-            be300_pcconnect_note_comm_read(d, val, (uint32_t)cpu->pc);
             return 1;
         }
 
