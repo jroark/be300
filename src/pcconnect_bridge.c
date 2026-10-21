@@ -670,12 +670,17 @@ bool pcconnect_bridge_ns16550_claims(const char *name)
     return strcmp(name, s->uart_name) == 0;
 }
 
+/*
+ * The UART register accessors below run on guest LSR/RBR reads, so they
+ * only release bytes already received; the socket is read once per batch
+ * by pcconnect_bridge_tick().
+ */
 bool pcconnect_bridge_uart_rx_available(void)
 {
     pcc_br_state_t *s = wince_bridge();
     if (!s)
         return false;
-    bridge_drain_rx(s);
+    bridge_release_rx_paced(s);
     if (!bridge_data_path_connected(s) || !s->guest_uart_ready)
         return false;
     return !pcc_ring_is_empty(&s->rx_ring);
@@ -686,7 +691,7 @@ size_t pcconnect_bridge_uart_rx_count(void)
     pcc_br_state_t *s = wince_bridge();
     if (!s)
         return 0;
-    bridge_drain_rx(s);
+    bridge_release_rx_paced(s);
     if (!bridge_data_path_connected(s) || !s->guest_uart_ready)
         return 0;
     return pcc_ring_count(&s->rx_ring);
@@ -858,7 +863,7 @@ size_t serial_bridge_uart_rx_count(const char *name)
     pcc_br_state_t *s = bridge_by_name(name);
     if (!s)
         return 0;
-    bridge_drain_rx(s);
+    bridge_release_rx_paced(s);
     if (!bridge_data_path_connected(s) || !s->guest_uart_ready)
         return 0;
     return pcc_ring_count(&s->rx_ring);
@@ -869,7 +874,7 @@ int serial_bridge_uart_rx_pop(const char *name)
     pcc_br_state_t *s = bridge_by_name(name);
     if (!s)
         return -1;
-    bridge_drain_rx(s);
+    bridge_release_rx_paced(s);
     if (!bridge_data_path_connected(s) || !s->guest_uart_ready)
         return -1;
     if (pcc_ring_is_empty(&s->rx_ring))
