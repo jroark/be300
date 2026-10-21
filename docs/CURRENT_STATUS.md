@@ -124,6 +124,23 @@ binding/IP configuration, PCMCIA I/O window routing, and NE2000 IRQ delivery.
 Do not chase the resolved `Internet.exe` date/epoch crash unless the guest
 clock is wrong again.
 
+### Emulator hacks still in place (2026-10-21)
+
+- **KjCMU warm reset** (`src/devices/nand_window.c`, the 7 to `0xA0C4` then
+  10 to `0xA0C8` sequence). It cold-resets only the CPU and the serial-dock
+  state; every other device keeps its state. Which units the real reset
+  reaches depends on how the Kj companion drives the VR4131 reset input
+  (RSTSW or a full system reset), and there is no hardware evidence for
+  either. WinCE's second boot after `Boot.exe` relies on what survives, so
+  the scope has not been widened.
+- **D7FE "NIC probe" override** (`src/hw/nand.c`, three SPL PCs before the
+  SPL entry). None of the regression images executes these PCs. They look
+  like an EDBG/debug-boot path, possibly reached by the NANDWRITER/KLOADER
+  `--restore` path, which can't be tested without NANDWRITER. Remove the
+  override once that path can be tested.
+- **Console capture of SPL writes to D7FC** (`src/hw/nand.c`). This is
+  host-side logging only; guest-visible state is latched as usual.
+
 ### CE.Net white screen after idle power-off (reference image, open)
 
 The CE.Net reference image (`net.bin`) boots to its shell, then about 45 s
