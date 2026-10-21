@@ -2,9 +2,10 @@
  *  src/hw/nand_restore.c — NANDWRITER restore engine.
  *
  *  Models the recovery-mode register bank at VRC4173 offsets 0x0980,
- *  0x0B00-0x0D00 (page buffer) and 0x0C00-0x0CC0 (control), plus the
- *  scattered side-band registers in the 0x1100/0x1B20/0x1CC0 range.
- *  The implementation is fully self-contained: it lives in its own
+ *  0x0B00-0x0D00 (page buffer) and 0x0C00-0x0CC0 (control). The
+ *  companion registers NANDWRITER also drives at 0x1100/0x1B20/0x1CC0
+ *  belong to their own blocks in be300_devices.c and cf.c. The
+ *  implementation is fully self-contained: it lives in its own
  *  s->restore_* slice of nand_state_t and never reaches into the SPL
  *  or ROM transfer engines.
  *
@@ -71,12 +72,6 @@ void nand_restore_seed_regs(nand_state_t *s)
         { 0x0C38u, 0x00000000u }, { 0x0C3Cu, 0x00001F1Fu },
         { 0x0C40u, 0x00000500u }, { 0x0C44u, 0x00000000u },
         { 0x0C48u, 0x0000030Fu }, { 0x0C4Cu, 0x00000000u },
-        { 0x1100u, 0x00000001u }, { 0x1104u, 0x00000001u },
-        { 0x1108u, 0x00000001u }, { 0x110Cu, 0x00000001u },
-        { 0x1128u, 0x00000001u },
-        { 0x1B20u, 0x00000001u },
-        { 0x1CC0u, 0x00000001u }, { 0x1CC4u, 0x00000201u },
-        { 0x1CC8u, 0x00001000u }, { 0x1CCCu, 0x00000000u },
     };
     size_t i;
 
@@ -293,33 +288,10 @@ static void nand_restore_buffer_write(nand_state_t *s, unsigned size,
     }
 }
 
-/* Companion registers NANDWRITER also drives, held in restore_regs and
- * seeded with their hardware values (hw_dump_vrc4173.txt:49, :51, :171,
- * :183). */
-static bool nand_restore_companion_reg(uint32_t offset)
-{
-    switch (offset) {
-    case 0x1100u:
-    case 0x1104u:
-    case 0x1108u:
-    case 0x110Cu:
-    case 0x1128u:
-    case 0x1B20u:
-    case 0x1CC0u:
-    case 0x1CC4u:
-    case 0x1CC8u:
-    case 0x1CCCu:
-        return true;
-    default:
-        return false;
-    }
-}
-
 bool nand_restore_handles_offset(uint32_t offset)
 {
     return (offset >= NAND_RESTORE_BUF_BASE && offset < NAND_RESTORE_BUF_END) ||
-        (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END) ||
-        nand_restore_companion_reg(offset);
+        (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END);
 }
 
 uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size)
@@ -331,8 +303,7 @@ uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size)
         goto out;
     }
 
-    if ((offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END) ||
-        nand_restore_companion_reg(offset)) {
+    if (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END) {
         uint32_t reg = nand_restore_get_reg(s, offset);
         for (unsigned i = 0; i < size; i++)
             val |= (uint64_t)((reg >> (8u * i)) & 0xFFu) << (8u * i);
@@ -364,11 +335,6 @@ void nand_restore_write(nand_state_t *s, uint32_t offset, unsigned size,
     }
 
     if (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END) {
-        nand_restore_set_reg(s, offset, (uint32_t)value);
-        goto out;
-    }
-
-    if (nand_restore_companion_reg(offset)) {
         nand_restore_set_reg(s, offset, (uint32_t)value);
         goto out;
     }

@@ -220,11 +220,11 @@ emulator for these ranges:
 | --- | --- |
 | `0x0060` | VRC4173 `SYSINT1REG` aggregate. Read-only for writes in the emulator; writes to bytes `0x060/0x061` do not clear it. |
 | `0x0062-0x006A` | Level-2 status registers. W1C. |
-| `0x1100-0x113F` | GIU/wake/status area. W1C except selected suspend latches. |
-| `0x1B00-0x1B2F` | Interrupt status/mask/ack area. W1C. |
+| `0x1100-0x113F` | Clock/power/wake block (unit enables; `0x1120`/`0x112C` written 1 by interrupt handlers). Plain read/write storage, mirrored every `0x40` through `0x11FF`, seeded from the hardware dump. |
+| `0x1B00-0x1B2F` | CF socket status area (`src/hw/cf.c` companion page). |
 
 Linux driver implication: use normal mask/status/ack sequencing. Do not assume
-writing zero clears a status bit in these VRC4173 ranges.
+writing zero clears a level-2 status bit (`0x0062-0x006A`).
 
 ## VR4131 Internal Peripherals
 
@@ -817,7 +817,6 @@ The restore engine has buffers and sideband registers outside the normal
 | `0x0980-0x098F` | Sideband control. |
 | `0x0B00-0x0CFF` | Page buffer window. |
 | `0x0C00-0x0CC0` | Restore C-window registers. |
-| `0x1100`, `0x1104`, `0x1108`, `0x110C`, `0x1128`, `0x1B20`, `0x1CC0-0x1CCC` | Additional restore-related latches. |
 
 Seeded restore C-window values include:
 
