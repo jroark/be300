@@ -195,6 +195,7 @@ set(BE300_SOURCES
     src/pcconnect_bridge.c
     src/host_chardev.c
     src/usbredir_dev.c
+    src/serial_backends.c
     src/stowaway.c
     src/ui.c
     src/ui_stowaway.c

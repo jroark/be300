@@ -10,7 +10,9 @@
 #include "host_time.h"
 
 #include "cpu.h"
+#include "devices.h"
 #include "machine.h"
+#include "memory.h"
 
 /*
  * Small, supported diagnostics for BE-300 emulator runs.
@@ -107,8 +109,17 @@ static void be300_probe_reset_state(void)
     memset(&g_stall, 0, sizeof(g_stall));
 }
 
+static void be300_probe_vr41xx_unhandled(uint32_t off, int writeflag,
+    unsigned len, uint64_t pc)
+{
+    be300_probe_note_mmio("vr41xx-default", off,
+        writeflag == MEM_WRITE ? 'W' : 'R', len, pc,
+        BE300_MMIO_CLASS_DEFAULT);
+}
+
 void be300_probe_attach(struct machine *machine)
 {
+    dev_vr41xx_set_unhandled_hook(be300_probe_vr41xx_unhandled);
     g_probe.machine = machine;
     g_probe.mmio_coverage = false;
     g_probe.detect_stall = false;

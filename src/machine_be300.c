@@ -23,6 +23,7 @@
 #include "pcconnect_bridge.h"
 #include "usbredir_dev.h"
 #include "ppsh.h"
+#include "serial_backends.h"
 #include "stowaway.h"
 #include "ui.h"
 
@@ -467,6 +468,7 @@ machine_t *be300_create(const machine_config_t *cfg)
         }
     }
     stowaway_configure(cfg->enable_stowaway_keyboard);
+    be300_serial_backends_install();
     m->boot_mode = BE300_BOOT_NONE;
     m->use_builtin_ui = true;
     m->save_exit_screenshot = true;
