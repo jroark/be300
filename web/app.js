@@ -1,4 +1,5 @@
 import { parseLaunchConfig, parseMacAddress, normalizeBridgeUrl } from "./launch-config.mjs?v=20261021b";
+import { BUTTON_MASK_SIZE, BUTTON_REGIONS } from "./button-regions.mjs?v=20261021b";
 
 const ASSET_VERSION = "20261021b";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
@@ -103,7 +104,6 @@ const pressedDeviceKeys = new Map();
 
 const FRAME_BUTTON_MASK_URL = `./buttons_dpad_bw_mask.png?v=${ASSET_VERSION}`;
 const BUTTON_MASK_THRESHOLD = 128;
-const BUTTON_MASK_MIN_AREA = 500;
 const BUTTON_MIN_DWELL_MS = 120;
 
 // Device buttons on the host keyboard when the Stowaway keyboard is off.
@@ -678,193 +678,6 @@ function mapPointerToFrame(event) {
   return { x, y };
 }
 
-function insertButtonComponent(components, component) {
-  if (component.area < BUTTON_MASK_MIN_AREA) {
-    return;
-  }
-  components.push(component);
-  components.sort((a, b) => b.area - a.area);
-  if (components.length > 16) {
-    components.pop();
-  }
-}
-
-function collectButtonMaskComponents(active, width, height) {
-  const seen = new Uint8Array(active.length);
-  const queue = new Uint32Array(active.length);
-  const components = [];
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const start = y * width + x;
-      if (!active[start] || seen[start]) {
-        continue;
-      }
-
-      let head = 0;
-      let tail = 0;
-      let area = 0;
-      let minX = x;
-      let maxX = x;
-      let minY = y;
-      let maxY = y;
-      let sumX = 0;
-      let sumY = 0;
-
-      seen[start] = 1;
-      queue[tail++] = start;
-
-      while (head < tail) {
-        const p = queue[head++];
-        const px = p % width;
-        const py = Math.floor(p / width);
-        const y0 = py > 0 ? py - 1 : py;
-        const y1 = py + 1 < height ? py + 1 : py;
-        const x0 = px > 0 ? px - 1 : px;
-        const x1 = px + 1 < width ? px + 1 : px;
-
-        area++;
-        sumX += px;
-        sumY += py;
-        minX = Math.min(minX, px);
-        maxX = Math.max(maxX, px);
-        minY = Math.min(minY, py);
-        maxY = Math.max(maxY, py);
-
-        for (let ny = y0; ny <= y1; ny++) {
-          for (let nx = x0; nx <= x1; nx++) {
-            if (nx === px && ny === py) {
-              continue;
-            }
-            const np = ny * width + nx;
-            if (!active[np] || seen[np]) {
-              continue;
-            }
-            seen[np] = 1;
-            queue[tail++] = np;
-          }
-        }
-      }
-
-      insertButtonComponent(components, {
-        area,
-        minX,
-        minY,
-        maxX,
-        maxY,
-        cx: sumX / area,
-        cy: sumY / area,
-      });
-    }
-  }
-
-  return components;
-}
-
-function splitSideComponent(active, width, component, leftSide) {
-  const boxW = component.maxX - component.minX + 1;
-  const boxH = component.maxY - component.minY + 1;
-  let upperX = component.minX + (leftSide ? 0.25 : 0.75) * boxW;
-  let upperY = component.minY + 0.30 * boxH;
-  let lowerX = component.minX + (leftSide ? 0.75 : 0.25) * boxW;
-  let lowerY = component.minY + 0.82 * boxH;
-
-  for (let iter = 0; iter < 8; iter++) {
-    let upperSumX = 0;
-    let upperSumY = 0;
-    let lowerSumX = 0;
-    let lowerSumY = 0;
-    let upperCount = 0;
-    let lowerCount = 0;
-
-    for (let y = component.minY; y <= component.maxY; y++) {
-      for (let x = component.minX; x <= component.maxX; x++) {
-        if (!active[y * width + x]) {
-          continue;
-        }
-        const du = ((x - upperX) ** 2) + ((y - upperY) ** 2);
-        const dl = ((x - lowerX) ** 2) + ((y - lowerY) ** 2);
-        if (du <= dl) {
-          upperSumX += x;
-          upperSumY += y;
-          upperCount++;
-        } else {
-          lowerSumX += x;
-          lowerSumY += y;
-          lowerCount++;
-        }
-      }
-    }
-
-    if (upperCount) {
-      upperX = upperSumX / upperCount;
-      upperY = upperSumY / upperCount;
-    }
-    if (lowerCount) {
-      lowerX = lowerSumX / lowerCount;
-      lowerY = lowerSumY / lowerCount;
-    }
-  }
-
-  return {
-    upper: { ...component, cx: upperX, cy: upperY },
-    lower: { ...component, cx: lowerX, cy: lowerY },
-  };
-}
-
-function assignButtonMaskRegions(components, active, width) {
-  if (components.length < 3) {
-    return null;
-  }
-
-  const dpad = components[0];
-  if (components.length < 5) {
-    let leftSide = null;
-    let rightSide = null;
-    for (const component of components.slice(1)) {
-      if (component.cx < dpad.cx) {
-        if (!leftSide || component.area > leftSide.area) {
-          leftSide = component;
-        }
-      } else if (!rightSide || component.area > rightSide.area) {
-        rightSide = component;
-      }
-    }
-    if (!leftSide || !rightSide) {
-      return null;
-    }
-
-    const left = splitSideComponent(active, width, leftSide, true);
-    const right = splitSideComponent(active, width, rightSide, false);
-    return {
-      dpad,
-      rocket: left.upper,
-      ok: left.lower,
-      power: right.upper,
-      esc: right.lower,
-    };
-  }
-
-  const left = [];
-  const right = [];
-  for (const component of components.slice(1)) {
-    (component.cx < dpad.cx ? left : right).push(component);
-  }
-  if (left.length < 2 || right.length < 2) {
-    return null;
-  }
-
-  left.sort((a, b) => a.cy - b.cy);
-  right.sort((a, b) => a.cy - b.cy);
-  return {
-    dpad,
-    rocket: left[0],
-    ok: left[left.length - 1],
-    power: right[0],
-    esc: right[right.length - 1],
-  };
-}
-
 function regionContains(region, x, y) {
   return x >= region.minX && x <= region.maxX &&
     y >= region.minY && y <= region.maxY;
@@ -966,16 +779,13 @@ function loadFrameButtonMask() {
         const luma = (data[off] * 77) + (data[off + 1] * 150) + (data[off + 2] * 29);
         active[i] = data[off + 3] >= 16 && (luma >> 8) >= BUTTON_MASK_THRESHOLD ? 1 : 0;
       }
-      const regions = assignButtonMaskRegions(
-        collectButtonMaskComponents(active, width, height),
-        active,
-        width,
-      );
-      if (!regions) {
-        console.warn("BE-300 button mask did not contain the expected button regions.");
+      if (width !== BUTTON_MASK_SIZE.width || height !== BUTTON_MASK_SIZE.height) {
+        console.warn("BE-300 button mask size does not match button-regions.mjs.");
         return;
       }
-      frameButtonMask = { active, width, height, regions };
+      // Regions come from the desktop's analysis of this mask
+      // (src/ui_button_mask.c via tests/test_button_mask.c).
+      frameButtonMask = { active, width, height, regions: BUTTON_REGIONS };
     } catch (error) {
       console.warn("Unable to load BE-300 button mask.", error);
     }

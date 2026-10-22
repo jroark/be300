@@ -199,7 +199,9 @@ set(BE300_SOURCES
     src/stowaway.c
     src/ui.c
     src/ui_audio.c
+    src/ui_button_mask.c
     src/ui_macos.c
+    src/ui_png.c
     src/ui_stowaway.c
     src/hw/cmu.c
     src/hw/pmu.c
@@ -353,7 +355,7 @@ if(BUILD_WEB)
 
     set(WEB_OUTPUT_DIR ${CMAKE_BINARY_DIR}/web)
     file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR})
-    foreach(asset index.html app.js launch-config.mjs worker.js styles.css favicon.svg)
+    foreach(asset index.html app.js launch-config.mjs button-regions.mjs worker.js styles.css favicon.svg)
         configure_file(${CMAKE_SOURCE_DIR}/web/${asset}
                        ${WEB_OUTPUT_DIR}/${asset}
                        COPYONLY)
@@ -477,6 +479,20 @@ if(BUILD_TESTING AND BUILD_CLI)
     target_compile_definitions(test_stowaway_keymap PRIVATE
         BE300_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME stowaway_keymap COMMAND test_stowaway_keymap)
+
+    if(PNG_FOUND)
+        add_executable(test_button_mask
+            tests/test_button_mask.c
+            src/ui_button_mask.c
+            src/ui_png.c
+            ${BUTTONS_MASK_PNG_HDR})
+        target_include_directories(test_button_mask PRIVATE
+            src ${CMAKE_BINARY_DIR} ${PNG_INCLUDE_DIRS})
+        target_compile_definitions(test_button_mask PRIVATE HAVE_PNG
+            BE300_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(test_button_mask ${PNG_LIBRARIES} m)
+        add_test(NAME button_mask COMMAND test_button_mask)
+    endif()
 endif()
 
 set(BE300_TEST_NAND "" CACHE FILEPATH
