@@ -118,24 +118,25 @@ Choosing
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.
 
-Release `20261021b` pairs the bridge's acknowledged TCP delivery, receive-window
-handling and retransmissions with Glaze's HTTPS cross-signed certificate-chain
-fix. The web bundle, worker, NAND URLs and bridge downloads use the same asset
-tag, and each native helper prints `20261021b` at startup. Existing bridge
-users should download and restart the helper to receive the TCP fix.
+Release `20261022a` refreshes the Glaze factory NAND with the sibling
+`glaze-os` checkout's latest WinCE compatibility runtime work (GDI, window,
+shell, thread and PE loader updates). The web bundle, worker and NAND URLs use
+the `20261022a` asset tag. The network bridge is unchanged from `20261021b`,
+which added acknowledged TCP delivery, receive-window handling and
+retransmissions; its helpers still print `20261021b` and their download links
+keep that tag.
 
-The release ships a fresh Glaze factory NAND assembled from the sibling
-`glaze-os` checkout's locally built springboard artifacts, including the TLS
-fix and local WinCE compatibility updates. It retains demand-paged NAND romfs,
-WinCE app compatibility, and the AIM package work. Its App Store (`appstore.glaze-os.com`,
+The factory image retains demand-paged NAND romfs, HTTPS cross-signed
+certificate-chain validation, WinCE app compatibility, and the AIM package
+work. Its App Store (`appstore.glaze-os.com`,
 which needs networking, i.e. the net bridge) offers Minesweeper, Solitaire,
 Fifteen, Sketch, Task Manager and AIM; the factory image also has system
 sounds and NTP time with named time zones.
 Build its factory NAND from the sibling `glaze-os` checkout
-with `./build.sh -s OUT=out/web-release-20261021b INIT=bin/springboard DYNAMIC=1
+with `./build.sh -s OUT=out/web-release-20261022a INIT=bin/springboard DYNAMIC=1
 LD_TESTS=0 MEM_TESTS=0`, then copy the resulting `glaze.bin` to this repo's
 `nand/glaze.bin` before building the web bundle. The 16 MiB release image has
-SHA-256 `e515396384685a6a52c071148534a44fa9e7afc9afd96c05abc59c87053cb3fd`.
+SHA-256 `e5aaf762e60c8fb72891b6c4dad86374f65a4248e11423f1ee94e555dfdfe1b4`.
 Keep development/test images outside `nand/`, since every `.bin` there is
 packaged for hosting. Save any image containing user data before replacing it
 with a fresh factory image.
