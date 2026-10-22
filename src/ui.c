@@ -9,6 +9,8 @@
 
 #include "ui.h"
 #include "ui_internal.h"
+#include "ui_button_mask.h"
+#include "ui_png.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,16 +22,6 @@
 
 #include <SDL.h>
 #include <SDL_shape.h>
-#ifdef __APPLE__
-#include <CoreGraphics/CoreGraphics.h>
-#include <SDL_syswm.h>
-#include <objc/message.h>
-#include <objc/objc.h>
-#include <objc/runtime.h>
-#endif
-#ifdef HAVE_PNG
-#include <png.h>
-#endif
 
 /* GXemul headers for framebuffer access */
 #include "machine.h"
@@ -39,8 +31,6 @@
 /* Quit flag */
 static bool quit_requested = false;
 static bool sdl_video_initialized = false;
-static bool sdl_audio_initialized = false;
-static SDL_AudioDeviceID audio_device = 0;
 static SDL_Texture *frame_texture = NULL;
 static bool frame_enabled = false;
 static uint32_t frame_width = 0;
@@ -57,41 +47,7 @@ static SDL_Rect frame_lcd_rect;
 static SDL_Rect frame_icon_rect;
 static SDL_Rect lcd_dst_rect;
 
-typedef enum {
-    UI_BUTTON_REGION_NONE = 0,
-    UI_BUTTON_REGION_DPAD,
-    UI_BUTTON_REGION_ROCKET,
-    UI_BUTTON_REGION_POWER,
-    UI_BUTTON_REGION_OK,
-    UI_BUTTON_REGION_ESC,
-    UI_BUTTON_REGION_COUNT
-} ui_button_region_kind_t;
-
-typedef struct {
-    bool valid;
-    uint32_t area;
-    uint32_t min_x;
-    uint32_t min_y;
-    uint32_t max_x;
-    uint32_t max_y;
-    double cx;
-    double cy;
-} ui_button_region_t;
-
-typedef struct {
-    uint32_t area;
-    uint32_t min_x;
-    uint32_t min_y;
-    uint32_t max_x;
-    uint32_t max_y;
-    double cx;
-    double cy;
-} ui_button_component_t;
-
-static uint8_t *button_mask_pixels = NULL;
-static uint32_t button_mask_width = 0;
-static uint32_t button_mask_height = 0;
-static ui_button_region_t button_regions[UI_BUTTON_REGION_COUNT];
+static ui_button_mask_t button_mask;
 
 /* Frame rate limiting */
 #define FRAME_INTERVAL_MS 33  /* ~30 fps */
@@ -101,9 +57,6 @@ static ui_button_region_t button_regions[UI_BUTTON_REGION_COUNT];
 #define BUTTON_MIN_DWELL_MAX_MS 5000
 #define BE300_FRAME_LCD_SCALE_DEFAULT 1.0
 #define BE300_FRAME_LCD_SCALE_MAX 4.0
-#define UI_BUTTON_MASK_THRESHOLD 128u
-#define UI_BUTTON_MASK_MIN_AREA 500u
-#define UI_BUTTON_MASK_MAX_COMPONENTS 16u
 #define BE300_TOUCH_LCD_W 240u
 #define BE300_TOUCH_LCD_H 320u
 #define BE300_TOUCH_PANEL_MAX_Y 359u
@@ -138,147 +91,10 @@ static uint32_t last_frame_tick = 0;
 /* Staging buffer for visible rectangle extraction */
 static uint16_t *staging_buf = NULL;
 
-#define BUZZER_SAMPLE_RATE      44100
-#define BUZZER_MAX_QUEUE_MS       250
-#define BUZZER_RETRIGGER_GAP_MS   120
-#define BUZZER_DEFAULT_HZ        1200
-#define BUZZER_DEFAULT_MS          60
-static uint32_t last_buzzer_tick = 0;
-
-/* Real audio path (AIU codec). Streams continuously, so allow a deeper
- * queue than the buzzer's one-shot pulses. */
-#define AIU_HOST_SAMPLE_RATE     BUZZER_SAMPLE_RATE
-#define AIU_MAX_QUEUE_MS               120
-
-static bool ui_audio_env_enabled(void)
-{
-    const char *v = getenv("BE300_AUDIO");
-
-    if (!v || !*v)
-        return true;
-    return strcmp(v, "0") != 0 &&
-        strcmp(v, "false") != 0 &&
-        strcmp(v, "FALSE") != 0 &&
-        strcmp(v, "off") != 0 &&
-        strcmp(v, "OFF") != 0;
-}
-
-static void ui_audio_init(void)
-{
-    SDL_AudioSpec want, have;
-
-    if (!ui_audio_env_enabled())
-        return;
-
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
-        fprintf(stderr, "[UI] SDL audio init failed: %s — continuing silent\n",
-                SDL_GetError());
-        return;
-    }
-    sdl_audio_initialized = true;
-
-    memset(&want, 0, sizeof(want));
-    want.freq = BUZZER_SAMPLE_RATE;
-    want.format = AUDIO_S16SYS;
-    want.channels = 1;
-    want.samples = 512;
-
-    audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (!audio_device) {
-        fprintf(stderr,
-            "[UI] SDL_OpenAudioDevice failed: %s — continuing silent\n",
-            SDL_GetError());
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
-        sdl_audio_initialized = false;
-        return;
-    }
-
-    SDL_PauseAudioDevice(audio_device, 0);
-}
-
-static void ui_audio_destroy(void)
-{
-    if (audio_device) {
-        SDL_ClearQueuedAudio(audio_device);
-        SDL_CloseAudioDevice(audio_device);
-        audio_device = 0;
-    }
-    if (sdl_audio_initialized) {
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
-        sdl_audio_initialized = false;
-    }
-}
-
-/* Host audio sink: 44100 Hz mono S16. Native builds queue to the SDL
- * device. The web build runs in a Web Worker, which has no AudioContext,
- * so it fills a ring that web/worker.js drains and posts to the page. */
-#ifdef __EMSCRIPTEN__
-#define WEB_AUDIO_RING_SAMPLES (BUZZER_SAMPLE_RATE / 2u)
-static int16_t web_audio_ring[WEB_AUDIO_RING_SAMPLES];
-static size_t web_audio_head;
-static size_t web_audio_count;
-static bool web_audio_enabled;
-
-void ui_web_audio_set_enabled(bool enabled)
-{
-    web_audio_enabled = enabled;
-    web_audio_head = 0;
-    web_audio_count = 0;
-}
-
-size_t ui_web_audio_drain(int16_t *dst, size_t max_samples)
-{
-    size_t n = web_audio_count < max_samples ? web_audio_count : max_samples;
-    size_t tail = (web_audio_head + WEB_AUDIO_RING_SAMPLES - web_audio_count) %
-        WEB_AUDIO_RING_SAMPLES;
-
-    for (size_t i = 0; i < n; i++)
-        dst[i] = web_audio_ring[(tail + i) % WEB_AUDIO_RING_SAMPLES];
-    web_audio_count -= n;
-    return n;
-}
-
-static bool ui_audio_sink_ready(void) { return web_audio_enabled; }
-static uint32_t ui_audio_sink_queued_bytes(void)
-{
-    return (uint32_t)(web_audio_count * sizeof(int16_t));
-}
-static void ui_audio_sink_clear(void) { web_audio_count = 0; }
-static void ui_audio_sink_put(const int16_t *pcm, size_t count)
-{
-    /* Overwrite the oldest samples when the worker falls behind. */
-    for (size_t i = 0; i < count; i++) {
-        web_audio_ring[web_audio_head] = pcm[i];
-        web_audio_head = (web_audio_head + 1u) % WEB_AUDIO_RING_SAMPLES;
-        if (web_audio_count < WEB_AUDIO_RING_SAMPLES)
-            web_audio_count++;
-    }
-}
-#else
-static bool ui_audio_sink_ready(void) { return audio_device != 0; }
-static uint32_t ui_audio_sink_queued_bytes(void)
-{
-    return SDL_GetQueuedAudioSize(audio_device);
-}
-static void ui_audio_sink_clear(void) { SDL_ClearQueuedAudio(audio_device); }
-static void ui_audio_sink_put(const int16_t *pcm, size_t count)
-{
-    SDL_QueueAudio(audio_device, pcm, (uint32_t)(count * sizeof(*pcm)));
-}
-#endif
-
-static void ui_reset_button_regions(void)
-{
-    memset(button_regions, 0, sizeof(button_regions));
-}
 
 static void ui_free_button_mask(void)
 {
-    free(button_mask_pixels);
-    button_mask_pixels = NULL;
-    button_mask_width = 0;
-    button_mask_height = 0;
-    ui_reset_button_regions();
+    ui_button_mask_free(&button_mask);
 }
 
 static void ui_video_destroy(machine_t *m)
@@ -512,121 +328,6 @@ static void ui_trim_frame_transparent_edges(uint8_t **pixels_io,
 }
 
 #ifdef HAVE_PNG
-typedef struct {
-    const uint8_t *cur;
-    size_t remaining;
-} ui_png_mem_reader_t;
-
-static void ui_png_read_from_memory(png_structp png, png_bytep dst, size_t len)
-{
-    ui_png_mem_reader_t *r = (ui_png_mem_reader_t *)png_get_io_ptr(png);
-
-    if (!r || r->remaining < len) {
-        png_error(png, "ui_png_read_from_memory: short read");
-        return;
-    }
-    memcpy(dst, r->cur, len);
-    r->cur += len;
-    r->remaining -= len;
-}
-
-static bool ui_load_png_rgba(const uint8_t *data, size_t len,
-    uint8_t **pixels_out, uint32_t *width_out, uint32_t *height_out)
-{
-    ui_png_mem_reader_t reader;
-    png_structp png = NULL;
-    png_infop info = NULL;
-    png_bytep *rows = NULL;
-    uint8_t *pixels = NULL;
-    png_uint_32 width, height;
-    int bit_depth, color_type;
-    size_t rowbytes;
-    bool ok = false;
-
-    if (!data || len < 8 || png_sig_cmp((png_bytep)data, 0, 8) != 0)
-        return false;
-
-    reader.cur = data + 8;
-    reader.remaining = len - 8;
-
-    png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (!png)
-        goto out;
-    info = png_create_info_struct(png);
-    if (!info)
-        goto out;
-
-    if (setjmp(png_jmpbuf(png)))
-        goto out;
-
-    png_set_read_fn(png, &reader, ui_png_read_from_memory);
-    png_set_sig_bytes(png, 8);
-    png_read_info(png, info);
-
-    width = png_get_image_width(png, info);
-    height = png_get_image_height(png, info);
-    bit_depth = png_get_bit_depth(png, info);
-    color_type = png_get_color_type(png, info);
-
-    if (bit_depth == 16)
-        png_set_strip_16(png);
-    if (color_type == PNG_COLOR_TYPE_PALETTE)
-        png_set_palette_to_rgb(png);
-    if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8)
-        png_set_expand_gray_1_2_4_to_8(png);
-    if (png_get_valid(png, info, PNG_INFO_tRNS))
-        png_set_tRNS_to_alpha(png);
-    if (color_type == PNG_COLOR_TYPE_GRAY ||
-        color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
-        png_set_gray_to_rgb(png);
-    if (!(color_type & PNG_COLOR_MASK_ALPHA))
-        png_set_filler(png, 0xff, PNG_FILLER_AFTER);
-
-    png_read_update_info(png, info);
-    rowbytes = png_get_rowbytes(png, info);
-    if (width == 0 || height == 0 || rowbytes < width * 4u)
-        goto out;
-
-    pixels = malloc((size_t)width * (size_t)height * 4u);
-    rows = malloc((size_t)height * sizeof(*rows));
-    if (!pixels || !rows)
-        goto out;
-
-    for (png_uint_32 y = 0; y < height; y++)
-        rows[y] = pixels + (size_t)y * (size_t)width * 4u;
-
-    if (rowbytes == width * 4u) {
-        png_read_image(png, rows);
-    } else {
-        uint8_t *tmp = malloc(rowbytes * (size_t)height);
-        if (!tmp)
-            goto out;
-        for (png_uint_32 y = 0; y < height; y++)
-            rows[y] = tmp + (size_t)y * rowbytes;
-        png_read_image(png, rows);
-        for (png_uint_32 y = 0; y < height; y++) {
-            memcpy(pixels + (size_t)y * (size_t)width * 4u,
-                   tmp + (size_t)y * rowbytes,
-                   (size_t)width * 4u);
-        }
-        free(tmp);
-    }
-    png_read_end(png, NULL);
-
-    *pixels_out = pixels;
-    *width_out = (uint32_t)width;
-    *height_out = (uint32_t)height;
-    pixels = NULL;
-    ok = true;
-
-out:
-    free(rows);
-    free(pixels);
-    if (png || info)
-        png_destroy_read_struct(&png, &info, NULL);
-    return ok;
-}
-
 #include "frame_png_embedded.h"
 
 static bool ui_load_frame_pixels(uint8_t **pixels_out, uint32_t *width_out,
@@ -639,290 +340,6 @@ static bool ui_load_frame_pixels(uint8_t **pixels_out, uint32_t *width_out,
     ui_trim_frame_transparent_edges(pixels_out, width_out, height_out);
     fprintf(stderr, "[UI] Loaded embedded frame asset (%u bytes)\n",
         (unsigned)be300_frame_png_len);
-    return true;
-}
-
-static int ui_button_component_area_desc(const void *ap, const void *bp)
-{
-    const ui_button_component_t *a = (const ui_button_component_t *)ap;
-    const ui_button_component_t *b = (const ui_button_component_t *)bp;
-
-    if (a->area < b->area)
-        return 1;
-    if (a->area > b->area)
-        return -1;
-    return 0;
-}
-
-static void ui_insert_button_component(ui_button_component_t *components,
-    size_t *count_io, const ui_button_component_t *component)
-{
-    size_t count = *count_io;
-
-    if (component->area < UI_BUTTON_MASK_MIN_AREA)
-        return;
-
-    if (count < UI_BUTTON_MASK_MAX_COMPONENTS) {
-        components[count] = *component;
-        *count_io = count + 1u;
-        return;
-    }
-
-    size_t smallest = 0;
-    for (size_t i = 1; i < count; i++) {
-        if (components[i].area < components[smallest].area)
-            smallest = i;
-    }
-    if (component->area > components[smallest].area)
-        components[smallest] = *component;
-}
-
-static bool ui_collect_button_components(const uint8_t *active,
-    uint32_t width, uint32_t height, ui_button_component_t *components,
-    size_t *count_out)
-{
-    size_t pixel_count = (size_t)width * (size_t)height;
-    uint8_t *seen = NULL;
-    uint32_t *queue = NULL;
-    size_t count = 0;
-
-    *count_out = 0;
-    if (!active || width == 0 || height == 0)
-        return false;
-
-    seen = calloc(pixel_count, 1);
-    queue = malloc(pixel_count * sizeof(*queue));
-    if (!seen || !queue) {
-        free(seen);
-        free(queue);
-        return false;
-    }
-
-    for (uint32_t y = 0; y < height; y++) {
-        for (uint32_t x = 0; x < width; x++) {
-            uint32_t start = y * width + x;
-            uint32_t head = 0, tail = 0, area = 0;
-            uint32_t min_x = x, min_y = y, max_x = x, max_y = y;
-            uint64_t sum_x = 0, sum_y = 0;
-
-            if (!active[start] || seen[start])
-                continue;
-
-            seen[start] = 1;
-            queue[tail++] = start;
-
-            while (head < tail) {
-                uint32_t p = queue[head++];
-                uint32_t px = p % width;
-                uint32_t py = p / width;
-                uint32_t y0 = py > 0 ? py - 1u : py;
-                uint32_t y1 = py + 1u < height ? py + 1u : py;
-                uint32_t x0 = px > 0 ? px - 1u : px;
-                uint32_t x1 = px + 1u < width ? px + 1u : px;
-
-                area++;
-                sum_x += px;
-                sum_y += py;
-                if (px < min_x) min_x = px;
-                if (px > max_x) max_x = px;
-                if (py < min_y) min_y = py;
-                if (py > max_y) max_y = py;
-
-                for (uint32_t ny = y0; ny <= y1; ny++) {
-                    for (uint32_t nx = x0; nx <= x1; nx++) {
-                        uint32_t np;
-
-                        if (nx == px && ny == py)
-                            continue;
-                        np = ny * width + nx;
-                        if (!active[np] || seen[np])
-                            continue;
-                        seen[np] = 1;
-                        queue[tail++] = np;
-                    }
-                }
-            }
-
-            if (area >= UI_BUTTON_MASK_MIN_AREA) {
-                ui_button_component_t component = {
-                    .area = area,
-                    .min_x = min_x,
-                    .min_y = min_y,
-                    .max_x = max_x,
-                    .max_y = max_y,
-                    .cx = (double)sum_x / (double)area,
-                    .cy = (double)sum_y / (double)area
-                };
-                ui_insert_button_component(components, &count,
-                    &component);
-            }
-        }
-    }
-
-    free(seen);
-    free(queue);
-
-    if (count == 0)
-        return false;
-
-    qsort(components, count, sizeof(*components),
-        ui_button_component_area_desc);
-    *count_out = count;
-    return true;
-}
-
-static void ui_region_from_component(ui_button_region_t *region,
-    const ui_button_component_t *component)
-{
-    region->valid = true;
-    region->area = component->area;
-    region->min_x = component->min_x;
-    region->min_y = component->min_y;
-    region->max_x = component->max_x;
-    region->max_y = component->max_y;
-    region->cx = component->cx;
-    region->cy = component->cy;
-}
-
-static void ui_split_side_component(const uint8_t *active, uint32_t width,
-    const ui_button_component_t *component, bool left_side,
-    ui_button_region_t *upper, ui_button_region_t *lower)
-{
-    double box_w = (double)(component->max_x - component->min_x + 1u);
-    double box_h = (double)(component->max_y - component->min_y + 1u);
-    double upper_x = (double)component->min_x +
-        (left_side ? 0.25 : 0.75) * box_w;
-    double upper_y = (double)component->min_y + 0.30 * box_h;
-    double lower_x = (double)component->min_x +
-        (left_side ? 0.75 : 0.25) * box_w;
-    double lower_y = (double)component->min_y + 0.82 * box_h;
-
-    for (int iter = 0; iter < 8; iter++) {
-        double upper_sum_x = 0.0, upper_sum_y = 0.0;
-        double lower_sum_x = 0.0, lower_sum_y = 0.0;
-        uint32_t upper_count = 0, lower_count = 0;
-
-        for (uint32_t y = component->min_y; y <= component->max_y; y++) {
-            for (uint32_t x = component->min_x; x <= component->max_x; x++) {
-                double du, dl;
-
-                if (!active[(size_t)y * width + x])
-                    continue;
-
-                du = ((double)x - upper_x) * ((double)x - upper_x) +
-                    ((double)y - upper_y) * ((double)y - upper_y);
-                dl = ((double)x - lower_x) * ((double)x - lower_x) +
-                    ((double)y - lower_y) * ((double)y - lower_y);
-                if (du <= dl) {
-                    upper_sum_x += x;
-                    upper_sum_y += y;
-                    upper_count++;
-                } else {
-                    lower_sum_x += x;
-                    lower_sum_y += y;
-                    lower_count++;
-                }
-            }
-        }
-
-        if (upper_count != 0) {
-            upper_x = upper_sum_x / (double)upper_count;
-            upper_y = upper_sum_y / (double)upper_count;
-        }
-        if (lower_count != 0) {
-            lower_x = lower_sum_x / (double)lower_count;
-            lower_y = lower_sum_y / (double)lower_count;
-        }
-    }
-
-    ui_region_from_component(upper, component);
-    ui_region_from_component(lower, component);
-    upper->cx = upper_x;
-    upper->cy = upper_y;
-    lower->cx = lower_x;
-    lower->cy = lower_y;
-}
-
-static bool ui_assign_button_regions(const ui_button_component_t *components,
-    size_t count, const uint8_t *active, uint32_t width,
-    ui_button_region_t *regions_out)
-{
-    int left_upper = -1, left_lower = -1;
-    int right_upper = -1, right_lower = -1;
-    size_t left_count = 0, right_count = 0;
-    const ui_button_component_t *dpad;
-
-    memset(regions_out, 0, sizeof(button_regions));
-    if (!components || count < 3 || !active || width == 0)
-        return false;
-
-    dpad = &components[0];
-    if (count < 5) {
-        int left_side = -1, right_side = -1;
-
-        for (size_t i = 1; i < count; i++) {
-            if (components[i].cx < dpad->cx) {
-                if (left_side < 0 ||
-                    components[i].area > components[left_side].area)
-                    left_side = (int)i;
-            } else {
-                if (right_side < 0 ||
-                    components[i].area > components[right_side].area)
-                    right_side = (int)i;
-            }
-        }
-
-        if (left_side < 0 || right_side < 0)
-            return false;
-
-        ui_region_from_component(&regions_out[UI_BUTTON_REGION_DPAD],
-            dpad);
-        ui_split_side_component(active, width, &components[left_side],
-            true, &regions_out[UI_BUTTON_REGION_ROCKET],
-            &regions_out[UI_BUTTON_REGION_OK]);
-        ui_split_side_component(active, width, &components[right_side],
-            false, &regions_out[UI_BUTTON_REGION_POWER],
-            &regions_out[UI_BUTTON_REGION_ESC]);
-        return true;
-    }
-
-    for (size_t i = 1; i < count; i++) {
-        const ui_button_component_t *component = &components[i];
-
-        if (component->cx < dpad->cx) {
-            left_count++;
-            if (left_upper < 0 ||
-                component->cy < components[left_upper].cy)
-                left_upper = (int)i;
-            if (left_lower < 0 ||
-                component->cy > components[left_lower].cy)
-                left_lower = (int)i;
-        } else {
-            right_count++;
-            if (right_upper < 0 ||
-                component->cy < components[right_upper].cy)
-                right_upper = (int)i;
-            if (right_lower < 0 ||
-                component->cy > components[right_lower].cy)
-                right_lower = (int)i;
-        }
-    }
-
-    if (left_count < 2 || right_count < 2 ||
-        left_upper < 0 || left_lower < 0 ||
-        right_upper < 0 || right_lower < 0 ||
-        left_upper == left_lower || right_upper == right_lower)
-        return false;
-
-    ui_region_from_component(&regions_out[UI_BUTTON_REGION_DPAD], dpad);
-    ui_region_from_component(&regions_out[UI_BUTTON_REGION_ROCKET],
-        &components[left_upper]);
-    ui_region_from_component(&regions_out[UI_BUTTON_REGION_OK],
-        &components[left_lower]);
-    ui_region_from_component(&regions_out[UI_BUTTON_REGION_POWER],
-        &components[right_upper]);
-    ui_region_from_component(&regions_out[UI_BUTTON_REGION_ESC],
-        &components[right_lower]);
     return true;
 }
 
@@ -940,49 +357,17 @@ static void ui_log_button_region(const char *name,
 static bool ui_configure_button_mask(const char *path, const uint8_t *rgba,
     uint32_t width, uint32_t height)
 {
-    size_t pixel_count = (size_t)width * (size_t)height;
-    uint8_t *active = NULL;
-    ui_button_component_t components[UI_BUTTON_MASK_MAX_COMPONENTS];
-    ui_button_region_t regions[UI_BUTTON_REGION_COUNT];
-    size_t component_count = 0;
-
-    if (!rgba || width == 0 || height == 0)
+    if (!ui_button_mask_build(&button_mask, rgba, width, height))
         return false;
-
-    active = malloc(pixel_count);
-    if (!active)
-        return false;
-
-    for (size_t i = 0; i < pixel_count; i++) {
-        const uint8_t *p = rgba + i * 4u;
-        uint32_t luma = (uint32_t)p[0] * 77u +
-            (uint32_t)p[1] * 150u + (uint32_t)p[2] * 29u;
-
-        active[i] = (p[3] >= 16u &&
-            (luma >> 8) >= UI_BUTTON_MASK_THRESHOLD) ? 1u : 0u;
-    }
-
-    if (!ui_collect_button_components(active, width, height, components,
-        &component_count) ||
-        !ui_assign_button_regions(components, component_count, active,
-            width, regions)) {
-        free(active);
-        return false;
-    }
-
-    ui_free_button_mask();
-    button_mask_pixels = active;
-    button_mask_width = width;
-    button_mask_height = height;
-    memcpy(button_regions, regions, sizeof(button_regions));
 
     fprintf(stderr, "[UI] Loaded button mask: %s (%ux%u)\n", path,
         width, height);
-    ui_log_button_region("dpad", &button_regions[UI_BUTTON_REGION_DPAD]);
-    ui_log_button_region("rocket", &button_regions[UI_BUTTON_REGION_ROCKET]);
-    ui_log_button_region("power", &button_regions[UI_BUTTON_REGION_POWER]);
-    ui_log_button_region("ok", &button_regions[UI_BUTTON_REGION_OK]);
-    ui_log_button_region("esc", &button_regions[UI_BUTTON_REGION_ESC]);
+    ui_log_button_region("dpad", &button_mask.regions[UI_BUTTON_REGION_DPAD]);
+    ui_log_button_region("rocket",
+        &button_mask.regions[UI_BUTTON_REGION_ROCKET]);
+    ui_log_button_region("power", &button_mask.regions[UI_BUTTON_REGION_POWER]);
+    ui_log_button_region("ok", &button_mask.regions[UI_BUTTON_REGION_OK]);
+    ui_log_button_region("esc", &button_mask.regions[UI_BUTTON_REGION_ESC]);
     return true;
 }
 
@@ -1254,182 +639,6 @@ static bool ui_apply_frame_window_shape(SDL_Window *win,
     return ok;
 }
 
-#ifdef __APPLE__
-static void ui_macos_release_cg_data(void *info, const void *data,
-    size_t size)
-{
-    (void)info;
-    (void)size;
-    free((void *)data);
-}
-
-static void ui_macos_make_window_transparent(SDL_Window *win)
-{
-    SDL_SysWMinfo info;
-    Class ns_color_class;
-    id ns_window;
-    id content_view;
-    id layer;
-    id clear_color;
-    id clear_cg_color = NULL;
-
-    if (!win)
-        return;
-
-    SDL_VERSION(&info.version);
-    if (!SDL_GetWindowWMInfo(win, &info) ||
-        info.subsystem != SDL_SYSWM_COCOA)
-        return;
-
-    ns_window = (id)info.info.cocoa.window;
-    if (!ns_window)
-        return;
-
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(ns_window,
-        sel_registerName("setOpaque:"), (BOOL)0);
-
-    ns_color_class = (Class)objc_getClass("NSColor");
-    if (ns_color_class) {
-        clear_color = ((id (*)(Class, SEL))objc_msgSend)(ns_color_class,
-            sel_registerName("clearColor"));
-        if (clear_color) {
-            ((void (*)(id, SEL, id))objc_msgSend)(ns_window,
-                sel_registerName("setBackgroundColor:"), clear_color);
-            clear_cg_color = ((id (*)(id, SEL))objc_msgSend)(clear_color,
-                sel_registerName("CGColor"));
-        }
-    }
-
-    content_view = ((id (*)(id, SEL))objc_msgSend)(ns_window,
-        sel_registerName("contentView"));
-    if (!content_view)
-        return;
-
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(content_view,
-        sel_registerName("setWantsLayer:"), (BOOL)1);
-    layer = ((id (*)(id, SEL))objc_msgSend)(content_view,
-        sel_registerName("layer"));
-    if (!layer)
-        return;
-
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(layer,
-        sel_registerName("setOpaque:"), (BOOL)0);
-    if (clear_cg_color) {
-        ((void (*)(id, SEL, id))objc_msgSend)(layer,
-            sel_registerName("setBackgroundColor:"), clear_cg_color);
-    }
-}
-
-static void ui_macos_apply_window_mask(SDL_Window *win,
-    const uint8_t *window_mask, int win_w, int win_h)
-{
-    SDL_SysWMinfo info;
-    Class ca_layer_class;
-    id ns_window;
-    id content_view;
-    id layer;
-    id mask_layer;
-    CGColorSpaceRef color_space = NULL;
-    CGDataProviderRef provider = NULL;
-    CGImageRef image = NULL;
-    uint8_t *rgba = NULL;
-    size_t pixels;
-    CGRect bounds;
-
-    if (!win || !window_mask || win_w <= 0 || win_h <= 0)
-        return;
-
-    SDL_VERSION(&info.version);
-    if (!SDL_GetWindowWMInfo(win, &info) ||
-        info.subsystem != SDL_SYSWM_COCOA)
-        return;
-
-    ns_window = (id)info.info.cocoa.window;
-    if (!ns_window)
-        return;
-
-    content_view = ((id (*)(id, SEL))objc_msgSend)(ns_window,
-        sel_registerName("contentView"));
-    if (!content_view)
-        return;
-
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(content_view,
-        sel_registerName("setWantsLayer:"), (BOOL)1);
-    layer = ((id (*)(id, SEL))objc_msgSend)(content_view,
-        sel_registerName("layer"));
-    if (!layer)
-        return;
-
-    pixels = (size_t)win_w * (size_t)win_h;
-    rgba = malloc(pixels * 4u);
-    if (!rgba)
-        return;
-    for (size_t i = 0; i < pixels; i++) {
-        rgba[i * 4u + 0u] = 255;
-        rgba[i * 4u + 1u] = 255;
-        rgba[i * 4u + 2u] = 255;
-        rgba[i * 4u + 3u] = window_mask[i];
-    }
-
-    color_space = CGColorSpaceCreateDeviceRGB();
-    if (!color_space)
-        goto out;
-    provider = CGDataProviderCreateWithData(NULL, rgba, pixels * 4u,
-        ui_macos_release_cg_data);
-    if (!provider)
-        goto out;
-    rgba = NULL;  /* owned by provider */
-
-    image = CGImageCreate((size_t)win_w, (size_t)win_h, 8, 32,
-        (size_t)win_w * 4u, color_space,
-        kCGBitmapByteOrder32Big | kCGImageAlphaLast,
-        provider, NULL, false, kCGRenderingIntentDefault);
-    if (!image)
-        goto out;
-
-    ca_layer_class = (Class)objc_getClass("CALayer");
-    if (!ca_layer_class)
-        goto out;
-    mask_layer = ((id (*)(Class, SEL))objc_msgSend)(ca_layer_class,
-        sel_registerName("layer"));
-    if (!mask_layer)
-        goto out;
-
-    bounds = CGRectMake(0.0, 0.0, (CGFloat)win_w, (CGFloat)win_h);
-    ((void (*)(id, SEL, CGRect))objc_msgSend)(mask_layer,
-        sel_registerName("setFrame:"), bounds);
-    ((void (*)(id, SEL, id))objc_msgSend)(mask_layer,
-        sel_registerName("setContents:"), (id)image);
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(layer,
-        sel_registerName("setMasksToBounds:"), (BOOL)1);
-    ((void (*)(id, SEL, id))objc_msgSend)(layer,
-        sel_registerName("setMask:"), mask_layer);
-
-out:
-    free(rgba);
-    if (image)
-        CGImageRelease(image);
-    if (provider)
-        CGDataProviderRelease(provider);
-    if (color_space)
-        CGColorSpaceRelease(color_space);
-}
-#else
-static void ui_macos_make_window_transparent(SDL_Window *win)
-{
-    (void)win;
-}
-
-static void ui_macos_apply_window_mask(SDL_Window *win,
-    const uint8_t *window_mask, int win_w, int win_h)
-{
-    (void)win;
-    (void)window_mask;
-    (void)win_w;
-    (void)win_h;
-}
-#endif
-
 static bool ui_window_to_frame(machine_t *m, int win_x, int win_y,
     double *frame_x_out, double *frame_y_out)
 {
@@ -1505,11 +714,6 @@ static bool ui_window_to_touch(machine_t *m, int win_x, int win_y,
     *x_out = (uint16_t)tx;
     *y_out = (uint16_t)ty;
     return true;
-}
-
-static bool ui_tick_reached(uint32_t now, uint32_t due)
-{
-    return (int32_t)(now - due) >= 0;
 }
 
 static uint32_t ui_later_tick(uint32_t a, uint32_t b)
@@ -1591,136 +795,6 @@ static bool ui_frame_point_in_rect(double fx, double fy, int x, int y,
     return fx >= x && fy >= y && fx < x + w && fy < y + h;
 }
 
-static bool ui_button_region_contains(const ui_button_region_t *region,
-    uint32_t x, uint32_t y)
-{
-    return region->valid &&
-        x >= region->min_x && x <= region->max_x &&
-        y >= region->min_y && y <= region->max_y;
-}
-
-static double ui_button_region_distance_sq(const ui_button_region_t *region,
-    uint32_t x, uint32_t y)
-{
-    double dx = (double)x + 0.5 - region->cx;
-    double dy = (double)y + 0.5 - region->cy;
-
-    return dx * dx + dy * dy;
-}
-
-static void ui_set_side_button_from_regions(
-    const ui_button_region_t *upper, const ui_button_region_t *lower,
-    uint32_t x, uint32_t y, uint8_t upper_btn_set1,
-    uint8_t upper_btn_set2, uint8_t lower_btn_set1,
-    uint8_t lower_btn_set2, uint8_t *btn_set1_out,
-    uint8_t *btn_set2_out)
-{
-    bool use_upper = ui_button_region_distance_sq(upper, x, y) <=
-        ui_button_region_distance_sq(lower, x, y);
-
-    if (use_upper) {
-        *btn_set1_out = upper_btn_set1;
-        *btn_set2_out = upper_btn_set2;
-    } else {
-        *btn_set1_out = lower_btn_set1;
-        *btn_set2_out = lower_btn_set2;
-    }
-}
-
-static bool ui_frame_hit_button_mask(double bx, double by,
-    uint8_t *btn_set1_out, uint8_t *btn_set2_out)
-{
-    int ix = (int)floor(bx);
-    int iy = (int)floor(by);
-    ui_button_region_kind_t kind = UI_BUTTON_REGION_NONE;
-    const ui_button_region_t *region = NULL;
-
-    if (!button_mask_pixels || ix < 0 || iy < 0 ||
-        (uint32_t)ix >= button_mask_width ||
-        (uint32_t)iy >= button_mask_height)
-        return false;
-
-    if (!button_mask_pixels[(size_t)iy * button_mask_width + (uint32_t)ix])
-        return false;
-
-    if (ui_button_region_contains(&button_regions[UI_BUTTON_REGION_DPAD],
-        (uint32_t)ix, (uint32_t)iy)) {
-        kind = UI_BUTTON_REGION_DPAD;
-        region = &button_regions[UI_BUTTON_REGION_DPAD];
-    } else if (ui_button_region_contains(
-        &button_regions[UI_BUTTON_REGION_ROCKET], (uint32_t)ix,
-        (uint32_t)iy) &&
-        ui_button_region_contains(&button_regions[UI_BUTTON_REGION_OK],
-        (uint32_t)ix, (uint32_t)iy)) {
-        ui_set_side_button_from_regions(
-            &button_regions[UI_BUTTON_REGION_ROCKET],
-            &button_regions[UI_BUTTON_REGION_OK],
-            (uint32_t)ix, (uint32_t)iy,
-            0, 0x10u, 0x04u, 0, btn_set1_out, btn_set2_out);
-        return true;
-    } else if (ui_button_region_contains(
-        &button_regions[UI_BUTTON_REGION_POWER], (uint32_t)ix,
-        (uint32_t)iy) &&
-        ui_button_region_contains(&button_regions[UI_BUTTON_REGION_ESC],
-        (uint32_t)ix, (uint32_t)iy)) {
-        ui_set_side_button_from_regions(
-            &button_regions[UI_BUTTON_REGION_POWER],
-            &button_regions[UI_BUTTON_REGION_ESC],
-            (uint32_t)ix, (uint32_t)iy,
-            0, 0x80u, 0x08u, 0, btn_set1_out, btn_set2_out);
-        return true;
-    } else {
-        for (ui_button_region_kind_t i = UI_BUTTON_REGION_ROCKET;
-            i < UI_BUTTON_REGION_COUNT; i++) {
-            if (ui_button_region_contains(&button_regions[i],
-                (uint32_t)ix, (uint32_t)iy)) {
-                kind = i;
-                region = &button_regions[i];
-                break;
-            }
-        }
-    }
-
-    if (!region)
-        return false;
-
-    switch (kind) {
-    case UI_BUTTON_REGION_DPAD: {
-        double rx = ((double)(region->max_x - region->min_x + 1u)) / 2.0;
-        double ry = ((double)(region->max_y - region->min_y + 1u)) / 2.0;
-        double dx, dy;
-
-        if (rx <= 0.0 || ry <= 0.0)
-            return false;
-
-        dx = ((double)ix + 0.5 - region->cx) / rx;
-        dy = ((double)iy + 0.5 - region->cy) / ry;
-        if (dx * dx + dy * dy < 0.18) {
-            *btn_set1_out = 0x04u;  /* ok */
-        } else if (fabs(dy) >= fabs(dx)) {
-            *btn_set1_out = dy < 0.0 ? 0x10u : 0x20u;  /* up/down */
-        } else {
-            *btn_set1_out = dx > 0.0 ? 0x40u : 0x80u;  /* right/left */
-        }
-        return true;
-    }
-    case UI_BUTTON_REGION_ROCKET:
-        *btn_set2_out = 0x10u;
-        return true;
-    case UI_BUTTON_REGION_POWER:
-        *btn_set2_out = 0x80u;
-        return true;
-    case UI_BUTTON_REGION_OK:
-        *btn_set1_out = 0x04u;
-        return true;
-    case UI_BUTTON_REGION_ESC:
-        *btn_set1_out = 0x08u;
-        return true;
-    default:
-        return false;
-    }
-}
-
 static bool ui_frame_hit_button_fallback(double bx, double by,
     uint8_t *btn_set1_out, uint8_t *btn_set2_out)
 {
@@ -1776,8 +850,8 @@ static bool ui_frame_hit_button(machine_t *m, int win_x, int win_y,
     bx = fx + (double)frame_trim_x;
     by = fy + (double)frame_trim_y;
 
-    if (button_mask_pixels)
-        return ui_frame_hit_button_mask(bx, by, btn_set1_out,
+    if (button_mask.active)
+        return ui_button_mask_hit(&button_mask, bx, by, btn_set1_out,
             btn_set2_out);
 
     return ui_frame_hit_button_fallback(bx, by, btn_set1_out,
@@ -1899,7 +973,6 @@ int ui_init(machine_t *m)
     button_min_dwell_ms = ui_ms_from_env("BE300_BUTTON_MIN_DWELL_MS",
         BUTTON_MIN_DWELL_DEFAULT_MS, BUTTON_MIN_DWELL_MAX_MS);
     last_frame_tick = 0;
-    last_buzzer_tick = 0;
 
     ui_audio_init();
 
@@ -2311,156 +1384,6 @@ void ui_destroy(machine_t *m)
         SDL_Quit();
 }
 
-void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
-{
-    uint32_t queued_max;
-    uint32_t now;
-    uint32_t period;
-    uint32_t samples;
-    int16_t *pcm;
-
-    if (!ui_audio_sink_ready())
-        return;
-
-    now = SDL_GetTicks();
-    if (ui_audio_sink_queued_bytes() > 0 ||
-        (last_buzzer_tick != 0 &&
-         !ui_tick_reached(now, last_buzzer_tick + BUZZER_RETRIGGER_GAP_MS)))
-        return;
-    last_buzzer_tick = now;
-
-    if (frequency_hz == 0)
-        frequency_hz = BUZZER_DEFAULT_HZ;
-    if (duration_ms == 0)
-        duration_ms = BUZZER_DEFAULT_MS;
-
-    if (frequency_hz < 80)
-        frequency_hz = 80;
-    if (frequency_hz > 6000)
-        frequency_hz = 6000;
-    if (duration_ms > 500)
-        duration_ms = 500;
-
-    samples = (BUZZER_SAMPLE_RATE * duration_ms) / 1000u;
-    if (samples == 0)
-        return;
-
-    pcm = malloc((size_t)samples * sizeof(*pcm));
-    if (!pcm)
-        return;
-
-    period = BUZZER_SAMPLE_RATE / frequency_hz;
-    if (period < 2)
-        period = 2;
-
-    for (uint32_t i = 0; i < samples; i++) {
-        uint32_t edge = (i * 12u) / samples;
-        int32_t amp = 6500;
-
-        if (edge < 12u)
-            amp = (amp * (int32_t)edge) / 12;
-        if (i > samples - (samples / 8u + 1u)) {
-            uint32_t rem = samples - i;
-            uint32_t tail = samples / 8u + 1u;
-            amp = (amp * (int32_t)rem) / (int32_t)tail;
-        }
-
-        pcm[i] = ((i % period) < (period / 2u))
-            ? (int16_t)amp
-            : (int16_t)-amp;
-    }
-
-    queued_max = (BUZZER_SAMPLE_RATE * sizeof(int16_t) *
-        BUZZER_MAX_QUEUE_MS) / 1000u;
-    if (ui_audio_sink_queued_bytes() > queued_max)
-        ui_audio_sink_clear();
-
-    ui_audio_sink_put(pcm, samples);
-    free(pcm);
-}
-
-static int32_t ui_audio_frame_mono(const int16_t *samples, size_t i,
-                                   uint8_t channels)
-{
-    if (channels == 2u)
-        return ((int32_t)samples[i * 2u] + (int32_t)samples[i * 2u + 1u]) / 2;
-    return samples[i];
-}
-
-void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
-                        uint32_t guest_rate_hz, uint8_t channels)
-{
-    /* Linear-interpolating resampler whose phase and last input frame carry
-     * across calls, so the AIU can feed it arbitrarily small chunks without
-     * per-chunk rounding error (pitch drift) or boundary clicks. */
-    static uint32_t last_rate_hz;
-    static double phase;          /* next output position, in input frames
-                                   * relative to this chunk; -1..0 = between
-                                   * the previous chunk's last frame and
-                                   * this chunk's first */
-    static int32_t prev_frame;
-    uint32_t queued_max;
-    int16_t out[1024];
-    size_t out_count = 0;
-    double step;
-
-    if (!ui_audio_sink_ready() || !samples || count_frames == 0)
-        return;
-    if (channels == 0)
-        channels = 1;
-    if (guest_rate_hz == 0)
-        guest_rate_hz = AIU_HOST_SAMPLE_RATE;
-
-    /* Backpressure: if the host queue is already deeper than our cap,
-     * drop this batch. Keeps wall-clock latency bounded. */
-    queued_max = (AIU_HOST_SAMPLE_RATE * (uint32_t)sizeof(int16_t) *
-        AIU_MAX_QUEUE_MS) / 1000u;
-    if (ui_audio_sink_queued_bytes() > queued_max) {
-        last_rate_hz = 0;
-        return;
-    }
-
-    if (guest_rate_hz != last_rate_hz) {
-        last_rate_hz = guest_rate_hz;
-        phase = 0.0;
-        prev_frame = ui_audio_frame_mono(samples, 0, channels);
-    }
-    step = (double)guest_rate_hz / (double)AIU_HOST_SAMPLE_RATE;
-
-    while (phase < (double)(count_frames - 1u) + 1e-9 ||
-           phase < 0.0) {
-        int32_t s0, s1, mixed;
-        double frac;
-
-        if (phase < 0.0) {
-            s0 = prev_frame;
-            s1 = ui_audio_frame_mono(samples, 0, channels);
-            frac = phase + 1.0;
-        } else {
-            size_t i0 = (size_t)phase;
-            size_t i1 = (i0 + 1u < count_frames) ? i0 + 1u : i0;
-
-            s0 = ui_audio_frame_mono(samples, i0, channels);
-            s1 = ui_audio_frame_mono(samples, i1, channels);
-            frac = phase - (double)i0;
-        }
-        mixed = (int32_t)((double)s0 + (double)(s1 - s0) * frac);
-        if (mixed > 32767) mixed = 32767;
-        if (mixed < -32768) mixed = -32768;
-        out[out_count++] = (int16_t)mixed;
-        if (out_count == sizeof(out) / sizeof(out[0])) {
-            ui_audio_sink_put(out, out_count);
-            out_count = 0;
-        }
-        phase += step;
-    }
-    prev_frame = ui_audio_frame_mono(samples, count_frames - 1u, channels);
-    phase -= (double)count_frames;
-
-    if (out_count > 0)
-        ui_audio_sink_put(out, out_count);
-}
-
 #else  /* !HAVE_SDL2 — headless stubs */
 
 int  ui_init(machine_t *m)         { (void)m; return 0; }
@@ -2468,10 +1391,5 @@ void ui_update(machine_t *m)       { (void)m; }
 void ui_destroy(machine_t *m)      { (void)m; }
 bool ui_should_quit(machine_t *m)  { (void)m; return false; }
 void ui_save_screenshot(machine_t *m) { (void)m; }
-void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms)
-    { (void)frequency_hz; (void)duration_ms; }
-void ui_audio_queue_pcm(const int16_t *samples, size_t count_frames,
-                        uint32_t guest_rate_hz, uint8_t channels)
-    { (void)samples; (void)count_frames; (void)guest_rate_hz; (void)channels; }
 
 #endif  /* HAVE_SDL2 */

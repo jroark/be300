@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import * as config from "../web/launch-config.mjs";
+import * as buttonRegions from "../web/button-regions.mjs";
 
 const imageIds = ["300", "beshell", "expod", "net", "glaze", "mw-2.4", "opie-4.2"];
 const parse = (search) => config.parseLaunchConfig(search, imageIds);
@@ -101,14 +102,20 @@ async function frontend(search) {
   document.querySelector = (selector) => element(selector.replace(/^#/, ""));
   document.querySelectorAll = () => [];
   const context = vm.createContext({ window, document, Worker, Image: Target, URL, URLSearchParams, console, performance, setTimeout, clearTimeout });
-  const exports = Object.keys(config);
-  const dependency = new vm.SyntheticModule(exports, function () {
-    for (const name of exports) this.setExport(name, config[name]);
-  }, { context });
+  const synthetic = (namespace) => {
+    const names = Object.keys(namespace);
+    return new vm.SyntheticModule(names, function () {
+      for (const name of names) this.setExport(name, namespace[name]);
+    }, { context });
+  };
+  const dependencies = {
+    "./launch-config.mjs": synthetic(config),
+    "./button-regions.mjs": synthetic(buttonRegions),
+  };
   const module = new vm.SourceTextModule(await readFile(new URL("../web/app.js", import.meta.url), "utf8"), {
     context, initializeImportMeta(meta) { meta.url = "https://linux4be.com/app.js"; },
   });
-  await module.link(() => dependency);
+  await module.link((specifier) => dependencies[specifier.split("?")[0]]);
   await module.evaluate();
   return { element, messages, worker, window, audioContexts: () => audioContexts };
 }

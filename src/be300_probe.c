@@ -7,9 +7,12 @@
 #include <time.h>
 
 #include "be300_probe.h"
+#include "host_time.h"
 
 #include "cpu.h"
+#include "devices.h"
 #include "machine.h"
+#include "memory.h"
 
 /*
  * Small, supported diagnostics for BE-300 emulator runs.
@@ -88,17 +91,6 @@ static uint32_t be300_mmio_hash(const char *dev, uint32_t off, char op)
     return h & (BE300_MMIO_COV_CAP - 1u);
 }
 
-static uint64_t be300_probe_wall_ns(void)
-{
-    struct timespec ts;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
-        return 0;
-
-    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) +
-        (uint64_t)ts.tv_nsec;
-}
-
 static uint32_t be300_probe_norm_pc(uint64_t pc)
 {
     return (uint32_t)pc;
@@ -117,8 +109,17 @@ static void be300_probe_reset_state(void)
     memset(&g_stall, 0, sizeof(g_stall));
 }
 
+static void be300_probe_vr41xx_unhandled(uint32_t off, int writeflag,
+    unsigned len, uint64_t pc)
+{
+    be300_probe_note_mmio("vr41xx-default", off,
+        writeflag == MEM_WRITE ? 'W' : 'R', len, pc,
+        BE300_MMIO_CLASS_DEFAULT);
+}
+
 void be300_probe_attach(struct machine *machine)
 {
+    dev_vr41xx_set_unhandled_hook(be300_probe_vr41xx_unhandled);
     g_probe.machine = machine;
     g_probe.mmio_coverage = false;
     g_probe.detect_stall = false;
@@ -220,7 +221,7 @@ static void be300_probe_stall_sample(uint32_t pc)
     if (g_stall.samples_in_bucket < g_probe.stall_window)
         return;
 
-    uint64_t now_ns = be300_probe_wall_ns();
+    uint64_t now_ns = be300_host_monotonic_ns();
     if (g_stall.inserted < g_probe.stall_unique_threshold) {
         if (g_stall.low_run_start_ns == 0)
             g_stall.low_run_start_ns = now_ns;

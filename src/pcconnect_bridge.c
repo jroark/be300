@@ -28,6 +28,7 @@
 #endif
 
 #include "be300.h"
+#include "host_time.h"
 #include "pcconnect_bridge.h"
 #include "pcconnect_ring.h"
 
@@ -141,14 +142,6 @@ static pcc_br_state_t *wince_bridge(void)
 
 /* ---------- helpers ---------- */
 
-static uint64_t mono_ns(void)
-{
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
-        return 0;
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-
 static const char *bridge_tag(const pcc_br_state_t *s)
 {
     /* serial0 / serial1 for stderr/tee logs; legacy name for WinCE bridge. */
@@ -166,7 +159,7 @@ static void tee_write_dir(pcc_br_state_t *s, const char *tag,
 {
     if (!s->tee || len == 0)
         return;
-    fprintf(s->tee, "%llu %s %zu:", (unsigned long long)mono_ns(), tag, len);
+    fprintf(s->tee, "%llu %s %zu:", (unsigned long long)be300_host_monotonic_ns(), tag, len);
     for (size_t i = 0; i < len; i++)
         fprintf(s->tee, " %02x", buf[i]);
     fputc('\n', s->tee);
@@ -328,7 +321,7 @@ static void bridge_release_rx_paced(pcc_br_state_t *s)
     if (pcc_ring_is_empty(&s->rx_pre_ring))
         return;
     was_empty = pcc_ring_is_empty(&s->rx_ring);
-    uint64_t now = mono_ns();
+    uint64_t now = be300_host_monotonic_ns();
     if (s->rx_next_due_ns == 0 || s->rx_next_due_ns + 100000000ull < now)
         s->rx_next_due_ns = now;
     while (!pcc_ring_is_empty(&s->rx_pre_ring) && now >= s->rx_next_due_ns &&
@@ -337,7 +330,7 @@ static void bridge_release_rx_paced(pcc_br_state_t *s)
         if (b < 0) break;
         released |= bridge_guest_rx_push(s, (uint8_t)b);
         s->rx_next_due_ns += s->rx_ns_per_byte;
-        now = mono_ns();
+        now = be300_host_monotonic_ns();
     }
     bridge_note_rx_released(s, was_empty, released);
     if (pcc_ring_is_empty(&s->rx_pre_ring))
@@ -430,7 +423,7 @@ static void bridge_drain_tx(pcc_br_state_t *s)
 
     /* Baud-throttled path: emit one byte per tx_ns_per_byte interval. */
     if (s->tx_ns_per_byte > 0) {
-        uint64_t now = mono_ns();
+        uint64_t now = be300_host_monotonic_ns();
         if (s->tx_next_due_ns == 0)
             s->tx_next_due_ns = now;
         while (!pcc_ring_is_empty(&s->tx_ring) && now >= s->tx_next_due_ns) {
@@ -443,7 +436,7 @@ static void bridge_drain_tx(pcc_br_state_t *s)
                 s->tx_next_due_ns += s->tx_ns_per_byte;
                 if (s->tx_next_due_ns + 10ull * s->tx_ns_per_byte < now)
                     s->tx_next_due_ns = now;
-                now = mono_ns();
+                now = be300_host_monotonic_ns();
                 continue;
             }
             if (n < 0) {

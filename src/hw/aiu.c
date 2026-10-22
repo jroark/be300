@@ -19,6 +19,7 @@
 
 #include "../be300.h"
 #include "../ui.h"
+#include "host_time.h"
 #include "aiu.h"
 
 #define AIU_LATCH_BASE      0x0A000000u
@@ -40,15 +41,8 @@
  * audio output, which plays in real time. Pacing it on emulated time
  * would play audio too fast or too slow whenever emulation runs faster
  * or slower than real time (--speed), at the cost of guest-visible DMA
- * completion following the host clock.
+ * completion following the host clock (be300_host_monotonic_ns).
  */
-static uint64_t aiu_now_ns(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
 
 static uint32_t aiu_reg(uint32_t off)
 {
@@ -134,7 +128,7 @@ static void aiu_start(machine_t *m)
     s->channels = aiu_channels();
     aiu_load_buffer(s, 0);
     aiu_load_buffer(s, 1);
-    s->start_ns = aiu_now_ns();
+    s->start_ns = be300_host_monotonic_ns();
     s->frames_done = 0;
     if (s->log_mmio)
         fprintf(stderr,
@@ -235,7 +229,7 @@ void aiu_tick(machine_t *m)
     if (!s->running || s->rate_hz == 0)
         return;
 
-    now = aiu_now_ns();
+    now = be300_host_monotonic_ns();
     if (now - s->start_ns > AIU_MAX_CATCHUP_NS + (s->frames_done *
             1000000000ULL) / s->rate_hz) {
         /* Host stalled; restart the cursor clock at the current frame. */

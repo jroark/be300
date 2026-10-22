@@ -256,6 +256,12 @@ static void nand_xfer_push_data(nand_state_t *s, uint8_t byte)
         s->xfer_data_bytes[s->xfer_data_count++] = byte;
 }
 
+static void nand_xfer_reset_addr(nand_state_t *s)
+{
+    s->xfer_addr_count = 0;
+    memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
+}
+
 static uint32_t nand_xfer_row_addr(const nand_state_t *s)
 {
     return (uint32_t)s->xfer_addr_bytes[1]
@@ -320,27 +326,23 @@ static void nand_xfer_commit_phase(nand_state_t *s)
         case NAND_CMD_READ0:
             s->state = NAND_STATE_READ_DATA;
             s->column = 0;
-            s->xfer_addr_count = 0;
-            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
+            nand_xfer_reset_addr(s);
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_READ1:
             s->state = NAND_STATE_READ_DATA;
             s->column = 256;
-            s->xfer_addr_count = 0;
-            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
+            nand_xfer_reset_addr(s);
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_READOOB:
             s->state = NAND_STATE_READ_OOB;
-            s->xfer_addr_count = 0;
-            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
+            nand_xfer_reset_addr(s);
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_READID:
             s->state = NAND_STATE_READ_ID;
-            s->xfer_addr_count = 0;
-            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
+            nand_xfer_reset_addr(s);
             nand_xfer_clear_data(s);
             s->ready = true;
             break;
@@ -354,15 +356,13 @@ static void nand_xfer_commit_phase(nand_state_t *s)
             s->column = 0;
             s->program_column = 0;
             s->program_length = 0;
-            s->xfer_addr_count = 0;
-            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
+            nand_xfer_reset_addr(s);
             memset(s->program_buffer, 0xFF, sizeof(s->program_buffer));
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_ERASE1:
             s->state = NAND_STATE_ERASE_SETUP;
-            s->xfer_addr_count = 0;
-            memset(s->xfer_addr_bytes, 0, sizeof(s->xfer_addr_bytes));
+            nand_xfer_reset_addr(s);
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_PAGEPROG:
@@ -413,6 +413,122 @@ static void nand_xfer_commit_phase(nand_state_t *s)
         break;
     default:
         break;
+    }
+}
+
+/*
+ * Legacy command/address ports: the direct I/O data port at 0xD000 (CLE/ALE
+ * picked by 0xD002) and the 0xAC00/0xAC04 command/address registers drive
+ * the same NAND command and address-cycle sequence.
+ */
+static void nand_legacy_command(nand_state_t *s, uint8_t cmd)
+{
+    s->last_cmd    = cmd;
+    s->addr_cycle  = 0;
+    s->xfer_cursor = 0;
+    s->ready       = false;
+
+    switch (cmd) {
+    case NAND_CMD_READ0:
+        s->state  = NAND_STATE_READ_DATA;
+        s->column = 0;
+        break;
+    case NAND_CMD_READ1:
+        s->state  = NAND_STATE_READ_DATA;
+        s->column = 256;
+        break;
+    case NAND_CMD_READOOB:
+        s->state = NAND_STATE_READ_OOB;
+        break;
+    case NAND_CMD_READID:
+        s->state = NAND_STATE_READ_ID;
+        nand_setup_transfer(s);
+        s->ready = true;
+        break;
+    case NAND_CMD_STATUS:
+        s->state = NAND_STATE_READ_STATUS;
+        s->ready = true;
+        break;
+    case NAND_CMD_SEQIN:
+        s->state = NAND_STATE_PROGRAM_DATA;
+        s->column = 0;
+        s->program_column = 0;
+        s->program_length = 0;
+        memset(s->program_buffer, 0xFF, sizeof(s->program_buffer));
+        break;
+    case NAND_CMD_ERASE1:
+        s->state = NAND_STATE_ERASE_SETUP;
+        break;
+    case NAND_CMD_PAGEPROG:
+        if (s->state == NAND_STATE_PROGRAM_DATA)
+            nand_commit_program(s);
+        s->state = NAND_STATE_IDLE;
+        s->ready = true;
+        s->status_value = 0xC0u;
+        break;
+    case NAND_CMD_ERASE2:
+        if (s->state == NAND_STATE_ERASE_SETUP)
+            nand_commit_erase(s);
+        s->state = NAND_STATE_IDLE;
+        s->ready = true;
+        s->status_value = 0xC0u;
+        break;
+    case NAND_CMD_RESET:
+        s->state = NAND_STATE_IDLE;
+        s->ready = true;
+        break;
+    default:
+        s->state = NAND_STATE_IDLE;
+        s->ready = true;
+        break;
+    }
+}
+
+/* One address cycle; returns true when it completes a read setup. */
+static bool nand_legacy_address(nand_state_t *s, uint8_t abyte)
+{
+    switch (s->addr_cycle) {
+    case 0:
+        /* Column address (within 256-byte half) */
+        if (s->state == NAND_STATE_READ_DATA)
+            s->column = (s->column & ~0xFFu) | abyte;
+        break;
+    case 1:
+        /* Page address bits [7:0] → row bits [7:0] */
+        s->page_addr = (s->page_addr & ~0xFFu) | abyte;
+        break;
+    case 2:
+        /* Page address bits [15:8] → row bits [15:8] */
+        s->page_addr = (s->page_addr & ~0xFF00u) | ((uint32_t)abyte << 8);
+        break;
+    case 3:
+        /* Page address bits [23:16] → row bits [23:16] (if needed) */
+        s->page_addr = (s->page_addr & ~0xFF0000u) | ((uint32_t)abyte << 16);
+        break;
+    }
+    s->addr_cycle++;
+
+    /* After all address cycles, set up the transfer */
+    if (s->addr_cycle >= 3 &&
+        (s->state == NAND_STATE_READ_DATA ||
+         s->state == NAND_STATE_READ_OOB)) {
+        nand_setup_transfer(s);
+        s->ready = true;
+        return true;
+    }
+    if (s->addr_cycle == 1 && s->state == NAND_STATE_PROGRAM_DATA)
+        s->program_column = s->column;
+    return false;
+}
+
+/* Program data bytes, least significant first, up to the page buffer. */
+static void nand_program_append(nand_state_t *s, uint64_t value, unsigned size)
+{
+    for (unsigned i = 0; i < size; i++) {
+        if ((s->program_column + s->program_length) >= sizeof(s->program_buffer))
+            break;
+        s->program_buffer[s->program_length++] =
+            (uint8_t)((value >> (8u * i)) & 0xFFu);
     }
 }
 
@@ -733,205 +849,30 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         uint8_t data_byte = (uint8_t)(value & 0xFFu);
         s->dio_last_write = data_byte;  /* latch for echo-back reads */
         if (s->dio_mode & 0x80u) {
-            /* CLE mode: data_byte is a NAND command */
-            s->last_cmd    = data_byte;
-            s->addr_cycle  = 0;
-            s->xfer_cursor = 0;
-            s->ready       = false;
-            switch (data_byte) {
-            case NAND_CMD_READ0:
-                s->state  = NAND_STATE_READ_DATA;
-                s->column = 0;
-                break;
-            case NAND_CMD_READ1:
-                s->state  = NAND_STATE_READ_DATA;
-                s->column = 256;
-                break;
-            case NAND_CMD_READOOB:
-                s->state = NAND_STATE_READ_OOB;
-                break;
-            case NAND_CMD_READID:
-                s->state = NAND_STATE_READ_ID;
-                nand_setup_transfer(s);
-                s->ready = true;
-                break;
-            case NAND_CMD_STATUS:
-                s->state = NAND_STATE_READ_STATUS;
-                s->ready = true;
-                break;
-            case NAND_CMD_SEQIN:
-                s->state = NAND_STATE_PROGRAM_DATA;
-                s->column = 0;
-                s->program_column = 0;
-                s->program_length = 0;
-                memset(s->program_buffer, 0xFF, sizeof(s->program_buffer));
-                break;
-            case NAND_CMD_ERASE1:
-                s->state = NAND_STATE_ERASE_SETUP;
-                break;
-            case NAND_CMD_PAGEPROG:
-                if (s->state == NAND_STATE_PROGRAM_DATA)
-                    nand_commit_program(s);
-                s->state = NAND_STATE_IDLE;
-                s->ready = true;
-                s->status_value = 0xC0u;
-                break;
-            case NAND_CMD_ERASE2:
-                if (s->state == NAND_STATE_ERASE_SETUP)
-                    nand_commit_erase(s);
-                s->state = NAND_STATE_IDLE;
-                s->ready = true;
-                s->status_value = 0xC0u;
-                break;
-            case NAND_CMD_RESET:
-                s->state = NAND_STATE_IDLE;
-                s->ready = true;
-                break;
-            default:
-                /* Unknown command — latch for echo-back via DIO read.
-                 * The ROM writes a test byte (0x43) to D000 and reads it
-                 * back to verify the NAND I/O path is functional. */
-                s->state = NAND_STATE_IDLE;
-                s->dio_last_write = data_byte;
-                s->ready = true;
-                break;
-            }
+            /* CLE mode: data_byte is a NAND command. An unknown one
+             * stays latched for echo-back: the ROM writes a test byte
+             * (0x43) to D000 and reads it back to verify the NAND I/O
+             * path. */
+            nand_legacy_command(s, data_byte);
         } else if (s->dio_mode & 0x01u) {
             /* ALE mode: data_byte is an address byte */
-            switch (s->addr_cycle) {
-            case 0:
-                if (s->state == NAND_STATE_READ_DATA)
-                    s->column = (s->column & ~0xFFu) | data_byte;
-                break;
-            case 1:
-                s->page_addr = (s->page_addr & ~0xFFu) | data_byte;
-                break;
-            case 2:
-                s->page_addr = (s->page_addr & ~0xFF00u) | ((uint32_t)data_byte << 8);
-                break;
-            case 3:
-                s->page_addr = (s->page_addr & ~0xFF0000u) | ((uint32_t)data_byte << 16);
-                break;
-            }
-            s->addr_cycle++;
-            if (s->addr_cycle >= 3 &&
-                (s->state == NAND_STATE_READ_DATA ||
-                 s->state == NAND_STATE_READ_OOB)) {
-                nand_setup_transfer(s);
-                s->ready = true;
+            if (nand_legacy_address(s, data_byte))
                 s->dio_last_write = 0;
-            } else if (s->addr_cycle == 1 && s->state == NAND_STATE_PROGRAM_DATA) {
-                s->program_column = s->column;
-            }
         } else if (s->state == NAND_STATE_PROGRAM_DATA) {
-            for (unsigned i = 0; i < size; i++) {
-                if ((s->program_column + s->program_length) >= sizeof(s->program_buffer))
-                    break;
-                s->program_buffer[s->program_length++] =
-                    (uint8_t)((value >> (8u * i)) & 0xFFu);
-            }
+            nand_program_append(s, value, size);
         }
         return;
     }
 
     /* Command register */
     if (offset == NAND_REG_CMD) {
-        uint8_t cmd = (uint8_t)(value & 0xFF);
-        s->last_cmd    = cmd;
-        s->addr_cycle  = 0;
-        s->xfer_cursor = 0;
-        s->ready       = false;
-
-        switch (cmd) {
-        case NAND_CMD_READ0:
-            s->state  = NAND_STATE_READ_DATA;
-            s->column = 0;
-            break;
-        case NAND_CMD_READ1:
-            s->state  = NAND_STATE_READ_DATA;
-            s->column = 256;
-            break;
-        case NAND_CMD_READOOB:
-            s->state = NAND_STATE_READ_OOB;
-            break;
-        case NAND_CMD_READID:
-            s->state = NAND_STATE_READ_ID;
-            nand_setup_transfer(s);
-            s->ready = true;
-            break;
-        case NAND_CMD_STATUS:
-            s->state = NAND_STATE_READ_STATUS;
-            s->ready = true;
-            break;
-        case NAND_CMD_SEQIN:
-            s->state = NAND_STATE_PROGRAM_DATA;
-            s->column = 0;
-            s->program_column = 0;
-            s->program_length = 0;
-            memset(s->program_buffer, 0xFF, sizeof(s->program_buffer));
-            break;
-        case NAND_CMD_ERASE1:
-            s->state = NAND_STATE_ERASE_SETUP;
-            break;
-        case NAND_CMD_PAGEPROG:
-            if (s->state == NAND_STATE_PROGRAM_DATA)
-                nand_commit_program(s);
-            s->state = NAND_STATE_IDLE;
-            s->ready = true;
-            s->status_value = 0xC0u;
-            break;
-        case NAND_CMD_ERASE2:
-            if (s->state == NAND_STATE_ERASE_SETUP)
-                nand_commit_erase(s);
-            s->state = NAND_STATE_IDLE;
-            s->ready = true;
-            s->status_value = 0xC0u;
-            break;
-        case NAND_CMD_RESET:
-            s->state = NAND_STATE_IDLE;
-            s->ready = true;
-            break;
-        default:
-            s->state = NAND_STATE_IDLE;
-            s->ready = true;
-            break;
-        }
+        nand_legacy_command(s, (uint8_t)(value & 0xFF));
         return;
     }
 
     /* Address byte register */
     if (offset == NAND_REG_ADDR) {
-        uint8_t abyte = (uint8_t)(value & 0xFF);
-        switch (s->addr_cycle) {
-        case 0:
-            /* Column address (within 256-byte half) */
-            if (s->state == NAND_STATE_READ_DATA)
-                s->column = (s->column & ~0xFFu) | abyte;
-            break;
-        case 1:
-            /* Page address bits [7:0] → row bits [7:0] */
-            s->page_addr = (s->page_addr & ~0xFFu) | abyte;
-            break;
-        case 2:
-            /* Page address bits [15:8] → row bits [15:8] */
-            s->page_addr = (s->page_addr & ~0xFF00u) | ((uint32_t)abyte << 8);
-            break;
-        case 3:
-            /* Page address bits [23:16] → row bits [23:16] (if needed) */
-            s->page_addr = (s->page_addr & ~0xFF0000u) | ((uint32_t)abyte << 16);
-            break;
-        }
-        s->addr_cycle++;
-
-        /* After all address cycles, set up the transfer */
-        if (s->addr_cycle >= 3 &&
-            (s->state == NAND_STATE_READ_DATA ||
-             s->state == NAND_STATE_READ_OOB)) {
-            nand_setup_transfer(s);
-            s->ready = true;
-        } else if (s->addr_cycle == 1 && s->state == NAND_STATE_PROGRAM_DATA) {
-            s->program_column = s->column;
-        }
+        nand_legacy_address(s, (uint8_t)(value & 0xFF));
         return;
     }
 
@@ -944,12 +885,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
     /* Indexed legacy data register writes (D7F8 selects byte register). */
     if (offset == NAND_REG_DATA) {
         if (s->state == NAND_STATE_PROGRAM_DATA) {
-            for (unsigned i = 0; i < size; i++) {
-                if ((s->program_column + s->program_length) >= sizeof(s->program_buffer))
-                    break;
-                s->program_buffer[s->program_length++] =
-                    (uint8_t)((value >> (8u * i)) & 0xFFu);
-            }
+            nand_program_append(s, value, size);
             return;
         }
 
