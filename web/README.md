@@ -118,10 +118,11 @@ Choosing
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.
 
-Release `20261022a` refreshes the Glaze factory NAND with the sibling
-`glaze-os` checkout's latest WinCE compatibility runtime work (GDI, window,
-shell, thread and PE loader updates). The web bundle, worker and NAND URLs use
-the `20261022a` asset tag. The network bridge is unchanged from `20261021b`,
+Release `20261022b` refreshes the Glaze factory NAND with glaze-os `main`
+through PR #34: background app processes and the multitasking switcher bar
+(double-press Home), and the Gmail package. It also carries the sibling
+checkout's local WinCE compatibility runtime work and status-bar card details.
+The web bundle, worker and NAND URLs use the `20261022b` asset tag. The network bridge is unchanged from `20261021b`,
 which added acknowledged TCP delivery, receive-window handling and
 retransmissions; its helpers still print `20261021b` and their download links
 keep that tag.
@@ -133,10 +134,10 @@ which needs networking, i.e. the net bridge) offers Minesweeper, Solitaire,
 Fifteen, Sketch, Task Manager and AIM; the factory image also has system
 sounds and NTP time with named time zones.
 Build its factory NAND from the sibling `glaze-os` checkout
-with `./build.sh -s OUT=out/web-release-20261022a INIT=bin/springboard DYNAMIC=1
+with `./build.sh -s OUT=out/web-release-20261022b INIT=bin/springboard DYNAMIC=1
 LD_TESTS=0 MEM_TESTS=0`, then copy the resulting `glaze.bin` to this repo's
 `nand/glaze.bin` before building the web bundle. The 16 MiB release image has
-SHA-256 `e5aaf762e60c8fb72891b6c4dad86374f65a4248e11423f1ee94e555dfdfe1b4`.
+SHA-256 `81c04f581fab3ac8c3e561ce8dd7bfe53fd627b5fa33babf637fb509a70306a3`.
 Keep development/test images outside `nand/`, since every `.bin` there is
 packaged for hosting. Save any image containing user data before replacing it
 with a fresh factory image.
