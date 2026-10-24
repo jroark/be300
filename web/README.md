@@ -118,12 +118,14 @@ Choosing
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.
 
-Release `20261022c` refreshes the Glaze factory NAND with the latest WinCE
-compatibility runtime from glaze-os PR #35. It preserves `20261022b`'s
-background app processes, multitasking switcher bar (double-press Home),
-Gmail package and status-bar card details. The release source snapshot is
-`release/20261022c` at `0c65a3f` in the glaze-os repository.
-The web bundle, worker and NAND URLs use the `20261022c` asset tag.
+Release `20261024a` refreshes the Glaze factory NAND from glaze-os `main` at
+`33638da`. It adds JerryScript and frame support in Browser and more WinCE
+runtime work: GDI device contexts, fonts and palettes, CSO combo boxes and
+two-row bars, and WorldTALK's C runtime, Winsock and network page loads. To
+fit them, romfs builds wolfSSL with `-Os` and leaves ktest out. It keeps
+`20261022c`'s background app processes, multitasking switcher bar
+(double-press Home), Gmail package and status-bar card details. The
+web bundle, worker and NAND URLs use the `20261024a` asset tag.
 The network bridge is unchanged from `20261021b`; its helper downloads keep
 that tag.
 The factory image retains demand-paged NAND romfs, HTTPS cross-signed
@@ -133,10 +135,10 @@ which needs networking, i.e. the net bridge) offers Minesweeper, Solitaire,
 Fifteen, Sketch, Task Manager and AIM; the factory image also has system
 sounds and NTP time with named time zones.
 Build its factory NAND from the sibling `glaze-os` checkout
-with `./build.sh -s OUT=out/web-release-20261022c INIT=bin/springboard DYNAMIC=1
+with `./build.sh -s OUT=out/web-release-20261024a INIT=bin/springboard DYNAMIC=1
 LD_TESTS=0 MEM_TESTS=0`, then copy the resulting `glaze.bin` to this repo's
 `nand/glaze.bin` before building the web bundle. The 16 MiB release image has
-SHA-256 `1d86bb8b2ed7ed076383650b008acb8f40cbd08b15518ae1f452d2e36b5e5067`.
+SHA-256 `f26d767b1ab12ec4c66d2459fd8dbde543b04112066f1f147f791f5e7b86f14e`.
 Keep development/test images outside `nand/`, since every `.bin` there is
 packaged for hosting. Save any image containing user data before replacing it
 with a fresh factory image.

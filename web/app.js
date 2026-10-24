@@ -1,7 +1,7 @@
-import { parseLaunchConfig, parseMacAddress, normalizeBridgeUrl } from "./launch-config.mjs?v=20261022c";
-import { BUTTON_MASK_SIZE, BUTTON_REGIONS } from "./button-regions.mjs?v=20261022c";
+import { parseLaunchConfig, parseMacAddress, normalizeBridgeUrl } from "./launch-config.mjs?v=20261024a";
+import { BUTTON_MASK_SIZE, BUTTON_REGIONS } from "./button-regions.mjs?v=20261024a";
 
-const ASSET_VERSION = "20261022c";
+const ASSET_VERSION = "20261024a";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
