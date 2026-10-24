@@ -143,7 +143,7 @@ Useful toolchains in the container:
 
 **Target:** Casio BE-300 using the NEC VR4131 MIPS little-endian SoC and VRC4173 companion chip.
 
-**CPU engine:** GXemul 0.7.0 from the `jroark/GXemul` `be300` branch. Fresh clones need:
+**CPU engine:** GXemul 0.7.0 from the `jroark/GXemul` `main` branch. Fresh clones need:
 
 ```bash
 git submodule update --init
@@ -433,9 +433,9 @@ When you need temporary diagnostics:
 
 ## GXemul Submodule Hygiene
 
-The `gxemul/` submodule points at the `be300` branch of `jroark/GXemul`. Keep it thin.
+The `gxemul/` submodule points at the `main` branch of `jroark/GXemul`. Keep it thin.
 
-- Current layout: pristine GXemul 0.7.0 (`c35c056`) plus the BE-300 delta history on `be300`; `git -C gxemul log --oneline --reverse c35c056..HEAD` lists it. Don't record a commit count here, it goes stale.
+- Current layout: pristine GXemul 0.7.0 (`c35c056`) plus the BE-300 delta history on `main` (the pre-rebuild history is tagged `archive/old-main`); `git -C gxemul log --oneline --reverse c35c056..HEAD` lists it. Don't record a commit count here, it goes stale.
 - The submodule history includes committed fixes for MIPS16/BE-300 platform glue, VR4131 timers/interrupts, reset and hibernate handling, GIUINTSTAT write-one-clear behavior, shared IP2 level preservation, and the VRC4173 GIRQ0 OR gate (`machine_hpcmips.c`, each companion interrupt source on its own `giu.0.girq0.<n>` pin). Use the git log as the authoritative ledger instead of copying a stale pass list into this file.
 - Do not accumulate more without first documenting the justification.
 - Before adding a gxemul-side fix, **diff against 0.7.0**: `git -C gxemul show c35c056:<path>` versus the current file. Confirm the change actually improves on upstream behavior. Several historical "fixes" on the prior `be300` branch were identity transformations of existing 0.7.0 code.

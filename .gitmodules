@@ -1,7 +1,7 @@
 [submodule "gxemul"]
 	path = gxemul
 	url = git@github.com:jroark/GXemul.git
-	branch = be300
+	branch = main
 [submodule "third_party/cimgui"]
 	path = third_party/cimgui
 	url = https://github.com/cimgui/cimgui.git
