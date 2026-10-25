@@ -6,7 +6,7 @@ supplied `wl54gcfppc41/wince41.cab` contains an ARM/Thumb CE 4.1 miniport;
 it cannot run in the BE-300's MIPS WinCE 3.0. Windows CE support for this card
 is not claimed.
 
-The station scans/authenticates/associates with the open virtual **BE300** AP,
+The station scans/authenticates/associates with the virtual **BE300** AP,
 channel **3**, BSSID **02:42:45:33:30:30**. Its Ethernet edge uses the same GXemul
 DHCP/DNS/IP gateway as XI-825 and NE2000. `--net-mac` applies to it. The card is
 also selectable in desktop VM setup/settings; older VM files default
@@ -89,7 +89,7 @@ Glaze's COR access uses the existing byte-addressed `0x0b400000` emulator alias,
 which is not yet verified on real hardware. It deliberately avoids `0x0a00d200`,
 which is the board NAND direct-I/O port.
 
-WEP/WPA, ad-hoc mode, physical-network discovery/bridging, browser/Android card
+Ad-hoc mode, physical-network discovery/bridging, browser/Android card
 selection, hot removal/reassociation and real-card certification are deferred.
 
 ## Validation
@@ -118,3 +118,28 @@ asset-free emulator CTests, the WinCE cold-boot test and both Glaze native
 driver tests passed. Glaze `ktest` passed with WL54-CF, NE2000, no card and
 CF storage. The local Browser fixture rendered **WL54-CF HTTP PASS** and
 retained the source NAND hash. Internet HTTP and DNS also succeeded.
+
+## Secured virtual AP fixtures
+
+Open and WEP need no cryptographic dependency. When CMake finds OpenSSL,
+`be300` also includes a PSK authenticator for WPA/TKIP and WPA2/CCMP. Build
+with `-DOPENSSL_ROOT_DIR=/path/to/openssl` if it is not found automatically.
+Select a fixture before starting the emulator:
+
+```sh
+BE300_WIFI_SECURITY=wpa2 BE300_WIFI_KEY=password build-host/be300 --nand copy.bin --wl54cf
+```
+
+`BE300_WIFI_SECURITY` accepts `open` (default), `wep`, `wpa`, or `wpa2`.
+The key is a test credential, supplied through `BE300_WIFI_KEY`; invalid
+configuration fails closed. The SSID remains BE300, channel 3. WEP accepts
+ASCII or hexadecimal 40/104-bit keys. WPA accepts a passphrase or hex PSK.
+The AP verifies the station's EAPOL MICs and firmware-installed keys, and
+blocks network-backend traffic until authentication completes. EAPOL stays
+inside the virtual AP. OpenSSL supplies independent PBKDF2, HMAC, AES-wrap,
+and random inputs; the guest supplicant uses its own internal crypto.
+
+The fixture models authentication and decrypted firmware payloads, rather
+than RF encryption. It does not establish real-card interoperability. The
+Glaze `tests/run_wifi_security.py` harness exercises both driver stacks,
+negative protocol cases, guest DHCP/HTTP, and persisted NAND reboots.

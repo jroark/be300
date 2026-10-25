@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "wifi_security.h"
 
 #define XI825_BUFFER_SIZE 4096u
 #define XI825_BUFFERS 24u
@@ -21,6 +22,7 @@ typedef struct {
 } xi825_record_t;
 
 typedef struct {
+    wifi_security_t security;
     uint16_t regs[32];
     xi825_buffer_t buffers[XI825_BUFFERS];
     xi825_record_t records[XI825_RECORDS];

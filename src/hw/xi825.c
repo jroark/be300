@@ -146,15 +146,28 @@ static bool can_associate(xi825_t *s)
 {
     xi825_record_t *ssid = record(s, 0xfc02);
     unsigned n = rd16(ssid->committed + 4);
+    if (!s->security.valid || s->security.mode > 1) return false;
+    unsigned flags=rd16(record(s,0xfc28)->committed+4);
+    if (!!(flags&1) != (s->security.mode==1)) return false;
+    if (s->security.mode==1) {
+        unsigned index=rd16(record(s,0xfc23)->committed+4);
+        xi825_record_t *key=index<4?record(s,0xfc24+index):NULL;
+        if(!key || !wifi_security_wep(&s->security,index,key->committed+4,
+            s->security.secret_len))return false;
+        unsigned size=s->security.secret_len==5?6:14;
+        for(unsigned i=0;i<4;i++) {
+            xi825_record_t *slot=record(s,0xfc24+i);
+            if(!slot || slot->length != 4+size)return false;
+        }
+    }
     return s->enabled && rd16(record(s, 0xfc00)->committed + 4) == 1 &&
-           !(rd16(record(s, 0xfc28)->committed + 4) & 1) &&
-           (n == 0 ||
-            (n == sizeof(ap_ssid) - 1 && !memcmp(ssid->committed + 6, ap_ssid, n)));
+           (n == 0 || (n == sizeof(ap_ssid)-1 && !memcmp(ssid->committed+6,ap_ssid,n)));
 }
 
 void xi825_tick(xi825_t *s)
 {
     bool connected = can_associate(s);
+    s->security.authorized = connected;
     if (s->link_pending || connected != s->associated) {
         uint8_t b[2];
         wr16(b, connected ? 1 : 2);
@@ -175,7 +188,7 @@ static void scan(xi825_t *s)
     wr16(b + 8, 100);
     memcpy(b + 10, ap_bssid, 6);
     wr16(b + 16, 100);
-    wr16(b + 18, 1);
+    wr16(b + 18, s->security.mode ? 0x11 : 1);
     wr16(b + 20, sizeof(ap_ssid) - 1);
     memcpy(b + 22, ap_ssid, sizeof(ap_ssid) - 1);
     b[54] = 0x82;
@@ -241,7 +254,9 @@ void xi825_reset(xi825_t *s)
     memcpy(mac, s->mac, 6);
     void *opaque = s->opaque;
     void (*tx)(void *, const uint8_t *, size_t) = s->transmit;
+    wifi_security_t security=s->security; wifi_security_reset(&security);
     memset(s, 0, sizeof(*s));
+    s->security=security;
     memcpy(s->mac, mac, 6);
     s->opaque = opaque;
     s->transmit = tx;
@@ -258,6 +273,7 @@ void xi825_reset(xi825_t *s)
     for (unsigned i = 0; i < sizeof(defaults) / sizeof(defaults[0]); ++i)
         scalar(s, defaults[i].id, defaults[i].value);
     uint8_t b[120] = {0};
+    for(unsigned i=0;i<4;i++)add_record(s,0xfc24+i,b,14);
     add_record(s, 0xfc01, mac, 6);
     add_record(s, 0xfc02, b, 34);
     add_record(s, 0xfc04, b, 34);
@@ -304,6 +320,7 @@ void xi825_init(xi825_t *s, const uint8_t mac[6])
 {
     memset(s, 0, sizeof(*s));
     memcpy(s->mac, mac, 6);
+    wifi_security_init(&s->security,mac);
     xi825_reset(s);
 }
 

@@ -214,6 +214,7 @@ set(BE300_SOURCES
     src/hw/cf.c
     src/hw/cf_ne2000.c
     src/hw/cf_xi825.c
+    src/hw/wifi_security.c
     src/hw/xi825.c
     src/hw/wl54cf.c
     src/hw/cf_wl54cf.c
@@ -418,11 +419,11 @@ if(BUILD_TESTING AND BUILD_CLI)
             ${CMAKE_SOURCE_DIR}/tests/test_network_cli.py $<TARGET_FILE:be300>)
     endif()
 
-    add_executable(test_xi825 tests/test_xi825.c src/hw/xi825.c
+    add_executable(test_xi825 src/hw/wifi_security.c tests/test_xi825.c src/hw/xi825.c
         src/hw/cf.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/hw/wl54cf.c src/hw/cf_wl54cf.c src/file_util.c)
     target_include_directories(test_xi825 PRIVATE src)
     add_test(NAME xi825 COMMAND test_xi825)
-    add_executable(test_wl54cf tests/test_wl54cf.c src/hw/wl54cf.c
+    add_executable(test_wl54cf src/hw/wifi_security.c tests/test_wl54cf.c src/hw/wl54cf.c
         src/hw/cf.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/hw/xi825.c
         src/hw/cf_wl54cf.c src/file_util.c)
     target_include_directories(test_wl54cf PRIVATE src)
@@ -534,4 +535,22 @@ if(BUILD_TESTING AND BUILD_CLI AND BE300_TEST_NAND)
     set_tests_properties(cold_boot PROPERTIES
         LABELS "integration;local"
         TIMEOUT 150)
+endif()
+
+# Optional authenticated virtual-AP fixtures. Open/WEP models need no crypto dependency.
+if(BUILD_CLI)
+    find_package(OpenSSL QUIET)
+    if(OpenSSL_FOUND)
+        if(BUILD_TESTING)
+            add_executable(test_wifi_security tests/test_wifi_security.c src/hw/wifi_security.c)
+            target_include_directories(test_wifi_security PRIVATE src)
+            add_test(NAME wifi_security COMMAND test_wifi_security)
+        endif()
+        foreach(wifi_target be300 test_xi825 test_wl54cf test_wifi_security)
+            if(TARGET ${wifi_target})
+                target_compile_definitions(${wifi_target} PRIVATE BE300_WIFI_OPENSSL)
+                target_link_libraries(${wifi_target} OpenSSL::Crypto)
+            endif()
+        endforeach()
+    endif()
 endif()
