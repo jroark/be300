@@ -69,7 +69,8 @@ static void draw_details_pane(launcher_state_t *L)
     igText("Frame bezel: %s", vm->cfg.frame_visible ? "yes" : "no");
     igText("Audio:       %s", vm->cfg.enable_audio ? "on" : "off");
     igText("RTC mode:    %s", vm->cfg.enable_rtc_host_time ? "host time" : "battery-cold");
-    igText("NE2000:      %s", vm->cfg.enable_ne2000 ? "on" : "off");
+    igText("Network:     %s", vm->cfg.enable_xi825 ? "XI-825 wireless" :
+        (vm->cfg.enable_ne2000 ? "NE2000 Ethernet" : "none"));
     igText("PPSH:        %s", vm->cfg.enable_ppsh ? "on" : "off");
     igText("Stowaway:    %s", vm->cfg.enable_stowaway_keyboard ? "on" : "off");
     if (vm->cfg.pcconnect_bridge)

@@ -620,7 +620,12 @@ machine_t *be300_create(const machine_config_t *cfg)
             cf_image_loaded = true;
         }
 
-        if (cfg->enable_ne2000) {
+        if (cfg->enable_ne2000 || cfg->enable_xi825) {
+            if ((cfg->enable_ne2000 && cfg->enable_xi825) || cfg->restore ||
+                cfg->rom_path || cf_present(&m->cf[BE300_PRIMARY_CF_SLOT])) {
+                fprintf(stderr, "[BE300] Conflicting primary PCMCIA socket configuration\n");
+                return be300_create_fail(m);
+            }
             m->emul->net = net_init(m->emul, NET_INIT_FLAG_GATEWAY,
                 NULL, NET_DEFAULT_IPV4_MASK, NET_DEFAULT_IPV4_LEN,
                 NULL, 0, 0, NULL);
@@ -628,10 +633,12 @@ machine_t *be300_create(const machine_config_t *cfg)
                 fprintf(stderr, "[BE300] Failed to initialize emulated network\n");
                 return be300_create_fail(m);
             }
-            if (cf_attach_ne2000(&m->cf[BE300_PRIMARY_CF_SLOT], gxm,
+            int (*attach)(cf_state_t *, struct machine *, struct net *, const uint8_t *) =
+                cfg->enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000;
+            if (attach(&m->cf[BE300_PRIMARY_CF_SLOT], gxm,
                     m->emul->net,
                     cfg->net_mac_set ? cfg->net_mac : NULL) != 0) {
-                fprintf(stderr, "[BE300] Failed to attach NE2000 card\n");
+                fprintf(stderr, "[BE300] Failed to attach network card\n");
                 return be300_create_fail(m);
             }
         }
@@ -640,7 +647,7 @@ machine_t *be300_create(const machine_config_t *cfg)
             bool nand_bootable = be300_nand_image_looks_bootable(m);
             bool cf_boot_visible = cfg->restore || !nand_bootable;
 
-            if (!cf_is_ne2000(&m->cf[BE300_PRIMARY_CF_SLOT]))
+            if (!cf_is_network(&m->cf[BE300_PRIMARY_CF_SLOT]))
                 cf_set_boot_visibility(&m->cf[BE300_PRIMARY_CF_SLOT],
                     cf_boot_visible);
             for (unsigned i = 1; i < BE300_MAX_CF_SLOTS; i++)
@@ -874,6 +881,7 @@ static bool be300_run_batch(machine_t *m)
 
     be300_touch_tick(m);
     cf_ne2000_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
+    cf_xi825_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     be300_vrc4173_update_cf_irq();
     aiu_tick(m);
     if (m->cfg.enable_stowaway_keyboard || m->cfg.pcconnect_bridge ||

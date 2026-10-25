@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-10-21
+Last updated: 2026-10-24
 
 ## Active Target
 
@@ -22,6 +22,9 @@ Secondary implemented paths, used for targeted investigation only:
 - `--restore --cf` for the local NANDWRITER/CompactFlash recovery path
 - `--ppsh` for the WinCE debug-shell probe path
 - `--ne2000` for the PCMCIA NE2000 Ethernet card path
+- `--xi825` for the native Z-Com XI-825 wireless CF card and virtual `BE300`
+  access point; see `docs/XI825.md` for the vendor driver and one-time
+  WinCE driver/LAN-profile registration required by the minimal CIS
 - `--rtc-host-time` for interactive boots that should start with the host
   local date/time instead of the first-boot default RTC value
 - `--pcconnect-bridge` connects the selected RS-232 or USB-sync dock path to a
@@ -62,6 +65,15 @@ snapshot transactionally; see `docs/INSTALLING_APPS.md`.
   path rather than in unused shadow structs.
 
 ## Current Behavior
+
+- XI-825 (2026-10-24): the unmodified vendor `nb825be.dll` 1.1.0 initializes
+  the station controller, and Wireless LAN Setting shows `BE300`, channel 3,
+  11 Mbps and BSSID `02:42:45:33:30:30`. After normal driver registration
+  and LAN-profile setup, reboot binds the driver automatically, DHCP assigns
+  `10.0.0.1` with gateway/DNS `10.0.0.254`, and the WinCE browser displays
+  a host-served HTTP test page and resolves/loads `http://example.com/`.
+  A captured XI-825 CIS is still needed to
+  match the vendor INF's initial card-ID checksum without manual selection.
 
 - Cold boot reaches the WinCE shell / first-boot UI path. The historical
   `Starting...` splash stall and Welcome.exe/launcher dependency theories are

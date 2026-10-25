@@ -72,8 +72,14 @@ DEVICE_ACCESS(be300_pcmcia_attr)
 
     (void)cpu; (void)mem;
     if (writeflag != MEM_READ) {
-        /* Writes are silently dropped (host-bus pull-up has no backing
-         * and the seeded CIS is treated as ROM). */
+        if (d && cf_present(d->cf)) {
+            uint32_t off = (uint32_t)relative_addr;
+            /* The 0x0B4 alias is byte addressed, the 0x0B6 alias is
+             * striped attribute memory, as documented below. */
+            off = off >= 0x200000u ? off - 0x200000u : off * 2u;
+            cf_cis_write(d->cf, off, (unsigned)len,
+                memory_readmax64(cpu, data, len));
+        }
         return 1;
     }
 
@@ -98,7 +104,10 @@ DEVICE_ACCESS(be300_pcmcia_attr)
             } else {
                 cis_idx = off;
             }
-            data[i] = cf_cis_read_byte(d->cf, cis_idx);
+            if (d->cf->card_kind == CF_CARD_XI825 && cis_idx == 0x1f0)
+                data[i] = (uint8_t)cf_cis_read(d->cf, 0x3e0, 1);
+            else
+                data[i] = cf_cis_read_byte(d->cf, cis_idx);
         }
     } else {
         memset(data, 0xFF, len);
