@@ -202,6 +202,9 @@ static int be300_nand_handle(struct cpu *cpu, struct memory *mem,
             uint64_t val = cf_cis_read(d->cf, offset - 0xD000u,
                 (unsigned)len);
             memory_writemax64(cpu, data, len, val);
+        } else {
+            cf_cis_write(d->cf, offset - 0xD000u, (unsigned)len,
+                memory_readmax64(cpu, data, len));
         }
         return 1;
     }
@@ -226,7 +229,7 @@ static int be300_nand_handle(struct cpu *cpu, struct memory *mem,
      * model once the socket window-translation register layout is identified.
      */
     if (d->cf && cf_pcmcia_windows_enabled(d->cf) &&
-        cf_is_ne2000(d->cf) &&
+        cf_is_network(d->cf) &&
         offset >= 0xC000u && offset < 0xC400u) {
         if (writeflag == MEM_WRITE) {
             uint64_t val = memory_readmax64(cpu, data, len);

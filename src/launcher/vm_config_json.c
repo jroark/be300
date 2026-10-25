@@ -139,6 +139,7 @@ int vm_config_load(const char *json_path, vm_bundle_t *vm)
     c->enable_rtc_host_time     = get_bool(root, "enable_rtc_host_time", false);
     c->enable_stowaway_keyboard = get_bool(root, "enable_stowaway_keyboard", false);
     c->enable_ne2000            = get_bool(root, "enable_ne2000", false);
+    c->enable_xi825             = get_bool(root, "enable_xi825", false);
     c->enable_audio             = get_bool(root, "enable_audio", false);
     c->restore                  = get_bool(root, "restore", false);
     c->mmio_coverage            = get_bool(root, "mmio_coverage", false);
@@ -216,6 +217,7 @@ int vm_config_save(const char *json_path, const machine_config_t *c)
     cJSON_AddBoolToObject(root, "enable_rtc_host_time",    c->enable_rtc_host_time);
     cJSON_AddBoolToObject(root, "enable_stowaway_keyboard",c->enable_stowaway_keyboard);
     cJSON_AddBoolToObject(root, "enable_ne2000",           c->enable_ne2000);
+    cJSON_AddBoolToObject(root, "enable_xi825",            c->enable_xi825);
     cJSON_AddBoolToObject(root, "enable_audio",            c->enable_audio);
     cJSON_AddBoolToObject(root, "restore",                 c->restore);
     cJSON_AddBoolToObject(root, "mmio_coverage",           c->mmio_coverage);

@@ -147,7 +147,12 @@ void launcher_settings_draw(launcher_state_t *L)
         }
         igCheckbox("Initialise RTC from host time", &c->enable_rtc_host_time);
         igCheckbox("Casio AIU audio path", &c->enable_audio);
-        igCheckbox("PCMCIA NE2000 Ethernet", &c->enable_ne2000);
+        int adapter = c->enable_xi825 ? 2 : (c->enable_ne2000 ? 1 : 0);
+        const char *adapters[] = { "None", "NE2000 Ethernet", "Z-Com XI-825 wireless" };
+        if (igCombo_Str_arr("Network card", &adapter, adapters, 3, -1)) {
+            c->enable_ne2000 = adapter == 1;
+            c->enable_xi825 = adapter == 2;
+        }
         igCheckbox("Stowaway dock keyboard", &c->enable_stowaway_keyboard);
     }
 

@@ -11,11 +11,13 @@ struct machine;
 struct net;
 
 #include "net.h"
+#include "xi825.h"
 
 typedef enum {
     CF_CARD_NONE = 0,
     CF_CARD_ATA,
     CF_CARD_NE2000,
+    CF_CARD_XI825,
 } cf_card_kind_t;
 
 #define CF_NE2000_MEM_SIZE 0x8000u
@@ -57,6 +59,11 @@ typedef struct {
     uint8_t  status_reg;
     uint8_t  device_control;
 
+    xi825_t xi825;
+    struct nic_data xi825_nic;
+    struct net *xi825_net;
+    uint8_t xi825_cor;
+
     struct {
         struct nic_data nic;
         struct net *net;
@@ -94,6 +101,10 @@ void     cf_destroy(cf_state_t *s);
 int      cf_load_image(cf_state_t *s, const char *path);
 int      cf_attach_ne2000(cf_state_t *s, struct machine *machine,
                           struct net *net, const uint8_t *mac);
+int      cf_attach_xi825(cf_state_t *s, struct machine *machine,
+                         struct net *net, const uint8_t *mac);
+void     cf_xi825_tick(cf_state_t *s);
+bool     cf_is_network(const cf_state_t *s);
 int      cf_save_image(cf_state_t *s);
 bool     cf_present(const cf_state_t *s);
 bool     cf_is_ne2000(const cf_state_t *s);
@@ -117,3 +128,4 @@ void     cf_ne2000_tick(cf_state_t *s);
 bool     cf_pcmcia_windows_enabled(const cf_state_t *s);
 uint8_t  cf_cis_read_byte(cf_state_t *s, uint32_t cis_idx);
 uint64_t cf_cis_read(cf_state_t *s, uint32_t offset, unsigned size);
+void     cf_cis_write(cf_state_t *s, uint32_t offset, unsigned size, uint64_t value);

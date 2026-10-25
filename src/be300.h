@@ -54,6 +54,7 @@ typedef struct {
     bool        enable_rtc_host_time;
     bool        enable_stowaway_keyboard;
     bool        enable_ne2000;
+    bool        enable_xi825;
     bool        enable_audio;
     bool        net_mac_set;
     bool        restore;

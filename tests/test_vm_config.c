@@ -93,6 +93,19 @@ static void test_config_round_trip(void)
     CHECK(in.cfg.net_mac_set == true, "net_mac_set round-trip");
     CHECK(in.cfg.net_mac[0] == 0x10 && in.cfg.net_mac[5] == 0xCC, "net_mac bytes");
 
+    CHECK(!in.cfg.enable_xi825, "XI-825 defaults off");
+    out.enable_ne2000 = false;
+    out.enable_xi825 = true;
+    CHECK(vm_config_save(json_path, &out) == 0, "save XI-825");
+    CHECK(vm_config_load(json_path, &in) == 0, "load XI-825");
+    CHECK(in.cfg.enable_xi825 && !in.cfg.enable_ne2000, "XI-825 round-trip");
+    FILE *legacy = fopen(json_path, "w");
+    CHECK(legacy, "open legacy config");
+    fputs("{\"schema\":1,\"enable_ne2000\":true}", legacy);
+    fclose(legacy);
+    CHECK(vm_config_load(json_path, &in) == 0, "load legacy config");
+    CHECK(!in.cfg.enable_xi825 && in.cfg.enable_ne2000, "legacy card selection");
+
     unlink(json_path);
     rmdir(dir);
     printf("test_config_round_trip OK\n");

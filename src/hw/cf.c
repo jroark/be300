@@ -393,8 +393,8 @@ int cf_save_image(cf_state_t *s)
 }
 
 
-int cf_attach_ne2000(cf_state_t *s, struct machine *machine,
-                     struct net *net, const uint8_t *mac)
+static int cf_attach_network(cf_state_t *s, struct machine *machine,
+                     struct net *net, const uint8_t *mac, cf_card_kind_t kind)
 {
     if (!s)
         return -1;
@@ -406,22 +406,30 @@ int cf_attach_ne2000(cf_state_t *s, struct machine *machine,
     s->image_path = NULL;
 
     memset(&s->ne2000, 0, sizeof(s->ne2000));
+    uint8_t card_mac[6];
     if (mac) {
-        memcpy(s->ne2000.par, mac, sizeof(s->ne2000.par));
+        memcpy(card_mac, mac, sizeof(card_mac));
     } else if (machine) {
-        net_generate_unique_mac(machine, s->ne2000.par);
+        net_generate_unique_mac(machine, card_mac);
     } else {
         static const uint8_t fallback_mac[6] =
             { 0x10, 0x20, 0x30, 0x00, 0x00, 0x10 };
-        memcpy(s->ne2000.par, fallback_mac, sizeof(s->ne2000.par));
+        memcpy(card_mac, fallback_mac, sizeof(card_mac));
     }
-    memcpy(s->ne2000.nic.mac_address, s->ne2000.par,
-        sizeof(s->ne2000.nic.mac_address));
-    s->ne2000.net = net;
+    struct nic_data *nic = kind == CF_CARD_XI825 ?
+        &s->xi825_nic : &s->ne2000.nic;
+    memset(nic, 0, sizeof(*nic));
+    memcpy(nic->mac_address, card_mac, sizeof(card_mac));
+    if (kind == CF_CARD_XI825)
+        s->xi825_net = net;
+    else {
+        s->ne2000.net = net;
+        memcpy(s->ne2000.par, card_mac, sizeof(card_mac));
+    }
     if (net)
-        net_add_nic(net, &s->ne2000.nic);
+        net_add_nic(net, nic);
 
-    s->card_kind = CF_CARD_NE2000;
+    s->card_kind = kind;
     s->attached = true;
     s->dirty = false;
     s->irq_pending = true;
@@ -431,15 +439,58 @@ int cf_attach_ne2000(cf_state_t *s, struct machine *machine,
     s->insert_event_pending = true;
     s->card_windows_enabled = false;
 
-    cf_seed_ne2000_cis(s);
+    if (kind == CF_CARD_XI825) {
+        /* PC Card VERS_1 identity from xi825.cbea Install.inf. MANFID
+         * 0xd601 is checked by nb825be.dll at 0x1000eb04. Standard
+         * PRISM attribute COR is at 0x3e0; I/O is a relocatable 64-byte
+         * 16-bit window. See docs/XI825.md for sources and limitations. */
+        static const uint8_t cis[] = {
+            0x01,0x03,0xdc,0x00,0xff,
+            0x15,0x1e,0x04,0x01,
+            'Z','-','C','o','m',0,
+            'L','A','N','E','s','c','a','p','e','/','X','I','-','8','2','5',0,
+            '1','.','0',0,0xff,
+            0x20,0x04,0x01,0xd6,0x05,0x00,
+            0x21,0x02,0x06,0x00,
+            0x1a,0x05,0x01,0x01,0xe0,0x03,0x01,
+            0x1b,0x09,0xc1,0x01,0x18,0xf0,0x60,0x00,0x03,0x3f,0x20,
+            0x14,0x00,0xff
+        };
+        memset(s->cis, 0xff, sizeof(s->cis));
+        memcpy(s->cis, cis, sizeof(cis));
+        xi825_init(&s->xi825, nic->mac_address);
+        xi825_set_cis(&s->xi825, cis, sizeof(cis));
+        s->xi825_cor = 0;
+    } else {
+        cf_seed_ne2000_cis(s);
+        ne2000_reset(s);
+    }
     cf_seed_companion_page(s);
     cf_reset_taskfile(s);
-    ne2000_reset(s);
     cf_arm_boot_status(s);
-    fprintf(stderr, "[NE2000] PCMCIA card attached MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
-        s->ne2000.par[0], s->ne2000.par[1], s->ne2000.par[2],
-        s->ne2000.par[3], s->ne2000.par[4], s->ne2000.par[5]);
+    fprintf(stderr, "[%s] PCMCIA card attached MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+        kind == CF_CARD_XI825 ? "XI825" : "NE2000",
+        card_mac[0], card_mac[1], card_mac[2],
+        card_mac[3], card_mac[4], card_mac[5]);
     return 0;
+}
+
+int cf_attach_ne2000(cf_state_t *s, struct machine *machine,
+                     struct net *net, const uint8_t *mac)
+{
+    return cf_attach_network(s, machine, net, mac, CF_CARD_NE2000);
+}
+
+int cf_attach_xi825(cf_state_t *s, struct machine *machine,
+                    struct net *net, const uint8_t *mac)
+{
+    return cf_attach_network(s, machine, net, mac, CF_CARD_XI825);
+}
+
+bool cf_is_network(const cf_state_t *s)
+{
+    return s && s->attached &&
+        (s->card_kind == CF_CARD_NE2000 || s->card_kind == CF_CARD_XI825);
 }
 
 bool cf_present(const cf_state_t *s)
@@ -508,7 +559,8 @@ uint32_t cf_giu_source_bits(const cf_state_t *s)
     return (s && s->attached &&
             (s->irq_pending || s->state_change_pending ||
              (s->card_kind == CF_CARD_NE2000 &&
-              (s->ne2000.isr & s->ne2000.imr) != 0))) ? 0x00000001u : 0u;
+              (s->ne2000.isr & s->ne2000.imr) != 0) ||
+             (s->card_kind == CF_CARD_XI825 && xi825_irq_pending(&s->xi825)))) ? 0x00000001u : 0u;
 }
 
 uint16_t cf_card_state_bits(const cf_state_t *s)
@@ -959,12 +1011,29 @@ uint64_t cf_cis_read(cf_state_t *s, uint32_t offset, unsigned size)
         uint32_t off = offset + i;
         uint8_t byte = 0xFFu;
 
-        if ((off & 1u) == 0u)
+        if (s && s->card_kind == CF_CARD_XI825 && off == 0x3e0)
+            byte = s->xi825_cor;
+        else if ((off & 1u) == 0u)
             byte = cf_cis_read_byte(s, off >> 1);
         val |= (uint64_t)byte << (8u * i);
     }
 
     return val;
+}
+
+void cf_cis_write(cf_state_t *s, uint32_t offset, unsigned size, uint64_t value)
+{
+    if (!s || s->card_kind != CF_CARD_XI825)
+        return;
+    for (unsigned i = 0; i < size && i < 8; ++i) {
+        if (offset + i != 0x3e0)
+            continue;
+        uint8_t cor = (uint8_t)(value >> (8*i));
+        if ((cor & 0x80) && !(s->xi825_cor & 0x80)) {
+            xi825_reset(&s->xi825);
+        }
+        s->xi825_cor = cor;
+    }
 }
 
 bool cf_pcmcia_windows_enabled(const cf_state_t *s)
@@ -1099,6 +1168,10 @@ uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size)
     }
     if (s->card_kind == CF_CARD_NE2000)
         return ne2000_window_read(s, offset, size);
+    if (s->card_kind == CF_CARD_XI825) {
+        if (s->xi825_cor & 0x80) return UINT64_MAX;
+        return xi825_read(&s->xi825, offset & 0x3f, size);
+    }
 
     reg = cf_decode_taskfile_offset(offset, &is_alt);
     if (reg == 0 && !is_alt) {
@@ -1122,6 +1195,11 @@ void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
         return;
     if (s->card_kind == CF_CARD_NE2000) {
         ne2000_window_write(s, offset, size, value);
+        return;
+    }
+    if (s->card_kind == CF_CARD_XI825) {
+        if (!(s->xi825_cor & 0x80))
+            xi825_write(&s->xi825, offset & 0x3f, size, value);
         return;
     }
 

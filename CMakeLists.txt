@@ -213,6 +213,8 @@ set(BE300_SOURCES
     src/hw/nand_restore.c
     src/hw/cf.c
     src/hw/cf_ne2000.c
+    src/hw/cf_xi825.c
+    src/hw/xi825.c
     src/hw/aiu.c
 )
 
@@ -408,6 +410,17 @@ endif()
 
 # Tests
 if(BUILD_TESTING AND BUILD_CLI)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        add_test(NAME network_cli COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/tests/test_network_cli.py $<TARGET_FILE:be300>)
+    endif()
+
+    add_executable(test_xi825 tests/test_xi825.c src/hw/xi825.c
+        src/hw/cf.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/file_util.c)
+    target_include_directories(test_xi825 PRIVATE src)
+    add_test(NAME xi825 COMMAND test_xi825)
+
     add_executable(test_vm_config
         tests/test_vm_config.c
         src/launcher/vm_bundle.c

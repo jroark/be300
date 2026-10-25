@@ -173,6 +173,8 @@ primary regression target:
 - `--restore --cf` — CompactFlash recovery path using a local NANDWRITER tool
 - `--ppsh` — WinCE PPSH debug-shell probe path
 - `--ne2000` — PCMCIA NE2000 Ethernet card model
+- `--xi825` — Z-Com XI-825 wireless CF card with a virtual access point;
+  requires the local vendor driver. See [XI-825 setup](docs/XI825.md).
 - `--rtc-host-time` — initialize the guest RTC from host local time
 - `--audio` — route emulated wave-audio output to SDL (the buzzer is already
   routed by the interactive frontend)
