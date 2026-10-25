@@ -626,8 +626,12 @@ machine_t *be300_create(const machine_config_t *cfg)
         }
 
         if (cfg->enable_ne2000 || cfg->enable_xi825) {
+            /* A deferred card may follow a --cf card that is ejected first. */
+            bool deferred = cfg->net_insert_after_s != 0;
             if ((cfg->enable_ne2000 && cfg->enable_xi825) || cfg->restore ||
-                cfg->rom_path || cf_present(&m->cf[BE300_PRIMARY_CF_SLOT])) {
+                cfg->rom_path || (!deferred && cf_present(&m->cf[BE300_PRIMARY_CF_SLOT])) ||
+                (deferred && cf_present(&m->cf[BE300_PRIMARY_CF_SLOT]) &&
+                 (!cfg->cf_eject_after_s || cfg->cf_eject_after_s >= cfg->net_insert_after_s))) {
                 fprintf(stderr, "[BE300] Conflicting primary PCMCIA socket configuration\n");
                 return be300_create_fail(m);
             }
@@ -640,7 +644,7 @@ machine_t *be300_create(const machine_config_t *cfg)
             }
             int (*attach)(cf_state_t *, struct machine *, struct net *, const uint8_t *) =
                 cfg->enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000;
-            if (attach(&m->cf[BE300_PRIMARY_CF_SLOT], gxm,
+            if (!deferred && attach(&m->cf[BE300_PRIMARY_CF_SLOT], gxm,
                     m->emul->net,
                     cfg->net_mac_set ? cfg->net_mac : NULL) != 0) {
                 fprintf(stderr, "[BE300] Failed to attach network card\n");
@@ -836,7 +840,10 @@ static void be300_cf_hotplug(machine_t *m)
     cf_state_t *cf = &m->cf[BE300_PRIMARY_CF_SLOT];
     uint64_t s;
 
-    if ((!m->cfg.cf_eject_after_s || ejected) && (!m->cfg.cf_insert_after_s || inserted))
+    static bool net_inserted;
+
+    if ((!m->cfg.cf_eject_after_s || ejected) && (!m->cfg.cf_insert_after_s || inserted) &&
+        (!m->cfg.net_insert_after_s || net_inserted))
         return;
     s = (be300_host_monotonic_ns() - m->autostop_start_ns) / UINT64_C(1000000000);
     if (m->cfg.cf_eject_after_s && !ejected && s >= m->cfg.cf_eject_after_s) {
@@ -850,6 +857,17 @@ static void be300_cf_hotplug(machine_t *m)
         inserted = true;
         if (cf_load_image(cf, m->cfg.cf_paths[BE300_PRIMARY_CF_SLOT]) == 0)
             fprintf(stderr, "[CF] card inserted after %" PRIu64 " s\n", s);
+        be300_cf_irq_update(g_be300_vrc4173_latch);
+    }
+    /* --net-insert-after: the network card goes into the emptied socket. */
+    if (m->cfg.net_insert_after_s && !net_inserted && s >= m->cfg.net_insert_after_s &&
+        !cf_present(cf)) {
+        int (*attach)(cf_state_t *, struct machine *, struct net *, const uint8_t *) =
+            m->cfg.enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000;
+        net_inserted = true;
+        if (attach(cf, m->gxe_machine, m->emul->net,
+                m->cfg.net_mac_set ? m->cfg.net_mac : NULL) == 0)
+            fprintf(stderr, "[CF] network card inserted after %" PRIu64 " s\n", s);
         be300_cf_irq_update(g_be300_vrc4173_latch);
     }
 }

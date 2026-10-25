@@ -120,6 +120,8 @@ static void usage(const char *prog)
         "  --cf-eject-after <s>  Eject the primary CF card s seconds after start\n"
         "  --cf-insert-after <s> Insert the primary --cf image s seconds after start\n"
         "                        (absent until then unless --cf-eject-after is earlier)\n"
+        "  --net-insert-after <s> Insert the --ne2000/--xi825 card s seconds after start,\n"
+        "                        into the socket the --cf card was ejected from\n"
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
@@ -351,6 +353,8 @@ int main(int argc, char *argv[])
             cfg.cf_eject_after_s = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--cf-insert-after") == 0 && i + 1 < argc) {
             cfg.cf_insert_after_s = (uint32_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--net-insert-after") == 0 && i + 1 < argc) {
+            cfg.net_insert_after_s = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--restore") == 0) {
             cfg.restore = true;
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
@@ -412,7 +416,9 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    if (network_card && cfg.cf_count > 0) {
+    /* A card inserted later takes the primary socket once its --cf card
+     * is ejected, so that card stays in the primary socket. */
+    if (network_card && cfg.cf_count > 0 && !cfg.net_insert_after_s) {
         if (cfg.cf_count > 1) {
             fprintf(stderr,
                 "Error: only one --cf image can be combined with a network card; "
@@ -423,6 +429,15 @@ int main(int argc, char *argv[])
         cfg.cf_paths[1] = cfg.cf_paths[0];
         cfg.cf_paths[0] = NULL;
         cfg.cf_count = 2;
+    }
+    if (cfg.net_insert_after_s && !network_card) {
+        fprintf(stderr, "Error: --net-insert-after requires --ne2000 or --xi825\n");
+        return 1;
+    }
+    if (cfg.net_insert_after_s && cfg.cf_count > 0 &&
+        (!cfg.cf_eject_after_s || cfg.cf_eject_after_s >= cfg.net_insert_after_s)) {
+        fprintf(stderr, "Error: --net-insert-after with --cf needs an earlier --cf-eject-after\n");
+        return 1;
     }
     if (cfg.net_mac_set && !network_card) {
         fprintf(stderr, "Error: --net-mac requires --ne2000 or --xi825\n");

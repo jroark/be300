@@ -76,6 +76,9 @@ typedef struct {
      * eject it, then (re)insert the image given with --cf. */
     uint32_t    cf_eject_after_s;
     uint32_t    cf_insert_after_s;
+    /* With --ne2000 or --xi825: the network card arrives this many seconds
+     * after start instead, once the --cf card has been ejected (0: off). */
+    uint32_t    net_insert_after_s;
     uint8_t     net_mac[6];
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* throttle target in million guest instructions/sec; 0 = unthrottled */
