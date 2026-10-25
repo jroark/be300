@@ -377,6 +377,27 @@ int cf_load_image(cf_state_t *s, const char *path)
     return 0;
 }
 
+void cf_eject(cf_state_t *s)
+{
+    if (!s || !s->attached)
+        return;
+    cf_save_image(s);
+    free(s->image);
+    s->image = NULL;
+    s->image_size = 0;
+    s->card_kind = CF_CARD_NONE;
+    s->attached = false;
+    s->dirty = false;
+    s->irq_pending = true;
+    s->state_change_pending = true;
+    s->insert_event_pending = false;
+    s->card_windows_enabled = false;
+    s->cis_funcid_seen = false;
+    memset(s->cis, 0xFF, sizeof(s->cis));
+    cf_seed_companion_page(s);
+    cf_reset_taskfile(s);
+}
+
 int cf_save_image(cf_state_t *s)
 {
     if (!s || !s->attached || !s->dirty || !s->image_path || !s->image)

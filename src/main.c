@@ -117,6 +117,9 @@ static void usage(const char *prog)
         "  --audio               Play wave output (wavedev DMA on the Kj companion)\n"
         "                        through SDL; the DMA/interrupt model always runs,\n"
         "                        this only routes PCM to the host (BE300_AUDIO=0 mutes)\n"
+        "  --cf-eject-after <s>  Eject the primary CF card s seconds after start\n"
+        "  --cf-insert-after <s> Insert the primary --cf image s seconds after start\n"
+        "                        (absent until then unless --cf-eject-after is earlier)\n"
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
         "  --ppsh                Enable PPSH (parallel port debug shell) probe\n"
@@ -344,6 +347,10 @@ int main(int argc, char *argv[])
                 return 1;
             }
             cfg.cf_paths[cfg.cf_count++] = argv[++i];
+        } else if (strcmp(argv[i], "--cf-eject-after") == 0 && i + 1 < argc) {
+            cfg.cf_eject_after_s = (uint32_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--cf-insert-after") == 0 && i + 1 < argc) {
+            cfg.cf_insert_after_s = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--restore") == 0) {
             cfg.restore = true;
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {

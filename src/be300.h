@@ -72,6 +72,10 @@ typedef struct {
     const char *nand_path;
     const char *cf_paths[BE300_MAX_CF_SLOTS];
     unsigned    cf_count;
+    /* Hot plug of the primary card, in host seconds after start (0: off):
+     * eject it, then (re)insert the image given with --cf. */
+    uint32_t    cf_eject_after_s;
+    uint32_t    cf_insert_after_s;
     uint8_t     net_mac[6];
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* throttle target in million guest instructions/sec; 0 = unthrottled */
