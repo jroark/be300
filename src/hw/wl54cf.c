@@ -29,7 +29,10 @@ void wl54cf_reset(wl54cf_t *s)
     memcpy(mac, s->mac, 6);
     void *opaque = s->opaque;
     void (*tx)(void *, const uint8_t *, size_t) = s->transmit;
+    wifi_security_t security = s->security;
+    wifi_security_reset(&security);
     memset(s, 0, sizeof(*s));
+    s->security = security;
     memcpy(s->mac, mac, 6);
     s->opaque = opaque;
     s->transmit = tx;
@@ -41,6 +44,7 @@ void wl54cf_init(wl54cf_t *s, const uint8_t mac[6])
 {
     memset(s, 0, sizeof(*s));
     memcpy(s->mac, mac, 6);
+    wifi_security_init(&s->security, mac);
     wl54cf_reset(s);
 }
 bool wl54cf_irq_pending(const wl54cf_t *s) { return (s->cause & ~s->mask & 31) != 0; }
@@ -169,7 +173,7 @@ static void station_command(wl54cf_t *s)
         p[6] = 40;
         memset(p + 7, 0, 8);
         put16(p + 15, 100);
-        put16(p + 17, 1);
+        put16(p + 17, s->security.mode ? 0x11 : 1);
         p += 19;
         *p++ = 0;
         *p++ = 5;
@@ -186,6 +190,7 @@ static void station_command(wl54cf_t *s)
         *p++ = 3;
         *p++ = 1;
         *p++ = 3;
+        memcpy(p, s->security.ie, s->security.ie_len); p += s->security.ie_len;
         put16(r->data + 11, (uint16_t)(p - r->data - 13));
         put16(r->data + 8, (uint16_t)(p - r->data - 11));
         r->data[10] = 1;
@@ -193,7 +198,7 @@ static void station_command(wl54cf_t *s)
         break;
     }
     case 0x11: /* AUTHENTICATE: select open-system authentication. */
-        if (n != 25 || memcmp(c->data + 8, bssid, 6) || c->data[14] != 0 || !s->radio)
+        if (n != 25 || memcmp(c->data + 8, bssid, 6) || c->data[14] > 1 || !s->radio)
             result = 2;
         else
             s->authenticated = true;
@@ -208,10 +213,40 @@ static void station_command(wl54cf_t *s)
                   s->radio && s->channel == 3;
         uint16_t chlen = 0;
         const uint8_t *ch = n >= 21 ? tlv(c->data + 21, n - 21, 3, &chlen) : NULL;
-        ok = ok && ch && chlen == 1 && ch[0] == 3 && !(get16(c->data + 14) & 0x12);
+        ok = ok && ch && chlen == 1 && ch[0] == 3 && s->security.valid &&
+             (!!(get16(c->data + 14) & 16) == (s->security.mode != 0));
+        if (s->security.mode == 1) ok = ok && wifi_security_wep(&s->security,s->wep_index,
+            s->wep[s->wep_index],s->wep_len[s->wep_index]);
+        if (s->security.mode >= 2) {
+            uint16_t il=0; const uint8_t *ie=tlv(c->data+21,n-21,s->security.ie[0],&il);
+            ok = ok && s->rsn && ie && il == s->security.ie_len-2 &&
+                 !memcmp(ie,s->security.ie+2,il);
+        }
         s->associated = ok;
+        if (ok) wifi_security_start(&s->security);
         put16(r->data + 10, ok ? 0 : 4);
         put16(r->data + 12, ok ? 1 : 0);
+        break;
+    }
+    case 0x13: { /* SET_WEP: action, index, types[4], keymaterial[4][16]. */
+        if(n!=80 || get16(c->data+10)>3) {result=2;break;}
+        unsigned action=get16(c->data+8); s->wep_index=get16(c->data+10);
+        memset(s->wep,0,sizeof(s->wep));memset(s->wep_len,0,sizeof(s->wep_len));
+        if(action==2) for(unsigned i=0;i<4;i++) {
+            unsigned t=c->data[12+i];if(t>2){result=2;break;}
+            s->wep_len[i]=t==1?5:t==2?13:0;memcpy(s->wep[i],c->data+16+16*i,s->wep_len[i]);
+        }
+        else if(action!=4)result=2;
+        break;
+    }
+    case 0x2f:
+        if(n!=12 || get16(c->data+8)!=1 || get16(c->data+10)>1) result=2;
+        else s->rsn=get16(c->data+10)!=0;
+        break;
+    case 0x5e: {
+        if(n!=52 || get16(c->data+8)!=1 || get16(c->data+10)!=0x100 || get16(c->data+12)!=38) {result=2;break;}
+        unsigned flags=get16(c->data+16), l=get16(c->data+18);
+        if(l>32 || !wifi_security_key(&s->security,!!(flags&2),get16(c->data+14),c->data+20,l))result=2;
         break;
     }
     case 0x24: /* DEAUTHENTICATE */
@@ -220,10 +255,11 @@ static void station_command(wl54cf_t *s)
         else {
             s->associated = false;
             s->authenticated = false;
+            wifi_security_reset(&s->security);
         }
         break;
     case 0x28: /* MAC_CONTROL */
-        if (n != 12 || (get16(c->data + 8) & ~0x1d3u))
+        if (n != 12 || (get16(c->data + 8) & ~0x1dbu))
             result = 2;
         else {
             s->mac_control = get16(c->data + 8);
@@ -264,7 +300,7 @@ static void transmit(wl54cf_t *s)
         uint32_t off = get32(b->data + 8);
         unsigned n = get16(b->data + 12);
         if (off >= 24 && off <= b->length && n >= 14 && n <= 1514 && n <= b->length - off &&
-            s->transmit)
+            s->transmit && wifi_security_tx(&s->security,b->data+off,n))
             s->transmit(s->opaque, b->data + off, n);
     }
     s->cause |= WL54CF_TX; /* CF download completion; not an over-air ACK. */
@@ -274,6 +310,7 @@ bool wl54cf_receive(wl54cf_t *s, const uint8_t *packet, size_t n)
     if (!s->associated || !(s->mac_control & 1) || n < 14 || n > 1514 ||
         s->rx_count == WL54CF_QUEUE)
         return false;
+    if ((packet[12]!=0x88 || packet[13]!=0x8e) && !s->security.authorized) return false;
     bool broadcast = !memcmp(packet, "\xff\xff\xff\xff\xff\xff", 6);
     if (memcmp(packet, s->mac, 6) && !(s->mac_control & 0x80) &&
         !(broadcast && (s->mac_control & 0x40)) &&
@@ -306,6 +343,9 @@ static uint64_t stream_read(wl54cf_buffer_t *b, unsigned size)
 }
 uint64_t wl54cf_read(wl54cf_t *s, unsigned off, unsigned size)
 {
+    if (s->security.pending_len && s->associated && s->rx_count<WL54CF_QUEUE &&
+        wl54cf_receive(s,s->security.pending,s->security.pending_len)) s->security.pending_len=0;
+
     if (!size || size > 8 || off >= 64 || size > 64 - off)
         return UINT64_MAX;
     if (off == 0x10)

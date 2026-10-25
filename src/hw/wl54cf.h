@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "wifi_security.h"
 
 #define WL54CF_BUFFER 2048u
 #define WL54CF_QUEUE 8u
@@ -18,6 +19,9 @@ typedef struct {
 } wl54cf_buffer_t;
 typedef struct {
     uint8_t mac[6];
+    wifi_security_t security;
+    uint8_t wep[4][16], wep_len[4], wep_index;
+    bool rsn;
     uint8_t firmware_stage; /* ROM, helper, station, failed */
     uint16_t mask, cause, host_status, mac_control;
     uint16_t request, firmware_payload;
