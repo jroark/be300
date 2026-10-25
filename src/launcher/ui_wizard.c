@@ -35,6 +35,7 @@ static bool  g_enable_audio = false;
 static bool  g_enable_rtc_host_time = false;
 static bool  g_enable_ne2000 = false;
 static bool  g_enable_xi825 = false;
+static bool  g_enable_wl54cf = false;
 static bool  g_enable_ppsh = false;
 static bool  g_enable_stowaway = false;
 static bool  g_restore = false;
@@ -58,6 +59,7 @@ static void wizard_reset(void)
     g_enable_rtc_host_time = false;
     g_enable_ne2000 = false;
     g_enable_xi825 = false;
+    g_enable_wl54cf = false;
     g_enable_ppsh = false;
     g_enable_stowaway = false;
     g_restore = false;
@@ -76,6 +78,7 @@ static void apply_to_cfg(machine_config_t *cfg)
     cfg->enable_rtc_host_time = g_enable_rtc_host_time;
     cfg->enable_ne2000 = g_enable_ne2000;
     cfg->enable_xi825 = g_enable_xi825;
+    cfg->enable_wl54cf = g_enable_wl54cf;
     cfg->enable_ppsh = g_enable_ppsh;
     cfg->enable_stowaway_keyboard = g_enable_stowaway;
     cfg->restore = g_restore;
@@ -142,11 +145,13 @@ void launcher_wizard_draw(launcher_state_t *L)
             &g_target_mhz, 0, 600, "%d", ImGuiSliderFlags_AlwaysClamp);
         igCheckbox("Initialise RTC from host time", &g_enable_rtc_host_time);
         igCheckbox("Casio AIU audio path", &g_enable_audio);
-        int adapter = g_enable_xi825 ? 2 : (g_enable_ne2000 ? 1 : 0);
-        const char *adapters[] = { "None", "NE2000 Ethernet", "Z-Com XI-825 wireless" };
-        if (igCombo_Str_arr("Network card", &adapter, adapters, 3, -1)) {
+        int adapter = g_enable_wl54cf ? 3 : (g_enable_xi825 ? 2 : (g_enable_ne2000 ? 1 : 0));
+        const char *adapters[] = { "None", "NE2000 Ethernet",
+            "Z-Com XI-825 wireless", "AmbiCom WL54-CF wireless" };
+        if (igCombo_Str_arr("Network card", &adapter, adapters, 4, -1)) {
             g_enable_ne2000 = adapter == 1;
             g_enable_xi825 = adapter == 2;
+            g_enable_wl54cf = adapter == 3;
         }
         igCheckbox("Stowaway dock keyboard", &g_enable_stowaway);
     }

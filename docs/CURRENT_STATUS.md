@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-10-24
+Last updated: 2026-10-25
 
 ## Active Target
 
@@ -22,6 +22,9 @@ Secondary implemented paths, used for targeted investigation only:
 - `--restore --cf` for the local NANDWRITER/CompactFlash recovery path
 - `--ppsh` for the WinCE debug-shell probe path
 - `--ne2000` for the PCMCIA NE2000 Ethernet card path
+- `--wl54cf` for the native AmbiCom WL54-CF station model and Glaze MIPS
+  driver; open virtual `BE300` AP, with local firmware upload; see
+  `docs/WL54CF.md`. The supplied ARM CE 4.1 driver cannot run on WinCE 3.0.
 - `--xi825` for the native Z-Com XI-825 wireless CF card and virtual `BE300`
   access point; see `docs/XI825.md` for the vendor driver and one-time
   WinCE driver/LAN-profile registration required by the minimal CIS
