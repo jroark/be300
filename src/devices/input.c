@@ -36,6 +36,7 @@ struct be300_input_device {
     bool       log_mmio;
     /* Button device state. */
     bool       button_irq_pending;
+    bool       button_source_enabled;   /* AA000014 bit 3 */
     struct interrupt button_irq;  /* BE-300 GIRQ0 cascaded interrupt */
     bool       button_irq_connected;
     bool       button_irq_asserted;
@@ -72,6 +73,7 @@ static void button_irq_update(struct be300_input_device *d, bool want)
 {
     if (!d || !d->button_irq_connected)
         return;
+    want = want && d->button_source_enabled;
     if (want && !d->button_irq_asserted) {
         INTERRUPT_ASSERT(d->button_irq);
         d->button_irq_asserted = true;
@@ -91,7 +93,16 @@ uint32_t button_girq0_source_bits(const struct be300_input_device *d)
      * changes latch this cascaded source until the OAL writes the GIRQ0-1
      * acknowledge path at AA000014.
      */
-    return (d && d->button_irq_pending) ? BUTTON_GIRQ0_SOURCE : 0;
+    return (d && d->button_irq_pending && d->button_source_enabled) ?
+        BUTTON_GIRQ0_SOURCE : 0;
+}
+
+void button_set_source_enabled(struct be300_input_device *d, bool enabled)
+{
+    if (!d)
+        return;
+    d->button_source_enabled = enabled;
+    button_irq_update(d, d->button_irq_pending);
 }
 
 void button_ack_keyboard_source(struct be300_input_device *d)

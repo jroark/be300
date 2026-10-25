@@ -105,6 +105,27 @@ void be300_log_mmio(const char *name, int writeflag, uint32_t off,
 
 machine_t *g_be300_machine = NULL;  /* for PIU cross-device callback */
 
+/*
+ * GIRQ0 source enables. Source n of AA000004 has its enable at
+ * AA000010 + 4n, bit 3 (USB bit 7 at 0x2C and wave audio bit 8 at 0x30
+ * below). The OAL's GIRQ0-0 and GIRQ0-1 handlers mask PCMCIA and the
+ * buttons with AA000010/AA000014 &= ~0x08 (docs/hardware/hardware.txt:93-112),
+ * InterruptDone writes 0x30, 0x04, 0x0C to set them again (PCs
+ * 0x800a9428-0x800a95a0 for 0x10, 0x800a9070-0x800a9114 for 0x14), the boot
+ * ROM leaves 0x3C in both (PCs 0xa0076d68-0xa0076d80), and the real idle
+ * dump reads 0x0C (hw_dump_vrc4173.txt:25). A disabled source neither
+ * raises GIU line 0 nor reads set in AA000004, whose dispatcher serves the
+ * lowest set bit. Writes still acknowledge both sources (be300_latch_write).
+ */
+#define BE300_GIRQ0_PCMCIA_EN   0x0010u
+#define BE300_GIRQ0_KEYS_EN     0x0014u
+#define BE300_GIRQ0_SOURCE_EN_BIT 0x00000008u
+
+static bool be300_girq0_enabled(struct be300_vrc4173_latch *d, uint32_t en_off)
+{
+    return (be300_latch_peek_u32(d, en_off) & BE300_GIRQ0_SOURCE_EN_BIT) != 0;
+}
+
 void be300_cf_irq_update(struct be300_vrc4173_latch *d)
 {
     bool want;
@@ -119,7 +140,8 @@ void be300_cf_irq_update(struct be300_vrc4173_latch *d)
      * corresponding level into the VR4131 GIU interrupt line.
      */
     want = cf_giu_source_bits(
-        &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]) != 0;
+        &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]) != 0 &&
+        be300_girq0_enabled(d, BE300_GIRQ0_PCMCIA_EN);
     if (want && !d->cf_irq_asserted) {
         INTERRUPT_ASSERT(d->cf_irq);
         d->cf_irq_asserted = true;
@@ -310,9 +332,11 @@ static uint64_t girq0_src_read(struct cpu *cpu,
     if (!cf_present(&g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]))
         val &= ~(uint64_t)1u;
     val &= ~(uint64_t)BUTTON_GIRQ0_SOURCE;
-    val |= cf_giu_source_bits(
-            &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT])
-        | be300_pcconnect_girq0_source_bits(d)
+    if (be300_girq0_enabled(d, BE300_GIRQ0_PCMCIA_EN))
+        val |= cf_giu_source_bits(&g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]);
+    else
+        val &= ~(uint64_t)1u;
+    val |= be300_pcconnect_girq0_source_bits(d)
         | be300_usbf_girq0_source_bits(d)
         | be300_aiu_girq0_source_bits(d)
         | button_girq0_source_bits(
@@ -742,6 +766,12 @@ static void be300_latch_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
             BE300_MMIO_CLASS_LATCHED);
         memcpy(&d->bytes[off], data, len);
     }
+    if (off <= BE300_GIRQ0_PCMCIA_EN && off + len > BE300_GIRQ0_PCMCIA_EN)
+        be300_cf_irq_update(d);
+    if (g_be300_machine && off <= BE300_GIRQ0_KEYS_EN && off + len > BE300_GIRQ0_KEYS_EN)
+        button_set_source_enabled(
+            (struct be300_input_device *)g_be300_machine->button_device,
+            be300_girq0_enabled(d, BE300_GIRQ0_KEYS_EN));
     if (off <= BE300_USBF_SOURCE_EN &&
         off + len > BE300_USBF_SOURCE_EN)
         be300_usbf_irq_update(d);

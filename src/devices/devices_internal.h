@@ -61,3 +61,5 @@ void be300_register_wince_aux(struct machine *gxm, bool log_mmio,
 uint32_t piu_girq0_source_bits(const struct be300_input_device *d);
 uint32_t button_girq0_source_bits(const struct be300_input_device *d);
 void     button_ack_keyboard_source(struct be300_input_device *d);
+/* AA000014 bit 3, the GIRQ0-1 source enable (be300_devices.c). */
+void     button_set_source_enabled(struct be300_input_device *d, bool enabled);
