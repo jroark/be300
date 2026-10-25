@@ -26,6 +26,7 @@
 #include "serial_backends.h"
 #include "stowaway.h"
 #include "ui.h"
+#include "devices/devices_internal.h"
 
 /* GXemul headers */
 #include "interrupt.h"
@@ -612,6 +613,10 @@ machine_t *be300_create(const machine_config_t *cfg)
         for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++) {
             if (!cfg->cf_paths[i])
                 continue;
+            /* --cf-insert-after: the card arrives later (be300_cf_hotplug). */
+            if (i == BE300_PRIMARY_CF_SLOT && cfg->cf_insert_after_s &&
+                (!cfg->cf_eject_after_s || cfg->cf_eject_after_s > cfg->cf_insert_after_s))
+                continue;
             if (cf_load_image(&m->cf[i], cfg->cf_paths[i]) != 0) {
                 fprintf(stderr, "[BE300] Failed to load CF image %u\n",
                     i + 1);
@@ -815,6 +820,33 @@ static void be300_runtime_finalize(machine_t *m)
     m->runtime_finalized = true;
 }
 
+/* --cf-eject-after / --cf-insert-after: hot plug of the primary card, so
+ * a guest's insertion handling (pcmcia.dll, Glaze's card driver) can be
+ * traced and tested. Each fires once, on host time since start. */
+static void be300_cf_hotplug(machine_t *m)
+{
+    static bool ejected, inserted;
+    cf_state_t *cf = &m->cf[BE300_PRIMARY_CF_SLOT];
+    uint64_t s;
+
+    if ((!m->cfg.cf_eject_after_s || ejected) && (!m->cfg.cf_insert_after_s || inserted))
+        return;
+    s = (be300_host_monotonic_ns() - m->autostop_start_ns) / UINT64_C(1000000000);
+    if (m->cfg.cf_eject_after_s && !ejected && s >= m->cfg.cf_eject_after_s) {
+        ejected = true;
+        cf_eject(cf);
+        be300_cf_irq_update(g_be300_vrc4173_latch);
+        fprintf(stderr, "[CF] card ejected after %" PRIu64 " s\n", s);
+    }
+    if (m->cfg.cf_insert_after_s && !inserted && s >= m->cfg.cf_insert_after_s &&
+        (!m->cfg.cf_eject_after_s || ejected) && m->cfg.cf_paths[BE300_PRIMARY_CF_SLOT]) {
+        inserted = true;
+        if (cf_load_image(cf, m->cfg.cf_paths[BE300_PRIMARY_CF_SLOT]) == 0)
+            fprintf(stderr, "[CF] card inserted after %" PRIu64 " s\n", s);
+        be300_cf_irq_update(g_be300_vrc4173_latch);
+    }
+}
+
 static bool be300_run_batch(machine_t *m)
 {
     struct machine *gxm = m->gxe_machine;
@@ -886,6 +918,8 @@ static bool be300_run_batch(machine_t *m)
 
     if (m->use_builtin_ui && ui_should_quit(m))
         return false;
+
+    be300_cf_hotplug(m);
 
     if (m->autostop_after_ns > 0 && m->autostop_start_ns > 0) {
         uint64_t now_ns = be300_host_monotonic_ns();

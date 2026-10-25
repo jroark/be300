@@ -92,6 +92,8 @@ typedef struct {
 void     cf_init(cf_state_t *s);
 void     cf_destroy(cf_state_t *s);
 int      cf_load_image(cf_state_t *s, const char *path);
+/* Hot unplug: the image is saved and the socket reads empty again. */
+void     cf_eject(cf_state_t *s);
 int      cf_attach_ne2000(cf_state_t *s, struct machine *machine,
                           struct net *net, const uint8_t *mac);
 int      cf_save_image(cf_state_t *s);
