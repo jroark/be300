@@ -99,12 +99,18 @@ static void test_config_round_trip(void)
     CHECK(vm_config_save(json_path, &out) == 0, "save XI-825");
     CHECK(vm_config_load(json_path, &in) == 0, "load XI-825");
     CHECK(in.cfg.enable_xi825 && !in.cfg.enable_ne2000, "XI-825 round-trip");
+    out.enable_xi825 = false;
+    out.enable_wl54cf = true;
+    CHECK(vm_config_save(json_path, &out) == 0, "save WL54-CF");
+    CHECK(vm_config_load(json_path, &in) == 0, "load WL54-CF");
+    CHECK(in.cfg.enable_wl54cf && !in.cfg.enable_xi825 && !in.cfg.enable_ne2000,
+        "WL54-CF round-trip");
     FILE *legacy = fopen(json_path, "w");
     CHECK(legacy, "open legacy config");
     fputs("{\"schema\":1,\"enable_ne2000\":true}", legacy);
     fclose(legacy);
     CHECK(vm_config_load(json_path, &in) == 0, "load legacy config");
-    CHECK(!in.cfg.enable_xi825 && in.cfg.enable_ne2000, "legacy card selection");
+    CHECK(!in.cfg.enable_xi825 && !in.cfg.enable_wl54cf && in.cfg.enable_ne2000, "legacy card selection");
 
     unlink(json_path);
     rmdir(dir);

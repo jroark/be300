@@ -106,6 +106,8 @@ DEVICE_ACCESS(be300_pcmcia_attr)
             }
             if (d->cf->card_kind == CF_CARD_XI825 && cis_idx == 0x1f0)
                 data[i] = (uint8_t)cf_cis_read(d->cf, 0x3e0, 1);
+            else if (d->cf->card_kind == CF_CARD_WL54CF && cis_idx == 0x100)
+                data[i] = (uint8_t)cf_cis_read(d->cf, 0x200, 1);
             else
                 data[i] = cf_cis_read_byte(d->cf, cis_idx);
         }
