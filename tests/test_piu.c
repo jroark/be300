@@ -129,12 +129,51 @@ static void test_full_pages_require_explicit_restart(void)
     CHECK((p.regs[1] & PIU_PENDING_PAGE0) != 0);
 }
 
+/* UM 9.2 (5) and (7): with PADATSTOP, a release returns to WaitPenTouch and
+ * the next touch raises a contact change; without it, the sequencer keeps
+ * scanning and the next touch only resumes sampling. */
+static void release_and_touch_again(piu_state_t *p, uint16_t control)
+{
+    piu_init(p);
+    configure_fast_scan(p);
+    piu_write(p, 0x00, control, 0);
+    piu_set_touch(p, true, 50, 60, 0);
+    piu_tick(p, 40000);
+    piu_write(p, 0x04, TOUCH_IRQ_MASK | PIU_PENDING_PENCHG | PIU_PENDING_PAGE0, 40000);
+    piu_set_touch(p, false, 50, 60, 50000);
+    CHECK((p->regs[1] & PIU_PENDING_PENCHG) != 0);
+    piu_write(p, 0x04, TOUCH_IRQ_MASK | PIU_PENDING_ANY, 50000);
+    piu_set_touch(p, true, 70, 80, 60000);
+}
+
+static void test_release_with_auto_stop(void)
+{
+    piu_state_t p;
+
+    release_and_touch_again(&p, AUTO_SCAN_CONTROL);
+    CHECK((p.regs[1] & PIU_PENDING_PENCHG) != 0);
+    CHECK(p.padstate == PIU_PADSTATE_PEN_DATA);
+}
+
+static void test_release_without_auto_stop(void)
+{
+    piu_state_t p;
+
+    release_and_touch_again(&p, AUTO_SCAN_CONTROL & ~0x0200u);
+    CHECK((p.regs[1] & PIU_PENDING_PENCHG) == 0);
+    CHECK(p.padstate != PIU_PADSTATE_WAIT_PEN);
+    piu_tick(&p, 200000);
+    CHECK((p.regs[1] & PIU_PENDING_TOUCH_DATA) != 0);
+}
+
 int main(void)
 {
     test_reset_command_and_defaults();
     test_pen_state_latch_and_queued_release();
     test_page_order_and_adc_endpoints();
     test_full_pages_require_explicit_restart();
+    test_release_with_auto_stop();
+    test_release_without_auto_stop();
     if (failures) {
         fprintf(stderr, "test_piu: %d failure(s)\n", failures);
         return 1;

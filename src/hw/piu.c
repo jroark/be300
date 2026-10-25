@@ -13,6 +13,7 @@
 #define PIUCNT_PADSCANTYPE  0x0020u
 #define PIUCNT_PADSCANSTART 0x0040u
 #define PIUCNT_PADATSTART   0x0100u
+#define PIUCNT_PADATSTOP    0x0200u
 
 static bool time_reached(uint64_t now_ns, uint64_t due_ns)
 {
@@ -122,11 +123,25 @@ static void signal_pen_down(piu_state_t *p, uint64_t now_ns)
     raise_penchg(p, true);
 }
 
+/*
+ * Release. UM section 9.2 (7): released in IntervalNextScan, the sequencer
+ * returns to WaitPenTouch only if PADATSTOP is set (9.3.1 bit 9, "auto stop
+ * ... during release state"); otherwise it keeps scanning, so a later touch
+ * resumes sampling without the contact-change interrupt only WaitPenTouch
+ * raises (9.2 (5)). A real BE-300 driven without PADATSTOP sat in
+ * IntervalNextScan after its first touch; Windows CE sets it (CNT 0x1304,
+ * hw_dump_vrc4173.txt:986).
+ */
 static void signal_pen_up(piu_state_t *p)
 {
     bool wait_enabled = wait_pen_enabled(p);
     bool should_signal = wait_enabled || p->padstate >= PIU_PADSTATE_WAIT_PEN;
 
+    if (wait_enabled && p->padstate >= PIU_PADSTATE_PEN_DATA &&
+        !(p->regs[0] & PIUCNT_PADATSTOP)) {
+        raise_penchg(p, false);
+        return;
+    }
     p->data_armed = false;
     p->data_ready_ns = 0;
     if (wait_enabled)
