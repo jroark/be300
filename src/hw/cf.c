@@ -438,11 +438,13 @@ static int cf_attach_network(cf_state_t *s, struct machine *machine,
         memcpy(card_mac, fallback_mac, sizeof(card_mac));
     }
     struct nic_data *nic = kind == CF_CARD_XI825 ?
-        &s->xi825_nic : &s->ne2000.nic;
+        &s->xi825_nic : (kind == CF_CARD_WL54CF ? &s->wl54cf_nic : &s->ne2000.nic);
     memset(nic, 0, sizeof(*nic));
     memcpy(nic->mac_address, card_mac, sizeof(card_mac));
     if (kind == CF_CARD_XI825)
         s->xi825_net = net;
+    else if (kind == CF_CARD_WL54CF)
+        s->wl54cf_net = net;
     else {
         s->ne2000.net = net;
         memcpy(s->ne2000.par, card_mac, sizeof(card_mac));
@@ -482,6 +484,24 @@ static int cf_attach_network(cf_state_t *s, struct machine *machine,
         xi825_init(&s->xi825, nic->mac_address);
         xi825_set_cis(&s->xi825, cis, sizeof(cis));
         s->xi825_cor = 0;
+    } else if (kind == CF_CARD_WL54CF) {
+        /* MANFID from Libertas if_cs.c; strings from AMWL54G install header.
+         * Minimal standard CIS, not a captured EEPROM: docs/WL54CF.md. */
+        static const uint8_t cis[] = {
+            0x01,0x03,0xdc,0x00,0xff,
+            0x15,0x15,0x04,0x01,
+            'M','a','r','v','e','l','l',0,
+            '8','0','2','.','1','1','_','C','F',0,0xff,
+            0x20,0x04,0xdf,0x02,0x03,0x81,
+            0x21,0x02,0x06,0x00,
+            0x1a,0x05,0x01,0x01,0x00,0x02,0x01,
+            0x1b,0x09,0xc1,0x01,0x18,0xf0,0x60,0x00,0x03,0x3f,0x20,
+            0x14,0x00,0xff
+        };
+        memset(s->cis, 0xff, sizeof(s->cis));
+        memcpy(s->cis, cis, sizeof(cis));
+        wl54cf_init(&s->wl54cf, card_mac);
+        s->wl54cf_cor = 0;
     } else {
         cf_seed_ne2000_cis(s);
         ne2000_reset(s);
@@ -490,7 +510,7 @@ static int cf_attach_network(cf_state_t *s, struct machine *machine,
     cf_reset_taskfile(s);
     cf_arm_boot_status(s);
     fprintf(stderr, "[%s] PCMCIA card attached MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
-        kind == CF_CARD_XI825 ? "XI825" : "NE2000",
+        kind == CF_CARD_XI825 ? "XI825" : (kind == CF_CARD_WL54CF ? "WL54CF" : "NE2000"),
         card_mac[0], card_mac[1], card_mac[2],
         card_mac[3], card_mac[4], card_mac[5]);
     return 0;
@@ -508,10 +528,17 @@ int cf_attach_xi825(cf_state_t *s, struct machine *machine,
     return cf_attach_network(s, machine, net, mac, CF_CARD_XI825);
 }
 
+int cf_attach_wl54cf(cf_state_t *s, struct machine *machine,
+                     struct net *net, const uint8_t *mac)
+{
+    return cf_attach_network(s, machine, net, mac, CF_CARD_WL54CF);
+}
+
 bool cf_is_network(const cf_state_t *s)
 {
     return s && s->attached &&
-        (s->card_kind == CF_CARD_NE2000 || s->card_kind == CF_CARD_XI825);
+        (s->card_kind == CF_CARD_NE2000 || s->card_kind == CF_CARD_XI825 ||
+         s->card_kind == CF_CARD_WL54CF);
 }
 
 bool cf_present(const cf_state_t *s)
@@ -581,7 +608,8 @@ uint32_t cf_giu_source_bits(const cf_state_t *s)
             (s->irq_pending || s->state_change_pending ||
              (s->card_kind == CF_CARD_NE2000 &&
               (s->ne2000.isr & s->ne2000.imr) != 0) ||
-             (s->card_kind == CF_CARD_XI825 && xi825_irq_pending(&s->xi825)))) ? 0x00000001u : 0u;
+             (s->card_kind == CF_CARD_XI825 && xi825_irq_pending(&s->xi825)) ||
+             (s->card_kind == CF_CARD_WL54CF && wl54cf_irq_pending(&s->wl54cf)))) ? 0x00000001u : 0u;
 }
 
 uint16_t cf_card_state_bits(const cf_state_t *s)
@@ -1034,6 +1062,8 @@ uint64_t cf_cis_read(cf_state_t *s, uint32_t offset, unsigned size)
 
         if (s && s->card_kind == CF_CARD_XI825 && off == 0x3e0)
             byte = s->xi825_cor;
+        else if (s && s->card_kind == CF_CARD_WL54CF && off == 0x200)
+            byte = s->wl54cf_cor;
         else if ((off & 1u) == 0u)
             byte = cf_cis_read_byte(s, off >> 1);
         val |= (uint64_t)byte << (8u * i);
@@ -1044,6 +1074,17 @@ uint64_t cf_cis_read(cf_state_t *s, uint32_t offset, unsigned size)
 
 void cf_cis_write(cf_state_t *s, uint32_t offset, unsigned size, uint64_t value)
 {
+    if (s && s->card_kind == CF_CARD_WL54CF) {
+        for (unsigned i = 0; i < size && i < 8; i++) {
+            if (offset + i != 0x200)
+                continue;
+            uint8_t cor = (uint8_t)(value >> (8 * i));
+            if ((cor & 0x80) && !(s->wl54cf_cor & 0x80))
+                wl54cf_reset(&s->wl54cf);
+            s->wl54cf_cor = cor;
+        }
+        return;
+    }
     if (!s || s->card_kind != CF_CARD_XI825)
         return;
     for (unsigned i = 0; i < size && i < 8; ++i) {
@@ -1189,6 +1230,11 @@ uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size)
     }
     if (s->card_kind == CF_CARD_NE2000)
         return ne2000_window_read(s, offset, size);
+    if (s->card_kind == CF_CARD_WL54CF) {
+        if ((s->wl54cf_cor & 0x81) != 1)
+            return UINT64_MAX;
+        return wl54cf_read(&s->wl54cf, offset & 0x3f, size);
+    }
     if (s->card_kind == CF_CARD_XI825) {
         if (s->xi825_cor & 0x80) return UINT64_MAX;
         return xi825_read(&s->xi825, offset & 0x3f, size);
@@ -1216,6 +1262,11 @@ void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
         return;
     if (s->card_kind == CF_CARD_NE2000) {
         ne2000_window_write(s, offset, size, value);
+        return;
+    }
+    if (s->card_kind == CF_CARD_WL54CF) {
+        if ((s->wl54cf_cor & 0x81) == 1)
+            wl54cf_write(&s->wl54cf, offset & 0x3f, size, value);
         return;
     }
     if (s->card_kind == CF_CARD_XI825) {

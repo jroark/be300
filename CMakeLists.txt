@@ -215,6 +215,8 @@ set(BE300_SOURCES
     src/hw/cf_ne2000.c
     src/hw/cf_xi825.c
     src/hw/xi825.c
+    src/hw/wl54cf.c
+    src/hw/cf_wl54cf.c
     src/hw/aiu.c
 )
 
@@ -417,9 +419,14 @@ if(BUILD_TESTING AND BUILD_CLI)
     endif()
 
     add_executable(test_xi825 tests/test_xi825.c src/hw/xi825.c
-        src/hw/cf.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/file_util.c)
+        src/hw/cf.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/hw/wl54cf.c src/hw/cf_wl54cf.c src/file_util.c)
     target_include_directories(test_xi825 PRIVATE src)
     add_test(NAME xi825 COMMAND test_xi825)
+    add_executable(test_wl54cf tests/test_wl54cf.c src/hw/wl54cf.c
+        src/hw/cf.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/hw/xi825.c
+        src/hw/cf_wl54cf.c src/file_util.c)
+    target_include_directories(test_wl54cf PRIVATE src)
+    add_test(NAME wl54cf COMMAND test_wl54cf)
 
     add_executable(test_vm_config
         tests/test_vm_config.c

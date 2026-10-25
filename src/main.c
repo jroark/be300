@@ -110,8 +110,9 @@ static void usage(const char *prog)
         "  --log-mmio            Log all MMIO register reads/writes to stderr\n"
         "  --nand <image>        Boot WinCE from NAND dump (B000FF SPL loader)\n"
         "  --cf <image>          Attach a FAT16 CF image (may be specified twice;\n"
-        "                        with --ne2000/--xi825, one --cf uses the secondary socket)\n"
+        "                        with --ne2000/--xi825/--wl54cf, one --cf uses the secondary socket)\n"
         "  --ne2000              Attach a PCMCIA NE2000 Ethernet card\n"
+        "  --wl54cf              Attach an AmbiCom WL54-CF wireless card (SSID BE300)\n"
         "  --xi825               Attach a Z-Com XI-825 wireless CF card (SSID BE300)\n"
         "  --net-mac <mac>       Override network card MAC (aa:bb:cc:dd:ee:ff)\n"
         "  --audio               Play wave output (wavedev DMA on the Kj companion)\n"
@@ -120,7 +121,7 @@ static void usage(const char *prog)
         "  --cf-eject-after <s>  Eject the primary CF card s seconds after start\n"
         "  --cf-insert-after <s> Insert the primary --cf image s seconds after start\n"
         "                        (absent until then unless --cf-eject-after is earlier)\n"
-        "  --net-insert-after <s> Insert the --ne2000/--xi825 card s seconds after start,\n"
+        "  --net-insert-after <s> Insert the --ne2000/--xi825/--wl54cf card s seconds after start,\n"
         "                        into the socket the --cf card was ejected from\n"
         "  --restore             Enter CF recovery boot mode (requires --cf)\n"
         "  --sdram <MB>          SDRAM size in megabytes (default: 16)\n"
@@ -322,6 +323,8 @@ int main(int argc, char *argv[])
             }
         } else if (strcmp(argv[i], "--ne2000") == 0) {
             cfg.enable_ne2000 = true;
+        } else if (strcmp(argv[i], "--wl54cf") == 0) {
+            cfg.enable_wl54cf = true;
         } else if (strcmp(argv[i], "--xi825") == 0) {
             cfg.enable_xi825 = true;
         } else if (strcmp(argv[i], "--audio") == 0) {
@@ -396,11 +399,11 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    if (cfg.enable_ne2000 && cfg.enable_xi825) {
-        fprintf(stderr, "Error: --ne2000 and --xi825 claim the same PCMCIA socket; pick one\n");
+    if ((unsigned)cfg.enable_ne2000 + cfg.enable_xi825 + cfg.enable_wl54cf > 1) {
+        fprintf(stderr, "Error: --ne2000, --xi825 and --wl54cf claim the same PCMCIA socket; pick one\n");
         return 1;
     }
-    bool network_card = cfg.enable_ne2000 || cfg.enable_xi825;
+    bool network_card = cfg.enable_ne2000 || cfg.enable_xi825 || cfg.enable_wl54cf;
     if (cfg.restore && network_card) {
         fprintf(stderr, "Error: --restore requires the primary PCMCIA socket, so it cannot be combined with a network card\n");
         usage(argv[0]);
@@ -431,7 +434,7 @@ int main(int argc, char *argv[])
         cfg.cf_count = 2;
     }
     if (cfg.net_insert_after_s && !network_card) {
-        fprintf(stderr, "Error: --net-insert-after requires --ne2000 or --xi825\n");
+        fprintf(stderr, "Error: --net-insert-after requires --ne2000, --xi825 or --wl54cf\n");
         return 1;
     }
     if (cfg.net_insert_after_s && cfg.cf_count > 0 &&
@@ -440,7 +443,7 @@ int main(int argc, char *argv[])
         return 1;
     }
     if (cfg.net_mac_set && !network_card) {
-        fprintf(stderr, "Error: --net-mac requires --ne2000 or --xi825\n");
+        fprintf(stderr, "Error: --net-mac requires --ne2000, --xi825 or --wl54cf\n");
         usage(argv[0]);
         return 1;
     }

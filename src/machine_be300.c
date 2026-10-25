@@ -625,11 +625,12 @@ machine_t *be300_create(const machine_config_t *cfg)
             cf_image_loaded = true;
         }
 
-        if (cfg->enable_ne2000 || cfg->enable_xi825) {
+        if (cfg->enable_ne2000 || cfg->enable_xi825 || cfg->enable_wl54cf) {
             /* A deferred card may follow a --cf card that is ejected first. */
             bool deferred = cfg->net_insert_after_s != 0;
-            if ((cfg->enable_ne2000 && cfg->enable_xi825) || cfg->restore ||
-                cfg->rom_path || (!deferred && cf_present(&m->cf[BE300_PRIMARY_CF_SLOT])) ||
+            if (((unsigned)cfg->enable_ne2000 + cfg->enable_xi825 + cfg->enable_wl54cf > 1) ||
+                cfg->restore || cfg->rom_path ||
+                (!deferred && cf_present(&m->cf[BE300_PRIMARY_CF_SLOT])) ||
                 (deferred && cf_present(&m->cf[BE300_PRIMARY_CF_SLOT]) &&
                  (!cfg->cf_eject_after_s || cfg->cf_eject_after_s >= cfg->net_insert_after_s))) {
                 fprintf(stderr, "[BE300] Conflicting primary PCMCIA socket configuration\n");
@@ -643,7 +644,8 @@ machine_t *be300_create(const machine_config_t *cfg)
                 return be300_create_fail(m);
             }
             int (*attach)(cf_state_t *, struct machine *, struct net *, const uint8_t *) =
-                cfg->enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000;
+                cfg->enable_wl54cf ? cf_attach_wl54cf :
+                (cfg->enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000);
             if (!deferred && attach(&m->cf[BE300_PRIMARY_CF_SLOT], gxm,
                     m->emul->net,
                     cfg->net_mac_set ? cfg->net_mac : NULL) != 0) {
@@ -863,7 +865,8 @@ static void be300_cf_hotplug(machine_t *m)
     if (m->cfg.net_insert_after_s && !net_inserted && s >= m->cfg.net_insert_after_s &&
         !cf_present(cf)) {
         int (*attach)(cf_state_t *, struct machine *, struct net *, const uint8_t *) =
-            m->cfg.enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000;
+            m->cfg.enable_wl54cf ? cf_attach_wl54cf :
+            (m->cfg.enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000);
         net_inserted = true;
         if (attach(cf, m->gxe_machine, m->emul->net,
                 m->cfg.net_mac_set ? m->cfg.net_mac : NULL) == 0)
@@ -932,6 +935,7 @@ static bool be300_run_batch(machine_t *m)
     be300_touch_tick(m);
     cf_ne2000_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     cf_xi825_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
+    cf_wl54cf_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     be300_vrc4173_update_cf_irq();
     aiu_tick(m);
     if (m->cfg.enable_stowaway_keyboard || m->cfg.pcconnect_bridge ||
