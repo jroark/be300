@@ -258,10 +258,11 @@ The settings panel attaches optional boot-time accessories:
   `src/be300_devices.c:be300_stowaway_signal_uart_irq`).
 
 - **Sound** defaults on and can be toggled while running. The buzzer and the
-  AIU wave output (the native `--audio` path) are written as 44100 Hz mono
-  S16 into a ring in `src/ui.c` instead of an SDL device, because Web Workers
+  AIU wave output (the native `--audio` path) are written as 44100 Hz stereo
+  S16 into a ring in `src/ui_audio.c` instead of an SDL device, because Web Workers
   have no `AudioContext`. `worker.js` drains it with `_be300_web_audio_drain`
-  after every slice and posts the chunks to `app.js`, which schedules them on
+  after every slice, counting stereo frames (two samples per frame). `audio.mjs`
+  preserves L/R in the transferred packets and Web Audio buffers; `app.js` schedules them on
   an `AudioContext` created from the Boot click (browser autoplay rules).
 
 If NE2000 is enabled without a bridge URL, the card uses GXemul's internal

@@ -22,3 +22,5 @@ jobs:
         run: cmake --build build-ci --parallel 2
       - name: Test
         run: ctest --test-dir build-ci --output-on-failure --timeout 60 -LE local
+      - name: Test web frontend
+        run: node --experimental-vm-modules --test tests/web_audio.mjs tests/web_launch_config.mjs

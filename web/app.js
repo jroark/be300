@@ -1,7 +1,8 @@
 import { parseLaunchConfig, parseMacAddress, normalizeBridgeUrl } from "./launch-config.mjs?v=20261024a";
 import { BUTTON_MASK_SIZE, BUTTON_REGIONS } from "./button-regions.mjs?v=20261024a";
+import { AUDIO_SAMPLE_RATE, createAudioBuffer } from "./audio.mjs?v=20261026a";
 
-const ASSET_VERSION = "20261024a";
+const ASSET_VERSION = "20261026a";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -348,10 +349,9 @@ async function collectDroppedEntries(entry, prefix, out) {
   }
 }
 
-// The worker posts buzzer + wave output as 44100 Hz mono S16 chunks. Each
+// The worker posts buzzer + wave output as 44100 Hz stereo S16 frames. Each
 // chunk is scheduled back to back on an AudioContext created from a user
 // gesture (Boot click or the Sound checkbox), as browser autoplay rules need.
-const AUDIO_SAMPLE_RATE = 44100;
 const AUDIO_LEAD_S = 0.05;
 const AUDIO_MAX_AHEAD_S = 0.3;
 let audioCtx = null;
@@ -378,9 +378,9 @@ function ensureAudioContext() {
   }
 }
 
-function playAudio(samples) {
+function playAudio(packet) {
   if (!audioCtx || audioCtx.state !== "running" || !audioEnabledInput.checked ||
-      !samples || samples.length === 0) {
+      !packet) {
     return;
   }
   const now = audioCtx.currentTime;
@@ -391,11 +391,8 @@ function playAudio(samples) {
     // The guest is producing faster than real time; drop to bound latency.
     return;
   }
-  const buffer = audioCtx.createBuffer(1, samples.length, AUDIO_SAMPLE_RATE);
-  const channel = buffer.getChannelData(0);
-  for (let i = 0; i < samples.length; i++) {
-    channel[i] = samples[i] / 32768;
-  }
+  const buffer = createAudioBuffer(audioCtx, packet);
+  if (!buffer) return;
   const source = audioCtx.createBufferSource();
   source.buffer = buffer;
   source.connect(audioCtx.destination);
@@ -1420,7 +1417,7 @@ worker.addEventListener("message", ({ data }) => {
       appendSerial(data.text);
       break;
     case "audio":
-      playAudio(data.samples);
+      playAudio(data);
       break;
     case "cfImage":
       if (data.bytes) {

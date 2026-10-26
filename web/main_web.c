@@ -35,7 +35,7 @@
  *     back to MEMFS so the page can download the card or reboot with it.
  *
  *   - `be300_web_set_audio_enabled` and `be300_web_audio_drain` expose the
- *     buzzer + AIU wave output as 44100 Hz mono S16 for the page to play
+ *     buzzer + AIU wave output as 44100 Hz interleaved stereo S16 for the page to play
  *     through Web Audio (workers have no AudioContext of their own). The
  *     worker still drives stepping/touch/serial through the existing public
  *     API in `src/be300.h`.
@@ -313,10 +313,11 @@ void be300_web_set_audio_enabled(uint32_t enabled) {
 }
 
 EMSCRIPTEN_KEEPALIVE
-uint32_t be300_web_audio_drain(int16_t *dst, uint32_t max_samples) {
+/* Capacity and result are stereo frames, each containing two S16 samples. */
+uint32_t be300_web_audio_drain(int16_t *dst, uint32_t max_frames) {
     if (!dst)
         return 0;
-    return (uint32_t)ui_web_audio_drain(dst, max_samples);
+    return (uint32_t)ui_web_audio_drain(dst, max_frames);
 }
 
 int be300_web_net_bridge_enabled(void) {

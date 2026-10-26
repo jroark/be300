@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import * as config from "../web/launch-config.mjs";
 import * as buttonRegions from "../web/button-regions.mjs";
+import * as audio from "../web/audio.mjs";
 
 const imageIds = ["300", "beshell", "expod", "net", "glaze", "mw-2.4", "opie-4.2"];
 const parse = (search) => config.parseLaunchConfig(search, imageIds);
@@ -92,8 +93,19 @@ async function frontend(search) {
   }
   const window = new Target(); window.location = { search };
   let audioContexts = 0;
+  const audioBuffers = [], audioStarts = [];
   window.AudioContext = class {
     state = "suspended";
+    currentTime = 1;
+    createBuffer(channels, frames, rate) {
+      const data = Array.from({ length: channels }, () => new Float32Array(frames));
+      const buffer = { numberOfChannels: channels, length: frames, sampleRate: rate,
+        duration: frames / rate, getChannelData: (channel) => data[channel] };
+      audioBuffers.push(buffer); return buffer;
+    }
+    createBufferSource() {
+      return { connect() {}, start(at) { audioStarts.push({ buffer: this.buffer, at }); } };
+    }
     constructor() { audioContexts++; }
     async resume() { this.state = "running"; }
   };
@@ -111,13 +123,14 @@ async function frontend(search) {
   const dependencies = {
     "./launch-config.mjs": synthetic(config),
     "./button-regions.mjs": synthetic(buttonRegions),
+    "./audio.mjs": synthetic(audio),
   };
   const module = new vm.SourceTextModule(await readFile(new URL("../web/app.js", import.meta.url), "utf8"), {
     context, initializeImportMeta(meta) { meta.url = "https://linux4be.com/app.js"; },
   });
   await module.link((specifier) => dependencies[specifier.split("?")[0]]);
   await module.evaluate();
-  return { element, messages, worker, window, audioContexts: () => audioContexts };
+  return { element, messages, worker, window, audioBuffers, audioStarts, audioContexts: () => audioContexts };
 }
 
 test("Glaze link boots exactly once with its selected configuration", async () => {
@@ -175,4 +188,29 @@ test("invalid URLs show an error and never silently boot the default image", asy
   assert.equal(app.messages.filter((m) => m.type === "bootNand").length, 0);
   assert.equal(app.element("status").dataset.state, "error");
   assert.match(app.element("status").textContent, /Invalid URL parameter "image"/);
+});
+
+
+test("frontend schedules stereo frames with the correct duration and honors mute", async () => {
+  const app = await frontend("?image=glaze");
+  await app.element("bootBtn").fire("click");
+  const samples = new Int16Array(441 * 2);
+  for (let i = 0; i < 441; i++) samples[i * 2] = 16384;
+  const packet = { type: "audio", frames: 441, channels: 2, sampleRate: 44100, samples };
+  await app.worker.fire("message", { data: packet });
+  await app.worker.fire("message", { data: packet });
+  assert.equal(app.audioBuffers.length, 2);
+  const buffer = app.audioBuffers[0];
+  assert.equal(buffer.numberOfChannels, 2);
+  assert.equal(buffer.length, 441);
+  assert.equal(buffer.duration, 0.01);
+  assert.ok([...buffer.getChannelData(0)].every((v) => v === 0.5));
+  assert.ok([...buffer.getChannelData(1)].every((v) => v === 0));
+  assert.ok(Math.abs(app.audioStarts[1].at - app.audioStarts[0].at - 0.01) < 1e-10);
+  app.element("audioEnabled").checked = false;
+  await app.element("audioEnabled").fire("change");
+  await app.worker.fire("message", { data: packet });
+  assert.equal(app.audioStarts.length, 2);
+  assert.equal(app.messages.at(-1).type, "setAudio");
+  assert.equal(app.messages.at(-1).enabled, false);
 });

@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-10-25
+Last updated: 2026-10-26
 
 ## Active Target
 
@@ -119,6 +119,14 @@ snapshot transactionally; see `docs/INSTALLING_APPS.md`.
 - The Kj companion wave-audio model services the guest's ping-pong DMA and
   SYSINTR `0x14`. Native `--audio` and the web Sound toggle control only host
   playback, not the guest-visible DMA/interrupt behavior.
+
+- Host audio preserves stereo L/R in both SDL and Web Audio, matching the
+  service manual's headphone specification (printed pp. 2/5/52). Mono PCM and
+  buzzer pulses are duplicated to both channels. Interpolation history resets
+  at a new DMA stream or format change; browser queue capacities/drain results
+  are stereo frames. Recording-sink, resampler/ring, muted-DMA and browser tests
+  cover these paths. See `docs/SERVICE_MANUAL.md` for the board evidence and
+  remaining EEPROM, power, LCD and reset validation prerequisites.
 
 ## Current Investigation Focus
 
