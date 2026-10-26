@@ -121,6 +121,7 @@ static void aiu_start(machine_t *m)
 {
     aiu_state_t *s = &m->aiu;
 
+    ui_audio_reset_stream();
     s->running = true;
     s->cur_buf = 0;
     s->pos = 0;

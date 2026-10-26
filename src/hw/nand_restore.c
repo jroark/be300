@@ -1,8 +1,10 @@
 /*
  *  src/hw/nand_restore.c — NANDWRITER restore engine.
  *
- *  Models the recovery-mode register bank at VRC4173 offsets 0x0980,
- *  0x0B00-0x0D00 (page buffer) and 0x0C00-0x0CC0 (control). The
+ *  Legacy recovery model at companion offsets 0x0B00-0x0D00.
+ *  The recovered LCD bank 0x0C00-0x0C4F and backlight 0x0980-0x098F
+ *  are excluded from dispatch; this older recovery mapping still needs
+ *  validation against NANDWRITER (see docs/BE300_LCD.md). The
  *  companion registers NANDWRITER also drives at 0x1100/0x1B20/0x1CC0
  *  belong to their own blocks in be300_devices.c and cf.c. The
  *  implementation is fully self-contained: it lives in its own
@@ -56,25 +58,6 @@ static void nand_restore_set_ready(nand_state_t *s, bool ready)
 
 void nand_restore_seed_regs(nand_state_t *s)
 {
-    static const struct {
-        uint16_t off;
-        uint32_t val;
-    } seed[] = {
-        { 0x0980u, 0x00000001u }, { 0x0984u, 0x00000202u },
-        { 0x0988u, 0x00000F70u }, { 0x098Cu, 0x00000000u },
-        { 0x0C00u, 0x00000020u }, { 0x0C04u, 0x00000002u },
-        { 0x0C08u, 0x00000050u }, { 0x0C0Cu, 0x000000F1u },
-        { 0x0C10u, 0x00000002u }, { 0x0C14u, 0x00000000u },
-        { 0x0C18u, 0x00000000u }, { 0x0C1Cu, 0x00000000u },
-        { 0x0C20u, 0x00000000u }, { 0x0C24u, 0x00000014u },
-        { 0x0C28u, 0x00000000u }, { 0x0C2Cu, 0x00000001u },
-        { 0x0C30u, 0x0000E000u }, { 0x0C34u, 0x000001FFu },
-        { 0x0C38u, 0x00000000u }, { 0x0C3Cu, 0x00001F1Fu },
-        { 0x0C40u, 0x00000500u }, { 0x0C44u, 0x00000000u },
-        { 0x0C48u, 0x0000030Fu }, { 0x0C4Cu, 0x00000000u },
-    };
-    size_t i;
-
     memset(s->restore_regs, 0, sizeof(s->restore_regs));
     memset(s->restore_page_buffer, 0xFF, sizeof(s->restore_page_buffer));
     s->restore_page_addr = 0;
@@ -87,9 +70,6 @@ void nand_restore_seed_regs(nand_state_t *s)
     s->restore_addr_count = 0;
     s->restore_ecc_count = 0;
     s->restore_status_ok = true;
-
-    for (i = 0; i < sizeof(seed) / sizeof(seed[0]); i++)
-        nand_restore_set_reg(s, seed[i].off, seed[i].val);
 }
 
 static uint32_t nand_restore_page_from_addr(const nand_state_t *s)
@@ -290,8 +270,10 @@ static void nand_restore_buffer_write(nand_state_t *s, unsigned size,
 
 bool nand_restore_handles_offset(uint32_t offset)
 {
-    return (offset >= NAND_RESTORE_BUF_BASE && offset < NAND_RESTORE_BUF_END) ||
-        (offset >= NAND_RESTORE_SIDE_BASE && offset < NAND_RESTORE_SIDE_END);
+    /* Recovered SPL/OAL/ddi identify 0980..098F and C00..C4F as
+     * backlight/panel registers, not NAND controls. See BE300_LCD.md. */
+    return offset >= NAND_RESTORE_BUF_BASE && offset < NAND_RESTORE_BUF_END &&
+        !(offset >= 0xC00 && offset < 0xC50);
 }
 
 uint64_t nand_restore_read(nand_state_t *s, uint32_t offset, unsigned size)

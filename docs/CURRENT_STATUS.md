@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-10-25
+Last updated: 2026-10-26
 
 ## Active Target
 
@@ -39,8 +39,7 @@ Secondary implemented paths, used for targeted investigation only:
   `docs/PC_CONNECT_BRIDGE.md`
 - `--stowaway-keyboard` attaches the Targus/Think Outside Stowaway dock
 - `--audio` routes the always-active Kj companion wave-DMA model to the host
-  SDL audio device; the browser frontend routes the same PCM plus buzzer audio
-  through Web Audio
+  SDL audio device; the browser frontend routes the same PCM through Web Audio
 
 A portable Windows x86_64 build is produced from macOS by the MinGW
 cross-build helper `tools/build_windows.sh` (output
@@ -68,6 +67,23 @@ snapshot transactionally; see `docs/INSTALLING_APPS.md`.
   path rather than in unused shadow structs.
 
 ## Current Behavior
+
+- LCD presentation follows the recovered panel enable, clock gates and
+  backlight power state. Cold starts no longer inherit a post-WinCE LCD
+  snapshot. Native display/screenshots and web/Android frame copies share
+  blanking without modifying guest VRAM. Contrast serial commands are
+  captured; optical curves and timing fields remain unmeasured. The old
+  BLG-to-buzzer heuristic was removed because it interpreted backlight
+  initialization as audio. See `docs/BE300_LCD.md` for evidence and limits.
+
+- Host button input tracks keyboard and pointer ownership separately, so one
+  release cannot clear another held source. SDL focus loss and browser
+  blur/hidden-page events release device buttons, touch and Stowaway keys.
+  Web frame buttons accept multiple pointers. F12 drives the existing Power
+  input in both frontends; arrows remain device buttons with the keyboard
+  accessory off. `ui_input` tests the real SDL event loop and browser tests
+  cover overlapping sources, chords and dwell timers. Display/EEPROM driver
+  findings and the next capture targets are in `docs/WINCE_DISPLAY_CONTROLS.md`.
 
 - XI-825 (2026-10-24): the unmodified vendor `nb825be.dll` 1.1.0 initializes
   the station controller, and Wireless LAN Setting shows `BE300`, channel 3,
@@ -119,6 +135,15 @@ snapshot transactionally; see `docs/INSTALLING_APPS.md`.
 - The Kj companion wave-audio model services the guest's ping-pong DMA and
   SYSINTR `0x14`. Native `--audio` and the web Sound toggle control only host
   playback, not the guest-visible DMA/interrupt behavior.
+
+- Host audio preserves stereo L/R in both SDL and Web Audio, matching the
+  service manual's headphone specification (printed pp. 2/5/52). Mono PCM and
+  host-generated tone pulses are duplicated to both channels; guest buzzer
+  register behavior remains unverified. Interpolation history resets
+  at a new DMA stream or format change; browser queue capacities/drain results
+  are stereo frames. Recording-sink, resampler/ring, muted-DMA and browser tests
+  cover these paths. See `docs/SERVICE_MANUAL.md` for the board evidence and
+  remaining EEPROM, power, LCD and reset validation prerequisites.
 
 ## Current Investigation Focus
 

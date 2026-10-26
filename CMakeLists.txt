@@ -182,7 +182,6 @@ set(BE300_SOURCES
     src/win32_compat.c
     src/file_util.c
     src/devices/boot_rom.c
-    src/devices/buzzer.c
     src/devices/display_ops.c
     src/devices/input.c
     src/devices/nand_window.c
@@ -198,7 +197,9 @@ set(BE300_SOURCES
     src/serial_backends.c
     src/stowaway.c
     src/ui.c
+    src/ui_buttons.c
     src/ui_audio.c
+    src/audio_pcm.c
     src/ui_button_mask.c
     src/ui_macos.c
     src/ui_png.c
@@ -219,6 +220,7 @@ set(BE300_SOURCES
     src/hw/wl54cf.c
     src/hw/cf_wl54cf.c
     src/hw/aiu.c
+    src/hw/lcd.c
 )
 
 # ============================================================
@@ -360,7 +362,7 @@ if(BUILD_WEB)
 
     set(WEB_OUTPUT_DIR ${CMAKE_BINARY_DIR}/web)
     file(MAKE_DIRECTORY ${WEB_OUTPUT_DIR})
-    foreach(asset index.html app.js launch-config.mjs button-regions.mjs worker.js styles.css favicon.svg)
+    foreach(asset index.html app.js launch-config.mjs button-regions.mjs audio.mjs worker.js styles.css favicon.svg)
         configure_file(${CMAKE_SOURCE_DIR}/web/${asset}
                        ${WEB_OUTPUT_DIR}/${asset}
                        COPYONLY)
@@ -448,6 +450,41 @@ if(BUILD_TESTING AND BUILD_CLI AND NOT WIN32)
 endif()
 
 if(BUILD_TESTING AND BUILD_CLI)
+    add_executable(test_lcd tests/test_lcd.c src/hw/lcd.c)
+    target_include_directories(test_lcd PRIVATE src)
+    add_test(NAME lcd COMMAND test_lcd)
+
+    if(SDL2_FOUND OR SDL2_LIBRARIES)
+        add_executable(test_ui_input tests/test_ui_input.c
+            src/ui.c src/ui_buttons.c src/ui_stowaway.c src/ui_button_mask.c
+            src/ui_png.c src/hw/lcd.c ${FRAME_PNG_HDR} ${BUTTONS_MASK_PNG_HDR})
+        target_include_directories(test_ui_input PRIVATE src ${CMAKE_BINARY_DIR})
+        target_link_libraries(test_ui_input ${SDL2_LIBRARIES} ${PNG_LIBRARIES} m)
+        add_test(NAME ui_input COMMAND test_ui_input)
+        set_tests_properties(ui_input PROPERTIES ENVIRONMENT
+            "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy;DISPLAY=:0;BE300_TOUCH_MIN_DWELL_MS=0")
+        foreach(audio_target test_ui_audio test_ui_web_audio)
+            add_executable(${audio_target} tests/test_ui_audio.c src/ui_audio.c src/audio_pcm.c)
+            target_include_directories(${audio_target} PRIVATE src ${SDL2_INCLUDE_DIRS})
+            add_test(NAME ${audio_target} COMMAND ${audio_target})
+            set_tests_properties(${audio_target} PROPERTIES ENVIRONMENT "BE300_AUDIO=1")
+        endforeach()
+        # Compile the same browser ring adapter on the host, with a recording SDL sink.
+        target_compile_definitions(test_ui_web_audio PRIVATE BE300_AUDIO_WEB=1)
+    endif()
+
+    if(NOT WIN32)
+        add_executable(test_audio_dma tests/test_audio_dma.c src/hw/aiu.c)
+        target_include_directories(test_audio_dma PRIVATE src)
+        target_compile_definitions(test_audio_dma PRIVATE clock_gettime=audio_test_clock_gettime)
+        add_test(NAME audio_dma COMMAND test_audio_dma)
+    endif()
+
+    add_executable(test_audio_pcm tests/test_audio_pcm.c src/audio_pcm.c)
+    target_include_directories(test_audio_pcm PRIVATE src)
+    target_link_libraries(test_audio_pcm m)
+    add_test(NAME audio_pcm COMMAND test_audio_pcm)
+
     add_executable(test_rtc
         tests/test_rtc.c
         src/hw/rtc.c)

@@ -1,7 +1,8 @@
 import { parseLaunchConfig, parseMacAddress, normalizeBridgeUrl } from "./launch-config.mjs?v=20261024a";
 import { BUTTON_MASK_SIZE, BUTTON_REGIONS } from "./button-regions.mjs?v=20261024a";
+import { AUDIO_SAMPLE_RATE, createAudioBuffer } from "./audio.mjs?v=20261026a";
 
-const ASSET_VERSION = "20261024a";
+const ASSET_VERSION = "20261026b";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
@@ -94,11 +95,11 @@ let btnSet2 = 0;
 let activeTargusKeyboardEnabled = false;
 const pressedStowawayKeys = new Set();
 let frameButtonMask = null;
-let activeFrameButton = null;
+const activeButtonPointers = new Map();
 let activeTouchPointerId = null;
 let activeTouchPoint = { x: 0, y: 0 };
 const activeMomentaryButtons = new Map();
-const pendingMomentaryButtonReleases = new Map();
+const latchedButtons = new Map();
 // Host keys held as device buttons while the Stowaway keyboard is off.
 const pressedDeviceKeys = new Map();
 
@@ -348,10 +349,9 @@ async function collectDroppedEntries(entry, prefix, out) {
   }
 }
 
-// The worker posts buzzer + wave output as 44100 Hz mono S16 chunks. Each
+// The worker posts buzzer + wave output as 44100 Hz stereo S16 frames. Each
 // chunk is scheduled back to back on an AudioContext created from a user
 // gesture (Boot click or the Sound checkbox), as browser autoplay rules need.
-const AUDIO_SAMPLE_RATE = 44100;
 const AUDIO_LEAD_S = 0.05;
 const AUDIO_MAX_AHEAD_S = 0.3;
 let audioCtx = null;
@@ -378,9 +378,9 @@ function ensureAudioContext() {
   }
 }
 
-function playAudio(samples) {
+function playAudio(packet) {
   if (!audioCtx || audioCtx.state !== "running" || !audioEnabledInput.checked ||
-      !samples || samples.length === 0) {
+      !packet) {
     return;
   }
   const now = audioCtx.currentTime;
@@ -391,11 +391,8 @@ function playAudio(samples) {
     // The guest is producing faster than real time; drop to bound latency.
     return;
   }
-  const buffer = audioCtx.createBuffer(1, samples.length, AUDIO_SAMPLE_RATE);
-  const channel = buffer.getChannelData(0);
-  for (let i = 0; i < samples.length; i++) {
-    channel[i] = samples[i] / 32768;
-  }
+  const buffer = createAudioBuffer(audioCtx, packet);
+  if (!buffer) return;
   const source = audioCtx.createBufferSource();
   source.buffer = buffer;
   source.connect(audioCtx.destination);
@@ -552,13 +549,15 @@ function syncControlButtonStates() {
   }
 }
 
-function setButtonMask(targetSet, mask, enabled) {
-  if (targetSet === "btn1") {
-    btnSet1 = enabled ? (btnSet1 | mask) : (btnSet1 & ~mask);
-  } else {
-    btnSet2 = enabled ? (btnSet2 | mask) : (btnSet2 & ~mask);
+// A mask can be held by several physical inputs. Keep ownership until each
+// source releases, including its minimum dwell, rather than clearing shared bits.
+function syncButtonSources() {
+  btnSet1 = 0;
+  btnSet2 = 0;
+  for (const { targetSet, mask } of [...activeMomentaryButtons.values(), ...latchedButtons.values()]) {
+    if (targetSet === "btn1") btnSet1 |= mask;
+    else btnSet2 |= mask;
   }
-
   syncControlButtonStates();
   sendButtons();
 }
@@ -567,53 +566,39 @@ function buttonPressKey(targetSet, mask) {
   return `${targetSet}:${mask}`;
 }
 
-function pressMomentaryButton(targetSet, mask) {
-  const key = buttonPressKey(targetSet, mask);
-  const pendingRelease = pendingMomentaryButtonReleases.get(key);
-  if (pendingRelease) {
-    clearTimeout(pendingRelease);
-    pendingMomentaryButtonReleases.delete(key);
-  }
-  activeMomentaryButtons.set(key, performance.now());
-  setButtonMask(targetSet, mask, true);
+function pressMomentaryButton(targetSet, mask, source) {
+  const old = activeMomentaryButtons.get(source);
+  if (old?.held) return;
+  if (old) clearTimeout(old.timer);
+  activeMomentaryButtons.set(source, { targetSet, mask, pressedAt: performance.now(), held: true });
+  syncButtonSources();
 }
 
-function releaseMomentaryButton(targetSet, mask) {
-  const key = buttonPressKey(targetSet, mask);
-  const pressedAt = activeMomentaryButtons.get(key);
-  if (typeof pressedAt !== "number") {
-    setButtonMask(targetSet, mask, false);
-    return;
-  }
-
+function releaseMomentaryButton(source) {
+  const press = activeMomentaryButtons.get(source);
+  if (!press?.held) return;
+  press.held = false;
   const finishRelease = () => {
-    pendingMomentaryButtonReleases.delete(key);
-    activeMomentaryButtons.delete(key);
-    setButtonMask(targetSet, mask, false);
+    if (activeMomentaryButtons.get(source) !== press) return;
+    activeMomentaryButtons.delete(source);
+    syncButtonSources();
   };
-  const remaining = BUTTON_MIN_DWELL_MS - (performance.now() - pressedAt);
-  if (remaining <= 0) {
-    finishRelease();
-  } else {
-    pendingMomentaryButtonReleases.set(key, setTimeout(finishRelease, remaining));
-  }
-}
-
-function cancelMomentaryButtonTimers() {
-  for (const pendingRelease of pendingMomentaryButtonReleases.values()) {
-    clearTimeout(pendingRelease);
-  }
-  pendingMomentaryButtonReleases.clear();
-  activeMomentaryButtons.clear();
+  const remaining = BUTTON_MIN_DWELL_MS - (performance.now() - press.pressedAt);
+  if (remaining <= 0) finishRelease();
+  else press.timer = setTimeout(finishRelease, remaining);
 }
 
 function clearGuestButtons() {
-  cancelMomentaryButtonTimers();
+  for (const press of activeMomentaryButtons.values()) clearTimeout(press.timer);
+  activeMomentaryButtons.clear();
+  latchedButtons.clear();
   pressedDeviceKeys.clear();
-  btnSet1 = 0;
-  btnSet2 = 0;
-  syncControlButtonStates();
-  sendButtons();
+  const pointers = [...activeButtonPointers.entries()];
+  activeButtonPointers.clear();
+  for (const [id, { element }] of pointers) {
+    if (element.hasPointerCapture(id)) element.releasePointerCapture(id);
+  }
+  syncButtonSources();
 }
 
 function sendStowawayKey(scancode, release) {
@@ -628,11 +613,8 @@ function releasePressedStowawayKeys() {
   if (!pressedStowawayKeys.size) {
     return;
   }
-  for (const code of pressedStowawayKeys) {
-    const scancode = STOWAWAY_KEY_CODES.get(code);
-    if (typeof scancode === "number") {
-      sendStowawayKey(scancode, true);
-    }
+  for (const scancode of new Set([...pressedStowawayKeys].map((code) => STOWAWAY_KEY_CODES.get(code)))) {
+    sendStowawayKey(scancode, true);
   }
   pressedStowawayKeys.clear();
 }
@@ -1244,54 +1226,54 @@ screenEl.addEventListener("lostpointercapture", (event) => {
   }
 });
 
-function pressFrameButton(event) {
-  if (!running || activeFrameButton || event.target === screenEl) {
-    return;
-  }
-  const point = mapPointerToFrame(event);
-  if (!point) {
-    return;
-  }
-  const hit = hitFrameButton(point);
-  if (!hit) {
-    return;
-  }
-
+function pressPointerButton(event, element, hit) {
+  if (!running || activeButtonPointers.has(event.pointerId)) return;
   event.preventDefault();
-  deviceFrameEl.setPointerCapture(event.pointerId);
-  activeFrameButton = { pointerId: event.pointerId, hit };
-  pressMomentaryButton(hit.targetSet, hit.mask);
+  activeButtonPointers.set(event.pointerId, { element });
+  element.setPointerCapture(event.pointerId);
+  pressMomentaryButton(hit.targetSet, hit.mask, `pointer:${event.pointerId}`);
 }
 
-function releaseFrameButton(event) {
-  if (!activeFrameButton || activeFrameButton.pointerId !== event.pointerId) {
-    return;
-  }
+function pressFrameButton(event) {
+  if (!running || event.target === screenEl) return;
+  const point = mapPointerToFrame(event);
+  const hit = point && hitFrameButton(point);
+  if (hit) pressPointerButton(event, deviceFrameEl, hit);
+}
 
+function releasePointerButton(event) {
+  const active = activeButtonPointers.get(event.pointerId);
+  if (!active) return;
   event.preventDefault();
-  if (deviceFrameEl.hasPointerCapture(event.pointerId)) {
-    deviceFrameEl.releasePointerCapture(event.pointerId);
+  // Remove ownership before releasing capture, which can dispatch another event.
+  activeButtonPointers.delete(event.pointerId);
+  releaseMomentaryButton(`pointer:${event.pointerId}`);
+  if (active.element.hasPointerCapture(event.pointerId)) {
+    active.element.releasePointerCapture(event.pointerId);
   }
-  releaseMomentaryButton(activeFrameButton.hit.targetSet, activeFrameButton.hit.mask);
-  activeFrameButton = null;
 }
 
 deviceFrameEl.addEventListener("pointerdown", pressFrameButton);
-deviceFrameEl.addEventListener("pointerup", releaseFrameButton);
-deviceFrameEl.addEventListener("pointercancel", releaseFrameButton);
-
-function releasePressedDeviceKeys() {
-  for (const mask of pressedDeviceKeys.values()) {
-    releaseMomentaryButton("btn1", mask);
-  }
-  pressedDeviceKeys.clear();
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+  deviceFrameEl.addEventListener(type, releasePointerButton);
 }
 
+function releaseAllHostInput() {
+  cancelActiveTouch();
+  releasePressedStowawayKeys();
+  clearGuestButtons();
+}
+
+window.addEventListener("blur", releaseAllHostInput);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) releaseAllHostInput();
+});
+
 window.addEventListener("keydown", (event) => {
-  if (!running || activeTargusKeyboardEnabled || isEditableTarget(event.target)) {
+  if (!running || (activeTargusKeyboardEnabled && event.code !== "F12") || isEditableTarget(event.target)) {
     return;
   }
-  const mask = DEVICE_KEY_MASKS.get(event.code);
+  const mask = event.code === "F12" ? 128 : DEVICE_KEY_MASKS.get(event.code);
   if (typeof mask !== "number") {
     return;
   }
@@ -1300,7 +1282,7 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   pressedDeviceKeys.set(event.code, mask);
-  pressMomentaryButton("btn1", mask);
+  pressMomentaryButton(event.code === "F12" ? "btn2" : "btn1", mask, `key:${event.code}`);
 });
 
 window.addEventListener("keyup", (event) => {
@@ -1310,10 +1292,8 @@ window.addEventListener("keyup", (event) => {
   }
   event.preventDefault();
   pressedDeviceKeys.delete(event.code);
-  releaseMomentaryButton("btn1", mask);
+  releaseMomentaryButton(`key:${event.code}`);
 });
-
-window.addEventListener("blur", releasePressedDeviceKeys);
 
 window.addEventListener("keydown", (event) => {
   if (!running || !activeTargusKeyboardEnabled || isEditableTarget(event.target)) {
@@ -1327,8 +1307,9 @@ window.addEventListener("keydown", (event) => {
   if (event.repeat || pressedStowawayKeys.has(event.code)) {
     return;
   }
+  const alreadyHeld = [...pressedStowawayKeys].some((code) => STOWAWAY_KEY_CODES.get(code) === scancode);
   pressedStowawayKeys.add(event.code);
-  sendStowawayKey(scancode, false);
+  if (!alreadyHeld) sendStowawayKey(scancode, false);
 });
 
 window.addEventListener("keyup", (event) => {
@@ -1341,10 +1322,10 @@ window.addEventListener("keyup", (event) => {
   }
   event.preventDefault();
   pressedStowawayKeys.delete(event.code);
-  sendStowawayKey(scancode, true);
+  if (![...pressedStowawayKeys].some((code) => STOWAWAY_KEY_CODES.get(code) === scancode)) {
+    sendStowawayKey(scancode, true);
+  }
 });
-
-window.addEventListener("blur", releasePressedStowawayKeys);
 
 for (const button of controlButtons) {
   const targetSet = button.dataset.set;
@@ -1354,29 +1335,20 @@ for (const button of controlButtons) {
   if (isToggle) {
     button.addEventListener("click", (event) => {
       event.preventDefault();
-      setButtonMask(targetSet, mask, !isMaskActive(targetSet, mask));
+      const source = buttonPressKey(targetSet, mask);
+      if (latchedButtons.has(source)) latchedButtons.delete(source);
+      else latchedButtons.set(source, { targetSet, mask });
+      syncButtonSources();
     });
     continue;
   }
 
-  const press = (event) => {
-    event.preventDefault();
-    button.setPointerCapture(event.pointerId);
-    pressMomentaryButton(targetSet, mask);
-  };
-
-  const release = (event) => {
-    event.preventDefault();
-    if (button.hasPointerCapture(event.pointerId)) {
-      button.releasePointerCapture(event.pointerId);
-    }
-    releaseMomentaryButton(targetSet, mask);
-  };
-
-  button.addEventListener("pointerdown", press);
-  button.addEventListener("pointerup", release);
-  button.addEventListener("pointercancel", release);
-  button.addEventListener("pointerleave", release);
+  button.addEventListener("pointerdown", (event) => {
+    pressPointerButton(event, button, { targetSet, mask });
+  });
+  for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    button.addEventListener(type, releasePointerButton);
+  }
 }
 
 worker.addEventListener("message", ({ data }) => {
@@ -1397,7 +1369,7 @@ worker.addEventListener("message", ({ data }) => {
        * A genuine stop still has bootInFlight=false and follows this path.
        */
       if (wasRunning && !running && !bootInFlight) {
-        releasePressedStowawayKeys();
+        releaseAllHostInput();
         activeTargusKeyboardEnabled = false;
       }
       if (data.message) {
@@ -1420,7 +1392,7 @@ worker.addEventListener("message", ({ data }) => {
       appendSerial(data.text);
       break;
     case "audio":
-      playAudio(data.samples);
+      playAudio(data);
       break;
     case "cfImage":
       if (data.bytes) {

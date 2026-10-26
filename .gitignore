@@ -10,6 +10,7 @@ build-host-*/
 build-ci/
 build-windows/
 build-web/
+build-web-*/
 build-test/
 dist/
 *.o

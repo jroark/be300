@@ -1,4 +1,5 @@
-import createBe300Module from "./be300_web.js?v=20261024a";
+import createBe300Module from "./be300_web.js?v=20261026a";
+import { AUDIO_CHANNELS, AUDIO_DRAIN_FRAMES, drainAudioPacket } from "./audio.mjs?v=20261026a";
 
 const MAX_FRAME_WIDTH = 480;
 const MAX_FRAME_HEIGHT = 640;
@@ -8,7 +9,6 @@ const INSTALL_LOG_BYTES = 65536;
 const NAND_MEMFS_PATH = "/All_nand_300.bin";
 const CF0_MEMFS_PATH = "/cf0.img";
 const NET_FRAME_BYTES = 2048;
-const AUDIO_DRAIN_SAMPLES = 8192;
 const DEFAULT_SPEED = 0;
 const FULL_SPEED_BATCHES_PER_STEP = 128;
 const FULL_SPEED_SLICE_MS = 12;
@@ -121,7 +121,7 @@ function ensureScratch(module) {
     heightPtr = module._malloc(4);
   }
   if (!audioPtr) {
-    audioPtr = module._malloc(AUDIO_DRAIN_SAMPLES * 2);
+    audioPtr = module._malloc(AUDIO_DRAIN_FRAMES * AUDIO_CHANNELS * Int16Array.BYTES_PER_ELEMENT);
   }
 }
 
@@ -323,22 +323,14 @@ function drainSerial(module) {
   }
 }
 
-// Buzzer + wave output arrive as 44100 Hz mono S16; the page plays them.
+// Preserve interleaved stereo frames through the worker transfer.
 function drainAudio(module) {
-  if (!machineHandle) {
-    return;
-  }
+  if (!machineHandle) return;
   for (;;) {
-    const count = module._be300_web_audio_drain(audioPtr, AUDIO_DRAIN_SAMPLES);
-    if (count <= 0) {
-      return;
-    }
-    const start = audioPtr >> 1;
-    const samples = module.HEAP16.slice(start, start + count);
-    postMessage({ type: "audio", samples }, [samples.buffer]);
-    if (count < AUDIO_DRAIN_SAMPLES) {
-      return;
-    }
+    const packet = drainAudioPacket(module, audioPtr);
+    if (!packet) return;
+    postMessage(packet, [packet.samples.buffer]);
+    if (packet.frames < AUDIO_DRAIN_FRAMES) return;
   }
 }
 

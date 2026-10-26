@@ -1020,26 +1020,7 @@ int be300_copy_frame_rgba8888(machine_t *m, uint8_t *dst, size_t dst_len,
     }
 
     src = (const uint16_t *)m->fb_data;
-    for (uint32_t y = 0; y < height; y++) {
-        for (uint32_t x = 0; x < width; x++) {
-            uint16_t pixel = src[y * m->fb_stride + x];
-            uint32_t r = (pixel >> 11) & 0x1Fu;
-            uint32_t b = pixel & 0x1Fu;
-            uint32_t g;
-            size_t off = ((size_t)y * width + x) * 4u;
-
-            g = (pixel >> 5) & 0x3Fu;
-            g = (g << 2) | (g >> 4);
-
-            r = (r << 3) | (r >> 2);
-            b = (b << 3) | (b >> 2);
-
-            dst[off + 0] = (uint8_t)r;
-            dst[off + 1] = (uint8_t)g;
-            dst[off + 2] = (uint8_t)b;
-            dst[off + 3] = 0xFFu;
-        }
-    }
+    lcd_copy_rgba8888(&m->lcd, src, dst, width, height, m->fb_stride);
 
     *width_out = width;
     *height_out = height;

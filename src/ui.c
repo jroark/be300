@@ -72,8 +72,6 @@ typedef enum {
 /* Mouse button held state for touch drag tracking */
 static bool mouse_button_held = false;
 static ui_pointer_mode_t pointer_mode = UI_POINTER_NONE;
-static uint8_t pointer_btn_set1 = 0;
-static uint8_t pointer_btn_set2 = 0;
 static bool touch_active = false;
 static bool touch_release_pending = false;
 static uint16_t touch_release_x = 0;
@@ -156,11 +154,7 @@ static void ui_copy_visible_frame(machine_t *m, uint16_t *dst)
 {
     const uint16_t *src = (const uint16_t *)m->fb_data;
 
-    for (uint32_t y = 0; y < m->fb_height; y++) {
-        memcpy(dst + y * m->fb_width,
-               src + y * m->fb_stride,
-               m->fb_width * sizeof(uint16_t));
-    }
+    lcd_copy_rgb565(&m->lcd, src, dst, m->fb_width, m->fb_height, m->fb_stride);
 }
 
 static void ui_put_le16(uint8_t *p, uint16_t v)
@@ -894,17 +888,10 @@ static SDL_HitTestResult SDLCALL ui_window_hit_test(SDL_Window *win,
 static void ui_press_pointer_button(machine_t *m, uint8_t btn_set1,
     uint8_t btn_set2, uint32_t now)
 {
-    if (pointer_mode == UI_POINTER_BUTTON) {
-        be300_set_buttons(m, m->btn_set1 & (uint8_t)~pointer_btn_set1,
-            m->btn_set2 & (uint8_t)~pointer_btn_set2);
-    }
-
-    pointer_btn_set1 = btn_set1;
-    pointer_btn_set2 = btn_set2;
     pointer_mode = UI_POINTER_BUTTON;
     button_release_pending = false;
     button_down_tick = now;
-    be300_set_buttons(m, m->btn_set1 | btn_set1, m->btn_set2 | btn_set2);
+    ui_buttons_set_pointer(m, btn_set1, btn_set2);
 }
 
 static void ui_release_pointer_button(machine_t *m)
@@ -912,10 +899,7 @@ static void ui_release_pointer_button(machine_t *m)
     if (pointer_mode != UI_POINTER_BUTTON)
         return;
 
-    be300_set_buttons(m, m->btn_set1 & (uint8_t)~pointer_btn_set1,
-        m->btn_set2 & (uint8_t)~pointer_btn_set2);
-    pointer_btn_set1 = 0;
-    pointer_btn_set2 = 0;
+    ui_buttons_set_pointer(m, 0, 0);
     button_release_pending = false;
     pointer_mode = UI_POINTER_NONE;
 }
@@ -959,8 +943,8 @@ int ui_init(machine_t *m)
     ui_free_button_mask();
     mouse_button_held = false;
     pointer_mode = UI_POINTER_NONE;
-    pointer_btn_set1 = 0;
-    pointer_btn_set2 = 0;
+    ui_buttons_release_all(m);
+    ui_stowaway_release_keys();
     touch_active = false;
     touch_release_pending = false;
     touch_down_tick = 0;
@@ -1189,6 +1173,8 @@ void ui_update(machine_t *m)
             if ((ev.key.keysym.mod & KMOD_GUI) == 0 &&
                 ui_stowaway_key_event(m, &ev.key, false))
                 break;
+            if (ui_button_key_event(m, &ev.key, false))
+                break;
             switch (ev.key.keysym.sym) {
             case SDLK_q:
                 quit_requested = true;
@@ -1199,38 +1185,30 @@ void ui_update(machine_t *m)
             case SDLK_m:
                 fprintf(stderr,
                     "[UI] Keys: Q=quit  S=screenshot  M=this help\n"
-                    "[UI]       Arrows=d-pad  Enter=ok  Esc=esc  Tab=rocket\n"
+                    "[UI]       Arrows=d-pad  Enter=ok  Esc=esc  Tab=rocket  F12=power\n"
                     "[UI]       Mouse click/drag=touchpanel; framed buttons click hardware keys\n");
                 break;
-            /* D-pad */
-            case SDLK_UP:     be300_set_buttons(m, m->btn_set1 | 0x10u, m->btn_set2); break;
-            case SDLK_DOWN:   be300_set_buttons(m, m->btn_set1 | 0x20u, m->btn_set2); break;
-            case SDLK_RIGHT:  be300_set_buttons(m, m->btn_set1 | 0x40u, m->btn_set2); break;
-            case SDLK_LEFT:   be300_set_buttons(m, m->btn_set1 | 0x80u, m->btn_set2); break;
-            /* Function buttons */
-            case SDLK_RETURN: be300_set_buttons(m, m->btn_set1 | 0x04u, m->btn_set2); break;  /* ok/enter */
-            case SDLK_ESCAPE: be300_set_buttons(m, m->btn_set1 | 0x08u, m->btn_set2); break;  /* esc */
-            case SDLK_TAB:    be300_set_buttons(m, m->btn_set1, m->btn_set2 | 0x10u); break;  /* rocket */
-            /* Power/reboot (btn_set2 0x80) intentionally not mapped */
             default:
                 break;
             }
             break;
 
         case SDL_KEYUP:
-            if ((ev.key.keysym.mod & KMOD_GUI) == 0 &&
-                ui_stowaway_key_event(m, &ev.key, true))
-                break;
-            switch (ev.key.keysym.sym) {
-            case SDLK_UP:     be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x10u, m->btn_set2); break;
-            case SDLK_DOWN:   be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x20u, m->btn_set2); break;
-            case SDLK_RIGHT:  be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x40u, m->btn_set2); break;
-            case SDLK_LEFT:   be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x80u, m->btn_set2); break;
-            case SDLK_RETURN: be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x04u, m->btn_set2); break;
-            case SDLK_ESCAPE: be300_set_buttons(m, m->btn_set1 & (uint8_t)~0x08u, m->btn_set2); break;
-            case SDLK_TAB:    be300_set_buttons(m, m->btn_set1, m->btn_set2 & (uint8_t)~0x10u); break;
-            default:
-                break;
+            /* Release a forwarded key even if GUI was pressed after key-down. */
+            if (!ui_stowaway_key_event(m, &ev.key, true))
+                ui_button_key_event(m, &ev.key, true);
+            break;
+
+        case SDL_WINDOWEVENT:
+            if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                mouse_button_held = false;
+                ui_buttons_release_all(m);
+                ui_release_pointer_button(m);
+                ui_stowaway_release_keys();
+                if (touch_active)
+                    ui_release_touch(m);
+                pointer_mode = UI_POINTER_NONE;
+                SDL_CaptureMouse(SDL_FALSE);
             }
             break;
 
@@ -1374,6 +1352,10 @@ void ui_save_screenshot(machine_t *m)
 
 void ui_destroy(machine_t *m)
 {
+    ui_buttons_release_all(m);
+    ui_stowaway_release_keys();
+    if (touch_active)
+        ui_release_touch(m);
     ui_video_destroy(m);
     ui_audio_destroy();
     /* SDL_Quit() shuts down every subsystem and tears down per-process state

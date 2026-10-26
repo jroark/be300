@@ -365,7 +365,15 @@ static uint64_t cmu_read(struct cpu *cpu, struct be300_vrc4173_latch *d,
 
     if (at + len > BE300_CMU_BASE + BE300_CMU_SIZE)
         return 0;
-    return memory_readmax64(cpu, &d->bytes[at], len);
+    (void)cpu;
+    uint64_t value = 0;
+    for (unsigned i = 0; i < len; i++) {
+        uint8_t byte = g_be300_machine && lcd_handles(at + i, 1)
+            ? (uint8_t)lcd_read(&g_be300_machine->lcd, at + i, 1)
+            : d->bytes[at + i];
+        value |= (uint64_t)byte << (8 * i);
+    }
+    return value;
 }
 
 static void cmu_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
@@ -375,8 +383,38 @@ static void cmu_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
 
     (void)cpu;
     (void)val;
-    if (at + len <= BE300_CMU_BASE + BE300_CMU_SIZE)
+    if (at + len <= BE300_CMU_BASE + BE300_CMU_SIZE) {
         memcpy(&d->bytes[at], data, len);
+        for (unsigned i = 0; i < len; i++)
+            if (g_be300_machine && lcd_handles(at + i, 1))
+                lcd_write(&g_be300_machine->lcd, at + i, 1, data[i]);
+    }
+}
+
+/* Recovered SPL 80F034A0 / ddi.dll 01A55900, 01A56A5C.
+ * Shared gates stay in CMU dispatch so its existing aliases agree. */
+static bool lcd_claims(struct be300_vrc4173_latch *d, uint32_t off,
+    unsigned len)
+{
+    (void)d;
+    return g_be300_machine && off < BE300_CMU_BASE && lcd_handles(off, len);
+}
+
+static uint64_t lcd_region_read(struct cpu *cpu, struct be300_vrc4173_latch *d,
+    uint32_t off, unsigned len)
+{
+    (void)cpu;
+    (void)d;
+    return lcd_read(&g_be300_machine->lcd, off, len);
+}
+
+static void lcd_region_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
+    uint32_t off, unsigned len, uint64_t val, const unsigned char *data)
+{
+    (void)cpu;
+    (void)d;
+    (void)data;
+    lcd_write(&g_be300_machine->lcd, off, len, val);
 }
 
 /* 0x1CD0: DMA-pending status; reading it runs the armed transfer. */
@@ -609,7 +647,7 @@ static bool intr_aggr_claims(struct be300_vrc4173_latch *d, uint32_t off,
 }
 
     /*
-     * WORKAROUND: VRC4173 display-controller-like block at
+     * WORKAROUND: VRC4173 drawing-engine block at
      * PA 0x0A000200..0x0A000234 (undocumented in VRC4173 UM).
      *
      * ddi.dll initialises offsets 0x200/0x204/0x208/0x20C/0x210/
@@ -623,7 +661,8 @@ static bool intr_aggr_claims(struct be300_vrc4173_latch *d, uint32_t off,
      *
      * Real HW dumps at docs/hardware/hw_dump_vrc4173.txt in the
      * 0x00000200..0x00000234 rows show volatile non-zero values
-     * consistent with a live display / LCD timing controller.
+     * insufficient to identify panel timing. ddi.dll uses this block
+     * for drawing; panel parameters are at 0xC00 (see BE300_LCD.md).
      * VRC4173 UM (docs/hardware/U14579EJ2V0UM00.pdf) has no
      * chapter covering offset 0x200; chapters are BCU/DMAAU/DCU/
      * CMU/ICU/GIU/PIU/AIU/KIU/PS2U/CARDU/USBU/AC97U only. This
@@ -707,6 +746,8 @@ static const be300_vrc4173_region_t be300_vrc4173_regions[] = {
     { "vrc4173-commmode-modem-event", BE300_MMIO_CLASS_KNOWN,
       be300_commmode_modem_event_claims,
       be300_commmode_modem_event_read, NULL },
+    { "be300-lcd", BE300_MMIO_CLASS_KNOWN, lcd_claims,
+      lcd_region_read, lcd_region_write },
     { "vrc4173-cmu", BE300_MMIO_CLASS_KNOWN, cmu_claims,
       cmu_read, cmu_write },
     { "vrc4173-dma-done-synth", BE300_MMIO_CLASS_STUBBED,
@@ -800,10 +841,8 @@ static int be300_vrc4173_handle(struct cpu *cpu, struct memory *mem,
     (void)mem;
     if (off + len > VRC4173_LATCH_SIZE)
         return 0;
-    if (writeflag == MEM_WRITE) {
+    if (writeflag == MEM_WRITE)
         val = memory_readmax64(cpu, data, len);
-        be300_buzzer_note_write(d, off, (unsigned)len, data);
-    }
 
     for (size_t i = 0;
          i < sizeof(be300_vrc4173_regions) / sizeof(be300_vrc4173_regions[0]);
@@ -891,7 +930,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
     g_be300_vrc4173_latch = latch;
     g_be300_machine = m;
     be300_register_wince_aux(gxm, log_mmio, enable_ppsh);
-    be300_buzzer_seed(latch);
+    lcd_init(&m->lcd);
     latch->pcconnect_insert_delay_ms = be300_pcconnect_connect_delay_ms();
     latch->usbf.ram = be300_usbf_ram;
     latch->usbf.irq_changed = be300_usbf_irq_changed;
@@ -997,12 +1036,13 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         /*
          * Clock/power/wake block 0x1100-0x113F and the DMA block's
          * 0x1CC0-0x1CCC words, as read on hardware
-         * (hw_dump_vrc4173.txt:49-52, :183).
+         * (hw_dump_vrc4173.txt:49-52, :183). LCD-owned gate words
+         * start off instead of inheriting the post-boot dump (BE300_LCD.md).
          */
         static const struct { uint16_t off; uint32_t val; } cmu_regs[] = {
-            { 0x1100, 1 }, { 0x1104, 1 }, { 0x1108, 1 }, { 0x110C, 1 },
+            { 0x1100, 0 }, { 0x1104, 1 }, { 0x1108, 1 }, { 0x110C, 0 },
             { 0x1110, 0 }, { 0x1114, 1 }, { 0x1118, 1 }, { 0x111C, 1 },
-            { 0x1120, 1 }, { 0x1124, 0 }, { 0x1128, 1 }, { 0x112C, 1 },
+            { 0x1120, 1 }, { 0x1124, 0 }, { 0x1128, 0 }, { 0x112C, 1 },
             { 0x1130, 0 }, { 0x1134, 0 }, { 0x1138, 1 }, { 0x113C, 1 },
             { 0x1CC0, 0x00000001 }, { 0x1CC4, 0x00000201 },
             { 0x1CC8, 0x00001000 }, { 0x1CCC, 0x00000000 },

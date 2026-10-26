@@ -1,7 +1,7 @@
 /*
  *  src/devices/vrc4173_latch.h — the VRC4173 companion latch shared by
  *  src/be300_devices.c (dispatch and registration) and the per-function
- *  files split from it: buzzer.c, serial_dock.c and display_ops.c.
+ *  files split from it: serial_dock.c and display_ops.c.
  */
 #pragma once
 
@@ -17,21 +17,9 @@ struct cpu;
 
 #define VRC4173_LATCH_BASE   0x0A000000ULL
 #define VRC4173_LATCH_SIZE   0x00020000     /* 128KB covers all VRC4173 space */
-/* Casio SDK buzzer.h ranges: hardware.txt:186 and hardware.txt:188. */
-#define BE300_BUZZER_BLG_OFF 0x0980u
-#define BE300_BUZZER_BLG_LEN 0x0068u
-#define BE300_BUZZER_CMM_OFF 0x1128u
-#define BE300_BUZZER_CMM_LEN 0x0004u
-
-struct be300_buzzer_state {
-    uint8_t blg[BE300_BUZZER_BLG_LEN];
-    uint8_t cmm[BE300_BUZZER_CMM_LEN];
-};
-
 struct be300_vrc4173_latch {
     uint8_t  bytes[0x20000];
     bool     log_mmio;
-    struct be300_buzzer_state buzzer;
     usbf_state_t usbf;
     struct interrupt usb_irq;
     bool     usb_irq_connected;
@@ -77,11 +65,6 @@ static inline uint16_t be300_latch_peek_u16(const struct be300_vrc4173_latch *d,
     return (uint16_t)d->bytes[off + 0u]
          | ((uint16_t)d->bytes[off + 1u] << 8);
 }
-
-/* buzzer.c */
-void be300_buzzer_note_write(struct be300_vrc4173_latch *d,
-    uint32_t off, unsigned len, const unsigned char *data);
-void be300_buzzer_seed(struct be300_vrc4173_latch *d);
 
 /* serial_dock.c */
 void be300_commmode_event_ack(struct be300_vrc4173_latch *d,

@@ -16,6 +16,7 @@
 #include "hw/nand.h"
 #include "hw/cf.h"
 #include "hw/aiu.h"
+#include "hw/lcd.h"
 
 /* Forward declarations for GXemul types */
 struct cpu;
@@ -141,6 +142,9 @@ typedef struct be300_state {
 
     /* AIU (Casio audio block on the VRC4173 latch) */
     aiu_state_t  aiu;
+
+    /* Panel/backlight digital state, separate from drawing engine/VRAM. */
+    lcd_state_t  lcd;
 
     /* NAND image data (loaded from file) */
     uint8_t     *nand_data;

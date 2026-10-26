@@ -12,11 +12,25 @@
 #ifdef HAVE_SDL2
 
 #include <stdint.h>
+#include <string.h>
 
 #include <SDL.h>
 
 #include "stowaway.h"
 #include "ui_internal.h"
+
+static uint8_t key_refs[2u * STOWAWAY_FN];
+static bool held_keys[SDL_NUM_SCANCODES];
+
+void ui_stowaway_release_keys(void)
+{
+    for (unsigned value = 0; value < 2u * STOWAWAY_FN; value++) {
+        if (key_refs[value])
+            stowaway_queue_mapped_key(value, true);
+    }
+    memset(key_refs, 0, sizeof(key_refs));
+    memset(held_keys, 0, sizeof(held_keys));
+}
 
 bool ui_stowaway_lookup_key(SDL_Scancode key, unsigned *value_out)
 {
@@ -33,26 +47,27 @@ bool ui_stowaway_lookup_key(SDL_Scancode key, unsigned *value_out)
 bool ui_stowaway_key_event(machine_t *m, const SDL_KeyboardEvent *key,
     bool release)
 {
-    static uint8_t key_refs[2u * STOWAWAY_FN];
     unsigned value;
 
-    if (!m->cfg.enable_stowaway_keyboard)
+    if (!release && !m->cfg.enable_stowaway_keyboard)
         return false;
     if (!ui_stowaway_lookup_key(key->keysym.scancode, &value))
         return false;
 
     if (release) {
-        if (key_refs[value] == 0)
+        if (!held_keys[key->keysym.scancode])
             return false;
+        held_keys[key->keysym.scancode] = false;
         key_refs[value]--;
         if (key_refs[value] == 0)
             stowaway_queue_mapped_key(value, true);
         return true;
     }
 
-    if (key->repeat)
+    if (key->repeat || held_keys[key->keysym.scancode])
         return true;
 
+    held_keys[key->keysym.scancode] = true;
     if (key_refs[value] == 0)
         stowaway_queue_mapped_key(value, false);
     if (key_refs[value] != UINT8_MAX)
