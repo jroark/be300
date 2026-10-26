@@ -13,8 +13,8 @@
 #define NAND_BOOT_END     0xC100u
 #define NAND_RESTORE_BUF_BASE  0x0B00u   /* NANDWRITER page buffer window */
 #define NAND_RESTORE_BUF_END   0x0D00u
-#define NAND_RESTORE_BASE      0x0C00u
-#define NAND_RESTORE_SIDE_BASE 0x0980u   /* NANDWRITER sideband control */
+#define NAND_RESTORE_BASE      0x0C00u /* legacy mapping; C00..C4F is LCD */
+#define NAND_RESTORE_SIDE_BASE 0x0980u   /* legacy label; recovered as LCD backlight */
 #define NAND_RESTORE_SIDE_END  0x0990u
 #define NAND_CMD_BASE     0xAC00u   /* Legacy command/address registers */
 #define NAND_CMD_END      0xAC50u

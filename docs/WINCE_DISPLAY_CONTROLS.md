@@ -52,11 +52,13 @@ The keyboard and display drivers communicate through named events:
 This confirms that host input should deliver physical button combinations
 to the guest rather than adjusting the screen directly.
 
-The emulator already excludes writes confined to `0x098C` from buzzer
-retriggering. That exclusion must remain: the display driver uses the word
-for backlight levels. Its earlier description as a tone-shape-only divider
-was incomplete. This analysis does not establish every function of the
-shared BLG block.
+The recovered SPL/OAL initialization and ddi backlight power routines also
+identify `0x0980/0x0984/0x0988` as backlight control/configuration/period.
+The old BLG-to-buzzer heuristic has been removed: these writes no longer
+produce invented audio. The service manual's separate buzzer needs a verified
+programming model. Digital panel/backlight power and serial contrast tracking
+are implemented; see `BE300_LCD.md`. This does not establish every function
+of the larger BLG block or an optical brightness/contrast curve.
 
 ## EEPROM bus
 

@@ -154,11 +154,7 @@ static void ui_copy_visible_frame(machine_t *m, uint16_t *dst)
 {
     const uint16_t *src = (const uint16_t *)m->fb_data;
 
-    for (uint32_t y = 0; y < m->fb_height; y++) {
-        memcpy(dst + y * m->fb_width,
-               src + y * m->fb_stride,
-               m->fb_width * sizeof(uint16_t));
-    }
+    lcd_copy_rgb565(&m->lcd, src, dst, m->fb_width, m->fb_height, m->fb_stride);
 }
 
 static void ui_put_le16(uint8_t *p, uint16_t v)

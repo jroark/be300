@@ -97,10 +97,12 @@ cd build-host
 ```
 
 Serial output is written to stdout. Emulator diagnostics are written to stderr.
-An SDL window opens for the framebuffer when SDL is available. The Casio
-piezo buzzer is rendered through SDL audio; set `BE300_AUDIO=0` to mute host
-audio without changing guest-visible hardware state. Touch input coalesces
-rapid host click events into one guest pen session. `BE300_TOUCH_MIN_DWELL_MS`
+An SDL window opens for the framebuffer when SDL is available. Panel and
+backlight power control presentation; see [LCD model](docs/BE300_LCD.md).
+Set `BE300_AUDIO=0` to mute host audio without changing guest-visible
+hardware state. The separate piezo buzzer's register behavior remains
+unverified. Touch input coalesces rapid host click events into one guest
+pen session. `BE300_TOUCH_MIN_DWELL_MS`
 sets the minimum guest pen-down time in milliseconds; set it to `0` for direct
 host timing.
 
@@ -176,8 +178,7 @@ primary regression target:
 - `--xi825` — Z-Com XI-825 wireless CF card with a virtual access point;
   requires the local vendor driver. See [XI-825 setup](docs/XI825.md).
 - `--rtc-host-time` — initialize the guest RTC from host local time
-- `--audio` — route emulated wave-audio output to SDL (the buzzer is already
-  routed by the interactive frontend)
+- `--audio` — route emulated wave-audio output to SDL
 - `--stowaway-keyboard` — attach the Targus/Think Outside serial keyboard dock
 - `--serial0-bridge` / `--serial1-bridge` — expose either emulated UART to a
   host TCP, Unix-socket, or PTY chardev

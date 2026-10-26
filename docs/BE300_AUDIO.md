@@ -2,8 +2,11 @@
 
 The BE-300 has two sound paths:
 
-- **Buzzer**: BLG registers at `0x0A000980` (Casio SDK `buzzer.h`,
-  `hardware.txt:186`). Used for screen taps and hardware buttons.
+- **Buzzer**: separate hardware path described in the service manual.
+  Its register behavior remains unverified. The former heuristic at BLG
+  `0x0A000980` interpreted recovered backlight words as audio and has been
+  removed; see `BE300_LCD.md`. The SDK resource range alone does not
+  establish the function of individual words.
 - **Wave output** ("Buzzer and headphones" in Volume & Sounds): `wavedev.dll`
   drives a Casio DMA block in the Kj companion window. This document covers
   that path. It is not the VRC4173 UM Ch. 10 AIU (Pass 33 saw zero accesses
@@ -140,8 +143,8 @@ Open questions:
 
 The Casio service manual (printed pp. 2, 5, 52) specifies stereo headphones
 and an audio/channel service check. Both native SDL and Web Audio preserve
-interleaved S16 L/R PCM at 44100 Hz. Mono guest PCM and buzzer pulses are
-presented equally on both host channels. `src/audio_pcm.c` performs streaming
+interleaved S16 L/R PCM at 44100 Hz. Mono guest PCM and host-generated tone
+pulses are presented equally on both host channels. `src/audio_pcm.c` performs streaming
 linear interpolation with integer phase, keeping each channel separate and
 preserving results across arbitrary DMA chunk boundaries. A rate/channel
 change or a new guest DMA stream resets interpolation history.

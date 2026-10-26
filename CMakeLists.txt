@@ -182,7 +182,6 @@ set(BE300_SOURCES
     src/win32_compat.c
     src/file_util.c
     src/devices/boot_rom.c
-    src/devices/buzzer.c
     src/devices/display_ops.c
     src/devices/input.c
     src/devices/nand_window.c
@@ -221,6 +220,7 @@ set(BE300_SOURCES
     src/hw/wl54cf.c
     src/hw/cf_wl54cf.c
     src/hw/aiu.c
+    src/hw/lcd.c
 )
 
 # ============================================================
@@ -450,10 +450,14 @@ if(BUILD_TESTING AND BUILD_CLI AND NOT WIN32)
 endif()
 
 if(BUILD_TESTING AND BUILD_CLI)
+    add_executable(test_lcd tests/test_lcd.c src/hw/lcd.c)
+    target_include_directories(test_lcd PRIVATE src)
+    add_test(NAME lcd COMMAND test_lcd)
+
     if(SDL2_FOUND OR SDL2_LIBRARIES)
         add_executable(test_ui_input tests/test_ui_input.c
             src/ui.c src/ui_buttons.c src/ui_stowaway.c src/ui_button_mask.c
-            src/ui_png.c ${FRAME_PNG_HDR} ${BUTTONS_MASK_PNG_HDR})
+            src/ui_png.c src/hw/lcd.c ${FRAME_PNG_HDR} ${BUTTONS_MASK_PNG_HDR})
         target_include_directories(test_ui_input PRIVATE src ${CMAKE_BINARY_DIR})
         target_link_libraries(test_ui_input ${SDL2_LIBRARIES} ${PNG_LIBRARIES} m)
         add_test(NAME ui_input COMMAND test_ui_input)

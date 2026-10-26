@@ -80,6 +80,13 @@ static void test_clean_ecc_and_inactive_buffer(void)
 
 int main(void)
 {
+    /* LCD/backlight accesses must never enter the legacy recovery engine. */
+    for (unsigned off = 0x980; off < 0x990; off++)
+        CHECK(!nand_restore_handles_offset(off));
+    for (unsigned off = 0xC00; off < 0xC50; off++)
+        CHECK(!nand_restore_handles_offset(off));
+    CHECK(nand_restore_handles_offset(0xB00));
+    CHECK(nand_restore_handles_offset(0xC50));
     fill_image();
     test_rom_stream_and_oob();
     test_empty_ata_taskfile();

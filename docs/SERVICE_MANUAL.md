@@ -26,7 +26,7 @@ with this repository.
 |---|---|---|
 | CPU / VTClock readout, p. 51 | Approximately 165 / 82 MHz | Existing timebase; retain RTC/PMU/timer regressions. |
 | 0.5 / 1 / 2 kHz and channel tests, p. 52 | Correct pitch and channel routing | `audio_pcm`, `test_ui_audio`, `test_ui_web_audio`, `audio_dma`; `tests/web_audio.mjs` and the frontend integration test cover worker/playback packets. Factory LR waveform still requires local Diag.exe. |
-| Display fills, white frame, grayscale, pp. 50, 53 | Correct bounds/colors and panel controls | Cold-boot screenshot regression exists; panel enable/brightness/contrast remain follow-up work. |
+| Display fills, white frame, grayscale, pp. 50, 53 | Correct bounds/colors and panel controls | Digital panel/backlight gating and serial contrast tracking implemented (`BE300_LCD.md`); optical curves remain unmeasured. |
 | Touch points / tracing cross, p. 50 | Stable calibration and continuous tracing | Existing `piu` tests; service-application interaction remains a local check. |
 | Keys and Power+arrow chords, pp. 18, 50, 53 | Correct key transitions and LCD controls | `ui_input` and browser integration tests cover source ownership, Power+Up, focus release and Stowaway aliases. Display-control writes are identified in `WINCE_DISPLAY_CONTROLS.md`; panel response needs measurements. |
 | RAM / NAND / boot-ROM checks, p. 51 | Successful memory access without modified guest bytes | Existing NAND/cold-boot tests; normal-ROM alias remains unverified. |
