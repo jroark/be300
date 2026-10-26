@@ -151,8 +151,12 @@ marker when the guest prints while it is closed.
 
 The device frame's buttons (Rocket, OK, Esc, Power and the D-pad) are
 clickable. When the Stowaway keyboard is off, the arrow keys, Enter and Esc
-press the D-pad, OK and Esc buttons. **Hold Rocket button** latches the
-Rocket key.
+press the D-pad, OK and Esc buttons. F12 presses Power in either keyboard
+mode. The frame accepts multiple pointers for button combinations; a mouse
+click can also be combined with a host key. **Hold Rocket button** latches
+the Rocket key. Losing focus or hiding the page releases held inputs and
+the Rocket latch. Pressing a button from several sources holds it until all
+sources release.
 
 Web boots initialize the guest RTC from the browser host's local date/time by
 default, matching the native emulator's `--rtc-host-time` option. Hosted

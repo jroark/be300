@@ -145,8 +145,9 @@ void be300_buzzer_note_write(struct be300_vrc4173_latch *d,
      *   - Clear-then-set: BLG[0] goes 0 -> 1 (caught by the edge arm below).
      *   - Set-while-latched: BLG[0] stays at 1 and the driver just rewrites
      *     the tone-config words (0x0984, 0x0988, 0x09A0, 0x09A4, 0x09A8).
-     * Writes confined to the 0x098C divider word are tone-shape adjustments
-     * mid-beep and must not retrigger. The 120ms gate inside ui_buzzer_pulse
+     * Writes confined to 0x098C must not retrigger: WinCE 3.0 ddi.dll
+     * 0x01A56BB0/0x01A56BD0 also uses this word for backlight levels
+     * (docs/WINCE_DISPLAY_CONTROLS.md). The 120ms gate inside ui_buzzer_pulse
      * consolidates the burst of config writes per beep into one host tone.
      */
     if ((new_control & 1u) && !(old_control & 1u)) {

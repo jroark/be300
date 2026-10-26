@@ -11,7 +11,7 @@ with this repository.
 |---|---|---|
 | VR4131; nominal 166 MHz, diagnostic 165 MHz CPU / 82 MHz VTClock | pp. 2, 51, 63, 65 | Retain the established 165.888 MHz CPU timebase and existing Count ratio. |
 | IC1: custom **RAKKO** gate array; IC300: **CAK2007** analog AD/DA | pp. 63–65 | Companion VRC4173 names in code are historical. Preserve register behavior established by dumps/driver traces; the schematic is not a replacement MMIO specification. |
-| IC3 EEPROM, SDA/SCL/address-select/write-protect pins; factory UUID | pp. 50, 65 | Trace the guest bus and identify the component/format before adding a persistent model. Do not fabricate factory contents to satisfy diagnostics. |
+| IC3 EEPROM, SDA/SCL/address-select/write-protect pins; factory UUID | pp. 50, 65 | WinCE's bit-banged bus registers are identified in `WINCE_DISPLAY_CONTROLS.md`; component capacity, factory contents and persistence behavior still need verification. Do not fabricate factory contents to satisfy diagnostics. |
 | Independent AC, charging, battery detectors, card-power detection and jacket SW2 | pp. 2–3, 52–55, 64–65 | Require separate board state and measured signal/IRQ routing rather than additional static latch values. |
 | ADC calibration at 4.2 V / 3.7 V; contrast Evol calibration | pp. 53–56 | Need real transfer characteristics and storage layout before modeling calibration. |
 | 240×320, 32,768-color STN panel; separate contrast/backlight controls | pp. 2, 18, 50, 53, 55–56, 63–65 | Keep panel presentation separate from the hardware-observed RGB565 framebuffer format. |
@@ -28,7 +28,7 @@ with this repository.
 | 0.5 / 1 / 2 kHz and channel tests, p. 52 | Correct pitch and channel routing | `audio_pcm`, `test_ui_audio`, `test_ui_web_audio`, `audio_dma`; `tests/web_audio.mjs` and the frontend integration test cover worker/playback packets. Factory LR waveform still requires local Diag.exe. |
 | Display fills, white frame, grayscale, pp. 50, 53 | Correct bounds/colors and panel controls | Cold-boot screenshot regression exists; panel enable/brightness/contrast remain follow-up work. |
 | Touch points / tracing cross, p. 50 | Stable calibration and continuous tracing | Existing `piu` tests; service-application interaction remains a local check. |
-| Keys and Power+arrow chords, pp. 18, 50, 53 | Correct key transitions and LCD controls | Existing button-mask/keymap tests; display-control behavior needs traces. |
+| Keys and Power+arrow chords, pp. 18, 50, 53 | Correct key transitions and LCD controls | `ui_input` and browser integration tests cover source ownership, Power+Up, focus release and Stowaway aliases. Display-control writes are identified in `WINCE_DISPLAY_CONTROLS.md`; panel response needs measurements. |
 | RAM / NAND / boot-ROM checks, p. 51 | Successful memory access without modified guest bytes | Existing NAND/cold-boot tests; normal-ROM alias remains unverified. |
 | AC / charge / VDET / jacket, pp. 52–55 | Independent input transitions | Needs bus/register/IRQ captures and analog calibration data. |
 | Reset / initialization / safe mode, pp. 25–27, 39–40 | Correct guest path and persistent NAND | Existing CPU/software reset implementation; physical reset routing/retention needs verification. |
@@ -60,3 +60,7 @@ remove data. Exclude the factory-only UUID-write operation from automation.
 The manual itself does not provide the executables, transaction captures,
 register addresses, reset timing or ADC conversion law needed for the later
 models. Those items remain evidence-gathering tasks.
+
+Driver analysis can proceed without the factory diagnostic binaries. See
+`WINCE_DISPLAY_CONTROLS.md` for the stock WinCE 3.0 contrast, backlight and
+EEPROM routines already identified from the local NAND.

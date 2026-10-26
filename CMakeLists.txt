@@ -198,6 +198,7 @@ set(BE300_SOURCES
     src/serial_backends.c
     src/stowaway.c
     src/ui.c
+    src/ui_buttons.c
     src/ui_audio.c
     src/audio_pcm.c
     src/ui_button_mask.c
@@ -450,6 +451,14 @@ endif()
 
 if(BUILD_TESTING AND BUILD_CLI)
     if(SDL2_FOUND OR SDL2_LIBRARIES)
+        add_executable(test_ui_input tests/test_ui_input.c
+            src/ui.c src/ui_buttons.c src/ui_stowaway.c src/ui_button_mask.c
+            src/ui_png.c ${FRAME_PNG_HDR} ${BUTTONS_MASK_PNG_HDR})
+        target_include_directories(test_ui_input PRIVATE src ${CMAKE_BINARY_DIR})
+        target_link_libraries(test_ui_input ${SDL2_LIBRARIES} ${PNG_LIBRARIES} m)
+        add_test(NAME ui_input COMMAND test_ui_input)
+        set_tests_properties(ui_input PROPERTIES ENVIRONMENT
+            "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy;DISPLAY=:0;BE300_TOUCH_MIN_DWELL_MS=0")
         foreach(audio_target test_ui_audio test_ui_web_audio)
             add_executable(${audio_target} tests/test_ui_audio.c src/ui_audio.c src/audio_pcm.c)
             target_include_directories(${audio_target} PRIVATE src ${SDL2_INCLUDE_DIRS})

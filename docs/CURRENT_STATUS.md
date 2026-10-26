@@ -69,6 +69,15 @@ snapshot transactionally; see `docs/INSTALLING_APPS.md`.
 
 ## Current Behavior
 
+- Host button input tracks keyboard and pointer ownership separately, so one
+  release cannot clear another held source. SDL focus loss and browser
+  blur/hidden-page events release device buttons, touch and Stowaway keys.
+  Web frame buttons accept multiple pointers. F12 drives the existing Power
+  input in both frontends; arrows remain device buttons with the keyboard
+  accessory off. `ui_input` tests the real SDL event loop and browser tests
+  cover overlapping sources, chords and dwell timers. Display/EEPROM driver
+  findings and the next capture targets are in `docs/WINCE_DISPLAY_CONTROLS.md`.
+
 - XI-825 (2026-10-24): the unmodified vendor `nb825be.dll` 1.1.0 initializes
   the station controller, and Wireless LAN Setting shows `BE300`, channel 3,
   11 Mbps and BSSID `02:42:45:33:30:30`. After normal driver registration
