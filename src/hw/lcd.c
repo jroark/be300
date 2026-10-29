@@ -15,7 +15,7 @@ bool lcd_handles(uint32_t off, unsigned len)
     for (unsigned i = 0; i < len; i++) {
         uint32_t at = off + i;
         if (!(at >= 0xC00 && at < 0xC50) &&
-            !(at >= 0x980 && at < 0x990) && !gate_byte(at))
+            !(at >= 0x980 && at < 0x990) && !(at >= 0x9A0 && at < 0x9AC) && !gate_byte(at))
             return false;
     }
     return true;
@@ -25,7 +25,7 @@ static const uint8_t *reg_byte(const lcd_state_t *s, uint32_t off)
 {
     if (off >= 0xC00 && off < 0xC50)
         return s->panel + off - 0xC00;
-    if (off >= 0x980 && off < 0x990)
+    if (off >= 0x980 && off < 0x9AC)
         return s->backlight + off - 0x980;
     return s->gates + off - 0x1100;
 }
@@ -84,6 +84,14 @@ bool lcd_backlight_enabled(const lcd_state_t *s)
     /* ddi.dll 01A55900: off clears BLG control and CMM bit 0.
      * Duty zero means maximum brightness, not power-off. */
     return (lcd_read(s, 0x980, 4) & 1) && (lcd_read(s, 0x1128, 4) & 1);
+}
+
+bool lcd_buzzer_signal(const lcd_state_t *s, uint32_t *period, uint32_t *duty)
+{
+    *period = ((uint32_t)lcd_read(s,0x9A4,4) & 0xffff) + 1;
+    *duty = ((uint32_t)lcd_read(s,0x9A8,4) & 0xffff) + 1;
+    return (lcd_read(s,0x9A0,4) & 1) && (lcd_read(s,0x1128,4) & 1) &&
+        (lcd_read(s,0x984,4) & 0x0202) == 0x0202 && *duty < *period;
 }
 
 void lcd_copy_rgb565(const lcd_state_t *s, const uint16_t *src, uint16_t *dst,

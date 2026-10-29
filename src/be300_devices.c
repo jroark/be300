@@ -376,6 +376,17 @@ static uint64_t cmu_read(struct cpu *cpu, struct be300_vrc4173_latch *d,
     return value;
 }
 
+static void update_buzzer(void)
+{
+    uint32_t period, duty;
+    if (!g_be300_machine) return;
+    bool enabled = lcd_buzzer_signal(&g_be300_machine->lcd,&period,&duty);
+#ifndef __EMSCRIPTEN__
+    enabled = enabled && g_be300_machine->cfg.enable_audio;
+#endif
+    ui_audio_set_buzzer(period,duty,enabled);
+}
+
 static void cmu_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
     uint32_t off, unsigned len, uint64_t val, const unsigned char *data)
 {
@@ -388,6 +399,7 @@ static void cmu_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
         for (unsigned i = 0; i < len; i++)
             if (g_be300_machine && lcd_handles(at + i, 1))
                 lcd_write(&g_be300_machine->lcd, at + i, 1, data[i]);
+        update_buzzer();
     }
 }
 
@@ -415,6 +427,7 @@ static void lcd_region_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
     (void)d;
     (void)data;
     lcd_write(&g_be300_machine->lcd, off, len, val);
+    update_buzzer();
 }
 
 /* 0x1CD0: DMA-pending status; reading it runs the armed transfer. */

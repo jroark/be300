@@ -99,6 +99,20 @@ int main(void)
     CHECK(rgb[0] == 0xF800 && rgb[3] == 0xFFFF);
     lcd_init(&s);
     CHECK(!lcd_scanout_enabled(&s) && !s.contrast_valid);
+    uint32_t period,duty;
+    CHECK(!lcd_buzzer_signal(&s,&period,&duty));
+    CHECK(lcd_handles(0x9A0,8) && lcd_handles(0x9AB,1) && !lcd_handles(0x9AB,2));
+    /* Backlight enable and its period are not buzzer triggers. */
+    enable(&s);lcd_write(&s,0x984,4,0x202);lcd_write(&s,0x988,4,0xf70);
+    CHECK(!lcd_buzzer_signal(&s,&period,&duty));
+    lcd_write(&s,0x9A4,4,1411);lcd_write(&s,0x9A8,4,705);lcd_write(&s,0x9A0,4,1);
+    CHECK(lcd_buzzer_signal(&s,&period,&duty) && period==1412 && duty==706);
+    lcd_write(&s,0x980,4,0);lcd_write(&s,0xC48,4,0);
+    CHECK(lcd_buzzer_signal(&s,&period,&duty)); /* separate output */
+    lcd_write(&s,0x1128,4,0);CHECK(!lcd_buzzer_signal(&s,&period,&duty));
+    lcd_write(&s,0x1128,4,1);lcd_write(&s,0x984,4,2);CHECK(!lcd_buzzer_signal(&s,&period,&duty));
+    lcd_write(&s,0x984,4,0x202);CHECK(lcd_buzzer_signal(&s,&period,&duty));
+    lcd_write(&s,0x9A0,2,0);CHECK(!lcd_buzzer_signal(&s,&period,&duty));
     puts("LCD gates, serial contrast, stride and shared presentation passed");
     return 0;
 }
