@@ -76,6 +76,11 @@ snapshot transactionally; see `docs/INSTALLING_APPS.md`.
   BLG-to-buzzer heuristic was removed because it interpreted backlight
   initialization as audio. See `docs/BE300_LCD.md` for evidence and limits.
 
+- The actual piezo channel at `09A0/9A4/9A8` now follows the recovered
+  `bltinbuz.dll` PWM sequence, with shared BLG config/clock and independent
+  host mixing alongside stereo PCM. The old backlight-triggered pulses
+  remain removed; see `docs/BE300_BUZZER.md`.
+
 - Host button input tracks keyboard and pointer ownership separately, so one
   release cannot clear another held source. SDL focus loss and browser
   blur/hidden-page events release device buttons, touch and Stowaway keys.

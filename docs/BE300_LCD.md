@@ -1,7 +1,9 @@
 # BE-300 LCD model and recovered startup evidence
 
 The companion LCD bank is at PA `0x0A000C00..0x0A000C4F`, with backlight
-words at `0x0A000980..0x0A00098F`. It is separate from the drawing engine
+words at `0x0A000980..0x0A00098F`. A separate piezo PWM channel lives at
+`0x0A0009A0..0x0A0009AB`; both share config `0984` and clock `1128`.
+The LCD is separate from the drawing engine
 at offsets `0x0200..0x0234`. The framebuffer is RGB565 at PA `0x0A200000`
 (KSEG1 `0xAA200000`), with 240 visible pixels, 320 rows, and a 256-pixel
 (512-byte) software pitch. Row padding is not presented to the host.
@@ -78,8 +80,10 @@ no unmeasured optical curve is applied to guest pixels.
 The former BLG buzzer heuristic interpreted backlight enable/configuration
 as tone triggers and converted 0988 into a guessed frequency. It has been
 removed, including its enabled-at-reset snapshot. Wave PCM and host tone
-rendering APIs are unchanged. The separate hardware buzzer needs verified
-register/driver evidence before guest tone generation can be restored.
+rendering APIs are unchanged. The actual buzzer channel has since been
+recovered from `bltinbuz.dll`; [BE300_BUZZER.md](BE300_BUZZER.md) describes
+its independent PWM model and evidence. Backlight activity still cannot
+trigger it.
 
 ## Limits and validation
 

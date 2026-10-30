@@ -83,6 +83,8 @@ int main(void)
     /* LCD/backlight accesses must never enter the legacy recovery engine. */
     for (unsigned off = 0x980; off < 0x990; off++)
         CHECK(!nand_restore_handles_offset(off));
+    for (unsigned off = 0x9A0; off < 0x9AC; off++)
+        CHECK(!nand_restore_handles_offset(off));
     for (unsigned off = 0xC00; off < 0xC50; off++)
         CHECK(!nand_restore_handles_offset(off));
     CHECK(nand_restore_handles_offset(0xB00));

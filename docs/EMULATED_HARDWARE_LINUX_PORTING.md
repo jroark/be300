@@ -492,9 +492,10 @@ Important platform identification and control offsets:
 | `0x0004` | Emulator-modeled summary | GIRQ0 source register. Bit 0 CF, bit 1 buttons, bit 4 CommMode, bit 9 touch. |
 | `0x0060` | Hardware-confirmed behavior | VRC4173 `SYSINT1REG` aggregate; read-only in emulator writes. |
 | `0x08A0` | Compatibility shim | Interrupt aggregate bit 0 reads as clear. |
-| `0x0980-0x09E7` | Survey latch/emulator-modeled host effect | Buzzer/BLG registers. Writes can trigger host buzzer pulses. |
+| `0x0980-0x098F` | Recovered digital controls | Backlight channel and shared BLG config; not a buzzer trigger. |
+| `0x09A0-0x09AB` | Recovered PWM channel | Separate piezo enable, period and duty. |
 | `0x0A00` | Compatibility shim | Display blit trigger/status. |
-| `0x1128` | Survey latch/emulator-modeled host effect | Buzzer/CMM word. |
+| `0x1128` | Recovered shared gate | BLG clock bit 0, shared by backlight and buzzer. |
 | `0x1300-0x161F` | Emulator-modeled | BE-300 USB function (device) controller: DMA/top level, core status, FIFOs, descriptor RAM. See `docs/BE300_USB_FUNCTION.md`. |
 | `0x1B00-0x1B2F` | Mixed | Interrupt/status/mask area, W1C handling. |
 | `0x7800-0x783F` | Stub/unknown | ScCmcu companion MCU command area; reads return zero to mean instant command completion. |
@@ -519,17 +520,22 @@ port would need a gadget (UDC) driver for it, not an OHCI host driver.
 
 ### Buzzer
 
-Status: survey latch with host-side effect.
+Status: recovered BLG PWM channel; see [BE300_BUZZER.md](BE300_BUZZER.md).
 
 Relevant offsets:
 
 | Offset | Meaning |
 | ---: | --- |
-| `0x0980-0x09E7` | BLG/buzzer-like register bank. Seeded words include `0x00000001`, `0x00000202`, `0x00000F70`, `0x00000000`. |
-| `0x1128-0x112B` | CMM/buzzer-related word, seeded to `0x00000001`. |
+| `0x0984` | Shared BLG configuration; buzzer sets `0x0202`. |
+| `0x09A0` | Buzzer enable (one on, zero off). |
+| `0x09A4`, `0x09A8` | Period and duty; counter intervals include +1. |
+| `0x1128-0x112B` | Shared BLG clock gate, bit 0. |
 
-Writes that transition control bits can pulse the host UI buzzer. Linux can
-ignore this until audio/input feedback support is desired.
+WinCE computes period as `1411200 / Hz - 1` and duty as
+`period * (100 - pulse_percent) / 100 - 1`. Stop the channel, enable its
+clock/config, program the counters and start it. Preserve backlight state.
+Backlight enable `0980` and period `0988` never generate audio. No post-boot
+BLG register snapshot is seeded.
 
 ## Serial Devices
 

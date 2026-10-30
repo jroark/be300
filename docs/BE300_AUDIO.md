@@ -2,11 +2,10 @@
 
 The BE-300 has two sound paths:
 
-- **Buzzer**: separate hardware path described in the service manual.
-  Its register behavior remains unverified. The former heuristic at BLG
-  `0x0A000980` interpreted recovered backlight words as audio and has been
-  removed; see `BE300_LCD.md`. The SDK resource range alone does not
-  establish the function of individual words.
+- **Buzzer**: separate BLG PWM channel at `0x0A0009A0/9A4/9A8`, recovered
+  from `bltinbuz.dll`. It shares config/clock with the backlight but uses
+  independent counters and enable. The former `0x0A000980` backlight-to-tone
+  heuristic remains removed. See [BE300_BUZZER.md](BE300_BUZZER.md).
 - **Wave output** ("Buzzer and headphones" in Volume & Sounds): `wavedev.dll`
   drives a Casio DMA block in the Kj companion window. This document covers
   that path. It is not the VRC4173 UM Ch. 10 AIU (Pass 33 saw zero accesses
