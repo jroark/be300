@@ -21,6 +21,7 @@
 #define BE300_NS_PER_MS 1000000ULL
 
 #define BE300_GIRQ0_COMMMODE       0x00000010u
+#define BE300_GIRQ0_COMMMODE_EN    0x0020u    /* GIRQ0-4 source word */
 #define BE300_COMMMODE_STATUS_OFF  0x8004u
 #define BE300_COMMMODE_SOCKET_OFF  0x8010u
 #define BE300_COMMMODE_MODEM_EVENT_OFF 0x1054u
@@ -257,8 +258,11 @@ void be300_pcconnect_irq_update(struct be300_vrc4173_latch *d)
     if (!d || !d->pcconnect_irq_connected)
         return;
 
+    /* GIRQ0-4: its word AA000020 and AA000008 gate the line like every
+     * companion source (be300_girq0_line_live). */
     want = be300_commmode_interrupt_enabled() &&
-        be300_pcconnect_commmode_unmasked(d);
+        be300_pcconnect_commmode_unmasked(d) &&
+        be300_girq0_line_live(d, BE300_GIRQ0_COMMMODE_EN);
     if (want && !d->pcconnect_irq_asserted) {
         INTERRUPT_ASSERT(d->pcconnect_irq);
         d->pcconnect_irq_asserted = true;
@@ -273,7 +277,8 @@ static void be300_pcconnect_irq_reedge(struct be300_vrc4173_latch *d)
     if (!d || !d->pcconnect_irq_connected || !d->pcconnect_irq_asserted)
         return;
     if (!be300_commmode_interrupt_enabled() ||
-        !be300_pcconnect_commmode_unmasked(d))
+        !be300_pcconnect_commmode_unmasked(d) ||
+        !be300_girq0_line_live(d, BE300_GIRQ0_COMMMODE_EN))
         return;
 
     INTERRUPT_DEASSERT(d->pcconnect_irq);

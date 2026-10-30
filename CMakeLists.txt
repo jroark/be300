@@ -184,6 +184,7 @@ set(BE300_SOURCES
     src/devices/boot_rom.c
     src/devices/display_ops.c
     src/devices/input.c
+    src/devices/gate_stall.c
     src/devices/nand_window.c
     src/devices/pcmcia_attr.c
     src/devices/serial_dock.c

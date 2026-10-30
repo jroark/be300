@@ -21,3 +21,5 @@ uint8_t nand_stream_oob_byte(nand_state_t *s,
 
 /* NANDWRITER restore-engine reset/seed helper invoked from nand_init(). */
 void    nand_restore_seed_regs(nand_state_t *s);
+
+bool nand_physical_bad(const nand_state_t *s, uint32_t block);

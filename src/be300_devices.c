@@ -126,6 +126,27 @@ static bool be300_girq0_enabled(struct be300_vrc4173_latch *d, uint32_t en_off)
     return (be300_latch_peek_u32(d, en_off) & BE300_GIRQ0_SOURCE_EN_BIT) != 0;
 }
 
+/*
+ * What reaches GIU line 0, as opposed to what AA000004 shows: a source drives
+ * the line only with bits 2 and 3 of its word set, and only while AA000008
+ * bit 0 (GIRQ0 output enable) is set. Both read 0 after a power-on and
+ * Windows CE sets them (idle dump: AA000008 = 1, source words 0x0C; its
+ * InterruptDone re-arms with 0x30, 0x04, 0x0C). On a real BE-300 a power-on
+ * boot got no companion interrupt until AA000008 was set, and touch stopped
+ * with its word at 0x08 and resumed at 0x0C (glaze-os
+ * docs/NAND_BOOT_AUDIT.md, "Power-on findings").
+ */
+#define BE300_GIRQ0_OUT_OFF      0x0008u
+#define BE300_GIRQ0_SOURCE_LIVE  0x0000000Cu
+#define BE300_GIRQ0_WORDS_END    0x0044u    /* AA000008..AA000040 */
+
+bool be300_girq0_line_live(struct be300_vrc4173_latch *d, uint32_t en_off)
+{
+    return d && (be300_latch_peek_u32(d, BE300_GIRQ0_OUT_OFF) & 1u) &&
+        (be300_latch_peek_u32(d, en_off) & BE300_GIRQ0_SOURCE_LIVE) ==
+            BE300_GIRQ0_SOURCE_LIVE;
+}
+
 void be300_cf_irq_update(struct be300_vrc4173_latch *d)
 {
     bool want;
@@ -141,7 +162,7 @@ void be300_cf_irq_update(struct be300_vrc4173_latch *d)
      */
     want = cf_giu_source_bits(
         &g_be300_machine->cf[BE300_PRIMARY_CF_SLOT]) != 0 &&
-        be300_girq0_enabled(d, BE300_GIRQ0_PCMCIA_EN);
+        be300_girq0_line_live(d, BE300_GIRQ0_PCMCIA_EN);
     if (want && !d->cf_irq_asserted) {
         INTERRUPT_ASSERT(d->cf_irq);
         d->cf_irq_asserted = true;
@@ -179,7 +200,8 @@ static void be300_usbf_irq_update(struct be300_vrc4173_latch *d)
     if (!d || !d->usb_irq_connected)
         return;
 
-    want = be300_usbf_girq0_source_bits(d) != 0;
+    want = be300_usbf_girq0_source_bits(d) != 0 &&
+        be300_girq0_line_live(d, BE300_USBF_SOURCE_EN);
     if (want && !d->usb_irq_asserted) {
         INTERRUPT_ASSERT(d->usb_irq);
         d->usb_irq_asserted = true;
@@ -211,7 +233,8 @@ static void be300_aiu_irq_update(struct be300_vrc4173_latch *d)
     if (!d || !d->aiu_irq_connected)
         return;
 
-    want = be300_aiu_girq0_source_bits(d) != 0;
+    want = be300_aiu_girq0_source_bits(d) != 0 &&
+        be300_girq0_line_live(d, AIU_SOURCE_EN_OFF);
     if (want && !d->aiu_irq_asserted) {
         INTERRUPT_ASSERT(d->aiu_irq);
         d->aiu_irq_asserted = true;
@@ -387,6 +410,15 @@ static void update_buzzer(void)
     ui_audio_set_buzzer(period,duty,enabled);
 }
 
+bool be300_cmu_gate_on(uint32_t gate_off)
+{
+    struct be300_vrc4173_latch *d = g_be300_vrc4173_latch;
+
+    if (!d)
+        return true;
+    return (cmu_read(NULL, d, gate_off, 1) & 1u) != 0;
+}
+
 static void cmu_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
     uint32_t off, unsigned len, uint64_t val, const unsigned char *data)
 {
@@ -400,6 +432,7 @@ static void cmu_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
             if (g_be300_machine && lcd_handles(at + i, 1))
                 lcd_write(&g_be300_machine->lcd, at + i, 1, data[i]);
         update_buzzer();
+        be300_gate_stall_update();
     }
 }
 
@@ -783,6 +816,23 @@ static const be300_vrc4173_region_t be300_vrc4173_regions[] = {
       scmcu_read, NULL },
 };
 
+/* Re-evaluate every companion line into GIU line 0 (be300_girq0_line_live). */
+static void be300_girq0_refresh_lines(struct be300_vrc4173_latch *d)
+{
+    be300_cf_irq_update(d);
+    be300_usbf_irq_update(d);
+    be300_aiu_irq_update(d);
+    be300_pcconnect_irq_update(d);
+    if (g_be300_machine) {
+        button_set_source_enabled(
+            (struct be300_input_device *)g_be300_machine->button_device,
+            be300_girq0_enabled(d, BE300_GIRQ0_KEYS_EN),
+            be300_girq0_line_live(d, BE300_GIRQ0_KEYS_EN));
+        be300_touch_irq_refresh(
+            (struct be300_input_device *)g_be300_machine->touch_device);
+    }
+}
+
 /* The plain latch: stored bytes, with the side effects of the low block. */
 static void be300_latch_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
     uint32_t off, unsigned len, uint64_t val, const unsigned char *data)
@@ -820,21 +870,13 @@ static void be300_latch_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
             BE300_MMIO_CLASS_LATCHED);
         memcpy(&d->bytes[off], data, len);
     }
-    if (off <= BE300_GIRQ0_PCMCIA_EN && off + len > BE300_GIRQ0_PCMCIA_EN)
-        be300_cf_irq_update(d);
-    if (g_be300_machine && off <= BE300_GIRQ0_KEYS_EN && off + len > BE300_GIRQ0_KEYS_EN)
-        button_set_source_enabled(
-            (struct be300_input_device *)g_be300_machine->button_device,
-            be300_girq0_enabled(d, BE300_GIRQ0_KEYS_EN));
-    if (off <= BE300_USBF_SOURCE_EN &&
-        off + len > BE300_USBF_SOURCE_EN)
-        be300_usbf_irq_update(d);
     if (g_be300_machine && aiu_handles_write(off, len)) {
         aiu_note_write(g_be300_machine, off, len, (uint32_t)val);
         be300_aiu_irq_update(d);
     }
-    if (off <= AIU_SOURCE_EN_OFF && off + len > AIU_SOURCE_EN_OFF)
-        be300_aiu_irq_update(d);
+    /* The output enable or any source word: every line may change. */
+    if (off < BE300_GIRQ0_WORDS_END && off + len > BE300_GIRQ0_OUT_OFF)
+        be300_girq0_refresh_lines(d);
     be300_pcconnect_note_comm_write(d, off, len, val, (uint32_t)cpu->pc);
     if (off <= 0x0A00u && off + len > 0x0A00u)
         be300_vrc4173_a00_blit_maybe(cpu, d);
@@ -949,8 +991,13 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
     latch->usbf.irq_changed = be300_usbf_irq_changed;
     latch->usbf.ctx = latch;
     usbf_init(&latch->usbf);
-    if (usbredir_dev_active())
+    if (usbredir_dev_active()) {
         usbredir_dev_bind(&latch->usbf);
+        /* USB wires exist independently of CE's CommMode dock-detect IST.
+         * A cold CF/Glaze boot programs the controller without reading that
+         * serial-dock path; descriptor readiness still gates enumeration. */
+        usbredir_dev_set_present(true);
+    }
 
     /*
      * Pre-populate latch with real hardware register values from
@@ -959,22 +1006,30 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
      * display, touch, keyboard, audio, power, etc.
      */
     {
-        /* VRC4173 Core (PA 0x0A000000, offset 0x0000, 64 words) */
-        /* Offset 0x000 = PIUCNTREG: 0x002 = PIUPWR (hw dump, hardware.txt:239) */
+        /*
+         * VRC4173 Core (PA 0x0A000000, offset 0x0000, 64 words), as a
+         * power-on leaves it: a real BE-300 booted from the ROM's CF path
+         * read all zero here at kernel entry but for 0x1C = 0x30 (glaze-os
+         * HWDUMP capture, docs/NAND_BOOT_AUDIT.md "Power-on findings").
+         * Windows CE's idle values (AA000008 = 1, source words 0x0C/0x3C,
+         * hw_dump_vrc4173.txt:25) are its own writes, so they are not
+         * seeded: the GIRQ0 output enable and source mode bits gate the
+         * interrupt lines (be300_girq0_line_live). 0x80-0xFF mirrors it.
+         */
         static const uint32_t core_regs[] = {
-            0x00000002, 0x00000000, 0x00000001, 0x00000000,
-            0x0000003C, 0x0000000C, 0x0000000C, 0x00000000,
-            0x0000000C, 0x00000000, 0x0000000C, 0x0000000C,
-            0x0000000C, 0x0000003C, 0x00000000, 0x00000000,
-            0x0000000C, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000030,
             0x00000000, 0x00000000, 0x00000000, 0x00000000,
             0x00000000, 0x00000000, 0x00000000, 0x00000000,
             0x00000000, 0x00000000, 0x00000000, 0x00000000,
-            0x00000000, 0x00000000, 0x00000001, 0x00000000,
-            0x0000000C, 0x0000000C, 0x0000000C, 0x00000000,
-            0x0000000C, 0x00000000, 0x0000000C, 0x0000000C,
-            0x0000000C, 0x0000003C, 0x00000000, 0x00000000,
-            0x0000000C, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000030,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
             0x00000000, 0x00000000, 0x00000000, 0x00000000,
             0x00000000, 0x00000000, 0x00000000, 0x00000000,
             0x00000000, 0x00000000, 0x00000000, 0x00000000,
@@ -1003,7 +1058,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
             { 0x03BC, 0x0000DD00 },
             { 0x03C0, 0x0000D007 },
             { 0x03C4, 0x00000001 },
-            { 0x03C8, 0x00000003 },
+            { 0x03C8, 0x00000000 },  /* PIU A/D enable: 0 at power-on, CE sets 3 */
             { 0x03CC, 0x00000000 },
             { 0x03D4, 0x00070000 },
             { 0x03F4, 0x00000007 },
@@ -1047,16 +1102,19 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         }
 
         /*
-         * Clock/power/wake block 0x1100-0x113F and the DMA block's
-         * 0x1CC0-0x1CCC words, as read on hardware
-         * (hw_dump_vrc4173.txt:49-52, :183). LCD-owned gate words
-         * start off instead of inheriting the post-boot dump (BE300_LCD.md).
+         * Clock/power/wake block 0x1100-0x113F: every gate off, as a
+         * power-on leaves it (a real BE-300's kernel-entry capture showed
+         * only 111C, which the ROM itself sets; glaze-os
+         * docs/NAND_BOOT_AUDIT.md "Power-on findings"). The ROM and the
+         * guest turn units on; hw_dump_vrc4173.txt:49-52 is Windows CE's
+         * steady state. The DMA block's 0x1CC0-0x1CCC words as read on
+         * hardware (:183).
          */
         static const struct { uint16_t off; uint32_t val; } cmu_regs[] = {
-            { 0x1100, 0 }, { 0x1104, 1 }, { 0x1108, 1 }, { 0x110C, 0 },
-            { 0x1110, 0 }, { 0x1114, 1 }, { 0x1118, 1 }, { 0x111C, 1 },
-            { 0x1120, 1 }, { 0x1124, 0 }, { 0x1128, 0 }, { 0x112C, 1 },
-            { 0x1130, 0 }, { 0x1134, 0 }, { 0x1138, 1 }, { 0x113C, 1 },
+            { 0x1100, 0 }, { 0x1104, 0 }, { 0x1108, 0 }, { 0x110C, 0 },
+            { 0x1110, 0 }, { 0x1114, 0 }, { 0x1118, 0 }, { 0x111C, 0 },
+            { 0x1120, 0 }, { 0x1124, 0 }, { 0x1128, 0 }, { 0x112C, 0 },
+            { 0x1130, 0 }, { 0x1134, 0 }, { 0x1138, 0 }, { 0x113C, 0 },
             { 0x1CC0, 0x00000001 }, { 0x1CC4, 0x00000201 },
             { 0x1CC8, 0x00001000 }, { 0x1CCC, 0x00000000 },
         };

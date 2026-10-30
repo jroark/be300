@@ -99,6 +99,8 @@
 #define NAND_PAGE_RAW     (NAND_PAGE_DATA + NAND_PAGE_OOB)
 #define NAND_BLOCK_PAGES  32u
 #define NAND_BLOCK_COUNT  1024u
+#define NAND_RAW_IMAGE_SIZE (NAND_BLOCK_COUNT * NAND_BLOCK_PAGES * NAND_PAGE_RAW)
+#define NAND_OOB_IMAGE_SIZE (NAND_BLOCK_COUNT * NAND_BLOCK_PAGES * NAND_PAGE_OOB)
 #define NAND_IMAGE_SIZE   (NAND_BLOCK_COUNT * NAND_BLOCK_PAGES * NAND_PAGE_DATA)
 
 /* NAND commands */
@@ -127,6 +129,7 @@ typedef struct {
     uint8_t       *image;       /* pointer to NAND image data (NULL = no image) */
     size_t         image_size;        /* emulated chip buffer size */
     size_t         image_valid_size;  /* bytes backed by the loaded data-only image */
+    uint8_t       *oob;         /* optional physical spare array; caller owns */
     bool           dirty;
     int8_t         block_data_state[NAND_BLOCK_COUNT]; /* synthetic OOB: 0 erased, 1 allocated */
 
@@ -171,6 +174,7 @@ typedef struct {
     uint16_t legacy_status7_event_reads;   /* sustained idx7 event-bit poll counter */
     bool     legacy_status7_ff_armed;      /* one-shot 0xFF escape has been emitted */
     uint8_t  xfer_buffer[16];              /* mode-4/ECC result buffer (0xA4A0-0xA4AC) */
+    uint16_t xfer_ecc_words[6];           /* MODE-1 input, reversed 10-bit fields */
     uint8_t  xfer_ecc_count;               /* six 10-bit ECC inputs via 0xA468 */
     uint8_t  xfer_phase;                   /* legacy A414 phase latch */
     uint8_t  xfer_pending_byte;            /* pending command/address data byte */

@@ -26,8 +26,9 @@ uint8_t nand_stream_oob_byte(nand_state_t *s,
     uint32_t block = page / NAND_BLOCK_PAGES;
     uint32_t page_in_block = page % NAND_BLOCK_PAGES;
 
-    if (oob_idx >= NAND_PAGE_OOB)
+    if (oob_idx >= NAND_PAGE_OOB || page >= NAND_BLOCK_COUNT * NAND_BLOCK_PAGES)
         return 0xFFu;
+    if (s->oob) return s->oob[page * NAND_PAGE_OOB + oob_idx];
 
     /*
      * The restore images are data-only dumps (no physical OOB bytes;
@@ -91,6 +92,76 @@ void nand_stream_read_dma(nand_state_t *s, uint8_t *dest, uint32_t len)
 }
 
 
+bool nand_physical_bad(const nand_state_t *s, uint32_t block)
+{
+    if (!s->oob || block >= NAND_BLOCK_COUNT) return false;
+    for (unsigned p = 0; p < 2; p++) {
+        const uint8_t *o = s->oob + (block*NAND_BLOCK_PAGES+p)*NAND_PAGE_OOB;
+        if (o[5] != 0xFF && !(o[0] == 0xAA && o[1] == 0x55 && o[2] == 0x0F)) return true;
+    }
+    return false;
+}
+
+/* Physical-page RS remainder for the ROM's MODE-1 result path. Synthetic
+ * data-only images retain their legacy no-parity/clean behavior. */
+static uint8_t nand_bitrev(uint8_t b)
+{
+    uint8_t r=0;
+    for (unsigned i=0;i<8;i++) r=(uint8_t)((r<<1)|((b>>i)&1));
+    return r;
+}
+static uint16_t nand_xtime(uint16_t a)
+{
+    a=(uint16_t)(a<<1);
+    return (a&0x400u) ? (uint16_t)(a^0x409u) : a;
+}
+static uint16_t nand_gmul(uint16_t a,uint16_t b)
+{
+    uint16_t r=0;
+    for(unsigned i=0;i<10;i++,b>>=1,a=nand_xtime(a)) if(b&1) r^=a;
+    return r;
+}
+static void nand_physical_ecc(nand_state_t *s)
+{
+    memset(s->xfer_buffer,0,sizeof(s->xfer_buffer));
+    unsigned status=(NAND_REG_XFER_STATUS2-NAND_XFER_BASE)>>2;
+    s->xfer_regs[status]=0;
+    if (!s->oob || s->stream_page >= NAND_BLOCK_COUNT*NAND_BLOCK_PAGES) return;
+    const uint8_t *o=s->oob+s->stream_page*NAND_PAGE_OOB;
+    uint16_t r[6], syndrome[6];
+    /* ROM 9FC01FE0 feeds reversed 10-bit fields. Use the values supplied
+     * by the guest, so incorrect ECC inputs cannot silently appear clean. */
+    for(unsigned i=0;i<6;i++) {
+        uint16_t v=s->xfer_ecc_words[i];r[i]=0;
+        for(unsigned j=0;j<10;j++)r[i]=(uint16_t)((r[i]<<1)|((v>>j)&1));
+    }
+    uint16_t g[7]={1}, rem[6]={0}, root=1;
+    for(unsigned k=0;k<6;k++,root=nand_xtime(root)) {
+        for(int i=(int)k+1;i>0;i--) g[i]=g[i-1]^nand_gmul(g[i],root);
+        g[0]=nand_gmul(g[0],root);
+    }
+    for(unsigned i=0;i<520;i++) {
+        uint8_t byte=i<512 ? s->image[s->stream_page*512+i] : o[i-512];
+        uint16_t feedback=((uint16_t)nand_bitrev(byte)<<2)^rem[5];
+        for(int j=5;j>0;j--) rem[j]=rem[j-1]^nand_gmul(feedback,g[j]);
+        rem[0]=nand_gmul(feedback,g[0]);
+    }
+    /* The controller returns polynomial coefficients, NOT S0..S5. ROM
+     * 9FC01C30 evaluates this degree-five remainder at x^0..x^5 before
+     * its error locator runs. Correct stored parity makes it zero. */
+    for(unsigned i=0;i<6;i++) {
+        syndrome[i]=r[i]^rem[5-i];
+        if(syndrome[i]) s->xfer_regs[status]=1;
+    }
+    /* Same 60-bit packing as physical parity, presented in four low
+     * halfwords at A4A0/A4A4/A4A8/A4AC. ROM 9FC01FA0 copies those pairs. */
+    uint16_t *v=syndrome;
+    uint8_t packed[8]={ (uint8_t)(v[5]>>2), (uint8_t)((v[5]<<6)|(v[4]>>4)),
+        (uint8_t)((v[4]<<4)|(v[3]>>6)), (uint8_t)((v[3]<<2)|(v[2]>>8)),
+        (uint8_t)v[2], (uint8_t)(v[1]>>2), (uint8_t)((v[1]<<6)|(v[0]>>4)), (uint8_t)(v[0]<<4) };
+    for (unsigned i=0;i<8;i++) s->xfer_buffer[(i/2)*4+i%2]=nand_bitrev(packed[i]);
+}
+
 static void nand_commit_program(nand_state_t *s)
 {
     uint32_t page_off;
@@ -101,7 +172,17 @@ static void nand_commit_program(nand_state_t *s)
     if (!s->image || s->page_addr >= (NAND_BLOCK_COUNT * NAND_BLOCK_PAGES))
         return;
 
+    if (nand_physical_bad(s, s->page_addr / NAND_BLOCK_PAGES)) {
+        s->status_value = 0xC1u; return;
+    }
     page_off = s->page_addr * NAND_PAGE_DATA;
+    if (s->oob) {
+        for (uint32_t j = 0; j < s->program_length && s->program_column+j < NAND_PAGE_RAW; j++) {
+            uint32_t col = s->program_column+j;
+            if (col >= NAND_PAGE_DATA) s->oob[s->page_addr*NAND_PAGE_OOB+col-NAND_PAGE_DATA] &= s->program_buffer[j];
+        }
+        if (s->program_length) s->dirty = true;
+    }
     limit = s->program_length;
     if (s->program_column + limit > NAND_PAGE_DATA)
         limit = (s->program_column < NAND_PAGE_DATA)
@@ -131,7 +212,9 @@ static void nand_commit_erase(nand_state_t *s)
     if (block >= NAND_BLOCK_COUNT)
         return;
 
+    if (nand_physical_bad(s, block)) { s->status_value = 0xC1u; return; }
     start_page = block * NAND_BLOCK_PAGES;
+    if (s->oob) memset(s->oob + start_page*NAND_PAGE_OOB, 0xFF, NAND_BLOCK_PAGES*NAND_PAGE_OOB);
     start_off = start_page * NAND_PAGE_DATA;
     memset(s->image + start_off, 0xFF, NAND_BLOCK_PAGES * NAND_PAGE_DATA);
     s->dirty = true;
@@ -366,20 +449,20 @@ static void nand_xfer_commit_phase(nand_state_t *s)
             nand_xfer_clear_data(s);
             break;
         case NAND_CMD_PAGEPROG:
+            s->status_value = 0xC0u;
             if (s->state == NAND_STATE_PROGRAM_DATA)
                 nand_commit_program(s);
             s->state = NAND_STATE_IDLE;
-            s->status_value = 0xC0u;
             s->ready = true;
             nand_xfer_prepare_status(s);
             break;
         case NAND_CMD_ERASE2:
+            s->status_value = 0xC0u;
             if (s->state == NAND_STATE_ERASE_SETUP) {
                 s->page_addr = nand_xfer_block_addr(s) * NAND_BLOCK_PAGES;
                 nand_commit_erase(s);
             }
             s->state = NAND_STATE_IDLE;
-            s->status_value = 0xC0u;
             s->ready = true;
             nand_xfer_prepare_status(s);
             break;
@@ -460,18 +543,18 @@ static void nand_legacy_command(nand_state_t *s, uint8_t cmd)
         s->state = NAND_STATE_ERASE_SETUP;
         break;
     case NAND_CMD_PAGEPROG:
+        s->status_value = 0xC0u;
         if (s->state == NAND_STATE_PROGRAM_DATA)
             nand_commit_program(s);
         s->state = NAND_STATE_IDLE;
         s->ready = true;
-        s->status_value = 0xC0u;
         break;
     case NAND_CMD_ERASE2:
+        s->status_value = 0xC0u;
         if (s->state == NAND_STATE_ERASE_SETUP)
             nand_commit_erase(s);
         s->state = NAND_STATE_IDLE;
         s->ready = true;
-        s->status_value = 0xC0u;
         break;
     case NAND_CMD_RESET:
         s->state = NAND_STATE_IDLE;
@@ -767,11 +850,12 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
              * emulated image those syndromes are zero.
              */
             if (s->xfer_regs[(NAND_REG_XFER_MODE - NAND_XFER_BASE) >> 2] == 0x01u) {
-                if (s->xfer_ecc_count < 6)
+                if (s->xfer_ecc_count < 6) {
+                    s->xfer_ecc_words[s->xfer_ecc_count] = (uint16_t)(value & 0x3FFu);
                     s->xfer_ecc_count++;
+                }
                 if (s->xfer_ecc_count >= 6) {
-                    memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
-                    s->xfer_regs[(NAND_REG_XFER_STATUS2 - NAND_XFER_BASE) >> 2] = 0;
+                    nand_physical_ecc(s);
                     s->ready = true;
                 }
             }
@@ -948,7 +1032,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 idx = s->stream_base + s->stream_cursor;
                 if (idx < sizeof(s->program_buffer))
                     s->program_buffer[idx] = (uint8_t)((value >> (8u * i)) & 0xFFu);
-                if (idx < NAND_PAGE_DATA) {
+                if (idx < NAND_PAGE_RAW) {
                     uint32_t used = idx + 1u;
                     if (used > s->program_length)
                         s->program_length = used;

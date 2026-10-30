@@ -108,7 +108,7 @@ static bool wait_pen_enabled(const piu_state_t *p)
     uint16_t ctl = p->regs[0];
 
     return (ctl & PIUCNT_PIUSEQEN) && (ctl & PIUCNT_PADATSTART) &&
-        (ctl & PIUCNT_PIUMODE_MASK) == 0;
+        (ctl & PIUCNT_PIUMODE_MASK) == 0 && p->adc_on;
 }
 
 static void signal_pen_down(piu_state_t *p, uint64_t now_ns)
@@ -223,7 +223,7 @@ static void refresh_control_state(piu_state_t *p, uint64_t now_ns)
             signal_pen_down(p, now_ns);
     } else if ((ctl & (PIUCNT_PIUSEQEN | PIUCNT_PADSCANSTART)) ==
         (PIUCNT_PIUSEQEN | PIUCNT_PADSCANSTART) &&
-        (ctl & PIUCNT_PIUMODE_MASK) == 0 &&
+        (ctl & PIUCNT_PIUMODE_MASK) == 0 && p->adc_on &&
         p->padstate == PIU_PADSTATE_STANDBY) {
         p->padstate = PIU_PADSTATE_PEN_DATA;
         if (p->touch_down)

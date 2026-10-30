@@ -81,6 +81,8 @@ typedef struct {
     /* With --ne2000 or --xi825: the network card arrives this many seconds
      * after start instead, once the --cf card has been ejected (0: off). */
     uint32_t    net_insert_after_s;
+    /* --touch-script: timed pen events at the PIU (machine_be300.c). */
+    const char *touch_script_path;
     uint8_t     net_mac[6];
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* throttle target in million guest instructions/sec; 0 = unthrottled */
@@ -148,6 +150,7 @@ typedef struct be300_state {
 
     /* NAND image data (loaded from file) */
     uint8_t     *nand_data;
+    uint8_t     *nand_oob;       /* raw 512+16 images only */
     size_t       nand_size;       /* emulated chip buffer size */
     size_t       nand_file_size;  /* bytes loaded from the data-only image */
 
