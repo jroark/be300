@@ -1,5 +1,5 @@
 /* Digital LCD behavior recovered from WinCE SPL/OAL and ddi.dll.
- * No guest binaries or optical/timing assumptions are embedded here. */
+ * No guest binaries or timing assumptions; optics only via the approximate curve. */
 #include "hw/lcd.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,6 +68,7 @@ int main(void)
     CHECK(s.contrast_bits == 0 && s.contrast_command == 0xC1);
     serial(&s, 0xAB, 8);
     CHECK(s.contrast_command == 0xAB);
+    serial(&s, 0xC1, 8); /* nominal contrast presents pixels unchanged */
 
     /* Two rows with padding sentinels, checking both frontend formats. */
     const uint16_t src[] = {0xF800, 0x07E0, 0x001F, 0xDEAD,
@@ -97,6 +98,31 @@ int main(void)
     lcd_write(&s, 0x98C, 4, 0); /* zero duty = maximum, not off */
     lcd_copy_rgb565(&s, src, rgb, 3, 2, 4);
     CHECK(rgb[0] == 0xF800 && rgb[3] == 0xFFFF);
+    /* Approximate brightness: stock duty table dims in order, black stays black. */
+    const uint32_t duties[] = {0x3D5, 0x7AC, 0x9F9, 0xD0B};
+    unsigned last = 256;
+    lcd_write(&s, 0x988, 4, 0xF70);
+    for (unsigned i = 0; i < 4; i++) {
+        lcd_write(&s, 0x98C, 4, duties[i]);
+        lcd_copy_rgba8888(&s, src, rgba, 3, 2, 4);
+        CHECK(rgba[12] < last && rgba[12] > 0 && rgba[16] == 0 && rgba[15] == 255);
+        last = rgba[12];
+        lcd_copy_rgb565(&s, src, rgb, 3, 2, 4);
+        CHECK(rgb[3] < 0xFFFF && rgb[4] == 0);
+    }
+    CHECK(!memcmp(src, original, sizeof(src)));
+    /* Approximate contrast: a higher level (lower command) spreads grey from mid. */
+    lcd_write(&s, 0x98C, 4, 0);
+    const uint16_t grey[] = {0x4208, 0xC618}; /* below and above mid-grey */
+    uint8_t lo[8], hi[8];
+    serial(&s, 0xAB, 8);
+    lcd_copy_rgba8888(&s, grey, hi, 2, 1, 2);
+    serial(&s, 0xD0, 8);
+    lcd_copy_rgba8888(&s, grey, lo, 2, 1, 2);
+    CHECK(hi[0] < 66 && hi[4] > 198 && lo[0] > 66 && lo[4] < 198);
+    serial(&s, 0xC1, 8);
+    lcd_copy_rgba8888(&s, grey, lo, 2, 1, 2);
+    CHECK(lo[0] == 66 && lo[4] == 198);
     lcd_init(&s);
     CHECK(!lcd_scanout_enabled(&s) && !s.contrast_valid);
     uint32_t period,duty;
