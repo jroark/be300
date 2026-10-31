@@ -272,6 +272,12 @@ static int be300_nand_handle(struct cpu *cpu, struct memory *mem,
         nand_write(d->nand, offset, (unsigned)len, val, pc);
     } else {
         uint64_t val = nand_read(d->nand, offset, (unsigned)len, pc);
+        if (d->nand->stream_stall) {
+            d->nand->stream_stall = false;
+            be300_bus_stall(cpu, "NAND stream", 0x0A000000ULL + offset,
+                MEM_READ, "past a 520-byte MODE-5 burst (the last 8 spare "
+                "bytes need MODE 4)");
+        }
         /*
          * PA 0x0A00A008 is also sampled by pcmcia.dll's socket-0
          * CardGetStatus callback at UM 0x0198C3C8.  The inserted-card

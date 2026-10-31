@@ -150,6 +150,40 @@ static void test_physical(void) {
     CHECK((n.status_value&1)==1 && oob[96*16+5]==0 && data[96*512]==0x27);
 }
 
+/* Reads one page through the transfer engine, the last 8 spare bytes in
+ * MODE 4 when split; returns how many words were read before a stall. */
+static unsigned test_read_page(nand_state_t *n, unsigned page, bool split)
+{
+    test_command(n,0);test_address(n,page,true);
+    nand_write(n,NAND_REG_XFER_KICK,4,1,0);nand_write(n,NAND_REG_XFER_MODE,4,5,0);
+    for(unsigned i=0;i<132;i++) {
+        if(split&&i==130)nand_write(n,NAND_REG_XFER_MODE,4,4,0);
+        uint32_t w=(uint32_t)nand_read(n,NAND_REG_STREAM_DATA,4,0);
+        if(n->stream_stall){n->stream_stall=false;nand_write(n,NAND_REG_XFER_MODE,4,0,0);return i;}
+        if(i==0)CHECK(w==(uint32_t)(page*0x40u)*0x01010101u+0x03020100u);
+    }
+    nand_write(n,NAND_REG_XFER_MODE,4,0,0);
+    return 132;
+}
+
+static void test_rom_burst_520(void)
+{
+    nand_state_t n;
+
+    nand_init(&n, image, sizeof(image), sizeof(image));
+    /* Power-on, untouched by the ROM (a CF recovery boot): 528 in MODE 5. */
+    CHECK(test_read_page(&n,1,false)==132);
+    /* After the ROM's MODE-1 ECC path a MODE-5 burst ends at 520 bytes:
+     * the 131st word hangs the bus, MODE 4 delivers the last 8. */
+    nand_write(&n,NAND_REG_XFER_MODE,4,1,0);
+    nand_write(&n,NAND_REG_XFER_MODE,4,0,0);
+    CHECK(test_read_page(&n,1,false)==130);
+    CHECK(test_read_page(&n,2,true)==132);
+    /* Windows CE's DMA state write (and Glaze's kernel's) ends it. */
+    nand_dma_state_written(&n);
+    CHECK(test_read_page(&n,3,false)==132);
+}
+
 int main(void)
 {
     /* LCD/backlight accesses must never enter the legacy recovery engine. */
@@ -166,6 +200,7 @@ int main(void)
     test_rom_stream_and_oob();
     test_empty_ata_taskfile();
     test_clean_ecc_and_inactive_buffer();
+    test_rom_burst_520();
     if (failures) {
         fprintf(stderr, "test_nand_boot: %d failure(s)\n", failures);
         return 1;

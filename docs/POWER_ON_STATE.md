@@ -20,6 +20,7 @@ state.
 | A source's line needs bits 2 **and** 3 of its word | Touch died with `0x08` and worked with `0x0C`; CE re-arms with `0x30, 0x04, 0x0C` | `be300_girq0_line_live` |
 | Source words, `0x0000` and `0x0008` read 0 at power-on (`0x1C` reads `0x30`) | Entry snapshot | `core_regs[]` |
 | PIU samples only if `0x3C8` = 3 when `PIUCNT` is written; 0 at power-on | Setting it on a running PIU did nothing until a restart | `hw/piu.h` `adc_on` |
+| After the ROM's NAND boot, a MODE-5 stream burst ends after 520 bytes; reading a 131st word stalls, and MODE 4 gives the last 8 spare bytes | Five Glaze SPL builds hung at their first page read on a NAND boot; splitting the read as the ROM and Casio's SPL do fixed it (2026-10-31). The same 528-byte reads worked after a CF recovery boot and after CE | `hw/nand.h` `burst_520`, `src/devices/nand_window.c` |
 
 A stall prints `[BUS] stall: ...` once. The CPU then stops while the window,
 screenshot and shutdown keep working. Up to one dyntrans block (~120
@@ -29,7 +30,13 @@ Checked: stock CE boots to its shell and opens Contacts on a scripted tap.
 Glaze's NAND image and recovery payload boot and unlock by touch. The read-back
 card images of the two Glaze payloads that hung on hardware stall at the same
 access in the emulator: the stub's framebuffer write, and the kernel's first
-SIU status read.
+SIU status read. The last Glaze NAND image that hung on hardware stalls at its
+SPL's first page read, and the one that boots on hardware reaches SpringBoard.
+The ROM's CF recovery path never enables the 520-byte burst.
+
+`--power-held` holds Power through reset, then releases it after 2 emulated
+seconds. With a `--cf` card the ROM then boots the card even over a bootable
+`--nand`, as on hardware (turning the device on with Power counts).
 
 `--touch-script FILE` feeds timed pen events (`<ms> down|tap <x> <y>`,
 `<ms> up`, emulated ms, LCD pixels) into the same entry point the window's mouse

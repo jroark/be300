@@ -532,6 +532,26 @@ static void cdma_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
     memcpy(&d->bytes[off], data, len);
 }
 
+/* 0x1CF4: the DMA state word nanddisk.dll and Glaze's kernel write when
+ * they take the NAND (glaze-os kernel/hw.h). It ends the ROM's 520-byte
+ * stream bursts in the NAND model (nand.h burst_520). */
+static bool cdma_state_claims(struct be300_vrc4173_latch *d, uint32_t off,
+    unsigned len)
+{
+    (void)d;
+    (void)len;
+    return g_be300_machine && off == 0x1CF4u;
+}
+
+static void cdma_state_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
+    uint32_t off, unsigned len, uint64_t val, const unsigned char *data)
+{
+    (void)cpu;
+    (void)val;
+    memcpy(&d->bytes[off], data, len);
+    nand_dma_state_written(&g_be300_machine->nand);
+}
+
 static bool nand_restore_claims(struct be300_vrc4173_latch *d, uint32_t off,
     unsigned len)
 {
@@ -800,6 +820,8 @@ static const be300_vrc4173_region_t be300_vrc4173_regions[] = {
       cdma_status_claims, cdma_status_read, NULL },
     { "vrc4173-dma", BE300_MMIO_CLASS_KNOWN, cdma_claims,
       cdma_read, cdma_write },
+    { "vrc4173-dma-state", BE300_MMIO_CLASS_KNOWN, cdma_state_claims,
+      cdma_read, cdma_state_write },
     { "vrc4173-nand-restore", BE300_MMIO_CLASS_KNOWN, nand_restore_claims,
       nand_restore_region_read, nand_restore_region_write },
     { "vrc4173-usbf", BE300_MMIO_CLASS_KNOWN, usbf_claims,

@@ -785,10 +785,21 @@ Known `MODE` values:
 | ---: | --- |
 | `0x00` | Reset/idle. |
 | `0x01` | Prepare for ECC/buffer result read. |
-| `0x04` | Fill 16-byte result buffer from current stream position. |
-| `0x05` | 520-byte stream burst through `0xB000`. |
+| `0x04` | Fill 16-byte result buffer from current stream position; the stream continues to the end of the page (the last 8 spare bytes after a 520-byte burst). |
+| `0x05` | Stream burst through `0xB000`: 520 bytes after the ROM's NAND boot, 528 otherwise (below). |
 | `0x06` | Final 8-byte OOB/ECC write window through `0xB000`. |
 | `0x07` | 520-byte program burst, 512 data plus first 8 OOB bytes. |
+
+**Read all 528 bytes as the ROM does.** After the ROM's NAND boot, a MODE-5
+burst ends after 520 bytes. The ROM (`9FC01A98-1AAE`) and Casio's SPL
+(`80F0ADFC-AE28`) read 130 words, switch to MODE 4, then read the last two.
+On a real BE-300, a Glaze SPL that read all 132 words in MODE 5 hung at the
+131st for good, and the emulator stalls there too (`[BUS] stall: read of NAND
+stream`). After a CF recovery boot, where the ROM never touched NAND, and after
+Windows CE, all 528 bytes came through in MODE 5 with valid ECC parity. The
+model therefore sets the 520-byte limit on the ROM's MODE-1 write and clears it
+on a write to the DMA state word `0x0A001CF4`. Which hardware state really does
+either is unknown, so a driver should always split.
 
 ECC behavior: the emulator assumes bit-perfect NAND data. Hardware ECC
 syndrome outputs are zero after six stored ECC words are supplied. A Linux

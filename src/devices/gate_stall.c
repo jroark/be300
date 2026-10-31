@@ -64,17 +64,26 @@ bool be300_bus_stalled(void)
     return stalled;
 }
 
-static void stall(struct cpu *cpu, const struct gated_device *g,
-    uint64_t addr, int writeflag, const char *gates)
+void be300_bus_stall(struct cpu *cpu, const char *unit, uint64_t pa,
+    int writeflag, const char *why)
 {
     if (!stalled)
         fprintf(stderr, "[BUS] stall: %s %s at PA 0x%08" PRIx64 " (pc 0x%08"
-            PRIx32 ") with clock gate %s off; a real BE-300 hangs here\n",
-            writeflag == MEM_WRITE ? "write to" : "read of", g->unit,
-            g->base + addr, (uint32_t)cpu->pc, gates);
+            PRIx32 ") %s; a real BE-300 hangs here\n",
+            writeflag == MEM_WRITE ? "write to" : "read of", unit,
+            pa, (uint32_t)cpu->pc, why);
     stalled = true;
     cpu->running = false;
     cpu->n_translated_instrs += N_DYNTRANS_IDLE_BREAK;  /* end this batch */
+}
+
+static void stall(struct cpu *cpu, const struct gated_device *g,
+    uint64_t addr, int writeflag, const char *gates)
+{
+    char why[64];
+
+    snprintf(why, sizeof(why), "with clock gate %s off", gates);
+    be300_bus_stall(cpu, g->unit, g->base + addr, writeflag, why);
 }
 
 static int gated_fb_access(struct cpu *cpu, struct memory *mem,
