@@ -17,6 +17,8 @@
 #include "hw/cf.h"
 #include "hw/aiu.h"
 #include "hw/lcd.h"
+#include "hw/battery.h"
+#include "hw/eeprom.h"
 
 /* Forward declarations for GXemul types */
 struct cpu;
@@ -86,6 +88,15 @@ typedef struct {
     bool        power_held;
     /* --touch-script: timed pen events at the PIU (machine_be300.c). */
     const char *touch_script_path;
+    /* --battery, --battery-state, --battery-drain (hw/battery.h). Stored as
+     * the percentage used, so a zeroed config (web, Android, launcher) is a
+     * full battery with the adapter in. */
+    uint32_t    battery_used_pct;
+    battery_mode_t battery_mode;
+    uint32_t    battery_drain;   /* percent per emulated minute, 0: steady */
+    /* --eeprom-cal: battery calibration bytes (hw/eeprom.h), else erased. */
+    bool        eeprom_cal_set;
+    uint8_t     eeprom_cal[2];
     uint8_t     net_mac[6];
     uint32_t    sdram_size;      /* bytes, default 16*1024*1024 */
     uint32_t    target_mhz;      /* throttle target in million guest instructions/sec; 0 = unthrottled */
@@ -150,6 +161,11 @@ typedef struct be300_state {
 
     /* Panel/backlight digital state, separate from drawing engine/VRAM. */
     lcd_state_t  lcd;
+
+    /* Battery, adapter and charger (GIUPIODL bits, PIU A/D port), and the
+     * serial EEPROM holding their calibration. */
+    battery_state_t battery;
+    eeprom_state_t eeprom;
 
     /* NAND image data (loaded from file) */
     uint8_t     *nand_data;

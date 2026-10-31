@@ -10,6 +10,7 @@
 #define PIUCNT_PADRST       0x0001u
 #define PIUCNT_PIUSEQEN     0x0004u
 #define PIUCNT_PIUMODE_MASK 0x0018u
+#define PIUCNT_PIUMODE_ADPORT 0x0008u   /* PIUMODE 01: A/D port scan */
 #define PIUCNT_PADSCANTYPE  0x0020u
 #define PIUCNT_PADSCANSTART 0x0040u
 #define PIUCNT_PADATSTART   0x0100u
@@ -274,6 +275,13 @@ void piu_write(piu_state_t *p, uint32_t offset, uint16_t value,
         }
         p->regs[0] = value & 0x03FEu;
         refresh_control_state(p, now_ns);
+        if ((value & PIUCNT_PIUSEQEN) &&
+            (value & PIUCNT_PIUMODE_MASK) == PIUCNT_PIUMODE_ADPORT &&
+            p->adc_on) {
+            /* One conversion, finished before software can poll. */
+            p->adport = p->aux_adc & 0x0FFFu;
+            p->regs[1] |= PIU_PENDING_ADPORT;
+        }
         return;
     }
 
@@ -326,6 +334,8 @@ uint16_t piu_read(piu_state_t *p, uint32_t offset, uint64_t now_ns)
         return p->regs[1];
     if (offset <= 0x18 && (offset & 3u) == 0)
         return p->regs[offset / 4];
+    if (offset == PIU_ADPORT_OFF)
+        return p->adport;
     if (!((offset >= 0x20 && offset <= 0x2C) ||
         (offset >= 0x50 && offset <= 0x5C)))
         return 0;

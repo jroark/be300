@@ -1,7 +1,8 @@
 /*
  *  src/devices/input.c — touchpanel and button input devices.
  *
- *  Touchpanel: VRC4173 PA 0x0A000300, size 0x60.
+ *  Touchpanel: VRC4173 PA 0x0A000300, size 0x60; its A/D port result at
+ *  0x0A000390 is read through the companion latch (be300_touch_adport).
  *  Buttons:    VRC4173 PA 0x0A00A040, size 0x10.
  *
  *  Both share the be300_input_device struct and route through GIRQ0:
@@ -27,6 +28,7 @@
 #include "be300.h"
 #include "be300_probe.h"
 #include "devices.h"
+#include "hw/battery.h"
 #include "hw/piu.h"
 
 #include "devices_internal.h"
@@ -198,6 +200,8 @@ static uint64_t piu_now_ns(struct be300_input_device *d)
  *                   OAL masks delivered bits in the high byte; touch.dll
  *                   clears the low-byte pending bits with W1C writes.
  *  +0x20-0x2C, +0x50-0x5C: ADC coordinate buffers (y+, y-, x-, x+)
+ *  +0x90 (outside this window): A/D port result, the battery voltage
+ *        (hw/piu.h, hw/battery.h), through be300_touch_adport()
  */
 static int be300_touch_handle(struct cpu *cpu, struct memory *mem,
     uint64_t relative_addr, unsigned char *data, size_t len, int writeflag,
@@ -213,6 +217,8 @@ static int be300_touch_handle(struct cpu *cpu, struct memory *mem,
         (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
         BE300_MMIO_CLASS_KNOWN);
 
+    battery_advance(&d->m->battery, piu_now_ns(d));
+    d->piu.aux_adc = battery_adc(&d->m->battery);
     if (writeflag == MEM_WRITE) {
         val = memory_readmax64(cpu, data, len);
         /* AA0003C8 bits 0-1 are sampled when the sequencer is (re)started,
@@ -229,6 +235,13 @@ static int be300_touch_handle(struct cpu *cpu, struct memory *mem,
     piu_refresh_irq(d);
     memory_writemax64(cpu, data, len, val);
     return 1;
+}
+
+/* Companion 0x0390, the PIU's A/D port result, for the latch's region. */
+uint16_t be300_touch_adport(void *touch_device)
+{
+    struct be300_input_device *d = (struct be300_input_device *)touch_device;
+    return d ? piu_read(&d->piu, PIU_ADPORT_OFF, piu_now_ns(d)) : 0;
 }
 
 /* --log-mmio logs after the access, so a read shows the value returned. */

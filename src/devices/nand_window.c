@@ -267,6 +267,27 @@ static int be300_nand_handle(struct cpu *cpu, struct memory *mem,
         return 1;
     }
 
+    /*
+     * Serial EEPROM bus (hw/eeprom.h): eeprom.dll writes SCL at 0xA19C and
+     * SDA at 0xA1A0 and samples the line at 0xA1A4. The outputs still
+     * latch below, reading back as the CE dump shows them
+     * (hw_dump_vrc4173.txt 0x0A00A190).
+     */
+    if (g_be300_machine && offset == EEPROM_SDA_IN_OFF &&
+        writeflag != MEM_WRITE) {
+        memory_writemax64(cpu, data, len,
+            eeprom_sda(&g_be300_machine->eeprom) ? 1u : 0u);
+        return 1;
+    }
+    if (g_be300_machine && writeflag == MEM_WRITE &&
+        (offset == EEPROM_SCL_OFF || offset == EEPROM_SDA_OUT_OFF)) {
+        bool level = (memory_readmax64(cpu, data, len) & 1u) != 0;
+        if (offset == EEPROM_SCL_OFF)
+            eeprom_set_scl(&g_be300_machine->eeprom, level);
+        else
+            eeprom_set_sda(&g_be300_machine->eeprom, level);
+    }
+
     if (writeflag == MEM_WRITE) {
         uint64_t val = memory_readmax64(cpu, data, len);
         nand_write(d->nand, offset, (unsigned)len, val, pc);

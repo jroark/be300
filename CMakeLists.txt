@@ -208,6 +208,8 @@ set(BE300_SOURCES
     src/hw/cmu.c
     src/hw/pmu.c
     src/hw/piu.c
+    src/hw/battery.c
+    src/hw/eeprom.c
     src/hw/siu.c
     src/hw/usbf.c
     src/hw/rtc.c
@@ -503,6 +505,14 @@ if(BUILD_TESTING AND BUILD_CLI)
         src/hw/piu.c)
     target_include_directories(test_piu PRIVATE src)
     add_test(NAME piu COMMAND test_piu)
+
+    add_executable(test_battery
+        tests/test_battery.c
+        src/hw/battery.c
+        src/hw/eeprom.c
+        src/hw/piu.c)
+    target_include_directories(test_battery PRIVATE src)
+    add_test(NAME battery COMMAND test_battery)
 
     add_executable(test_nand_boot
         tests/test_nand_boot.c
