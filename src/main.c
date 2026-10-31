@@ -118,6 +118,8 @@ static void usage(const char *prog)
         "  --audio               Play headphone PCM and piezo PWM through SDL;\n"
         "                        guest audio/interrupt models always run,\n"
         "                        this only enables host output (BE300_AUDIO=0 mutes)\n"
+        "  --power-held          Hold Power at reset (the ROM's CF recovery boot with\n"
+        "                        a bootable --nand), released after 2 emulated s\n"
         "  --touch-script <f>    Timed pen events at the touch panel, for headless\n"
         "                        tests: lines \"<ms> down <x> <y>\", \"<ms> up\",\n"
         "                        \"<ms> tap <x> <y>\"; emulated ms, LCD pixels\n"
@@ -359,6 +361,8 @@ int main(int argc, char *argv[])
             cfg.cf_eject_after_s = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--cf-insert-after") == 0 && i + 1 < argc) {
             cfg.cf_insert_after_s = (uint32_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--power-held") == 0) {
+            cfg.power_held = true;
         } else if (strcmp(argv[i], "--touch-script") == 0 && i + 1 < argc) {
             cfg.touch_script_path = argv[++i];
         } else if (strcmp(argv[i], "--net-insert-after") == 0 && i + 1 < argc) {

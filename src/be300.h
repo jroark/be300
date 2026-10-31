@@ -81,6 +81,9 @@ typedef struct {
     /* With --ne2000 or --xi825: the network card arrives this many seconds
      * after start instead, once the --cf card has been ejected (0: off). */
     uint32_t    net_insert_after_s;
+    /* --power-held: Power held at reset, as for the ROM's CF recovery boot,
+     * with any --nand image; released after two emulated seconds. */
+    bool        power_held;
     /* --touch-script: timed pen events at the PIU (machine_be300.c). */
     const char *touch_script_path;
     uint8_t     net_mac[6];

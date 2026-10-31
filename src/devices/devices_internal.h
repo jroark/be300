@@ -71,6 +71,9 @@ void     be300_touch_irq_refresh(struct be300_input_device *d);
 void     be300_gate_stall_install(struct machine *gxm);
 void     be300_gate_stall_update(void);     /* after a gate write */
 bool     be300_bus_stalled(void);
+/* Log an access real hardware never completes and stop the CPU for good. */
+void     be300_bus_stall(struct cpu *cpu, const char *unit, uint64_t pa,
+                         int writeflag, const char *why);
 /* Whether the clock gate at companion offset 0x1100-0x113C reads on. */
 bool     be300_cmu_gate_on(uint32_t gate_off);
 /* A GIRQ0 source word at en_off reaches GIU line 0 (bits 2-3 and AA000008). */

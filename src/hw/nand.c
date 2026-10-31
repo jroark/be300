@@ -294,6 +294,11 @@ void nand_init(nand_state_t *s, uint8_t *image, size_t size,
     nand_restore_seed_regs(s);
 }
 
+void nand_dma_state_written(nand_state_t *s)
+{
+    s->burst_520 = false;
+}
+
 /* Resolve current page_addr + column into a byte offset in the NAND image.
  * Sets nand_offset, xfer_length, and xfer_cursor. */
 static void nand_setup_transfer(nand_state_t *s)
@@ -623,8 +628,12 @@ static uint64_t nand_stream_read(nand_state_t *s, unsigned size)
     for (unsigned i = 0; i < size; i++) {
         uint8_t byte;
 
-        if (s->stream_limit != 0 && (s->stream_cursor + i) >= s->stream_limit)
+        if (s->stream_limit != 0 && (s->stream_cursor + i) >= s->stream_limit) {
+            if (s->burst_520 &&
+                s->xfer_regs[(NAND_REG_XFER_MODE - NAND_XFER_BASE) >> 2] == 0x05u)
+                s->stream_stall = true;
             byte = 0xFFu;
+        }
         else
             byte = nand_stream_byte(s, s->stream_cursor + i);
         val |= ((uint64_t)byte) << (8u * i);
@@ -789,6 +798,8 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
              *   0x06 = final 8-byte OOB/ECC write window via 0xB000
              *   0x07 = 520-byte program burst (512 data + first 8 OOB)
              */
+            if (data_byte == 0x01u)
+                s->burst_520 = true;    /* the ROM's ECC result path */
             if (data_byte == 0x00u || data_byte == 0x01u) {
                 s->xfer_ecc_count = 0;
                 memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
@@ -813,6 +824,9 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                     s->stream_cursor = 0;
                     s->stream_active = true;
                 }
+                /* The rest of the page, past a 520-byte burst. */
+                if (s->stream_active)
+                    s->stream_limit = NAND_PAGE_RAW - s->stream_col;
                 memset(s->xfer_buffer, 0x00, sizeof(s->xfer_buffer));
                 if (s->stream_active) {
                     for (int i = 0; i < 16; i++)
@@ -827,7 +841,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 s->stream_col = col;
                 s->stream_base = row * NAND_PAGE_RAW + col;
                 s->stream_cursor = 0;
-                s->stream_limit = NAND_PAGE_RAW - col;
+                s->stream_limit = (s->burst_520 ? NAND_PAGE_DATA + 8u : NAND_PAGE_RAW) - col;
                 s->stream_active = true;
             } else if (data_byte == 0x06u) {
                 s->stream_base = NAND_PAGE_DATA + 8u;

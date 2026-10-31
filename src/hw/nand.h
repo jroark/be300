@@ -160,6 +160,20 @@ typedef struct {
     uint32_t stream_cursor;
     uint32_t stream_limit;
     bool     stream_active;
+    /*
+     * After the ROM's NAND boot path a MODE-5 burst ends after 520 bytes
+     * (512 data + the first 8 spare): the last 8 spare bytes need MODE 4,
+     * as the ROM (9FC01A98-1AAE) and Casio's SPL (80F0ADFC-AE28) read them.
+     * On a real BE-300, Glaze SPLs that read all 528 bytes in MODE 5 hung
+     * there for good (glaze-os docs/NAND_BOOT_AUDIT.md, "Boot beeps").
+     * Glaze kernels did read all 528 bytes in MODE 5 after a CF recovery
+     * boot (the ROM never touched NAND) and after Windows CE (nanddisk.dll
+     * writes the DMA state word 0x1CF4), with valid ECC parity in the last 8
+     * bytes. So the ROM's MODE-1 ECC path sets this and a 0x1CF4 write
+     * clears it; which hardware state really does either is not known.
+     */
+    bool     burst_520;
+    bool     stream_stall;   /* a read ran past such a burst: the bus hangs */
     uint32_t boot_regs[64];      /* 0xC000-0xC0FC */
     uint8_t  boot_addr_bytes[4];
     uint8_t  boot_addr_count;
@@ -209,6 +223,8 @@ typedef struct {
 
 void     nand_init(nand_state_t *s, uint8_t *image, size_t size,
                    size_t valid_size);
+/* The companion DMA state word 0x1CF4 was written (see burst_520). */
+void     nand_dma_state_written(nand_state_t *s);
 uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
                    uint32_t pc);
 /*

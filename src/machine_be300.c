@@ -628,7 +628,7 @@ machine_t *be300_create(const machine_config_t *cfg)
     aiu_init(&m->aiu, cfg->log_mmio);
     be300_apply_rtc_host_time(m);
 
-    if (cfg->restore)
+    if (cfg->restore || cfg->power_held)
         m->btn_set2 = 0x80u;
 
     /*
@@ -692,7 +692,9 @@ machine_t *be300_create(const machine_config_t *cfg)
 
         if (cf_image_loaded) {
             bool nand_bootable = be300_nand_image_looks_bootable(m);
-            bool cf_boot_visible = cfg->restore || !nand_bootable;
+            /* The ROM boots the card instead of a bootable NAND only with
+             * Power held at reset, as on a real BE-300. */
+            bool cf_boot_visible = cfg->restore || cfg->power_held || !nand_bootable;
 
             if (!cf_is_network(&m->cf[BE300_PRIMARY_CF_SLOT]))
                 cf_set_boot_visibility(&m->cf[BE300_PRIMARY_CF_SLOT],
@@ -935,6 +937,18 @@ static bool be300_touch_script_load(const char *path)
     return ok;
 }
 
+/* --power-held: let go of Power once the ROM has chosen the card. */
+static void be300_power_release(machine_t *m)
+{
+    static bool released;
+
+    if (!m->cfg.power_held || released ||
+        be300_emulated_ns(m) < UINT64_C(2000000000))
+        return;
+    released = true;
+    be300_set_buttons(m, m->btn_set1, (uint8_t)(m->btn_set2 & ~0x80u));
+}
+
 static void be300_touch_script(machine_t *m)
 {
     while (touch_script_next < touch_script_len &&
@@ -1068,6 +1082,7 @@ static bool be300_run_batch(machine_t *m)
 
     be300_cf_hotplug(m);
     be300_touch_script(m);
+    be300_power_release(m);
 
     if (m->autostop_after_ns > 0 && m->autostop_start_ns > 0) {
         uint64_t now_ns = be300_host_monotonic_ns();
