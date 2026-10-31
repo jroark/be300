@@ -26,6 +26,7 @@
 #include "be300_probe.h"
 #include "devices.h"
 #include "devices/devices_internal.h"
+#include "hw/piu.h"
 #include "devices/vrc4173_latch.h"
 #include "host_time.h"
 #include "hw/cf.h"
@@ -797,6 +798,26 @@ static uint64_t scmcu_read(struct cpu *cpu, struct be300_vrc4173_latch *d,
     return 0;   /* WORKAROUND: instant MCU completion */
 }
 
+/* PIU A/D port result (hw/piu.h), just past the touch window. */
+static bool adport_claims(struct be300_vrc4173_latch *d, uint32_t off,
+    unsigned len)
+{
+    (void)d;
+    (void)len;
+    return off >= 0x0300u + PIU_ADPORT_OFF && off < 0x0304u + PIU_ADPORT_OFF;
+}
+
+static uint64_t adport_read(struct cpu *cpu, struct be300_vrc4173_latch *d,
+    uint32_t off, unsigned len)
+{
+    (void)cpu;
+    (void)d;
+    (void)len;
+    if (off != 0x0300u + PIU_ADPORT_OFF || !g_be300_machine)
+        return 0;
+    return be300_touch_adport(g_be300_machine->touch_device);
+}
+
 static const be300_vrc4173_region_t be300_vrc4173_regions[] = {
     { NULL, BE300_MMIO_CLASS_KNOWN, aiu_status_claims,
       aiu_status_read, NULL },
@@ -836,6 +857,8 @@ static const be300_vrc4173_region_t be300_vrc4173_regions[] = {
       latched_bit0_clear_read, NULL },
     { "vrc4173-scmcu-stub", BE300_MMIO_CLASS_STUBBED, scmcu_claims,
       scmcu_read, NULL },
+    { "vrc4173-piu-adport", BE300_MMIO_CLASS_KNOWN, adport_claims,
+      adport_read, NULL },
 };
 
 /* Re-evaluate every companion line into GIU line 0 (be300_girq0_line_live). */

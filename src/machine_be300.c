@@ -427,6 +427,19 @@ static machine_t *be300_create_fail(machine_t *m)
     return NULL;
 }
 
+/* GIUPIODL's battery lines (hw/battery.h), read through dev_vr41xx. */
+static machine_t *giu_pins_machine;
+
+static uint16_t be300_giu_pins(uint16_t pins)
+{
+    machine_t *m = giu_pins_machine;
+
+    if (!m)
+        return pins;
+    battery_advance(&m->battery, be300_emulated_ns(m));
+    return battery_gpio(&m->battery, pins);
+}
+
 static bool be300_touch_script_load(const char *path);
 
 machine_t *be300_create(const machine_config_t *cfg)
@@ -626,6 +639,15 @@ machine_t *be300_create(const machine_config_t *cfg)
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_init(&m->cf[i]);
     aiu_init(&m->aiu, cfg->log_mmio);
+    battery_init(&m->battery, 100u - cfg->battery_used_pct, cfg->battery_mode,
+        cfg->battery_drain);
+    giu_pins_machine = m;
+    dev_vr41xx_set_giu_pins_hook(be300_giu_pins);
+    eeprom_init(&m->eeprom);
+    if (cfg->eeprom_cal_set) {
+        m->eeprom.mem[EEPROM_BATTERY_CAL] = cfg->eeprom_cal[0];
+        m->eeprom.mem[EEPROM_BATTERY_CAL + 1] = cfg->eeprom_cal[1];
+    }
     be300_apply_rtc_host_time(m);
 
     if (cfg->restore || cfg->power_held)

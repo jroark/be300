@@ -67,6 +67,7 @@ void     button_set_source_enabled(struct be300_input_device *d, bool enabled,
     bool line_live);
 /* Touch's line follows AA000034 and AA000008 too; called when they change. */
 void     be300_touch_irq_refresh(struct be300_input_device *d);
+uint16_t be300_touch_adport(void *touch_device);   /* companion 0x0390 */
 /* Bus stalls on gated companion units (src/devices/gate_stall.c). */
 void     be300_gate_stall_install(struct machine *gxm);
 void     be300_gate_stall_update(void);     /* after a gate write */

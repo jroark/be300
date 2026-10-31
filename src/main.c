@@ -123,6 +123,12 @@ static void usage(const char *prog)
         "  --touch-script <f>    Timed pen events at the touch panel, for headless\n"
         "                        tests: lines \"<ms> down <x> <y>\", \"<ms> up\",\n"
         "                        \"<ms> tap <x> <y>\"; emulated ms, LCD pixels\n"
+        "  --battery <pct>       Battery level, 0-100 (default: 100)\n"
+        "  --battery-state <s>   ac (default: adapter in, charged), charging or battery\n"
+        "  --battery-drain <n>   Lose (battery) or gain (charging) n percent per\n"
+        "                        emulated minute; charging ends in ac at 100\n"
+        "  --eeprom-cal <b0,b1>  EEPROM battery calibration bytes (max, min; hex or\n"
+        "                        decimal); default erased, so guests use 4.2/3.7 V\n"
         "  --cf-eject-after <s>  Eject the primary CF card s seconds after start\n"
         "  --cf-insert-after <s> Insert the primary --cf image s seconds after start\n"
         "                        (absent until then unless --cf-eject-after is earlier)\n"
@@ -365,6 +371,32 @@ int main(int argc, char *argv[])
             cfg.power_held = true;
         } else if (strcmp(argv[i], "--touch-script") == 0 && i + 1 < argc) {
             cfg.touch_script_path = argv[++i];
+        } else if (strcmp(argv[i], "--battery") == 0 && i + 1 < argc) {
+            int pct = atoi(argv[++i]);
+            if (pct < 0 || pct > 100) {
+                fprintf(stderr, "Error: --battery expects 0-100\n");
+                return 1;
+            }
+            cfg.battery_used_pct = 100u - (uint32_t)pct;
+        } else if (strcmp(argv[i], "--battery-state") == 0 && i + 1 < argc) {
+            if (!battery_parse_mode(argv[++i], &cfg.battery_mode)) {
+                fprintf(stderr, "Error: --battery-state expects ac, charging or battery\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--battery-drain") == 0 && i + 1 < argc) {
+            cfg.battery_drain = (uint32_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--eeprom-cal") == 0 && i + 1 < argc) {
+            char *end;
+            unsigned long b0 = strtoul(argv[++i], &end, 0), b1 = 256;
+            if (*end == ',')
+                b1 = strtoul(end + 1, &end, 0);
+            if (*end || b0 > 255 || b1 > 255) {
+                fprintf(stderr, "Error: --eeprom-cal expects two bytes, e.g. 0xD9,0x7E\n");
+                return 1;
+            }
+            cfg.eeprom_cal_set = true;
+            cfg.eeprom_cal[0] = (uint8_t)b0;
+            cfg.eeprom_cal[1] = (uint8_t)b1;
         } else if (strcmp(argv[i], "--net-insert-after") == 0 && i + 1 < argc) {
             cfg.net_insert_after_s = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--restore") == 0) {
