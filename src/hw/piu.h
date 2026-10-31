@@ -38,7 +38,18 @@ typedef struct {
     uint16_t adc[4];
     uint16_t page_adc[2][4];
     bool page_valid[2];
+    /*
+     * The A/D side's enable, AA0003C8 bits 0-1 (both set), as it stood at
+     * the last PIUCNT write. Windows CE leaves 3 there and a power-on 0; on
+     * a real BE-300 the PIU never detected the pen or sampled until it was
+     * 3, and setting it on a running sequencer took effect only once
+     * PIUCNT was written again (glaze-os docs/NAND_BOOT_AUDIT.md,
+     * "Power-on findings"). Without it the sequencer's states still change.
+     */
+    bool adc_on;
 } piu_state_t;
+
+#define PIU_ADC_ENABLE_OFF  0x03C8u   /* companion offset of the enable */
 
 void piu_init(piu_state_t *p);
 void piu_set_touch(piu_state_t *p, bool down, uint16_t x, uint16_t y,

@@ -61,5 +61,17 @@ void be300_register_wince_aux(struct machine *gxm, bool log_mmio,
 uint32_t piu_girq0_source_bits(const struct be300_input_device *d);
 uint32_t button_girq0_source_bits(const struct be300_input_device *d);
 void     button_ack_keyboard_source(struct be300_input_device *d);
-/* AA000014 bit 3, the GIRQ0-1 source enable (be300_devices.c). */
-void     button_set_source_enabled(struct be300_input_device *d, bool enabled);
+/* AA000014 bit 3, the GIRQ0-1 source enable, and whether the source can
+ * drive GIU line 0 at all (be300_girq0_line_live, be300_devices.c). */
+void     button_set_source_enabled(struct be300_input_device *d, bool enabled,
+    bool line_live);
+/* Touch's line follows AA000034 and AA000008 too; called when they change. */
+void     be300_touch_irq_refresh(struct be300_input_device *d);
+/* Bus stalls on gated companion units (src/devices/gate_stall.c). */
+void     be300_gate_stall_install(struct machine *gxm);
+void     be300_gate_stall_update(void);     /* after a gate write */
+bool     be300_bus_stalled(void);
+/* Whether the clock gate at companion offset 0x1100-0x113C reads on. */
+bool     be300_cmu_gate_on(uint32_t gate_off);
+/* A GIRQ0 source word at en_off reaches GIU line 0 (bits 2-3 and AA000008). */
+bool     be300_girq0_line_live(struct be300_vrc4173_latch *d, uint32_t en_off);

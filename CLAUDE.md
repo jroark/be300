@@ -56,6 +56,7 @@ Primary local references:
 - `docs/hardware/be300_boot_rom.bin` - extracted ROM binary embedded into the emulator at build time
 - `docs/ROM_SPL_HANDOFF.md` - ROM to SPL to NK handoff analysis
 - `docs/HARDWARE_GROUND_TRUTH.md` - synthesized hardware reference notes
+- `docs/POWER_ON_STATE.md` - companion power-on values, GIRQ0 output/source gating, PIU A/D enable and bus stalls on gated units (from real power-on captures); `--touch-script` for headless touch tests
 - `ce/bediag/` - BEDiag diagnostic tool source and output
 
 ## Source Code Layout

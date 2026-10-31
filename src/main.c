@@ -118,6 +118,9 @@ static void usage(const char *prog)
         "  --audio               Play headphone PCM and piezo PWM through SDL;\n"
         "                        guest audio/interrupt models always run,\n"
         "                        this only enables host output (BE300_AUDIO=0 mutes)\n"
+        "  --touch-script <f>    Timed pen events at the touch panel, for headless\n"
+        "                        tests: lines \"<ms> down <x> <y>\", \"<ms> up\",\n"
+        "                        \"<ms> tap <x> <y>\"; emulated ms, LCD pixels\n"
         "  --cf-eject-after <s>  Eject the primary CF card s seconds after start\n"
         "  --cf-insert-after <s> Insert the primary --cf image s seconds after start\n"
         "                        (absent until then unless --cf-eject-after is earlier)\n"
@@ -356,6 +359,8 @@ int main(int argc, char *argv[])
             cfg.cf_eject_after_s = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--cf-insert-after") == 0 && i + 1 < argc) {
             cfg.cf_insert_after_s = (uint32_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--touch-script") == 0 && i + 1 < argc) {
+            cfg.touch_script_path = argv[++i];
         } else if (strcmp(argv[i], "--net-insert-after") == 0 && i + 1 < argc) {
             cfg.net_insert_after_s = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--restore") == 0) {

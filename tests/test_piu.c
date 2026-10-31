@@ -18,6 +18,7 @@ static int failures;
 
 static void configure_fast_scan(piu_state_t *p)
 {
+    p->adc_on = true;   /* AA0003C8 = 3 at the PIUCNT write (src/devices/input.c) */
     piu_write(p, 0x04, TOUCH_IRQ_MASK, 0);
     piu_write(p, 0x08, 1, 0); /* 30 us scan interval. */
     piu_write(p, 0x0C, 0, 0); /* No stabilization delay. */
@@ -166,8 +167,36 @@ static void test_release_without_auto_stop(void)
     CHECK((p.regs[1] & PIU_PENDING_TOUCH_DATA) != 0);
 }
 
+/* A real BE-300 after a power-on: with the A/D enable off when PIUCNT is
+ * written, the PIU neither detects the pen nor samples, and enabling it
+ * later changes nothing until PIUCNT is written again. */
+static void test_adc_enable_sampled_at_start(void)
+{
+    piu_state_t p;
+
+    piu_init(&p);
+    configure_fast_scan(&p);
+    p.adc_on = false;
+    piu_write(&p, 0x00, 0x0001, 0);                 /* PIURST */
+    piu_write(&p, 0x00, AUTO_SCAN_CONTROL, 0);
+    piu_set_touch(&p, true, 100, 200, 0);
+    piu_tick(&p, 40000);
+    CHECK((p.regs[1] & PIU_PENDING_ANY) == 0);
+    CHECK(!p.page_valid[0] && !p.page_valid[1]);
+    piu_set_touch(&p, false, 100, 200, 50000);
+    piu_write(&p, 0x04, TOUCH_IRQ_MASK | PIU_PENDING_ANY, 50000);
+
+    piu_write(&p, 0x00, 0x0001, 60000);
+    configure_fast_scan(&p);                        /* the restart samples it */
+    piu_set_touch(&p, true, 100, 200, 70000);
+    piu_tick(&p, 110000);
+    CHECK((p.regs[1] & PIU_PENDING_PENCHG) != 0);
+    CHECK(p.page_valid[0]);
+}
+
 int main(void)
 {
+    test_adc_enable_sampled_at_start();
     test_reset_command_and_defaults();
     test_pen_state_latch_and_queued_release();
     test_page_order_and_adc_endpoints();

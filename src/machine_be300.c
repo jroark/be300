@@ -230,6 +230,18 @@ static void be300_sync_nand_image(machine_t *m)
     if (!m || !m->nand_data || !m->cfg.nand_path || !m->nand.dirty)
         return;
 
+    if (m->nand_oob) {
+        uint8_t *raw = malloc(NAND_RAW_IMAGE_SIZE);
+        if (!raw) return;
+        for (size_t p = 0; p < NAND_BLOCK_COUNT * NAND_BLOCK_PAGES; p++) {
+            memcpy(raw + p*NAND_PAGE_RAW, m->nand_data + p*NAND_PAGE_DATA, NAND_PAGE_DATA);
+            memcpy(raw + p*NAND_PAGE_RAW + NAND_PAGE_DATA, m->nand_oob + p*NAND_PAGE_OOB, NAND_PAGE_OOB);
+        }
+        if (!be300_write_file_atomic(m->cfg.nand_path, raw, NAND_RAW_IMAGE_SIZE)) m->nand.dirty = false;
+        else fprintf(stderr, "[BE300] Failed to save raw NAND image: %s\n", strerror(errno));
+        free(raw);
+        return;
+    }
     /*
      * Keep the image's own length (a 16,449,536-byte restore image, or a
      * short one) unless the guest programmed pages past it; the loader
@@ -329,6 +341,23 @@ static int be300_load_nand_image_file(machine_t *m, const char *path)
         fclose(f);
         return -1;
     }
+    if ((uint64_t)fsize == NAND_RAW_IMAGE_SIZE) {
+        data = malloc(NAND_IMAGE_SIZE);
+        uint8_t *oob = malloc(NAND_OOB_IMAGE_SIZE);
+        if (!data || !oob) { free(data); free(oob); fclose(f); return -1; }
+        uint8_t raw[NAND_PAGE_RAW];
+        for (size_t p = 0; p < NAND_BLOCK_COUNT * NAND_BLOCK_PAGES; p++) {
+            if (fread(raw, 1, sizeof(raw), f) != sizeof(raw)) {
+                free(data); free(oob); fclose(f); return -1;
+            }
+            memcpy(data + p*NAND_PAGE_DATA, raw, NAND_PAGE_DATA);
+            memcpy(oob + p*NAND_PAGE_OOB, raw + NAND_PAGE_DATA, NAND_PAGE_OOB);
+        }
+        fclose(f);
+        m->nand_data = data; m->nand_oob = oob;
+        m->nand_size = m->nand_file_size = NAND_IMAGE_SIZE;
+        return 0;
+    }
     if ((uint64_t)fsize > NAND_IMAGE_SIZE) {
         fprintf(stderr, "[BE300] NAND image too large (%ld bytes)\n", fsize);
         fclose(f);
@@ -386,6 +415,7 @@ static int be300_create_blank_nand(machine_t *m)
 static machine_t *be300_create_fail(machine_t *m)
 {
     free(m->nand_data);
+    free(m->nand_oob);
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_destroy(&m->cf[i]);
     pcconnect_bridge_shutdown();
@@ -397,6 +427,8 @@ static machine_t *be300_create_fail(machine_t *m)
     return NULL;
 }
 
+static bool be300_touch_script_load(const char *path);
+
 machine_t *be300_create(const machine_config_t *cfg)
 {
     static bool subsystems_initialized = false;
@@ -404,6 +436,10 @@ machine_t *be300_create(const machine_config_t *cfg)
     const char *autostop_env;
     if (!m) return NULL;
     m->cfg = *cfg;
+    if (cfg->touch_script_path && !be300_touch_script_load(cfg->touch_script_path)) {
+        free(m);
+        return NULL;
+    }
     if (cfg->pcconnect_bridge &&
         cfg->pcconnect_dock == BE300_PCC_DOCK_USB_SYNC) {
         /*
@@ -681,6 +717,7 @@ machine_t *be300_create(const machine_config_t *cfg)
         if (m->nand_data) {
             nand_init(&m->nand, m->nand_data, m->nand_size,
                       m->nand_file_size);
+            m->nand.oob = m->nand_oob;
         }
 
         /*
@@ -774,6 +811,7 @@ static void be300_runtime_start(machine_t *m)
                             m->cfg.stall_window,
                             m->cfg.stall_unique_threshold,
                             m->cfg.stall_wall_secs);
+    be300_gate_stall_install(gxm);  /* every device is registered by now */
     cpu_run_init(gxm);
     m->cpu->running = true;
 
@@ -833,6 +871,79 @@ static void be300_runtime_finalize(machine_t *m)
     m->runtime_finalized = true;
 }
 
+/*
+ * --touch-script: pen events at the PIU on emulated time, as the window's
+ * mouse would deliver them through be300_set_touch, so a guest's real
+ * touch path (PIU, GIRQ0, its driver) can be tested headless. Lines are
+ * "<ms> down <x> <y>", "<ms> up" or "<ms> tap <x> <y>" (down, then up 150 ms
+ * later), with ms since start and x/y in LCD pixels (y 320-359 is the
+ * icon strip under the LCD); '#' starts a comment.
+ */
+#define BE300_TOUCH_SCRIPT_MAX 256
+#define BE300_TOUCH_SCRIPT_W   240u     /* the LCD */
+#define BE300_TOUCH_SCRIPT_H   360u     /* and the icon strip below it */
+
+struct be300_touch_event {
+    uint64_t at_ns;
+    bool down;
+    uint16_t x, y;
+};
+
+static struct be300_touch_event touch_script[BE300_TOUCH_SCRIPT_MAX];
+static unsigned touch_script_len, touch_script_next;
+
+static bool be300_touch_script_add(uint64_t ms, bool down, unsigned x, unsigned y)
+{
+    if (touch_script_len == BE300_TOUCH_SCRIPT_MAX || x >= BE300_TOUCH_SCRIPT_W ||
+        y >= BE300_TOUCH_SCRIPT_H)
+        return false;
+    touch_script[touch_script_len++] = (struct be300_touch_event){
+        ms * UINT64_C(1000000), down, (uint16_t)x, (uint16_t)y };
+    return true;
+}
+
+static bool be300_touch_script_load(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    char line[128], cmd[8];
+    unsigned long long ms;
+    unsigned x, y, n = 0, lx = 0, ly = 0;
+    bool ok = true;
+
+    if (!f) {
+        fprintf(stderr, "[TOUCH] cannot open %s: %s\n", path, strerror(errno));
+        return false;
+    }
+    while (ok && fgets(line, sizeof(line), f)) {
+        n++;
+        if (line[strspn(line, " \t")] == '#' || line[strspn(line, " \t\r\n")] == 0)
+            continue;
+        int k = sscanf(line, "%llu %7s %u %u", &ms, cmd, &x, &y);
+        if (k == 4 && !strcmp(cmd, "down"))
+            ok = be300_touch_script_add(ms, true, lx = x, ly = y);
+        else if (k == 4 && !strcmp(cmd, "tap"))
+            ok = be300_touch_script_add(ms, true, x, y) &&
+                be300_touch_script_add(ms + 150, false, lx = x, ly = y);
+        else if (k == 2 && !strcmp(cmd, "up"))
+            ok = be300_touch_script_add(ms, false, lx, ly);
+        else
+            ok = false;
+        if (!ok)
+            fprintf(stderr, "[TOUCH] %s:%u: bad or too many events\n", path, n);
+    }
+    fclose(f);
+    return ok;
+}
+
+static void be300_touch_script(machine_t *m)
+{
+    while (touch_script_next < touch_script_len &&
+        be300_emulated_ns(m) >= touch_script[touch_script_next].at_ns) {
+        const struct be300_touch_event *e = &touch_script[touch_script_next++];
+        be300_set_touch(m, e->down, e->x, e->y);
+    }
+}
+
 /* --cf-eject-after / --cf-insert-after: hot plug of the primary card, so
  * a guest's insertion handling (pcmcia.dll, Glaze's card driver) can be
  * traced and tested. Each fires once, on host time since start. */
@@ -883,8 +994,14 @@ static bool be300_run_batch(machine_t *m)
     if (emul_shutdown)
         return false;
 
-    if (!machine_run(gxm))
+    /* A stall on a gated unit (src/devices/gate_stall.c) freezes the guest
+     * for good, as on hardware; the window, screenshot and shutdown go on. */
+    if (be300_bus_stalled()) {
+        struct timespec idle = { 0, 10 * 1000 * 1000 };
+        nanosleep(&idle, NULL);
+    } else if (!machine_run(gxm) && !be300_bus_stalled()) {
         return false;
+    }
 
     be300_probe_note_batch(m->cpu);
 
@@ -950,6 +1067,7 @@ static bool be300_run_batch(machine_t *m)
         return false;
 
     be300_cf_hotplug(m);
+    be300_touch_script(m);
 
     if (m->autostop_after_ns > 0 && m->autostop_start_ns > 0) {
         uint64_t now_ns = be300_host_monotonic_ns();
@@ -1108,6 +1226,7 @@ void be300_destroy(machine_t *m)
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_save_image(&m->cf[i]);
 
+    free(m->nand_oob);
     if (m->nand_data) {
         free(m->nand_data);
         m->nand_data = NULL;

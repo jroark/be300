@@ -147,6 +147,11 @@ static void nand_restore_commit_program(nand_state_t *s)
         return;
     }
 
+    if (nand_physical_bad(s, s->restore_page_addr / NAND_BLOCK_PAGES)) {
+        s->restore_status_ok = false; nand_restore_set_ready(s, true); return;
+    }
+    if (s->oob) for (unsigned i = 0; i < NAND_PAGE_OOB; i++)
+        s->oob[s->restore_page_addr*NAND_PAGE_OOB+i] &= s->restore_page_buffer[NAND_PAGE_DATA+i];
     page_off = s->restore_page_addr * NAND_PAGE_DATA;
     for (uint32_t i = 0; i < NAND_PAGE_DATA && (page_off + i) < s->image_size; i++)
         s->image[page_off + i] &= s->restore_page_buffer[i];
@@ -173,7 +178,11 @@ static void nand_restore_commit_erase(nand_state_t *s)
         return;
     }
 
+    if (nand_physical_bad(s, block)) {
+        s->restore_status_ok = false; nand_restore_set_ready(s, true); return;
+    }
     start_page = block * NAND_BLOCK_PAGES;
+    if (s->oob) memset(s->oob + start_page*NAND_PAGE_OOB, 0xFF, NAND_BLOCK_PAGES*NAND_PAGE_OOB);
     start_off = start_page * NAND_PAGE_DATA;
     memset(s->image + start_off, 0xFF, NAND_BLOCK_PAGES * NAND_PAGE_DATA);
     s->dirty = true;

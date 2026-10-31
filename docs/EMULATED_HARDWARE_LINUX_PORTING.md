@@ -220,7 +220,7 @@ emulator for these ranges:
 | --- | --- |
 | `0x0060` | VRC4173 `SYSINT1REG` aggregate. Read-only for writes in the emulator; writes to bytes `0x060/0x061` do not clear it. |
 | `0x0062-0x006A` | Level-2 status registers. W1C. |
-| `0x1100-0x113F` | Clock/power/wake block (unit enables; `0x1120`/`0x112C` written 1 by interrupt handlers). Plain read/write storage, mirrored every `0x40` through `0x11FF`, seeded from the hardware dump. |
+| `0x1100-0x113F` | Clock gates (unit enables). Mirrored every `0x40` through `0x11FF`. All off at power-on: the ROM sets `111C`, and the guest must turn on each unit it uses. The framebuffer stalls the bus with `1100`/`110C` off, and the companion SIU with `1108`/`112C`/`1138`/`113C` all off (`docs/POWER_ON_STATE.md`). |
 | `0x1B00-0x1B2F` | CF socket status area (`src/hw/cf.c` companion page). |
 
 Linux driver implication: use normal mask/status/ack sequencing. Do not assume
@@ -488,8 +488,11 @@ Important platform identification and control offsets:
 
 | Offset | Status | Meaning |
 | ---: | --- | --- |
-| `0x0000` | Survey latch | Core/PIU-adjacent value seeded to `0x00000002`. |
+| `0x0000` | Power-on value | Reads 0 after a power-on. |
 | `0x0004` | Emulator-modeled summary | GIRQ0 source register. Bit 0 CF, bit 1 buttons, bit 4 CommMode, bit 9 touch. |
+| `0x0008` | Hardware-confirmed | GIRQ0 output enable, bit 0. 0 at power-on: no companion source reaches GIU line 0 until it is set. |
+| `0x0010 + 4n` | Hardware-confirmed | Source n's word. Bit 3 enables it (mask with `&= ~0x08`); bit 2 must be set too or its line never reaches the CPU. Write `0x0C` to enable, as Windows CE does; bits 4-7 read as status. 0 at power-on. |
+| `0x03C8` | Hardware-confirmed | PIU A/D enable, bits 0-1 = 3. Sampled at each `PIUCNT` write: set it before starting the touch sequencer. 0 at power-on. |
 | `0x0060` | Hardware-confirmed behavior | VRC4173 `SYSINT1REG` aggregate; read-only in emulator writes. |
 | `0x08A0` | Compatibility shim | Interrupt aggregate bit 0 reads as clear. |
 | `0x0980-0x098F` | Recovered digital controls | Backlight channel and shared BLG config; not a buzzer trigger. |
@@ -677,7 +680,8 @@ Readback bytes:
 
 Button state changes assert the keyboard source at VRC4173 offset `0x0004`
 bit 1, routed through GIU line 0. The OAL/guest acknowledges this source by
-writing the GIRQ0 acknowledge path at VRC4173 offset `0x0014`.
+writing the GIRQ0 acknowledge path at VRC4173 offset `0x0014`, its source
+word, so a write must keep bits 2-3 (`0x0C`) or the source goes dark.
 The power-button release edge updates the live bit but does not assert the
 keyboard source; otherwise the release from the press that entered SUSPEND
 immediately wakes the guest again. The BE-300 OAL also has a separate SYSINT1

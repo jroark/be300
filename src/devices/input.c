@@ -30,6 +30,7 @@
 #include "hw/piu.h"
 
 #include "devices_internal.h"
+#include "vrc4173_latch.h"
 
 struct be300_input_device {
     machine_t *m;
@@ -37,6 +38,7 @@ struct be300_input_device {
     /* Button device state. */
     bool       button_irq_pending;
     bool       button_source_enabled;   /* AA000014 bit 3 */
+    bool       button_line_live;        /* ... and it can reach GIU line 0 */
     struct interrupt button_irq;  /* BE-300 GIRQ0 cascaded interrupt */
     bool       button_irq_connected;
     bool       button_irq_asserted;
@@ -73,7 +75,7 @@ static void button_irq_update(struct be300_input_device *d, bool want)
 {
     if (!d || !d->button_irq_connected)
         return;
-    want = want && d->button_source_enabled;
+    want = want && d->button_source_enabled && d->button_line_live;
     if (want && !d->button_irq_asserted) {
         INTERRUPT_ASSERT(d->button_irq);
         d->button_irq_asserted = true;
@@ -97,11 +99,13 @@ uint32_t button_girq0_source_bits(const struct be300_input_device *d)
         BUTTON_GIRQ0_SOURCE : 0;
 }
 
-void button_set_source_enabled(struct be300_input_device *d, bool enabled)
+void button_set_source_enabled(struct be300_input_device *d, bool enabled,
+    bool line_live)
 {
     if (!d)
         return;
     d->button_source_enabled = enabled;
+    d->button_line_live = line_live;
     button_irq_update(d, d->button_irq_pending);
 }
 
@@ -158,9 +162,20 @@ uint32_t piu_girq0_source_bits(const struct be300_input_device *d)
     return piu_irq_pending(&d->piu) ? 0x00000200u : 0;
 }
 
+/* GIRQ0-9's source word: bits 2-3 and AA000008 gate its line
+ * (be300_girq0_line_live). */
+#define PIU_GIRQ0_SOURCE_EN  0x0034u
+
 static void piu_refresh_irq(struct be300_input_device *d)
 {
-    piu_irq_update(d, piu_irq_pending(&d->piu));
+    piu_irq_update(d, piu_irq_pending(&d->piu) &&
+        be300_girq0_line_live(g_be300_vrc4173_latch, PIU_GIRQ0_SOURCE_EN));
+}
+
+void be300_touch_irq_refresh(struct be300_input_device *d)
+{
+    if (d)
+        piu_refresh_irq(d);
 }
 
 /* The PIU's sample and conversion timing is guest-visible hardware time:
@@ -200,6 +215,11 @@ static int be300_touch_handle(struct cpu *cpu, struct memory *mem,
 
     if (writeflag == MEM_WRITE) {
         val = memory_readmax64(cpu, data, len);
+        /* AA0003C8 bits 0-1 are sampled when the sequencer is (re)started,
+         * not live (hw/piu.h piu_state_t.adc_on). */
+        if (off == 0 && g_be300_vrc4173_latch)
+            d->piu.adc_on = (be300_latch_peek_u32(g_be300_vrc4173_latch,
+                PIU_ADC_ENABLE_OFF) & 3u) == 3u;
         piu_write(&d->piu, off, (uint16_t)val, piu_now_ns(d));
         piu_refresh_irq(d);
         return 1;
