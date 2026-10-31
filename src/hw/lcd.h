@@ -23,7 +23,8 @@ bool lcd_backlight_enabled(const lcd_state_t *s);
 #define BE300_BUZZER_CLOCK 1411200u
 /* bltinbuz.dll 018F119C, 018F1604..1678. Counts include the counter's +1. */
 bool lcd_buzzer_signal(const lcd_state_t *s, uint32_t *period, uint32_t *duty);
-/* Blanking preserves guest VRAM; analog transfer curves are unmeasured. */
+/* Blanking preserves guest VRAM. Brightness and contrast are presented with
+ * an approximate curve for visibility; the panel's optics are unmeasured. */
 void lcd_copy_rgb565(const lcd_state_t *s, const uint16_t *src, uint16_t *dst,
     size_t width, size_t height, size_t stride);
 void lcd_copy_rgba8888(const lcd_state_t *s, const uint16_t *src, uint8_t *dst,

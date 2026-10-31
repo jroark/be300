@@ -24,10 +24,10 @@ bool lcd_handles(uint32_t off, unsigned len)
 static const uint8_t *reg_byte(const lcd_state_t *s, uint32_t off)
 {
     if (off >= 0xC00 && off < 0xC50)
-        return s->panel + off - 0xC00;
+        return s->panel + (off - 0xC00);
     if (off >= 0x980 && off < 0x9AC)
-        return s->backlight + off - 0x980;
-    return s->gates + off - 0x1100;
+        return s->backlight + (off - 0x980);
+    return s->gates + (off - 0x1100);
 }
 
 void lcd_init(lcd_state_t *s)
@@ -94,29 +94,80 @@ bool lcd_buzzer_signal(const lcd_state_t *s, uint32_t *period, uint32_t *duty)
         (lcd_read(s,0x984,4) & 0x0202) == 0x0202 && *duty < *period;
 }
 
+static uint8_t lcd_level(int v, int k, int gain)
+{
+    int c = 128 + (v - 128) * k / 256;
+    c = c < 0 ? 0 : c > 255 ? 255 : c;
+    return (uint8_t)(c * gain / 256);
+}
+
+/* Approximate presentation of the backlight duty and serial contrast so
+ * the controls are visible. The panel's optical response is unmeasured:
+ * the 30% floor and 8% per contrast step are illustrative, not physical.
+ * Fills 8-bit outputs for 5-bit (R/B) and 6-bit (G) inputs; returns false
+ * at full backlight and nominal contrast (stock level 5, command C1). */
+static bool lcd_levels(const lcd_state_t *s, uint8_t c5[32], uint8_t c6[64])
+{
+    uint32_t period = (uint32_t)lcd_read(s, 0x988, 4) & 0xffff;
+    uint32_t duty = (uint32_t)lcd_read(s, 0x98C, 4) & 0xffff;
+    int gain = 256, k = 256;
+    /* ddi.dll 01A52050: a larger duty word is a dimmer backlight. */
+    if (duty && period)
+        gain = duty >= period ? 77 : 77 + (int)(179 * (period - duty) / period);
+    /* ddi.dll 01A56A5C sends 208 - 3 * level; lower commands raise contrast. */
+    if (s->contrast_valid && s->contrast_command != 0xC1) {
+        k = 256 + (0xC1 - (int)s->contrast_command) * 20 / 3;
+        k = k < 0 ? 0 : k > 512 ? 512 : k;
+    }
+    if (gain == 256 && k == 256)
+        return false;
+    for (int i = 0; i < 32; i++)
+        c5[i] = lcd_level((i << 3) | (i >> 2), k, gain);
+    for (int i = 0; i < 64; i++)
+        c6[i] = lcd_level((i << 2) | (i >> 4), k, gain);
+    return true;
+}
+
 void lcd_copy_rgb565(const lcd_state_t *s, const uint16_t *src, uint16_t *dst,
     size_t width, size_t height, size_t stride)
 {
+    uint8_t c5[32], c6[64];
     if (!lcd_scanout_enabled(s) || !lcd_backlight_enabled(s)) {
         memset(dst, 0, width * height * sizeof(*dst));
         return;
     }
-    for (size_t y = 0; y < height; y++)
-        memcpy(dst + y * width, src + y * stride, width * sizeof(*dst));
+    if (!lcd_levels(s, c5, c6)) {
+        for (size_t y = 0; y < height; y++)
+            memcpy(dst + y * width, src + y * stride, width * sizeof(*dst));
+        return;
+    }
+    for (size_t y = 0; y < height; y++) {
+        for (size_t x = 0; x < width; x++) {
+            uint16_t pixel = src[y * stride + x];
+            dst[y * width + x] = (uint16_t)((c5[(pixel >> 11) & 31] >> 3) << 11 |
+                (c6[(pixel >> 5) & 63] >> 2) << 5 | c5[pixel & 31] >> 3);
+        }
+    }
 }
 
 void lcd_copy_rgba8888(const lcd_state_t *s, const uint16_t *src, uint8_t *dst,
     size_t width, size_t height, size_t stride)
 {
+    uint8_t c5[32], c6[64];
     bool visible = lcd_scanout_enabled(s) && lcd_backlight_enabled(s);
+    if (!visible || !lcd_levels(s, c5, c6)) {
+        for (int i = 0; i < 32; i++)
+            c5[i] = visible ? (uint8_t)((i << 3) | (i >> 2)) : 0;
+        for (int i = 0; i < 64; i++)
+            c6[i] = visible ? (uint8_t)((i << 2) | (i >> 4)) : 0;
+    }
     for (size_t y = 0; y < height; y++) {
         for (size_t x = 0; x < width; x++) {
-            uint16_t pixel = visible ? src[y * stride + x] : 0;
-            unsigned r = (pixel >> 11) & 31, g = (pixel >> 5) & 63, b = pixel & 31;
+            uint16_t pixel = src[y * stride + x];
             size_t at = (y * width + x) * 4;
-            dst[at] = (uint8_t)((r << 3) | (r >> 2));
-            dst[at + 1] = (uint8_t)((g << 2) | (g >> 4));
-            dst[at + 2] = (uint8_t)((b << 3) | (b >> 2));
+            dst[at] = c5[(pixel >> 11) & 31];
+            dst[at + 1] = c6[(pixel >> 5) & 63];
+            dst[at + 2] = c5[pixel & 31];
             dst[at + 3] = 255;
         }
     }

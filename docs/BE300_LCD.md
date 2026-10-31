@@ -74,8 +74,16 @@ Inactive presentation returns black through native SDL, screenshots and the
 shared web/Android RGBA frame-copy API. Guest VRAM remains writable and
 unchanged, and reappears when enabled. Black is a host blanking convention;
 the unpowered reflective STN panel's appearance is not simulated. Backlight
-duty zero stays visible. Contrast clock/latch edges record the command;
-no unmeasured optical curve is applied to guest pixels.
+duty zero stays visible. Contrast clock/latch edges record the command.
+
+So that guest brightness and contrast controls are visible, presentation
+applies an approximate curve to the copied pixels, never to VRAM. Backlight
+gain is 30% + 70% × (1 − duty/period) from 0988/098C, so ddi.dll's duty
+table reads as roughly 41%, 53%, 63%, 82% and 100%. Contrast scales each
+channel about mid-grey by 1 + 0.08 × (C1 − command) / 3, about 8% per
+ddi.dll level (command 208 − 3 × level). Duty zero with no latched command
+or command C1 presents pixels unchanged. These constants are illustrative,
+not a measured optical response.
 
 The former BLG buzzer heuristic interpreted backlight enable/configuration
 as tone triggers and converted 0988 into a guessed frequency. It has been
@@ -91,13 +99,15 @@ No recovered code establishes a programmable framebuffer base or pitch.
 Hardware dump C34=`01FF` resembles 512−1 but is not proof of pitch semantics;
 it remains plain storage. C00..C24 timing fields, refresh rate, porches,
 sync polarity, clock divisors, status/scanline counters, electrical settle
-times and brightness/contrast transfer curves remain unknown. This model
+times and the panel's real brightness/contrast transfer curves remain
+unknown. Apart from the approximate presentation curve above, this model
 does not guess them or enforce delay durations. Glaze programs the recovered
 sequence and delays independently; the emulator does not perform it for guests.
 
 `test_lcd` covers reset-off state, individual gates/enable bits, byte/halfword/
 word/64-bit readback, serial edges/latching, both presentation formats,
-row padding, duty zero and VRAM retention across blanking. `test_nand_boot`
+row padding, duty zero, the approximate brightness/contrast curve and
+VRAM retention across blanking. `test_nand_boot`
 checks that the recovery dispatcher excludes the LCD/backlight bank.
 The local `cold_boot` regression requires an unmodified WinCE shell boot and
 a nonblank screenshot, using a temporary NAND copy. Glaze is additionally
