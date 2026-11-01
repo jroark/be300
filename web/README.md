@@ -118,27 +118,36 @@ Choosing
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.
 
-Release `20261024a` refreshes the Glaze factory NAND from glaze-os `main` at
-`33638da`. It adds JerryScript and frame support in Browser and more WinCE
-runtime work: GDI device contexts, fonts and palettes, CSO combo boxes and
-two-row bars, and WorldTALK's C runtime, Winsock and network page loads. To
-fit them, romfs builds wolfSSL with `-Os` and leaves ktest out. It keeps
-`20261022c`'s background app processes, multitasking switcher bar
-(double-press Home), Gmail package and status-bar card details. The
-web bundle, worker and NAND URLs use the `20261024a` asset tag.
-The network bridge is unchanged from `20261021b`; its helper downloads keep
-that tag.
-The factory image retains demand-paged NAND romfs, HTTPS cross-signed
-certificate-chain validation, WinCE app compatibility, and the AIM package
-work. Its App Store (`appstore.glaze-os.com`,
-which needs networking, i.e. the net bridge) offers Minesweeper, Solitaire,
-Fifteen, Sketch, Task Manager and AIM; the factory image also has system
-sounds and NTP time with named time zones.
-Build its factory NAND from the sibling `glaze-os` checkout
-with `./build.sh -s OUT=out/web-release-20261024a INIT=bin/springboard DYNAMIC=1
-LD_TESTS=0 MEM_TESTS=0`, then copy the resulting `glaze.bin` to this repo's
-`nand/glaze.bin` before building the web bundle. The 16 MiB release image has
-SHA-256 `f26d767b1ab12ec4c66d2459fd8dbde543b04112066f1f147f791f5e7b86f14e`.
+Release `20261101a` publishes the emulator from `main` (LCD power and
+contrast, piezo buzzer, power-on state, ROM NAND bursts, battery and PMU wake
+models, Wi-Fi CF cards, CF hot plug and stereo audio) together with a fresh
+Glaze factory NAND and a rebuilt Linux matrix. The web bundle, worker and NAND
+URLs use the `20261101a` asset tag. The network bridge is unchanged from
+`20261021b`; its helper downloads keep that tag. The Windows CE images are
+unchanged from `20261024a`.
+
+The Glaze factory NAND comes from glaze-os `main` at `e9490e6`. Its App
+Store (`appstore.glaze-os.com`) needs networking, i.e. the net bridge. Build it
+from the sibling `glaze-os` checkout with
+`./build.sh -s OUT=out/web-release-20261101a INIT=bin/springboard DYNAMIC=1
+LD_TESTS=0 MEM_TESTS=0 BUILD_ID=e9490e6`, then copy the resulting `glaze.bin`
+to this repo's `nand/glaze.bin` before building the web bundle. The 16 MiB
+release image has SHA-256
+`33080190d6995655e754a7e1ba9f48825c3fc4feb8823506f929289194c590b8`.
+
+The nine Linux images come from the sibling `mipsel-cross-image` checkout at
+`8d80835`, built inside its `mips-dev` container without `BE300_SPL_DIAG`.
+The 4.2.9 images use `BE300_PHYSICAL_NAND=1` (RS-ECC boot reader, writable
+JFFS2 root). The 2.4.18 and 2.6.8.1 images use the default mode: their
+physical-mode kernels need the 17 MiB physical image and its inventory, and on
+the 16 MiB logical image they panic with no `mtdblock3`. The scripts are
+`build_be300_kernel.sh`, `build_be300_opie_nand.sh` and
+`build_be300_picogui_nand.sh` for 4.2.9; `build_be300_2_4_mw_nand.sh`,
+`BE300_2_4_UI=opie build_be300_2_4_kernel.sh` and
+`build_be300_2_4_pgui_demo_nand.sh` for 2.4.18; and
+`build_be300_2_6_mw_nand.sh`, `build_be300_2_6_opie_nand.sh` and
+`BE300_2_6_UI=pgui build_be300_2_6_kernel.sh` for 2.6.8.1. Copy each
+`linux-4.2.9/*.nand` output to the matching `nand/<id>.bin`.
 Keep development/test images outside `nand/`, since every `.bin` there is
 packaged for hosting. Save any image containing user data before replacing it
 with a fresh factory image.

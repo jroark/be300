@@ -1,5 +1,5 @@
-import createBe300Module from "./be300_web.js?v=20261026a";
-import { AUDIO_CHANNELS, AUDIO_DRAIN_FRAMES, drainAudioPacket } from "./audio.mjs?v=20261026a";
+import createBe300Module from "./be300_web.js?v=20261101a";
+import { AUDIO_CHANNELS, AUDIO_DRAIN_FRAMES, drainAudioPacket } from "./audio.mjs?v=20261101a";
 
 const MAX_FRAME_WIDTH = 480;
 const MAX_FRAME_HEIGHT = 640;

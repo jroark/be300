@@ -1,8 +1,8 @@
-import { parseLaunchConfig, parseMacAddress, normalizeBridgeUrl } from "./launch-config.mjs?v=20261024a";
-import { BUTTON_MASK_SIZE, BUTTON_REGIONS } from "./button-regions.mjs?v=20261024a";
-import { AUDIO_SAMPLE_RATE, createAudioBuffer } from "./audio.mjs?v=20261026a";
+import { parseLaunchConfig, parseMacAddress, normalizeBridgeUrl } from "./launch-config.mjs?v=20261101a";
+import { BUTTON_MASK_SIZE, BUTTON_REGIONS } from "./button-regions.mjs?v=20261101a";
+import { AUDIO_SAMPLE_RATE, createAudioBuffer } from "./audio.mjs?v=20261101a";
 
-const ASSET_VERSION = "20261026b";
+const ASSET_VERSION = "20261101a";
 const worker = new Worker(new URL(`./worker.js?v=${ASSET_VERSION}`, import.meta.url), {
   type: "module",
 });
