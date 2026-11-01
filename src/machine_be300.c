@@ -901,7 +901,9 @@ static void be300_runtime_finalize(machine_t *m)
  * touch path (PIU, GIRQ0, its driver) can be tested headless. Lines are
  * "<ms> down <x> <y>", "<ms> up" or "<ms> tap <x> <y>" (down, then up 150 ms
  * later), with ms since start and x/y in LCD pixels (y 320-359 is the
- * icon strip under the LCD); '#' starts a comment.
+ * icon strip under the LCD); '#' starts a comment. "<ms> power down|up"
+ * holds or lets go of the Power button, as the window's F12 does, for
+ * headless power-off and wake tests.
  */
 #define BE300_TOUCH_SCRIPT_MAX 256
 #define BE300_TOUCH_SCRIPT_W   240u     /* the LCD */
@@ -910,6 +912,7 @@ static void be300_runtime_finalize(machine_t *m)
 struct be300_touch_event {
     uint64_t at_ns;
     bool down;
+    bool power;                 /* the Power button, not the pen */
     uint16_t x, y;
 };
 
@@ -922,7 +925,16 @@ static bool be300_touch_script_add(uint64_t ms, bool down, unsigned x, unsigned 
         y >= BE300_TOUCH_SCRIPT_H)
         return false;
     touch_script[touch_script_len++] = (struct be300_touch_event){
-        ms * UINT64_C(1000000), down, (uint16_t)x, (uint16_t)y };
+        ms * UINT64_C(1000000), down, false, (uint16_t)x, (uint16_t)y };
+    return true;
+}
+
+static bool be300_power_script_add(uint64_t ms, bool down)
+{
+    if (touch_script_len == BE300_TOUCH_SCRIPT_MAX)
+        return false;
+    touch_script[touch_script_len++] = (struct be300_touch_event){
+        ms * UINT64_C(1000000), down, true, 0, 0 };
     return true;
 }
 
@@ -950,6 +962,12 @@ static bool be300_touch_script_load(const char *path)
                 be300_touch_script_add(ms + 150, false, lx = x, ly = y);
         else if (k == 2 && !strcmp(cmd, "up"))
             ok = be300_touch_script_add(ms, false, lx, ly);
+        else if (k == 2 && !strcmp(cmd, "power")) {
+            char state[8];
+            ok = sscanf(line, "%llu %7s %7s", &ms, cmd, state) == 3 &&
+                (!strcmp(state, "down") || !strcmp(state, "up")) &&
+                be300_power_script_add(ms, !strcmp(state, "down"));
+        }
         else
             ok = false;
         if (!ok)
@@ -976,7 +994,11 @@ static void be300_touch_script(machine_t *m)
     while (touch_script_next < touch_script_len &&
         be300_emulated_ns(m) >= touch_script[touch_script_next].at_ns) {
         const struct be300_touch_event *e = &touch_script[touch_script_next++];
-        be300_set_touch(m, e->down, e->x, e->y);
+        if (e->power)
+            be300_set_buttons(m, m->btn_set1, e->down ? (uint8_t)(m->btn_set2 | 0x80u)
+                                                      : (uint8_t)(m->btn_set2 & ~0x80u));
+        else
+            be300_set_touch(m, e->down, e->x, e->y);
     }
 }
 
@@ -1091,6 +1113,7 @@ static bool be300_run_batch(machine_t *m)
     cf_wl54cf_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     be300_vrc4173_update_cf_irq();
     aiu_tick(m);
+    be300_cmcu_tick(m);
     if (m->cfg.enable_stowaway_keyboard || m->cfg.pcconnect_bridge ||
         m->cfg.serial0_bridge || m->cfg.serial1_bridge)
         be300_pcconnect_poll();
@@ -1241,6 +1264,9 @@ void be300_set_buttons(machine_t *m, uint8_t btn_set1, uint8_t btn_set2)
     m->btn_set1 = btn_set1;
     m->btn_set2 = btn_set2;
     __sync_synchronize();
+    /* Power is also the VR4131's POWER pin, which wakes HIBERNATE (VR4131
+     * UM §12.1.3(1)); the companion only samples it as a button. */
+    dev_vr41xx_power_switch((btn_set2 & 0x80u) != 0);
     be300_buttons_host_update(m, old_set1, old_set2);
 }
 

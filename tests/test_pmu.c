@@ -27,10 +27,58 @@ static void test_reset_and_w1c(void)
     pmu_state_t p;
 
     pmu_init(&p);
-    CHECK(p.pmuintreg == PMUINTREG_RTCRST);
+    /* UM §12.2.1: RTCRST is bit 4; DCDST (bit 10) shows the DCD# pin,
+       high on a BE-300 (hw_dump_vr4131.txt:35 reads 0x0400). */
+    CHECK(PMUINTREG_RTCRST == 0x10 && PMUINTREG_RSTSW == 0x08 &&
+          PMUINTREG_TIMOUTRST == 0x20 && PMUINTREG_RTCINTR == 0x200);
+    CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == (PMUINTREG_RTCRST | PMUINTREG_DCDST));
     CHECK(p.pmucntreg == 0);
     pmu_write(&p, PMU_PMUINTREG, 2, PMUINTREG_RTCRST);
-    CHECK(p.pmuintreg == 0);
+    CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == PMUINTREG_DCDST);
+    /* DCDST is read-only; the memo bits are plain read/write. */
+    pmu_write(&p, PMU_PMUINTREG, 2, 0xFFFF);
+    CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == (PMUINTREG_DCDST | PMUINTREG_MEMO));
+    pmu_write(&p, PMU_PMUINTREG, 2, 0x0040);
+    CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == (PMUINTREG_DCDST | 0x0040));
+    /* What Windows CE writes before HIBERNATE (nk.exe 0x80079560). */
+    p.pmuintreg = 0x03FF;
+    pmu_write(&p, PMU_PMUINTREG, 2, 0xFB3B);
+    CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == PMUINTREG_DCDST);
+    p.dcd_high = 0;
+    CHECK(!(pmu_read(&p, PMU_PMUINTREG, 2) & PMUINTREG_DCDST));
+}
+
+/* UM §12.1.3: an alarm wake from Hibernate sets RTCINTR, a power-switch
+   wake sets nothing (a real BE-300 read 0x0600 and 0x0400, Glaze
+   2026-10-31), and both arm the HALTimer again (UM §12.1.2(1)). */
+static void test_hibernate_wake(void)
+{
+    pmu_state_t p;
+
+    reset_calls = 0;
+    pmu_init(&p);
+    pmu_arm_initial(&p, 0, 1000, reset_cb, NULL);
+    pmu_write(&p, PMU_PMUCNTREG, 2, PMUCNTREG_HALTIMERRST);
+    pmu_write(&p, PMU_PMUINTREG, 2, 0xFB3B);
+    pmu_hibernate_wake(&p, PMUINTREG_RTCINTR, 500);
+    CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == (PMUINTREG_RTCINTR | PMUINTREG_DCDST));
+    CHECK(p.haltimer_remaining_cycles == 1000);
+    pmu_tick(&p, 800);
+    CHECK(p.haltimer_remaining_cycles == 700 && reset_calls == 0);
+    pmu_write(&p, PMU_PMUCNTREG, 2, PMUCNTREG_HALTIMERRST);
+    CHECK(p.haltimer_remaining_cycles == 0);
+
+    pmu_write(&p, PMU_PMUINTREG, 2, 0xFB3B);
+    pmu_hibernate_wake(&p, 0, 900);
+    CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == PMUINTREG_DCDST);
+    pmu_tick(&p, 1300);
+    pmu_tick(&p, 1700);
+    pmu_tick(&p, 1950);
+    CHECK(reset_calls == 1 && (p.pmuintreg & PMUINTREG_TIMOUTRST));
+
+    pmu_reset_switch(&p);
+    pmu_apply_pending_reset_state(&p, 2000);
+    CHECK(p.pmuintreg & PMUINTREG_RSTSW);
 }
 
 static void test_haltimer_and_count_wrap(void)
@@ -99,6 +147,7 @@ int main(void)
     test_haltimer_and_count_wrap();
     test_count_rewrite_and_ack();
     test_soft_reset_state();
+    test_hibernate_wake();
     if (failures) {
         fprintf(stderr, "test_pmu: %d failure(s)\n", failures);
         return 1;

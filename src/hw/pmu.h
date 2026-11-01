@@ -4,10 +4,14 @@
 /*
  * PMU — Power Management Unit (VR4131 hardware manual §12)
  *
- *   - PMUINTREG (0x00, W1C): reset-cause status bits. Set by hardware
- *     on power-on (RTCRST), HALTimer fire (TIMOUTRST), reset-switch /
- *     SOFTRST (RSTSW), and battery-low (BATTINH). NK reads this to
- *     decide cold vs. warm-restart branching.
+ *   - PMUINTREG (0x00, W1C): reset-cause and wake-cause bits (UM §12.2.1,
+ *     U15350EJ2V0UM p.225-226). Set by hardware on power-on (RTCRST),
+ *     HALTimer fire (TIMOUTRST), reset switch or SOFTRST (RSTSW), a
+ *     battery too low to start (BATTINH) and an Elapsed Time alarm wake
+ *     (RTCINTR). A power-switch wake from Hibernate sets none of them
+ *     (UM §12.1.3(1): "Activation via power switch interrupt never sets
+ *     PMUINTREG's POWERSWINTR bit to 1"). DCDST is read-only and shows the
+ *     DCD# pin. NK reads this to decide cold vs. warm-restart branching.
  *   - PMUCNTREG (0x02): control. Bit 2 (HALTIMERRST) must be written
  *     1 within ~4 s of power-on (UM §12.2.2) or the HALTimer fires and
  *     cold-resets the CPU with SDRAM preserved.
@@ -27,11 +31,20 @@
 #define PMU_PMUWAITREG     0x08u   /* PMU wait counter */
 #define PMU_PMUDIVREG      0x0Cu   /* PMU divide mode */
 
-/* PMUINTREG status bits (UM §12.2.1) — W1C */
-#define PMUINTREG_RTCRST      (1u << 0)  /* power-on */
-#define PMUINTREG_TIMOUTRST   (1u << 1)  /* HALTimer expiry */
-#define PMUINTREG_RSTSW       (1u << 2)  /* reset switch / SOFTRST */
-#define PMUINTREG_BATTINH     (1u << 3)  /* battery low */
+/* PMUINTREG bits (UM §12.2.1, U15350EJ2V0UM p.225-226). Write 1 to clear,
+ * but for DCDST (read-only pin state), RFU bit 2 and the memo bits 7:6,
+ * which software reads and writes freely. */
+#define PMUINTREG_POWERSWINTR (1u << 0)  /* power switch, while running */
+#define PMUINTREG_BATTINTR    (1u << 1)  /* battery low, while running */
+#define PMUINTREG_RSTSW       (1u << 3)  /* reset switch / SOFTRST */
+#define PMUINTREG_RTCRST      (1u << 4)  /* power-on: the RTC was reset */
+#define PMUINTREG_TIMOUTRST   (1u << 5)  /* HALTimer expiry */
+#define PMUINTREG_MEMO        (3u << 6)  /* free for software */
+#define PMUINTREG_BATTINH     (1u << 8)  /* battery too low at power-on */
+#define PMUINTREG_RTCINTR     (1u << 9)  /* woken by the Elapsed Time alarm */
+#define PMUINTREG_DCDST       (1u << 10) /* DCD# pin high (read-only) */
+#define PMUINTREG_CLKRUNINTR  (1u << 11)
+#define PMUINTREG_GPIOINTR(n) (1u << (12 + (n)))  /* GPIO0-3 activation */
 
 /* PMUCNTREG control bits (UM §12.2.2) */
 #define PMUCNTREG_HALTIMERRST (1u << 2)  /* write 1: pet HALTimer */
@@ -47,10 +60,17 @@ typedef struct {
     uint16_t pmuwaitreg;
     uint16_t pmudivreg;
 
-    /* HALTimer countdown (UM §12.2.2 ~4 s watchdog). */
+    /* HALTimer countdown (UM §12.2.2 ~4 s watchdog). haltimer_window is
+       the full window, armed again on every wake from Hibernate. */
     uint64_t last_count_sample;
     uint64_t haltimer_remaining_cycles;
     uint64_t haltimer_arm_cycles;
+    uint64_t haltimer_window;
+
+    /* DCD# pin level for DCDST. The BE-300 reads it high: PMUINTREG 0x0400
+       in docs/hardware/hw_dump_vr4131.txt:35, and 0x0400/0x0600 on a real
+       BE-300 after Glaze's Hibernate wakes (2026-10-31). */
+    uint8_t  dcd_high;
 
     /* Cold-reset staging: set by pmu_tick / pmu_write (SOFTRST), applied
        by pmu_apply_pending_reset_state before the cold_reset call. */
@@ -93,3 +113,17 @@ void pmu_tick(pmu_state_t *s, uint64_t cur_count);
  * UM §12.1.2.
  */
 void pmu_apply_pending_reset_state(pmu_state_t *s, uint64_t cur_count);
+
+/*
+ * A reset by the RSTSW# pin (the reset switch, or a board part driving it):
+ * stages RSTSW like SOFTRST, for pmu_apply_pending_reset_state.
+ */
+void pmu_reset_switch(pmu_state_t *s);
+
+/*
+ * The CPU starts again after HIBERNATE (UM §12.1.3): `cause` is
+ * PMUINTREG_RTCINTR for the Elapsed Time alarm and 0 for the power switch,
+ * which sets nothing. The HALTimer is armed again, since software must
+ * clear it within about 4 s of any activation (UM §12.1.2(1)).
+ */
+void pmu_hibernate_wake(pmu_state_t *s, uint32_t cause, uint64_t cur_count);

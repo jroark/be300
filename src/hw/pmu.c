@@ -14,6 +14,7 @@ void pmu_init(pmu_state_t *s)
      * cold-reset thunk.
      */
     s->pmuintreg     = PMUINTREG_RTCRST;
+    s->dcd_high      = 1;
     s->pmucntreg     = 0;
     s->pmutclkdivreg = 0;
     s->pmucnt2reg    = 0;
@@ -37,6 +38,7 @@ void pmu_arm_initial(pmu_state_t *s, uint64_t initial_count,
                      void *cpu_opaque)
 {
     s->haltimer_arm_cycles       = arm_cycles;
+    s->haltimer_window           = arm_cycles;
     s->haltimer_remaining_cycles = arm_cycles;
     s->last_count_sample         = initial_count;
     s->cold_reset                = cold_reset;
@@ -66,7 +68,9 @@ uint32_t pmu_read(pmu_state_t *s, uint32_t offset, unsigned size)
 {
     (void)size;
     switch (offset) {
-    case PMU_PMUINTREG:     return s->pmuintreg;
+    case PMU_PMUINTREG:
+        return (uint16_t)((s->pmuintreg & ~(PMUINTREG_DCDST | (1u << 2))) |
+                          (s->dcd_high ? PMUINTREG_DCDST : 0));
     case PMU_PMUCNTREG:     return s->pmucntreg;
     case PMU_PMUTCLKDIVREG: return s->pmutclkdivreg;
     case PMU_PMUCNT2REG:    return s->pmucnt2reg;
@@ -82,8 +86,10 @@ void pmu_write(pmu_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     (void)size;
     switch (offset) {
     case PMU_PMUINTREG:
-        /* W1C: bits written as 1 clear the corresponding status bit. */
-        s->pmuintreg &= (uint16_t)~val;
+        /* W1C, but DCDST is read-only, RFU bit 2 reads 0, and the memo
+           bits are plain read/write (UM §12.2.1). */
+        s->pmuintreg &= (uint16_t)~(val & ~(PMUINTREG_DCDST | PMUINTREG_MEMO | (1u << 2)));
+        s->pmuintreg = (uint16_t)((s->pmuintreg & ~PMUINTREG_MEMO) | (val & PMUINTREG_MEMO));
         break;
 
     case PMU_PMUCNTREG:
@@ -183,4 +189,17 @@ void pmu_tick(pmu_state_t *s, uint64_t cur_count)
     }
 
     s->haltimer_remaining_cycles -= delta;
+}
+
+void pmu_reset_switch(pmu_state_t *s)
+{
+    s->pending_reset_cause = PMUINTREG_RSTSW;
+}
+
+void pmu_hibernate_wake(pmu_state_t *s, uint32_t cause, uint64_t cur_count)
+{
+    s->pmuintreg |= (uint16_t)cause;
+    s->haltimer_remaining_cycles = s->haltimer_window;
+    s->haltimer_arm_cycles       = s->haltimer_window;
+    s->last_count_sample         = cur_count;
 }

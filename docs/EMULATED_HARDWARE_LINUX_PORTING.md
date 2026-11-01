@@ -268,36 +268,60 @@ emulator does not currently gate peripheral behavior based on this mask.
 
 ### PMU: Power Management Unit
 
-Status: emulator-modeled for reset cause, HALTimer, and software reset.
+Status: emulator-modeled for reset and wake causes, the HALTimer, software
+reset, the reset switch and HIBERNATE.
 
 Base: `0x0F0000C0`
 
 | Offset | Name | Behavior |
 | ---: | --- | --- |
-| `0x00` | `PMUINTREG` | Reset-cause/status bits, write-one-to-clear. |
-| `0x02` | `PMUCNTREG` | Control. Bit 2 pets/rearms the HALTimer. |
+| `0x00` | `PMUINTREG` | Reset and wake causes, write-one-to-clear; `DCDST` read-only. |
+| `0x02` | `PMUCNTREG` | Control. Bit 2 (`HALTIMERRST`) clears the HALTimer. |
 | `0x04` | `PMUTCLKDIVREG` | Latches writes. |
 | `0x06` | `PMUCNT2REG` | Control 2. Bit 4 triggers immediate cold reset. |
 | `0x08` | `PMUWAITREG` | Latches writes. |
 | `0x0C` | `PMUDIVREG` | Latches writes. |
 
-`PMUINTREG` bits:
+`PMUINTREG` bits (VR4131 UM §12.2.1, p.225-226):
 
 | Bit | Name | Meaning |
 | ---: | --- | --- |
-| 0 | `RTCRST` | Power-on reset. |
-| 1 | `TIMOUTRST` | HALTimer timeout reset. |
-| 2 | `RSTSW` | Reset switch or software reset. |
-| 3 | `BATTINH` | Battery low/inhibit. |
+| 0 | `POWERSWINTR` | Power switch while running (not raised yet). |
+| 1 | `BATTINTR` | Battery low while running. |
+| 3 | `RSTSW` | Reset switch or `SOFTRST`. |
+| 4 | `RTCRST` | Power-on: the RTC was reset. Set at emulator start. |
+| 5 | `TIMOUTRST` | HALTimer expiry. |
+| 7:6 | memo | Plain read/write, for software. |
+| 8 | `BATTINH` | Battery too low at power-on. |
+| 9 | `RTCINTR` | Woken from HIBERNATE by the Elapsed Time alarm. |
+| 10 | `DCDST` | DCD# pin high. Read-only; reads 1 on a BE-300 (`hw_dump_vr4131.txt:35`). |
+| 15:12 | `GPIOnINTR` | GPIO activation (not modelled). |
 
 At power-on the emulator arms a roughly 4-second HALTimer window. A guest that
-writes bit 2 (`HALTIMERRST`) in `PMUCNTREG` pets the timer. If the timer
+writes bit 2 (`HALTIMERRST`) in `PMUCNTREG` clears the timer. If the timer
 expires, the emulator stages `TIMOUTRST` and cold-resets the CPU with SDRAM
 preserved. If the guest writes bit 4 (`SOFTRST`) in `PMUCNT2REG`, the emulator
-stages `RSTSW` and immediately cold-resets the CPU.
+stages `RSTSW` and immediately cold-resets the CPU. Both, and the reset
+switch, reset the VR4131's peripheral units but the RTC and PMU (UM §12.1.1,
+§12.1.2): of the modelled ones, the ICU, CMU, DMAAU and DCU.
+
+**HIBERNATE** (UM §12.1.4(4), `X(hibernate_vr41xx)` and
+`dev_vr41xx_hibernate()`):
+- It does nothing while an unmasked ICU request is pending (§12.1.2(2)).
+- Otherwise the CPU stops, with time still running, until a wake:
+  - a rising edge on the POWER pin (the Power button, F12, or
+    `--touch-script`'s `power down`), which sets no `PMUINTREG` bit
+    (§12.1.3(1));
+  - the Elapsed Time alarm (ETIME reaching ECMP), which sets `RTCINTR` and
+    is ignored while Power is held (§12.1.3(4)).
+  DCD# and the GPIO activation inputs are not modelled.
+- The wake resets the peripheral units as above and arms the HALTimer
+  again. The CPU then cold-resets into the boot ROM with SDRAM kept.
+- A real BE-300 read `PMUINTREG` 0x0600 after an alarm wake and 0x0400 after
+  a Power wake (Glaze, 2026-10-31); the emulator reads the same.
 
 Linux implication: an early PMU driver should acknowledge reset-cause bits and
-pet or disable the HALTimer using the same sequence as real VR4131 firmware.
+clear the HALTimer using the same sequence as real VR4131 firmware.
 If Linux hangs early with repeated resets, check PMU HALTimer handling first.
 
 ### RTC and Timers
@@ -501,7 +525,7 @@ Important platform identification and control offsets:
 | `0x1128` | Recovered shared gate | BLG clock bit 0, shared by backlight and buzzer. |
 | `0x1300-0x161F` | Emulator-modeled | BE-300 USB function (device) controller: DMA/top level, core status, FIFOs, descriptor RAM. See `docs/BE300_USB_FUNCTION.md`. |
 | `0x1B00-0x1B2F` | Mixed | Interrupt/status/mask area, W1C handling. |
-| `0x7800-0x783F` | Stub/unknown | ScCmcu companion MCU command area; reads return zero to mean instant command completion. |
+| `0x7800-0x783F` | Emulator-modeled watchdog | ScCmcu, Casio's power MCU: a watchdog started, reloaded and stopped as the boot ROM and Windows CE do; STATUS (`+0x34`) reads 3 while it runs; TIMEOUT seconds (CE: 150) without a reload reset the BE-300. See `src/hw/cmcu.h`. |
 | `0x8004` | Emulator-modeled with PC Connect option | CommMode pending/mask word. |
 | `0x8010` | Emulator-modeled with PC Connect option | CommMode socket identity. |
 | `0x8680` | Emulator-modeled | VRC4173 companion SIU base. |
@@ -1119,8 +1143,9 @@ Recommended Linux driver names are suggestions, not existing upstream bindings.
 - VRC4173 display acceleration blocks are partial. Use the framebuffer first.
 - The USB block is a function (device) controller; there is no USB host port.
 - DSIU extension registers are stubbed.
-- The ScCmcu range `0x0A007800-0x0A00783F` returns instant completion and is
-  not a real MCU model.
+- The ScCmcu range `0x0A007800-0x0A00783F` models only the watchdog
+  (`src/hw/cmcu.h`). How its expiry resets the CPU isn't known; it is
+  modelled as the reset switch.
 - Unknown VRC4173 registers usually act as latches. A driver that depends on
   side effects from an undocumented register may need emulator work.
 - The RTC starts as uninitialized/default-value for cold boot. Do not expect a

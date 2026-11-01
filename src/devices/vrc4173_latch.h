@@ -12,6 +12,7 @@
 #include "be300.h"
 #include "interrupt.h"
 #include "hw/usbf.h"
+#include "hw/cmcu.h"
 
 struct cpu;
 
@@ -21,6 +22,7 @@ struct be300_vrc4173_latch {
     uint8_t  bytes[0x20000];
     bool     log_mmio;
     usbf_state_t usbf;
+    cmcu_state_t cmcu;          /* ScCmcu watchdog, 0x7800-0x783F */
     struct interrupt usb_irq;
     bool     usb_irq_connected;
     bool     usb_irq_asserted;

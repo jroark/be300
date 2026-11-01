@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-10-26
+Last updated: 2026-10-31
 
 ## Active Target
 
@@ -16,6 +16,15 @@ The NAND image is a local prerequisite and is not redistributed in Git; see
 The emulator should run the real masked ROM, load the SPL from NAND, decompress
 NK.exe, start WinCE, and reach the first-boot UI without guest patches, RAM
 seeds, or synthetic handoff state.
+
+Since 2026-10-31, a cold boot stops at the touch-screen calibration prompt
+("Align Screen"), the real battery-pull sequence's step 5 (CLAUDE.md). It used
+to go straight to the shell. The change comes from `PMUINTREG` taking the VR4131
+UM's layout (`src/hw/pmu.h`): `RTCRST`, which reports the power-on, is bit 4,
+not bit 0. CE now sees a power-on, where before it saw bit 0, which is
+`POWERSWINTR`. With `RTCRST` put back at bit 0 and the CMCU watchdog modelled,
+CE showed its "Restart: Due to an OS problem..." dialog over the shell instead.
+Tapping through calibration headless isn't scripted yet.
 
 Secondary implemented paths, used for targeted investigation only:
 
