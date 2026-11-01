@@ -79,3 +79,7 @@ void     be300_bus_stall(struct cpu *cpu, const char *unit, uint64_t pa,
 bool     be300_cmu_gate_on(uint32_t gate_off);
 /* A GIRQ0 source word at en_off reaches GIU line 0 (bits 2-3 and AA000008). */
 bool     be300_girq0_line_live(struct be300_vrc4173_latch *d, uint32_t en_off);
+
+/* be300_devices.c: the ScCmcu watchdog's reset (hw/cmcu.h), from the
+ * machine loop. */
+void be300_cmcu_tick(machine_t *m);

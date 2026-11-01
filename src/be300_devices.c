@@ -763,23 +763,13 @@ static uint64_t latched_bit0_clear_read(struct cpu *cpu,
     return (uint64_t)(be300_latch_peek_u32(d, off) & ~(uint32_t)1u);
 }
 
-    /*
-     * WORKAROUND: ScCmcu registers (Casio companion MCU,
-     * PA 0x0A007800-0x0A00783F).
-     *
-     * The ROM MIPS16 boot dispatcher at 0x9FC00C20 writes a
-     * command byte (e.g. 0x35) to register 0x7834, then polls
-     * it until the value drops below 3 (meaning "command
-     * complete").  Register 0x7800 follows the same pattern
-     * with command 0x5C.
-     *
-     * On real hardware, a companion microcontroller receives
-     * the command, processes it (e.g. power sequencing, battery
-     * check), and clears the register when done.  We don't
-     * emulate the companion MCU, so we return 0 on all reads
-     * to simulate instant completion.  Without this, the ROM
-     * poll loop spins forever waiting for the MCU to respond.
-     */
+/*
+ * ScCmcu, Casio's power-management microcontroller (PA 0x0A007800-
+ * 0x0A00783F): its watchdog, modelled in hw/cmcu.c from the boot ROM's
+ * stop at 0x9FC00D20 and Windows CE's start, reload and stop sequences.
+ * STATUS reads 3 while it runs, so the ROM's stop loop, which resends the
+ * command while STATUS reads 3, ends once it has stopped.
+ */
 static bool scmcu_claims(struct be300_vrc4173_latch *d, uint32_t off,
     unsigned len)
 {
@@ -792,10 +782,35 @@ static uint64_t scmcu_read(struct cpu *cpu, struct be300_vrc4173_latch *d,
     uint32_t off, unsigned len)
 {
     (void)cpu;
-    (void)d;
-    (void)off;
     (void)len;
-    return 0;   /* WORKAROUND: instant MCU completion */
+    return cmcu_read(&d->cmcu, off - 0x7800u);
+}
+
+static void scmcu_write(struct cpu *cpu, struct be300_vrc4173_latch *d,
+    uint32_t off, unsigned len, uint64_t val, const unsigned char *data)
+{
+    (void)cpu;
+    (void)len;
+    (void)data;
+    cmcu_write(&d->cmcu, off - 0x7800u, (uint32_t)val,
+        be300_emulated_ns(g_be300_machine));
+}
+
+/*
+ * The watchdog ran out (hw/cmcu.h): the BE-300 resets. TODO 2026-10-31: how
+ * the microcontroller resets the CPU isn't known; it is modelled as a pulse
+ * on RSTSW#, the reset switch's line (VR4131 UM §12.1.1(2)), which leaves
+ * RAM and the companion as they are.
+ */
+void be300_cmcu_tick(machine_t *m)
+{
+    struct be300_vrc4173_latch *d = g_be300_vrc4173_latch;
+
+    if (!d || !m || !m->cpu || !cmcu_expired(&d->cmcu, be300_emulated_ns(m)))
+        return;
+    fprintf(stderr, "[CMCU] watchdog: %u s without a reload; resetting the BE-300\n",
+        cmcu_read(&d->cmcu, CMCU_TIMEOUT) & 0xFFFFu);
+    dev_vr41xx_reset_switch(m->cpu);
 }
 
 /* PIU A/D port result (hw/piu.h), just past the touch window. */
@@ -855,8 +870,8 @@ static const be300_vrc4173_region_t be300_vrc4173_regions[] = {
       latched_bit0_clear_read, NULL },
     { "vrc4173-ddi-ctrl-busy", BE300_MMIO_CLASS_STUBBED, ddi_busy_claims,
       latched_bit0_clear_read, NULL },
-    { "vrc4173-scmcu-stub", BE300_MMIO_CLASS_STUBBED, scmcu_claims,
-      scmcu_read, NULL },
+    { "vrc4173-scmcu", BE300_MMIO_CLASS_KNOWN, scmcu_claims,
+      scmcu_read, scmcu_write },
     { "vrc4173-piu-adport", BE300_MMIO_CLASS_KNOWN, adport_claims,
       adport_read, NULL },
 };
@@ -1028,6 +1043,7 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
     CHECK_ALLOCATION(latch = calloc(1, sizeof(struct be300_vrc4173_latch)));
     latch->log_mmio = log_mmio;
     g_be300_vrc4173_latch = latch;
+    cmcu_init(&latch->cmcu);
     g_be300_machine = m;
     be300_register_wince_aux(gxm, log_mmio, enable_ppsh);
     lcd_init(&m->lcd);
