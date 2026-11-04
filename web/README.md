@@ -118,22 +118,23 @@ Choosing
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.
 
-Release `20261101a` publishes the emulator from `main` (LCD power and
-contrast, piezo buzzer, power-on state, ROM NAND bursts, battery and PMU wake
-models, Wi-Fi CF cards, CF hot plug and stereo audio) together with a fresh
-Glaze factory NAND and a rebuilt Linux matrix. The web bundle, worker and NAND
-URLs use the `20261101a` asset tag. The network bridge is unchanged from
-`20261021b`; its helper downloads keep that tag. The Windows CE images are
-unchanged from `20261024a`.
+Release `20261104a` updates only the Glaze factory NAND to Glaze OS 1.1. The
+emulator source is unchanged from `20261101a`, which published it from `main`
+(LCD power and contrast, piezo buzzer, power-on state, ROM NAND bursts,
+battery and PMU wake models, Wi-Fi CF cards, CF hot plug and stereo audio).
+The web bundle, worker and NAND URLs use the `20261104a` asset tag. The
+network bridge is unchanged from `20261021b`; its helper downloads keep that
+tag. The Windows CE images are unchanged from `20261024a`, and the Linux
+images from `20261101a`.
 
-The Glaze factory NAND comes from glaze-os `main` at `e9490e6`. Its App
-Store (`appstore.glaze-os.com`) needs networking, i.e. the net bridge. Build it
-from the sibling `glaze-os` checkout with
-`./build.sh -s OUT=out/web-release-20261101a INIT=bin/springboard DYNAMIC=1
-LD_TESTS=0 MEM_TESTS=0 BUILD_ID=e9490e6`, then copy the resulting `glaze.bin`
+The Glaze factory NAND comes from glaze-os `main` at `4420239` (OS 1.1, SPL 3).
+Its App Store (`appstore.glaze-os.com`) needs networking, i.e. the net bridge.
+Build it from the sibling `glaze-os` checkout with
+`./build.sh OUT=out/web-release-20261104a INIT=bin/springboard DYNAMIC=1
+LD_TESTS=0 MEM_TESTS=0 BUILD_ID=4420239`, then copy the resulting `glaze.bin`
 to this repo's `nand/glaze.bin` before building the web bundle. The 16 MiB
 release image has SHA-256
-`33080190d6995655e754a7e1ba9f48825c3fc4feb8823506f929289194c590b8`.
+`9ea2b603744ea072e385d3ff7b7192e04be17a30c82c2564b9aa9b2dd57ed1d6`.
 
 The nine Linux images come from the sibling `mipsel-cross-image` checkout at
 `8d80835`, built inside its `mips-dev` container without `BE300_SPL_DIAG`.
