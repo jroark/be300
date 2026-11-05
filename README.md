@@ -177,6 +177,11 @@ primary regression target:
 - `--ne2000` — PCMCIA NE2000 Ethernet card model
 - `--xi825` — Z-Com XI-825 wireless CF card with a virtual access point;
   requires the local vendor driver. See [XI-825 setup](docs/XI825.md).
+- `--cf-modem <spec>` — Rockwell RC56LD CF data modem (the CIS of a real
+  CF56R-BCT-DX card, a 16550 at 3f8h and a Hayes command interpreter). A dialed
+  call connects to a host chardev: `tcp:HOST:PORT` (e.g. glaze-os
+  `tests/ppp_peer.py`), `pty:auto` for a host `pppd`, `unix:/PATH`. Dropping
+  DTR hangs up.
 - `--rtc-host-time` — initialize the guest RTC from host local time
 - `--audio` — route emulated wave-audio output to SDL
 - `--stowaway-keyboard` — attach the Targus/Think Outside serial keyboard dock

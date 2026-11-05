@@ -59,6 +59,9 @@ typedef struct {
     bool        enable_ne2000;
     bool        enable_xi825;
     bool        enable_wl54cf;
+    /* --cf-modem: an RC56LD data modem whose calls reach this host_chardev
+     * spec (pty:auto, tcp:HOST:PORT, unix:/PATH, ...), e.g. a host pppd. */
+    const char *cf_modem_spec;
     bool        enable_audio;
     bool        net_mac_set;
     bool        restore;
@@ -155,6 +158,8 @@ typedef struct be300_state {
     /* NAND flash controller (VRC4173) */
     nand_state_t nand;
     cf_state_t   cf[BE300_MAX_CF_SLOTS];
+    /* --cf-modem: where the modem's calls go. */
+    struct host_chardev *modem_link;
 
     /* AIU (Casio audio block on the VRC4173 latch) */
     aiu_state_t  aiu;

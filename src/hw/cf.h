@@ -13,6 +13,7 @@ struct net;
 #include "net.h"
 #include "xi825.h"
 #include "wl54cf.h"
+#include "modem.h"
 
 typedef enum {
     CF_CARD_NONE = 0,
@@ -20,6 +21,7 @@ typedef enum {
     CF_CARD_NE2000,
     CF_CARD_XI825,
     CF_CARD_WL54CF,
+    CF_CARD_MODEM,      /* Rockwell RC56LD-PCC data modem, --cf-modem */
 } cf_card_kind_t;
 
 #define CF_NE2000_MEM_SIZE 0x8000u
@@ -71,6 +73,9 @@ typedef struct {
     struct net *xi825_net;
     uint8_t xi825_cor;
 
+    cf_modem_t modem;
+    uint8_t modem_cor;
+
     struct {
         struct nic_data nic;
         struct net *net;
@@ -114,6 +119,13 @@ int      cf_attach_xi825(cf_state_t *s, struct machine *machine,
                          struct net *net, const uint8_t *mac);
 int      cf_attach_wl54cf(cf_state_t *s, struct machine *machine,
                          struct net *net, const uint8_t *mac);
+/* A CF data modem; the backend callbacks go to modem.h's cf_modem_t. */
+int      cf_attach_modem(cf_state_t *s, void *opaque,
+                         bool (*dial)(void *, const char *),
+                         void (*hangup)(void *),
+                         void (*tx)(void *, const uint8_t *, size_t));
+/* Cards with registers in the I/O window at 0x0A00C000: network and modem. */
+bool     cf_is_io_card(const cf_state_t *s);
 void     cf_wl54cf_tick(cf_state_t *s);
 void     cf_xi825_tick(cf_state_t *s);
 bool     cf_is_network(const cf_state_t *s);
