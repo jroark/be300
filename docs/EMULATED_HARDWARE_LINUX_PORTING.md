@@ -69,6 +69,7 @@ Optional useful flags while developing Linux support:
 | --- | --- |
 | `--cf <image>` | Attach a 512-byte-sector CF image. Useful for block-driver work. |
 | `--ne2000` | Attach the PCMCIA NE2000 Ethernet card model. |
+| `--jacket` | Put the network card (`--ne2000`, `--3c589`, `--hermes`) in a PCMCIA jacket: the BE-300's second socket controller at `0x0B000000` (power at `0x0A001B00`, detect at `0x0A001008` bit 3, I/O at `0x0B200000`, attribute memory at `0x0B600000`). See `src/hw/jacket.h`. |
 | `--ppsh` | Enable the PPSH debug-shell transport at `0x0C000120/0x0C000520`. |
 | `--rtc-host-time` | Initialize the VR4131 RTC from host local time. Native cold boots leave this off by default; the web frontend enables it by default. |
 | `--pcconnect-bridge <S>` | Bridge the PC Connect serial dock UART to a host chardev. Not needed for normal kernel bring-up. |

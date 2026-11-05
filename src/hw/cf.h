@@ -13,6 +13,7 @@ struct net;
 #include "net.h"
 #include "xi825.h"
 #include "wl54cf.h"
+#include "el3.h"
 #include "modem.h"
 
 typedef enum {
@@ -22,6 +23,7 @@ typedef enum {
     CF_CARD_XI825,
     CF_CARD_WL54CF,
     CF_CARD_MODEM,      /* Rockwell RC56LD-PCC data modem, --cf-modem */
+    CF_CARD_3C589,
 } cf_card_kind_t;
 
 #define CF_NE2000_MEM_SIZE 0x8000u
@@ -68,6 +70,10 @@ typedef struct {
     struct net *wl54cf_net;
     uint8_t wl54cf_cor;
 
+    el3_t el3;
+    struct nic_data el3_nic;
+    struct net *el3_net;
+
     xi825_t xi825;
     struct nic_data xi825_nic;
     struct net *xi825_net;
@@ -75,6 +81,10 @@ typedef struct {
 
     cf_modem_t modem;
     uint8_t modem_cor;
+
+    /* --jacket: the PCMCIA jacket (socket 1, jacket.c) whose detect and
+     * power-good bits this socket's companion page reports. */
+    const struct jacket *jacket;
 
     struct {
         struct nic_data nic;
@@ -128,6 +138,11 @@ int      cf_attach_modem(cf_state_t *s, void *opaque,
 bool     cf_is_io_card(const cf_state_t *s);
 void     cf_wl54cf_tick(cf_state_t *s);
 void     cf_xi825_tick(cf_state_t *s);
+int      cf_attach_3c589(cf_state_t *s, struct machine *machine,
+                        struct net *net, const uint8_t *mac);
+void     cf_el3_tick(cf_state_t *s);
+int      cf_attach_hermes(cf_state_t *s, struct machine *machine,
+                         struct net *net, const uint8_t *mac);
 bool     cf_is_network(const cf_state_t *s);
 int      cf_save_image(cf_state_t *s);
 bool     cf_present(const cf_state_t *s);

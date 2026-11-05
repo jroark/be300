@@ -114,6 +114,12 @@ static void usage(const char *prog)
         "  --ne2000              Attach a PCMCIA NE2000 Ethernet card\n"
         "  --wl54cf              Attach an AmbiCom WL54-CF wireless card (SSID BE300)\n"
         "  --xi825               Attach a Z-Com XI-825 wireless CF card (SSID BE300)\n"
+        "  --3c589               Attach a 3Com EtherLink III PC Card (through a jacket)\n"
+        "  --hermes              Attach a Lucent Orinoco/WaveLAN (Hermes) PC Card (SSID BE300)\n"
+        "  --hermes-firmware V   Its Agere station firmware: 8.72 (default) or 6.4, which\n"
+        "                        has no host scan\n"
+        "  --jacket              Put --ne2000, --3c589 or --hermes in a PCMCIA jacket:\n"
+        "                        Windows CE's socket 1, powered by the guest\n"
         "  --net-mac <mac>       Override network card MAC (aa:bb:cc:dd:ee:ff)\n"
         "  --cf-modem <spec>     Attach a Rockwell RC56LD CF data modem; a dialed call\n"
         "                        connects to <spec>: pty:auto (e.g. for pppd), tcp:HOST:PORT,\n"
@@ -344,6 +350,20 @@ int main(int argc, char *argv[])
             cfg.cf_modem_spec = argv[++i];
         } else if (strcmp(argv[i], "--xi825") == 0) {
             cfg.enable_xi825 = true;
+        } else if (strcmp(argv[i], "--hermes") == 0) {
+            cfg.enable_hermes = true;
+        } else if (strcmp(argv[i], "--hermes-firmware") == 0 && i + 1 < argc) {
+            unsigned major, minor;
+            if (sscanf(argv[++i], "%u.%u", &major, &minor) != 2 || major > 255 || minor > 255) {
+                fprintf(stderr, "Error: --hermes-firmware takes MAJOR.MINOR, e.g. 6.4\n");
+                return 1;
+            }
+            cfg.hermes_firmware_major = (uint8_t)major;
+            cfg.hermes_firmware_minor = (uint8_t)minor;
+        } else if (strcmp(argv[i], "--jacket") == 0) {
+            cfg.enable_jacket = true;
+        } else if (strcmp(argv[i], "--3c589") == 0) {
+            cfg.enable_3c589 = true;
         } else if (strcmp(argv[i], "--audio") == 0) {
             cfg.enable_audio = true;
         } else if (strcmp(argv[i], "--net-mac") == 0 && i + 1 < argc) {
@@ -446,11 +466,21 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    if ((unsigned)cfg.enable_ne2000 + cfg.enable_xi825 + cfg.enable_wl54cf > 1) {
-        fprintf(stderr, "Error: --ne2000, --xi825 and --wl54cf claim the same PCMCIA socket; pick one\n");
+    if ((unsigned)cfg.enable_ne2000 + cfg.enable_xi825 + cfg.enable_wl54cf + cfg.enable_3c589 +
+        cfg.enable_hermes > 1) {
+        fprintf(stderr, "Error: --ne2000, --xi825, --wl54cf, --3c589 and --hermes claim the same PCMCIA socket; pick one\n");
         return 1;
     }
-    bool network_card = cfg.enable_ne2000 || cfg.enable_xi825 || cfg.enable_wl54cf;
+    bool network_card = cfg.enable_ne2000 || cfg.enable_xi825 || cfg.enable_wl54cf ||
+        cfg.enable_3c589 || cfg.enable_hermes;
+    if (cfg.enable_jacket && !(cfg.enable_ne2000 || cfg.enable_3c589 || cfg.enable_hermes)) {
+        fprintf(stderr, "Error: --jacket takes --ne2000, --3c589 or --hermes\n");
+        return 1;
+    }
+    if (cfg.enable_jacket && (cfg.cf_count || cfg.cf_modem_spec)) {
+        fprintf(stderr, "Error: the PCMCIA jacket fills the CF slot; drop --cf/--cf-modem\n");
+        return 1;
+    }
     if (cfg.cf_modem_spec) {
         host_chardev_kind_t kind;
         const char *target;

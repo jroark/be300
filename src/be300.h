@@ -15,6 +15,7 @@
 #include "hw/siu.h"
 #include "hw/nand.h"
 #include "hw/cf.h"
+#include "hw/jacket.h"
 #include "hw/aiu.h"
 #include "hw/lcd.h"
 #include "hw/battery.h"
@@ -59,6 +60,13 @@ typedef struct {
     bool        enable_ne2000;
     bool        enable_xi825;
     bool        enable_wl54cf;
+    bool        enable_3c589;
+    bool        enable_hermes;
+    /* --jacket: the network card is in a PCMCIA jacket, Windows CE's
+     * socket 1 (hw/jacket.h), not the CF socket. */
+    bool        enable_jacket;
+    /* --hermes-firmware MAJOR.MINOR (0: 8.72), real cards 8.72 and 6.4. */
+    uint8_t     hermes_firmware_major, hermes_firmware_minor;
     /* --cf-modem: an RC56LD data modem whose calls reach this host_chardev
      * spec (pty:auto, tcp:HOST:PORT, unix:/PATH, ...), e.g. a host pppd. */
     const char *cf_modem_spec;
@@ -158,6 +166,9 @@ typedef struct be300_state {
     /* NAND flash controller (VRC4173) */
     nand_state_t nand;
     cf_state_t   cf[BE300_MAX_CF_SLOTS];
+    /* --jacket: the jacket's card and socket 1's controller. */
+    cf_state_t   jacket_card;
+    jacket_t     jacket;
     /* --cf-modem: where the modem's calls go. */
     struct host_chardev *modem_link;
 

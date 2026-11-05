@@ -177,6 +177,15 @@ primary regression target:
 - `--ne2000` — PCMCIA NE2000 Ethernet card model
 - `--xi825` — Z-Com XI-825 wireless CF card with a virtual access point;
   requires the local vendor driver. See [XI-825 setup](docs/XI825.md).
+- `--3c589` — 3Com EtherLink III PC Card (a real 3C589D's CIS)
+- `--hermes` — Lucent/Agere Orinoco or WaveLAN Gold (Hermes) PC Card with the
+  same virtual access point (a real Orinoco Gold's CIS); `--hermes-firmware
+  6.4` gives the older Agere firmware with no host scan (default 8.72)
+- `--jacket` — put `--ne2000`, `--3c589` or `--hermes` in a PCMCIA jacket:
+  Windows CE's socket 1, a second socket controller at `0x0B000000` with card
+  windows at `0x0B200000` (I/O) and `0x0B600000` (attribute memory), which
+  the guest powers and resets (`src/hw/jacket.h`; glaze-os
+  `docs/hardware/PCCARDS.md`). The interrupt is not modelled.
 - `--cf-modem <spec>` — Rockwell RC56LD CF data modem (the CIS of a real
   CF56R-BCT-DX card, a 16550 at 3f8h and a Hayes command interpreter). A dialed
   call connects to a host chardev: `tcp:HOST:PORT` (e.g. glaze-os

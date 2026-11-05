@@ -28,6 +28,11 @@ typedef struct {
     xi825_record_t records[XI825_RECORDS];
     uint8_t mac[6];
     bool enabled, associated, link_pending;
+    bool hermes;    /* Lucent/Agere firmware: Agere WEP RIDs, scan records, TX rate */
+    /* Agere station firmware, major << 8 | minor (0: 8.72). Before 8.10 there
+     * is no host scan (Linux orinoco has_hostscan): RID 0xFCB2 is refused and
+     * the scan inquiry lists networks only while the desired SSID is empty. */
+    uint16_t hermes_firmware;
     uint16_t next_fid;
     uint16_t info_queue[8];
     unsigned info_head, info_count;
@@ -40,6 +45,9 @@ typedef struct {
 void xi825_init(xi825_t *s, const uint8_t mac[6]);
 void xi825_reset(xi825_t *s);
 void xi825_set_cis(xi825_t *s, const uint8_t *cis, size_t length);
+void xi825_set_hermes(xi825_t *s, bool hermes);
+/* An Agere firmware version for --hermes (real cards: 8.72.1, 6.4.1). */
+void xi825_set_hermes_firmware(xi825_t *s, unsigned major, unsigned minor);
 uint64_t xi825_read(xi825_t *s, unsigned offset, unsigned size);
 void xi825_write(xi825_t *s, unsigned offset, unsigned size, uint64_t value);
 bool xi825_irq_pending(const xi825_t *s);

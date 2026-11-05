@@ -63,6 +63,7 @@
  */
 struct be300_pcmcia_attr_device {
     cf_state_t *cf;
+    jacket_t   *jacket;     /* --jacket: 0x0B600000 is socket 1's attribute memory */
 };
 
 DEVICE_ACCESS(be300_pcmcia_attr)
@@ -71,6 +72,16 @@ DEVICE_ACCESS(be300_pcmcia_attr)
         (struct be300_pcmcia_attr_device *)extra;
 
     (void)cpu; (void)mem;
+    /* Socket 1 (glaze-os PCCARDS.md): striped attribute memory at
+     * 0x0B600000, decoded once the jacket's card is up. */
+    if (d && d->jacket && relative_addr >= JACKET_ATTR_OFFSET) {
+        uint32_t off = (uint32_t)(relative_addr - JACKET_ATTR_OFFSET);
+        if (writeflag != MEM_READ)
+            jacket_attr_write(d->jacket, off, (unsigned)len, memory_readmax64(cpu, data, len));
+        else
+            memory_writemax64(cpu, data, len, jacket_attr_read(d->jacket, off, (unsigned)len));
+        return 1;
+    }
     if (writeflag != MEM_READ) {
         if (d && cf_present(d->cf)) {
             uint32_t off = (uint32_t)relative_addr;
@@ -125,6 +136,7 @@ void be300_register_pcmcia_attr_window(struct machine *gxm, machine_t *m)
 
     CHECK_ALLOCATION(d = calloc(1, sizeof(*d)));
     d->cf = m ? &m->cf[BE300_PRIMARY_CF_SLOT] : NULL;
+    d->jacket = m && m->cfg.enable_jacket ? &m->jacket : NULL;
 
     /*
      * The CIS window is a read-only view of the card's attribute memory, but
@@ -135,4 +147,39 @@ void be300_register_pcmcia_attr_window(struct machine *gxm, machine_t *m)
         0x0B400000ULL, 0x300000ULL,
         dev_be300_pcmcia_attr_access, (void *)d,
         DM_DEFAULT, NULL);
+}
+
+/*
+ *  Socket 1's I/O window (--jacket): PA 0x0B200000 + port, decoded once the
+ *  jacket's card is powered and out of reset (pcmcia.dll's window table at
+ *  0x0198B9AC; a real BE-300 read an NE2000's command register at
+ *  0x0B200300, glaze-os docs/hardware/PCCARDS.md).
+ */
+struct be300_jacket_io_device {
+    jacket_t *jacket;
+};
+
+DEVICE_ACCESS(be300_jacket_io)
+{
+    struct be300_jacket_io_device *d = (struct be300_jacket_io_device *)extra;
+
+    (void)mem;
+    if (writeflag != MEM_READ)
+        jacket_io_write(d->jacket, (uint32_t)relative_addr, (unsigned)len,
+            memory_readmax64(cpu, data, len));
+    else
+        memory_writemax64(cpu, data, len,
+            jacket_io_read(d->jacket, (uint32_t)relative_addr, (unsigned)len));
+    return 1;
+}
+
+void be300_register_jacket_io_window(struct machine *gxm, machine_t *m)
+{
+    struct be300_jacket_io_device *d;
+
+    CHECK_ALLOCATION(d = calloc(1, sizeof(*d)));
+    d->jacket = &m->jacket;
+    memory_device_register(gxm->memory, "be300_jacket_io",
+        JACKET_IO_BASE, JACKET_IO_SIZE,
+        dev_be300_jacket_io_access, (void *)d, DM_DEFAULT, NULL);
 }
