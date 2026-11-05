@@ -116,8 +116,10 @@ static void usage(const char *prog)
         "  --xi825               Attach a Z-Com XI-825 wireless CF card (SSID BE300)\n"
         "  --3c589               Attach a 3Com EtherLink III PC Card (through a jacket)\n"
         "  --hermes              Attach a Lucent Orinoco/WaveLAN (Hermes) PC Card (SSID BE300)\n"
-        "  --modem HOST:PORT     Attach a PC Card modem; ATD connects to the TCP peer (e.g. a PPP server)\n"
         "  --net-mac <mac>       Override network card MAC (aa:bb:cc:dd:ee:ff)\n"
+        "  --cf-modem <spec>     Attach a Rockwell RC56LD CF data modem; a dialed call\n"
+        "                        connects to <spec>: pty:auto (e.g. for pppd), tcp:HOST:PORT,\n"
+        "                        tcp-listen:PORT, unix:/PATH; any number answers\n"
         "  --audio               Play headphone PCM and piezo PWM through SDL;\n"
         "                        guest audio/interrupt models always run,\n"
         "                        this only enables host output (BE300_AUDIO=0 mutes)\n"
@@ -340,10 +342,10 @@ int main(int argc, char *argv[])
             cfg.enable_ne2000 = true;
         } else if (strcmp(argv[i], "--wl54cf") == 0) {
             cfg.enable_wl54cf = true;
+        } else if (strcmp(argv[i], "--cf-modem") == 0 && i + 1 < argc) {
+            cfg.cf_modem_spec = argv[++i];
         } else if (strcmp(argv[i], "--xi825") == 0) {
             cfg.enable_xi825 = true;
-        } else if (strcmp(argv[i], "--modem") == 0 && i + 1 < argc) {
-            cfg.modem_peer = argv[++i];
         } else if (strcmp(argv[i], "--hermes") == 0) {
             cfg.enable_hermes = true;
         } else if (strcmp(argv[i], "--3c589") == 0) {
@@ -451,12 +453,31 @@ int main(int argc, char *argv[])
         return 1;
     }
     if ((unsigned)cfg.enable_ne2000 + cfg.enable_xi825 + cfg.enable_wl54cf + cfg.enable_3c589 +
-        cfg.enable_hermes + (cfg.modem_peer != NULL) > 1) {
-        fprintf(stderr, "Error: --ne2000, --xi825, --wl54cf and --3c589 claim the same PCMCIA socket; pick one\n");
+        cfg.enable_hermes > 1) {
+        fprintf(stderr, "Error: --ne2000, --xi825, --wl54cf, --3c589 and --hermes claim the same PCMCIA socket; pick one\n");
         return 1;
     }
     bool network_card = cfg.enable_ne2000 || cfg.enable_xi825 || cfg.enable_wl54cf ||
         cfg.enable_3c589 || cfg.enable_hermes;
+    if (cfg.cf_modem_spec) {
+        host_chardev_kind_t kind;
+        const char *target;
+        if (network_card || cfg.restore || cfg.rom_path || cfg.net_insert_after_s ||
+            !host_chardev_parse_spec(cfg.cf_modem_spec, &kind, &target)) {
+            fprintf(stderr, "Error: --cf-modem takes the primary PCMCIA socket of a --nand boot "
+                            "and a pty:/tcp:/unix: spec\n");
+            return 1;
+        }
+        if (cfg.cf_count > 1) {
+            fprintf(stderr, "Error: only one --cf image can be combined with --cf-modem\n");
+            return 1;
+        }
+        if (cfg.cf_count == 1) {        /* the image moves to the secondary socket */
+            cfg.cf_paths[1] = cfg.cf_paths[0];
+            cfg.cf_paths[0] = NULL;
+            cfg.cf_count = 2;
+        }
+    }
     if (cfg.restore && network_card) {
         fprintf(stderr, "Error: --restore requires the primary PCMCIA socket, so it cannot be combined with a network card\n");
         usage(argv[0]);
