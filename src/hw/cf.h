@@ -153,6 +153,7 @@ void     cf_note_pcmcia_window_enable(cf_state_t *s);
 void     cf_clear_irq(cf_state_t *s);
 void     cf_consume_state_change(cf_state_t *s);
 uint32_t cf_giu_source_bits(const cf_state_t *s);
+bool     cf_card_irq_pending(const cf_state_t *s);
 uint16_t cf_card_state_bits(const cf_state_t *s);
 uint64_t cf_companion_read(cf_state_t *s, uint32_t offset, unsigned size);
 void     cf_companion_write(cf_state_t *s, uint32_t offset, unsigned size,

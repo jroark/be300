@@ -743,6 +743,19 @@ uint32_t cf_giu_source_bits(const cf_state_t *s)
               (s->modem.mcr & 0x08) && cf_modem_irq_pending(&s->modem)))) ? 0x00000001u : 0u;
 }
 
+/* The card's own interrupt request, without the CF socket's state-change
+ * bits (the jacket's socket raises its interrupt from this, jacket.c). */
+bool cf_card_irq_pending(const cf_state_t *s)
+{
+    return s && s->attached &&
+           ((s->card_kind == CF_CARD_NE2000 && (s->ne2000.isr & s->ne2000.imr) != 0) ||
+            (s->card_kind == CF_CARD_XI825 && xi825_irq_pending(&s->xi825)) ||
+            (s->card_kind == CF_CARD_WL54CF && wl54cf_irq_pending(&s->wl54cf)) ||
+            (s->card_kind == CF_CARD_3C589 && el3_irq_pending(&s->el3)) ||
+            (s->card_kind == CF_CARD_MODEM && (s->modem_cor & 0x3f) &&
+             (s->modem.mcr & 0x08) && cf_modem_irq_pending(&s->modem)));
+}
+
 uint16_t cf_card_state_bits(const cf_state_t *s)
 {
     if (!s || !s->attached)

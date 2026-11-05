@@ -48,6 +48,7 @@ uint64_t be300_emulated_ns(const machine_t *m);
 
 /* Helpers that cross device boundaries. */
 void be300_cf_irq_update(struct be300_vrc4173_latch *d);
+void be300_jacket_irq_update(struct be300_vrc4173_latch *d);
 void be300_pcconnect_reset_for_cpu_reset(struct be300_vrc4173_latch *d);
 
 /* WinCE auxiliary / PPSH device register helper (definition in

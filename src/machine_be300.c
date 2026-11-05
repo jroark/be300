@@ -1224,6 +1224,7 @@ static bool be300_run_batch(machine_t *m)
         cf_ne2000_tick(&m->jacket_card);
         cf_xi825_tick(&m->jacket_card);
         cf_el3_tick(&m->jacket_card);
+        be300_vrc4173_update_cf_irq();  /* and socket 1's (GIRQ0 source 6) */
     }
     cf_wl54cf_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     modem_tick(m);

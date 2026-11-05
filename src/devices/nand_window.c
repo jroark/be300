@@ -409,6 +409,7 @@ static int be300_companion_ab_handle(struct cpu *cpu, struct memory *mem,
             jacket_reg_write(d->jacket, off, (unsigned)len, memory_readmax64(cpu, data, len));
         else
             memory_writemax64(cpu, data, len, jacket_reg_read(d->jacket, off, (unsigned)len));
+        be300_jacket_irq_update(g_be300_vrc4173_latch);  /* the cause or enable changed */
         return 1;
     }
 

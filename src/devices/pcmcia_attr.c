@@ -170,6 +170,7 @@ DEVICE_ACCESS(be300_jacket_io)
     else
         memory_writemax64(cpu, data, len,
             jacket_io_read(d->jacket, (uint32_t)relative_addr, (unsigned)len));
+    be300_jacket_irq_update(g_be300_vrc4173_latch);     /* the card acknowledged */
     return 1;
 }
 
