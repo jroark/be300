@@ -13,6 +13,8 @@ struct net;
 #include "net.h"
 #include "xi825.h"
 #include "wl54cf.h"
+#include "el3.h"
+#include "modem.h"
 
 typedef enum {
     CF_CARD_NONE = 0,
@@ -20,6 +22,8 @@ typedef enum {
     CF_CARD_NE2000,
     CF_CARD_XI825,
     CF_CARD_WL54CF,
+    CF_CARD_3C589,
+    CF_CARD_MODEM,
 } cf_card_kind_t;
 
 #define CF_NE2000_MEM_SIZE 0x8000u
@@ -65,6 +69,11 @@ typedef struct {
     struct nic_data wl54cf_nic;
     struct net *wl54cf_net;
     uint8_t wl54cf_cor;
+
+    modem_t modem;
+    el3_t el3;
+    struct nic_data el3_nic;
+    struct net *el3_net;
 
     xi825_t xi825;
     struct nic_data xi825_nic;
@@ -116,6 +125,13 @@ int      cf_attach_wl54cf(cf_state_t *s, struct machine *machine,
                          struct net *net, const uint8_t *mac);
 void     cf_wl54cf_tick(cf_state_t *s);
 void     cf_xi825_tick(cf_state_t *s);
+int      cf_attach_3c589(cf_state_t *s, struct machine *machine,
+                        struct net *net, const uint8_t *mac);
+void     cf_el3_tick(cf_state_t *s);
+int      cf_attach_modem(cf_state_t *s, struct machine *machine, const char *peer);
+void     cf_modem_tick(cf_state_t *s);
+int      cf_attach_hermes(cf_state_t *s, struct machine *machine,
+                         struct net *net, const uint8_t *mac);
 bool     cf_is_network(const cf_state_t *s);
 int      cf_save_image(cf_state_t *s);
 bool     cf_present(const cf_state_t *s);

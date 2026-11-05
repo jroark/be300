@@ -683,10 +683,12 @@ machine_t *be300_create(const machine_config_t *cfg)
             cf_image_loaded = true;
         }
 
-        if (cfg->enable_ne2000 || cfg->enable_xi825 || cfg->enable_wl54cf) {
+        if (cfg->enable_ne2000 || cfg->enable_xi825 || cfg->enable_wl54cf || cfg->enable_3c589 ||
+            cfg->enable_hermes) {
             /* A deferred card may follow a --cf card that is ejected first. */
             bool deferred = cfg->net_insert_after_s != 0;
-            if (((unsigned)cfg->enable_ne2000 + cfg->enable_xi825 + cfg->enable_wl54cf > 1) ||
+            if (((unsigned)cfg->enable_ne2000 + cfg->enable_xi825 + cfg->enable_wl54cf +
+                 cfg->enable_3c589 + cfg->enable_hermes > 1) ||
                 cfg->restore || cfg->rom_path ||
                 (!deferred && cf_present(&m->cf[BE300_PRIMARY_CF_SLOT])) ||
                 (deferred && cf_present(&m->cf[BE300_PRIMARY_CF_SLOT]) &&
@@ -703,11 +705,22 @@ machine_t *be300_create(const machine_config_t *cfg)
             }
             int (*attach)(cf_state_t *, struct machine *, struct net *, const uint8_t *) =
                 cfg->enable_wl54cf ? cf_attach_wl54cf :
+                cfg->enable_3c589 ? cf_attach_3c589 :
+                cfg->enable_hermes ? cf_attach_hermes :
                 (cfg->enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000);
             if (!deferred && attach(&m->cf[BE300_PRIMARY_CF_SLOT], gxm,
                     m->emul->net,
                     cfg->net_mac_set ? cfg->net_mac : NULL) != 0) {
                 fprintf(stderr, "[BE300] Failed to attach network card\n");
+                return be300_create_fail(m);
+            }
+        }
+
+        if (cfg->modem_peer) {
+            /* A modem has no Ethernet backend: ATD reaches the TCP peer. */
+            if (cfg->restore || cfg->rom_path || cf_present(&m->cf[BE300_PRIMARY_CF_SLOT]) ||
+                cf_attach_modem(&m->cf[BE300_PRIMARY_CF_SLOT], gxm, cfg->modem_peer) != 0) {
+                fprintf(stderr, "[BE300] Conflicting primary PCMCIA socket configuration\n");
                 return be300_create_fail(m);
             }
         }
@@ -1035,6 +1048,8 @@ static void be300_cf_hotplug(machine_t *m)
         !cf_present(cf)) {
         int (*attach)(cf_state_t *, struct machine *, struct net *, const uint8_t *) =
             m->cfg.enable_wl54cf ? cf_attach_wl54cf :
+            m->cfg.enable_3c589 ? cf_attach_3c589 :
+            m->cfg.enable_hermes ? cf_attach_hermes :
             (m->cfg.enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000);
         net_inserted = true;
         if (attach(cf, m->gxe_machine, m->emul->net,
@@ -1110,6 +1125,8 @@ static bool be300_run_batch(machine_t *m)
     be300_touch_tick(m);
     cf_ne2000_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     cf_xi825_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
+    cf_el3_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
+    cf_modem_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     cf_wl54cf_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     be300_vrc4173_update_cf_irq();
     aiu_tick(m);

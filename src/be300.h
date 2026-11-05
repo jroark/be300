@@ -59,6 +59,9 @@ typedef struct {
     bool        enable_ne2000;
     bool        enable_xi825;
     bool        enable_wl54cf;
+    bool        enable_3c589;
+    bool        enable_hermes;
+    const char *modem_peer;     /* --modem HOST:PORT */
     bool        enable_audio;
     bool        net_mac_set;
     bool        restore;

@@ -114,6 +114,9 @@ static void usage(const char *prog)
         "  --ne2000              Attach a PCMCIA NE2000 Ethernet card\n"
         "  --wl54cf              Attach an AmbiCom WL54-CF wireless card (SSID BE300)\n"
         "  --xi825               Attach a Z-Com XI-825 wireless CF card (SSID BE300)\n"
+        "  --3c589               Attach a 3Com EtherLink III PC Card (through a jacket)\n"
+        "  --hermes              Attach a Lucent Orinoco/WaveLAN (Hermes) PC Card (SSID BE300)\n"
+        "  --modem HOST:PORT     Attach a PC Card modem; ATD connects to the TCP peer (e.g. a PPP server)\n"
         "  --net-mac <mac>       Override network card MAC (aa:bb:cc:dd:ee:ff)\n"
         "  --audio               Play headphone PCM and piezo PWM through SDL;\n"
         "                        guest audio/interrupt models always run,\n"
@@ -339,6 +342,12 @@ int main(int argc, char *argv[])
             cfg.enable_wl54cf = true;
         } else if (strcmp(argv[i], "--xi825") == 0) {
             cfg.enable_xi825 = true;
+        } else if (strcmp(argv[i], "--modem") == 0 && i + 1 < argc) {
+            cfg.modem_peer = argv[++i];
+        } else if (strcmp(argv[i], "--hermes") == 0) {
+            cfg.enable_hermes = true;
+        } else if (strcmp(argv[i], "--3c589") == 0) {
+            cfg.enable_3c589 = true;
         } else if (strcmp(argv[i], "--audio") == 0) {
             cfg.enable_audio = true;
         } else if (strcmp(argv[i], "--net-mac") == 0 && i + 1 < argc) {
@@ -441,11 +450,13 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    if ((unsigned)cfg.enable_ne2000 + cfg.enable_xi825 + cfg.enable_wl54cf > 1) {
-        fprintf(stderr, "Error: --ne2000, --xi825 and --wl54cf claim the same PCMCIA socket; pick one\n");
+    if ((unsigned)cfg.enable_ne2000 + cfg.enable_xi825 + cfg.enable_wl54cf + cfg.enable_3c589 +
+        cfg.enable_hermes + (cfg.modem_peer != NULL) > 1) {
+        fprintf(stderr, "Error: --ne2000, --xi825, --wl54cf and --3c589 claim the same PCMCIA socket; pick one\n");
         return 1;
     }
-    bool network_card = cfg.enable_ne2000 || cfg.enable_xi825 || cfg.enable_wl54cf;
+    bool network_card = cfg.enable_ne2000 || cfg.enable_xi825 || cfg.enable_wl54cf ||
+        cfg.enable_3c589 || cfg.enable_hermes;
     if (cfg.restore && network_card) {
         fprintf(stderr, "Error: --restore requires the primary PCMCIA socket, so it cannot be combined with a network card\n");
         usage(argv[0]);

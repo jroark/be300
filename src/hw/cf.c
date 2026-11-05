@@ -437,14 +437,17 @@ static int cf_attach_network(cf_state_t *s, struct machine *machine,
             { 0x10, 0x20, 0x30, 0x00, 0x00, 0x10 };
         memcpy(card_mac, fallback_mac, sizeof(card_mac));
     }
-    struct nic_data *nic = kind == CF_CARD_XI825 ?
-        &s->xi825_nic : (kind == CF_CARD_WL54CF ? &s->wl54cf_nic : &s->ne2000.nic);
+    struct nic_data *nic = kind == CF_CARD_XI825 ? &s->xi825_nic :
+        kind == CF_CARD_WL54CF ? &s->wl54cf_nic :
+        kind == CF_CARD_3C589 ? &s->el3_nic : &s->ne2000.nic;
     memset(nic, 0, sizeof(*nic));
     memcpy(nic->mac_address, card_mac, sizeof(card_mac));
     if (kind == CF_CARD_XI825)
         s->xi825_net = net;
     else if (kind == CF_CARD_WL54CF)
         s->wl54cf_net = net;
+    else if (kind == CF_CARD_3C589)
+        s->el3_net = net;
     else {
         s->ne2000.net = net;
         memcpy(s->ne2000.par, card_mac, sizeof(card_mac));
@@ -502,6 +505,43 @@ static int cf_attach_network(cf_state_t *s, struct machine *machine,
         memcpy(s->cis, cis, sizeof(cis));
         wl54cf_init(&s->wl54cf, card_mac);
         s->wl54cf_cor = 0;
+    } else if (kind == CF_CARD_MODEM) {
+        /* A Megahertz/USR-style modem: FUNCID serial, CONFIG at 0x200, an
+         * entry decoding COM1 (0x3F8, eight ports) with a level IRQ. MANFID
+         * 0128:0101 is illustrative, not a captured card's. */
+        static const uint8_t cis[] = {
+            0x01,0x03,0xdc,0x00,0xff,
+            0x15,0x1b,0x04,0x01,
+            'U','.','S','.',' ','R','o','b','o','t','i','c','s',0,
+            '5','6','K',' ','M','o','d','e','m',0,0xff,
+            0x20,0x04,0x28,0x01,0x01,0x01,
+            0x21,0x02,0x02,0x00,
+            0x1a,0x05,0x01,0x23,0x00,0x02,0x01,
+            0x1b,0x09,0xe3,0x01,0x18,0xa3,0x60,0xf8,0x03,0x07,0x24,
+            0x14,0x00,0xff
+        };
+        memset(s->cis, 0xff, sizeof(s->cis));
+        memcpy(s->cis, cis, sizeof(cis));
+    } else if (kind == CF_CARD_3C589) {
+        /* MANFID 0101:0589 and VERS_1 as Linux 3c589_cs matches them; the
+         * CFTABLE entry decodes four address lines. Not a captured card:
+         * the CONFIG base here (0x10000) is an assumption pending a dump
+         * from a real 3c589, and the model decodes I/O whatever the COR. */
+        static const uint8_t cis[] = {
+            0x01,0x03,0xdc,0x00,0xff,
+            0x15,0x1e,0x04,0x01,
+            '3','C','o','m',0,
+            '3','C','5','8','9',0,
+            'T','P','/','B','N','C',' ','L','A','N',' ','C','a','r','d',0,0xff,
+            0x20,0x04,0x01,0x01,0x89,0x05,
+            0x21,0x02,0x06,0x00,
+            0x1a,0x06,0x02,0x03,0x00,0x00,0x01,0x03,
+            0x1b,0x05,0xc1,0x01,0x18,0x44,0x20,
+            0x14,0x00,0xff
+        };
+        memset(s->cis, 0xff, sizeof(s->cis));
+        memcpy(s->cis, cis, sizeof(cis));
+        el3_init(&s->el3, card_mac);
     } else {
         cf_seed_ne2000_cis(s);
         ne2000_reset(s);
@@ -510,7 +550,8 @@ static int cf_attach_network(cf_state_t *s, struct machine *machine,
     cf_reset_taskfile(s);
     cf_arm_boot_status(s);
     fprintf(stderr, "[%s] PCMCIA card attached MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
-        kind == CF_CARD_XI825 ? "XI825" : (kind == CF_CARD_WL54CF ? "WL54CF" : "NE2000"),
+        kind == CF_CARD_XI825 ? "XI825" : kind == CF_CARD_WL54CF ? "WL54CF" :
+        kind == CF_CARD_3C589 ? "3C589" : kind == CF_CARD_MODEM ? "MODEM" : "NE2000",
         card_mac[0], card_mac[1], card_mac[2],
         card_mac[3], card_mac[4], card_mac[5]);
     return 0;
@@ -528,6 +569,53 @@ int cf_attach_xi825(cf_state_t *s, struct machine *machine,
     return cf_attach_network(s, machine, net, mac, CF_CARD_XI825);
 }
 
+/* A Lucent/Agere Hermes card (WaveLAN/IEEE, Orinoco): the XI-825 model in
+ * its Agere firmware mode. MANFID 0156:0002 as Linux orinoco_cs matches
+ * it; COR at 0x3E0 like the PRISM. Not a captured card's CIS. */
+int cf_attach_hermes(cf_state_t *s, struct machine *machine,
+                     struct net *net, const uint8_t *mac)
+{
+    static const uint8_t cis[] = {
+        0x01,0x03,0xdc,0x00,0xff,
+        0x15,0x32,0x04,0x01,
+        'L','u','c','e','n','t',' ','T','e','c','h','n','o','l','o','g','i','e','s',0,
+        'W','a','v','e','L','A','N','/','I','E','E','E',0,
+        'V','e','r','s','i','o','n',' ','0','1','.','0','1',0,0xff,
+        0x20,0x04,0x56,0x01,0x02,0x00,
+        0x21,0x02,0x06,0x00,
+        0x1a,0x05,0x01,0x01,0xe0,0x03,0x01,
+        0x1b,0x09,0xc1,0x01,0x18,0xf0,0x60,0x00,0x03,0x3f,0x20,
+        0x14,0x00,0xff
+    };
+    int rv = cf_attach_network(s, machine, net, mac, CF_CARD_XI825);
+    if (rv)
+        return rv;
+    memset(s->cis, 0xff, sizeof(s->cis));
+    memcpy(s->cis, cis, sizeof(cis));
+    xi825_set_hermes(&s->xi825, true);
+    xi825_set_cis(&s->xi825, cis, sizeof(cis));
+    fprintf(stderr, "[HERMES] Agere firmware mode\n");
+    return 0;
+}
+
+int cf_attach_modem(cf_state_t *s, struct machine *machine, const char *peer)
+{
+    modem_init(&s->modem, peer);
+    return cf_attach_network(s, machine, NULL, NULL, CF_CARD_MODEM);
+}
+
+void cf_modem_tick(cf_state_t *s)
+{
+    if (s && s->attached && s->card_kind == CF_CARD_MODEM)
+        modem_tick(&s->modem);
+}
+
+int cf_attach_3c589(cf_state_t *s, struct machine *machine,
+                    struct net *net, const uint8_t *mac)
+{
+    return cf_attach_network(s, machine, net, mac, CF_CARD_3C589);
+}
+
 int cf_attach_wl54cf(cf_state_t *s, struct machine *machine,
                      struct net *net, const uint8_t *mac)
 {
@@ -538,7 +626,8 @@ bool cf_is_network(const cf_state_t *s)
 {
     return s && s->attached &&
         (s->card_kind == CF_CARD_NE2000 || s->card_kind == CF_CARD_XI825 ||
-         s->card_kind == CF_CARD_WL54CF);
+         s->card_kind == CF_CARD_WL54CF || s->card_kind == CF_CARD_3C589 ||
+         s->card_kind == CF_CARD_MODEM);
 }
 
 bool cf_present(const cf_state_t *s)
@@ -609,7 +698,9 @@ uint32_t cf_giu_source_bits(const cf_state_t *s)
              (s->card_kind == CF_CARD_NE2000 &&
               (s->ne2000.isr & s->ne2000.imr) != 0) ||
              (s->card_kind == CF_CARD_XI825 && xi825_irq_pending(&s->xi825)) ||
-             (s->card_kind == CF_CARD_WL54CF && wl54cf_irq_pending(&s->wl54cf)))) ? 0x00000001u : 0u;
+             (s->card_kind == CF_CARD_WL54CF && wl54cf_irq_pending(&s->wl54cf)) ||
+             (s->card_kind == CF_CARD_3C589 && el3_irq_pending(&s->el3)) ||
+             (s->card_kind == CF_CARD_MODEM && modem_irq_pending(&s->modem)))) ? 0x00000001u : 0u;
 }
 
 uint16_t cf_card_state_bits(const cf_state_t *s)
@@ -1230,6 +1321,10 @@ uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size)
     }
     if (s->card_kind == CF_CARD_NE2000)
         return ne2000_window_read(s, offset, size);
+    if (s->card_kind == CF_CARD_3C589)
+        return el3_read(&s->el3, offset & 0x0f, size);
+    if (s->card_kind == CF_CARD_MODEM)
+        return (offset & 0x3f8) == 0x3f8 ? modem_read(&s->modem, offset & 7) : 0xff;
     if (s->card_kind == CF_CARD_WL54CF) {
         if ((s->wl54cf_cor & 0x81) != 1)
             return UINT64_MAX;
@@ -1262,6 +1357,15 @@ void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
         return;
     if (s->card_kind == CF_CARD_NE2000) {
         ne2000_window_write(s, offset, size, value);
+        return;
+    }
+    if (s->card_kind == CF_CARD_3C589) {
+        el3_write(&s->el3, offset & 0x0f, size, value);
+        return;
+    }
+    if (s->card_kind == CF_CARD_MODEM) {
+        if ((offset & 0x3f8) == 0x3f8)
+            modem_write(&s->modem, offset & 7, (uint8_t)value);
         return;
     }
     if (s->card_kind == CF_CARD_WL54CF) {
