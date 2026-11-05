@@ -82,6 +82,10 @@ typedef struct {
     cf_modem_t modem;
     uint8_t modem_cor;
 
+    /* --jacket: the PCMCIA jacket (socket 1, jacket.c) whose detect and
+     * power-good bits this socket's companion page reports. */
+    const struct jacket *jacket;
+
     struct {
         struct nic_data nic;
         struct net *net;

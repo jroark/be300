@@ -62,6 +62,7 @@ struct be300_cf_window_device {
 
 struct be300_companion_ab_device {
     cf_state_t *cf;
+    jacket_t   *jacket;     /* --jacket: socket 1's controller (hw/jacket.c) */
     bool        log_mmio;
     uint8_t     bytes[0x10000];
 };
@@ -402,6 +403,15 @@ static int be300_companion_ab_handle(struct cpu *cpu, struct memory *mem,
     if (!d || off + len > sizeof(d->bytes))
         return 0;
 
+    /* With a jacket, its first 0x600 bytes are socket 1's controller. */
+    if (d->jacket && off + len <= JACKET_REG_SIZE) {
+        if (writeflag == MEM_WRITE)
+            jacket_reg_write(d->jacket, off, (unsigned)len, memory_readmax64(cpu, data, len));
+        else
+            memory_writemax64(cpu, data, len, jacket_reg_read(d->jacket, off, (unsigned)len));
+        return 1;
+    }
+
 
     if (writeflag == MEM_WRITE) {
         be300_probe_note_mmio("vrc4173-companion-ab", off, 'W',
@@ -517,6 +527,7 @@ void be300_register_companion_ab_window(struct machine *gxm, machine_t *m,
 
     CHECK_ALLOCATION(d = calloc(1, sizeof(*d)));
     d->cf = &m->cf[BE300_PRIMARY_CF_SLOT];
+    d->jacket = m->cfg.enable_jacket ? &m->jacket : NULL;
     d->log_mmio = log_mmio;
 
     memory_device_register(gxm->memory, "be300_companion_ab_window",

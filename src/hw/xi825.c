@@ -142,6 +142,22 @@ static bool info(xi825_t *s, uint16_t type, const void *data, size_t len)
     return true;
 }
 
+static unsigned hermes_major(const xi825_t *s)
+{
+    return s->hermes_firmware ? s->hermes_firmware >> 8 : 8;
+}
+
+static unsigned hermes_minor(const xi825_t *s)
+{
+    return s->hermes_firmware ? s->hermes_firmware & 0xff : 72;
+}
+
+/* Host scan arrived in Agere firmware 8.10 (Linux orinoco hw.c). */
+static bool hermes_host_scan(const xi825_t *s)
+{
+    return hermes_major(s) > 8 || (hermes_major(s) == 8 && hermes_minor(s) >= 10);
+}
+
 static bool can_associate(xi825_t *s)
 {
     xi825_record_t *ssid = record(s, 0xfc02);
@@ -200,7 +216,16 @@ static void scan(xi825_t *s)
         /* Agere: no header, 50-byte records (channel, noise, level, BSSID,
          * beacon interval, capabilities, SSID length + 32 bytes; no rates),
          * as a real Orinoco (8.72) and WaveLAN Gold (6.4) send them. */
-        uint8_t a[50] = {0};
+        /* Before host scan, the inquiry lists only what the firmware saw
+         * looking for its desired SSID: nothing for a named one (a real
+         * WaveLAN Gold, 6.4.1, sent 0 bytes). Real cards repeat a network
+         * heard more than once, so the record is sent twice. */
+        xi825_record_t *desired = record(s, 0xfc02);
+        if (!hermes_host_scan(s) && rd16(desired->committed + 4) != 0) {
+            info(s, 0xf101, NULL, 0);
+            return;
+        }
+        uint8_t a[100] = {0};
         wr16(a, 3);
         wr16(a + 2, 40);
         wr16(a + 4, 100);
@@ -209,6 +234,8 @@ static void scan(xi825_t *s)
         wr16(a + 14, s->security.mode ? 0x11 : 1);
         wr16(a + 16, sizeof(ap_ssid) - 1);
         memcpy(a + 18, ap_ssid, sizeof(ap_ssid) - 1);
+        memcpy(a + 50, a, 50);
+        wr16(a + 54, 90);                   /* heard again, weaker */
         info(s, 0xf101, a, sizeof(a));
         return;
     }
@@ -289,8 +316,10 @@ void xi825_reset(xi825_t *s)
     void (*tx)(void *, const uint8_t *, size_t) = s->transmit;
     wifi_security_t security=s->security; wifi_security_reset(&security);
     bool hermes = s->hermes;
+    uint16_t firmware = s->hermes_firmware;
     memset(s, 0, sizeof(*s));
     s->hermes = hermes;
+    s->hermes_firmware = firmware;
     s->security=security;
     memcpy(s->mac, mac, 6);
     s->opaque = opaque;
@@ -326,6 +355,13 @@ void xi825_reset(xi825_t *s)
     wr16(b, 0x1f);
     wr16(b + 4, 1);
     wr16(b + 6, 7);
+    if (hermes) {
+        /* As real cards report it: id 0x1f, variant 1, major, minor
+         * (glaze-os PCCARDS.md: Orinoco Gold 8.72.1, WaveLAN Gold 6.4.1). */
+        wr16(b + 2, 1);
+        wr16(b + 4, hermes_major(s));
+        wr16(b + 6, hermes_minor(s));
+    }
     add_record(s, 0xfd20, b, 8);
     memset(b, 0, sizeof(b));
     wr16(b, 0x8000);
@@ -352,10 +388,17 @@ void xi825_reset(xi825_t *s)
         scalar(s, 0xfc21, 1);
         scalar(s, 0xfcb1, 0);
         add_record(s, 0xfc25, b, 64);
-        add_record(s, 0xfcb2, b, 34);
+        if (hermes_host_scan(s))
+            add_record(s, 0xfcb2, b, 34);
     }
     if (cis_length)
         xi825_set_cis(s, cis, cis_length);
+}
+
+void xi825_set_hermes_firmware(xi825_t *s, unsigned major, unsigned minor)
+{
+    s->hermes_firmware = (uint16_t)((major & 0xff) << 8 | (minor & 0xff));
+    xi825_reset(s);
 }
 
 void xi825_set_hermes(xi825_t *s, bool hermes)

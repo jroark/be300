@@ -482,6 +482,7 @@ static machine_t *be300_create_fail(machine_t *m)
     free(m->nand_oob);
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_destroy(&m->cf[i]);
+    cf_destroy(&m->jacket_card);
     pcconnect_bridge_shutdown();
     usbredir_dev_shutdown();
     stowaway_configure(false);
@@ -702,6 +703,10 @@ machine_t *be300_create(const machine_config_t *cfg)
     nand_init(&m->nand, NULL, 0, 0);
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_init(&m->cf[i]);
+    cf_init(&m->jacket_card);
+    jacket_init(&m->jacket, &m->jacket_card, &m->cf[BE300_PRIMARY_CF_SLOT]);
+    if (cfg->enable_jacket)
+        m->cf[BE300_PRIMARY_CF_SLOT].jacket = &m->jacket;
     aiu_init(&m->aiu, cfg->log_mmio);
     battery_init(&m->battery, 100u - cfg->battery_used_pct, cfg->battery_mode,
         cfg->battery_drain);
@@ -772,12 +777,19 @@ machine_t *be300_create(const machine_config_t *cfg)
                 cfg->enable_3c589 ? cf_attach_3c589 :
                 cfg->enable_hermes ? cf_attach_hermes :
                 (cfg->enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000);
-            if (!deferred && attach(&m->cf[BE300_PRIMARY_CF_SLOT], gxm,
+            cf_state_t *socket = cfg->enable_jacket ? &m->jacket_card :
+                &m->cf[BE300_PRIMARY_CF_SLOT];
+            if (!deferred && attach(socket, gxm,
                     m->emul->net,
                     cfg->net_mac_set ? cfg->net_mac : NULL) != 0) {
                 fprintf(stderr, "[BE300] Failed to attach network card\n");
                 return be300_create_fail(m);
             }
+            if (!deferred && cfg->enable_hermes && cfg->hermes_firmware_major)
+                xi825_set_hermes_firmware(&socket->xi825, cfg->hermes_firmware_major,
+                    cfg->hermes_firmware_minor);
+            if (cfg->enable_jacket)
+                fprintf(stderr, "[JACKET] card in the PCMCIA jacket (socket 1)\n");
         }
 
         if (cfg->cf_modem_spec) {
@@ -882,6 +894,10 @@ machine_t *be300_create(const machine_config_t *cfg)
         extern void be300_register_pcmcia_attr_window(struct machine *,
             machine_t *);
         be300_register_pcmcia_attr_window(gxm, m);
+        if (cfg->enable_jacket) {
+            extern void be300_register_jacket_io_window(struct machine *, machine_t *);
+            be300_register_jacket_io_window(gxm, m);
+        }
 
         /* Register NAND flash; pre-split to leave gap at 0x0A00A040 for input device */
         extern void be300_register_nand(struct machine *, nand_state_t *,
@@ -1116,6 +1132,8 @@ static void be300_cf_hotplug(machine_t *m)
         be300_cf_irq_update(g_be300_vrc4173_latch);
     }
     /* --net-insert-after: the network card goes into the emptied socket. */
+    if (m->cfg.enable_jacket)
+        cf = &m->jacket_card;
     if (m->cfg.net_insert_after_s && !net_inserted && s >= m->cfg.net_insert_after_s &&
         !cf_present(cf)) {
         int (*attach)(cf_state_t *, struct machine *, struct net *, const uint8_t *) =
@@ -1125,8 +1143,12 @@ static void be300_cf_hotplug(machine_t *m)
             (m->cfg.enable_xi825 ? cf_attach_xi825 : cf_attach_ne2000);
         net_inserted = true;
         if (attach(cf, m->gxe_machine, m->emul->net,
-                m->cfg.net_mac_set ? m->cfg.net_mac : NULL) == 0)
+                m->cfg.net_mac_set ? m->cfg.net_mac : NULL) == 0) {
+            if (m->cfg.enable_hermes && m->cfg.hermes_firmware_major)
+                xi825_set_hermes_firmware(&cf->xi825, m->cfg.hermes_firmware_major,
+                    m->cfg.hermes_firmware_minor);
             fprintf(stderr, "[CF] network card inserted after %" PRIu64 " s\n", s);
+        }
         be300_cf_irq_update(g_be300_vrc4173_latch);
     }
 }
@@ -1198,6 +1220,11 @@ static bool be300_run_batch(machine_t *m)
     cf_ne2000_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     cf_xi825_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     cf_el3_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
+    if (m->cfg.enable_jacket) {
+        cf_ne2000_tick(&m->jacket_card);
+        cf_xi825_tick(&m->jacket_card);
+        cf_el3_tick(&m->jacket_card);
+    }
     cf_wl54cf_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     modem_tick(m);
     be300_vrc4173_update_cf_irq();
@@ -1386,6 +1413,7 @@ void be300_destroy(machine_t *m)
     modem_link_free(m);
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_destroy(&m->cf[i]);
+    cf_destroy(&m->jacket_card);
     pcconnect_bridge_shutdown();
     usbredir_dev_shutdown();
     stowaway_configure(false);
