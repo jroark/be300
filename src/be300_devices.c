@@ -174,6 +174,43 @@ void be300_cf_irq_update(struct be300_vrc4173_latch *d)
 }
 
 /*
+ * --jacket: socket 1's interrupt reaches GIRQ0 through the companion's
+ * 0x0A001B50 bit 3 (hw/jacket.h), unmasked by 0x0A001B58 bit 3, as AA000004
+ * bit 6 with its source word at AA000028 (nk.exe OAL 0x8007B088 enables it
+ * with 0x30 then 0x0C).
+ */
+#define BE300_GIRQ0_JACKET      0x00000040u
+#define BE300_JACKET_SOURCE_EN  0x0028u
+
+static uint32_t be300_jacket_girq0_source_bits(struct be300_vrc4173_latch *d)
+{
+    machine_t *m = g_be300_machine;
+
+    if (!d || !m || !m->cfg.enable_jacket || !jacket_irq_line(&m->jacket) ||
+        !(m->cf[BE300_PRIMARY_CF_SLOT].companion_page[0xB58] & 0x08u) ||
+        !be300_girq0_enabled(d, BE300_JACKET_SOURCE_EN))
+        return 0;
+    return BE300_GIRQ0_JACKET;
+}
+
+void be300_jacket_irq_update(struct be300_vrc4173_latch *d)
+{
+    bool want;
+
+    if (!d || !d->jacket_irq_connected)
+        return;
+    want = be300_jacket_girq0_source_bits(d) != 0 &&
+        be300_girq0_line_live(d, BE300_JACKET_SOURCE_EN);
+    if (want && !d->jacket_irq_asserted) {
+        INTERRUPT_ASSERT(d->jacket_irq);
+        d->jacket_irq_asserted = true;
+    } else if (!want && d->jacket_irq_asserted) {
+        INTERRUPT_DEASSERT(d->jacket_irq);
+        d->jacket_irq_asserted = false;
+    }
+}
+
+/*
  * USB function controller interrupt: docs/BE300_USB_FUNCTION.md.  The OAL
  * GIRQ0 dispatcher takes AA000004 bit 7 to handler 0x800aaab0, which clears
  * the source enable AA00002C bit 3 before returning SYSINTR 0x12 and leaves
@@ -268,6 +305,7 @@ void be300_vrc4173_update_audio_irq(void)
 void be300_vrc4173_update_cf_irq(void)
 {
     be300_cf_irq_update(g_be300_vrc4173_latch);
+    be300_jacket_irq_update(g_be300_vrc4173_latch);
 }
 
 /*
@@ -361,6 +399,7 @@ static uint64_t girq0_src_read(struct cpu *cpu,
     else
         val &= ~(uint64_t)1u;
     val |= be300_pcconnect_girq0_source_bits(d)
+        | be300_jacket_girq0_source_bits(d)
         | be300_usbf_girq0_source_bits(d)
         | be300_aiu_girq0_source_bits(d)
         | button_girq0_source_bits(
@@ -880,6 +919,7 @@ static const be300_vrc4173_region_t be300_vrc4173_regions[] = {
 static void be300_girq0_refresh_lines(struct be300_vrc4173_latch *d)
 {
     be300_cf_irq_update(d);
+    be300_jacket_irq_update(d);
     be300_usbf_irq_update(d);
     be300_aiu_irq_update(d);
     be300_pcconnect_irq_update(d);
@@ -1242,6 +1282,12 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
         INTERRUPT_CONNECT(tmps, latch->cf_irq);
         latch->cf_irq_connected = true;
         latch->cf_irq_asserted = false;
+
+        snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.0.girq0.%i",
+            gxm->path, gxm->bootstrap_cpu, 8, 6);
+        INTERRUPT_CONNECT(tmps, latch->jacket_irq);
+        latch->jacket_irq_connected = true;
+        latch->jacket_irq_asserted = false;
 
         snprintf(tmps, sizeof(tmps), "%s.cpu[%i].vrip.%i.giu.0.girq0.%i",
             gxm->path, gxm->bootstrap_cpu, 8, 7);

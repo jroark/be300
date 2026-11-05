@@ -185,7 +185,8 @@ primary regression target:
   Windows CE's socket 1, a second socket controller at `0x0B000000` with card
   windows at `0x0B200000` (I/O) and `0x0B600000` (attribute memory), which
   the guest powers and resets (`src/hw/jacket.h`; glaze-os
-  `docs/hardware/PCCARDS.md`). The interrupt is not modelled.
+  `docs/hardware/PCCARDS.md`). Its interrupt reaches GIRQ0 source 6 through
+  `0x0A001B50` bit 3, as on the real machine.
 - `--cf-modem <spec>` — Rockwell RC56LD CF data modem (the CIS of a real
   CF56R-BCT-DX card, a 16550 at 3f8h and a Hayes command interpreter). A dialed
   call connects to a host chardev: `tcp:HOST:PORT` (e.g. glaze-os

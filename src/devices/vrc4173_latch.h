@@ -35,6 +35,10 @@ struct be300_vrc4173_latch {
     struct interrupt cf_irq;
     bool     cf_irq_connected;
     bool     cf_irq_asserted;
+    /* --jacket: socket 1's interrupt, GIRQ0 source 6 (hw/jacket.h). */
+    struct interrupt jacket_irq;
+    bool     jacket_irq_connected;
+    bool     jacket_irq_asserted;
     bool     pcconnect_dock_connected;
     uint16_t pcconnect_commmode_pending;
     uint16_t stowaway_commmode_events;

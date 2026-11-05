@@ -8,17 +8,19 @@
  *
  *  - card detect: 0x0A001008 bit 3 and 0x0A00104C bit 6 read 1 while the
  *    jacket's socket is empty (0x4/0xC and 0x0C/0x48);
- *  - bus power: 0x0A001B00 bit 0 (with GPIO 5); 0x0A001B50 bit 3 then
- *    reports power good;
+ *  - bus power: 0x0A001B00 bit 0 (with GPIO 5);
  *  - the controller at 0x0B000000 reads 0 while its bus is off; powered,
  *    0x0B000100 and 0x0B000010 identify it (0x641, 0x7402), 0x0B000108-118
  *    and 0x0B000150 are pin edge detectors (bit 6 the level), and
  *    0x0B000500 is a socket block laid out like 0x0A00A000 (CTRL, RESET,
  *    STATUS at +0, +4, +8; A020/A024's counterparts at +0x20/+0x24);
  *  - card windows: I/O at 0x0B200000 + port, attribute memory at
- *    0x0B600000, decoded once the card is powered and out of reset.
- *
- *  Not modelled: socket 1's interrupt (unknown; Glaze polls the card).
+ *    0x0B600000, decoded once the card is powered and out of reset;
+ *  - the interrupt: the card's IREQ latches bit 0 of the socket's cause
+ *    0x0B00053C (cleared by reading), shown as bit 1 of 0x0B000200;
+ *    with 0x0B000208 = 1 it raises bit 3 of the companion's 0x0A001B50
+ *    (masked by 0x0A001B58), which is GIRQ0 source 6 (nk.exe OAL
+ *    0x800AB2A4/0x800AB394; traced on a BE-300 with a 3c589).
  */
 #ifndef BE300_HW_JACKET_H
 #define BE300_HW_JACKET_H
@@ -37,6 +39,7 @@ typedef struct jacket {
     cf_state_t *cf;     /* the CF socket's state, whose companion page holds bus power */
     uint32_t regs[JACKET_REG_SIZE / 4];
     bool was_up;
+    bool cause;         /* 0x0B00053C bit 0, latched */
 } jacket_t;
 
 void     jacket_init(jacket_t *j, cf_state_t *card, cf_state_t *cf);
@@ -50,7 +53,10 @@ void     jacket_io_write(jacket_t *j, uint32_t offset, unsigned size, uint64_t v
 uint64_t jacket_attr_read(jacket_t *j, uint32_t offset, unsigned size);
 void     jacket_attr_write(jacket_t *j, uint32_t offset, unsigned size, uint64_t value);
 /* The CF socket's companion page bytes that report the jacket: detect at
- * 0x008 and 0x04C, power good at 0xB50. */
+ * 0x008 and 0x04C, the socket's interrupt at 0xB50 bit 3. */
 uint8_t  jacket_companion_byte(const jacket_t *j, uint32_t offset, uint8_t byte);
+/* The socket's interrupt output: 0x0B000200 bit 1 gated by 0x0B000208,
+ * i.e. 0x0A001B50 bit 3. Latches the card's request first. */
+bool     jacket_irq_line(jacket_t *j);
 
 #endif

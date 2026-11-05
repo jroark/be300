@@ -12,6 +12,9 @@
 #define REG_RESET       0x504u
 #define REG_STATUS      0x508u
 #define CTRL_UP         0x0Bu       /* supply bits 0 and 3, output bit 1 */
+#define REG_IRQ_SUMMARY 0x200u
+#define REG_IRQ_ENABLE  0x208u
+#define REG_CAUSE       0x53Cu
 
 void jacket_init(jacket_t *j, cf_state_t *card, cf_state_t *cf)
 {
@@ -27,7 +30,7 @@ bool jacket_bus_on(const jacket_t *j)
 
 static uint32_t reg(const jacket_t *j, uint32_t offset)
 {
-    return j->regs[(offset & (JACKET_REG_SIZE - 1u)) / 4u];
+    return offset < JACKET_REG_SIZE ? j->regs[offset / 4u] : 0u;
 }
 
 bool jacket_card_up(jacket_t *j)
@@ -62,12 +65,32 @@ static bool pin(uint32_t offset)
     }
 }
 
+/* The card's request latches the cause while the card is up. */
+static bool cause(jacket_t *j)
+{
+    if (jacket_card_up(j) && cf_card_irq_pending(j->card))
+        j->cause = true;
+    return j->cause;
+}
+
+bool jacket_irq_line(jacket_t *j)
+{
+    return j && jacket_bus_on(j) && (reg(j, REG_IRQ_ENABLE) & 1u) && cause(j);
+}
+
 static uint32_t reg_read32(jacket_t *j, uint32_t offset)
 {
     if (!jacket_bus_on(j))
         return 0;                       /* an unpowered controller reads 0 */
     bool present = cf_present(j->card);
     switch (offset) {
+    case REG_IRQ_SUMMARY:
+        return cause(j) ? 2u : 0u;
+    case REG_CAUSE: {
+        bool latched = cause(j);
+        j->cause = false;               /* cleared by reading */
+        return latched ? 1u : 0u;
+    }
     case 0x000u: return 1u;
     case 0x008u: return 0x55AA55AAu;
     case 0x00Cu: return 0xAA55AA55u;
@@ -147,7 +170,8 @@ uint8_t jacket_companion_byte(const jacket_t *j, uint32_t offset, uint8_t byte)
     switch (offset) {
     case 0x008u: return present ? 0x04u : 0x0Cu;
     case 0x04Cu: return present ? 0x0Cu : 0x48u;
-    case 0xB50u: return jacket_bus_on(j) ? (uint8_t)(byte | 0x08u) : byte;
+    case 0xB50u: return jacket_irq_line((jacket_t *)j) ? (uint8_t)(byte | 0x08u)
+                                                       : (uint8_t)(byte & ~0x08u);
     default:     return byte;
     }
 }
