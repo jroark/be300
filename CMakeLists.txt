@@ -223,6 +223,7 @@ set(BE300_SOURCES
     src/hw/xi825.c
     src/hw/wl54cf.c
     src/hw/cf_wl54cf.c
+    src/hw/modem.c
     src/hw/aiu.c
     src/hw/lcd.c
 )
@@ -426,14 +427,19 @@ if(BUILD_TESTING AND BUILD_CLI)
     endif()
 
     add_executable(test_xi825 src/hw/wifi_security.c tests/test_xi825.c src/hw/xi825.c
-        src/hw/cf.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/hw/wl54cf.c src/hw/cf_wl54cf.c src/file_util.c)
+        src/hw/cf.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/hw/wl54cf.c src/hw/cf_wl54cf.c src/hw/modem.c src/file_util.c)
     target_include_directories(test_xi825 PRIVATE src)
     add_test(NAME xi825 COMMAND test_xi825)
     add_executable(test_wl54cf src/hw/wifi_security.c tests/test_wl54cf.c src/hw/wl54cf.c
         src/hw/cf.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/hw/xi825.c
-        src/hw/cf_wl54cf.c src/file_util.c)
+        src/hw/cf_wl54cf.c src/hw/modem.c src/file_util.c)
     target_include_directories(test_wl54cf PRIVATE src)
     add_test(NAME wl54cf COMMAND test_wl54cf)
+    add_executable(test_modem src/hw/wifi_security.c tests/test_modem.c src/hw/modem.c
+        src/hw/cf.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/hw/xi825.c src/hw/wl54cf.c
+        src/hw/cf_wl54cf.c src/file_util.c)
+    target_include_directories(test_modem PRIVATE src)
+    add_test(NAME modem COMMAND test_modem)
 
     add_executable(test_vm_config
         tests/test_vm_config.c

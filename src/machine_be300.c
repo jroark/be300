@@ -22,6 +22,7 @@
 #include "pcconnect.h"
 #include "pcconnect_bridge.h"
 #include "usbredir_dev.h"
+#include "host_chardev.h"
 #include "ppsh.h"
 #include "serial_backends.h"
 #include "stowaway.h"
@@ -412,8 +413,71 @@ static int be300_create_blank_nand(machine_t *m)
  * them armed and made the next be300_create in this process fail (bind:
  * address in use) or abort on duplicate handler names.
  */
+/* --cf-modem: a dialed call is the modem link's peer (a host pppd on a
+ * pty, a TCP server, ...); hardware model in hw/modem.c. */
+static bool modem_dial(void *opaque, const char *number)
+{
+    machine_t *m = opaque;
+    host_chardev_tick(m->modem_link);
+    bool up = host_chardev_ready(m->modem_link);
+    fprintf(stderr, "[MODEM] dial %s: %s\n", number, up ? "CONNECT" : "NO CARRIER");
+    return up;
+}
+
+static void modem_hangup(void *opaque)
+{
+    machine_t *m = opaque;
+    fprintf(stderr, "[MODEM] hang up\n");
+    /* A socket peer sees the call end; a pty stays for the next call. */
+    if (m->modem_link->kind != HOST_CHARDEV_PTY)
+        host_chardev_drop_peer(m->modem_link);
+}
+
+static void modem_tx(void *opaque, const uint8_t *data, size_t len)
+{
+    machine_t *m = opaque;
+    if (host_chardev_ready(m->modem_link))
+        (void)host_chardev_write(m->modem_link, data, len);
+}
+
+static void modem_tick(machine_t *m)
+{
+    cf_state_t *cf = &m->cf[BE300_PRIMARY_CF_SLOT];
+    if (!m->modem_link || cf->card_kind != CF_CARD_MODEM || !cf->attached)
+        return;
+    host_chardev_tick(m->modem_link);
+    if (!cf->modem.online)
+        return;
+    if (!host_chardev_ready(m->modem_link)) {
+        cf_modem_carrier_lost(&cf->modem);
+        return;
+    }
+    uint8_t buf[512];
+    size_t space = cf_modem_rx_space(&cf->modem);
+    if (!space)
+        return;
+    ssize_t n = host_chardev_read(m->modem_link, buf, space < sizeof(buf) ? space : sizeof(buf));
+    if (n > 0)
+        cf_modem_receive(&cf->modem, buf, (size_t)n);
+    else if ((n == 0 && m->modem_link->kind != HOST_CHARDEV_PTY) ||
+             (n < 0 && !host_chardev_errno_would_block())) {
+        host_chardev_drop_peer(m->modem_link);
+        cf_modem_carrier_lost(&cf->modem);
+    }
+}
+
+static void modem_link_free(machine_t *m)
+{
+    if (!m->modem_link)
+        return;
+    host_chardev_close(m->modem_link);
+    free(m->modem_link);
+    m->modem_link = NULL;
+}
+
 static machine_t *be300_create_fail(machine_t *m)
 {
+    modem_link_free(m);
     free(m->nand_data);
     free(m->nand_oob);
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
@@ -708,6 +772,23 @@ machine_t *be300_create(const machine_config_t *cfg)
                     m->emul->net,
                     cfg->net_mac_set ? cfg->net_mac : NULL) != 0) {
                 fprintf(stderr, "[BE300] Failed to attach network card\n");
+                return be300_create_fail(m);
+            }
+        }
+
+        if (cfg->cf_modem_spec) {
+            host_chardev_kind_t kind;
+            const char *target;
+            m->modem_link = calloc(1, sizeof(*m->modem_link));
+            if (!m->modem_link || !host_chardev_parse_spec(cfg->cf_modem_spec, &kind, &target)) {
+                fprintf(stderr, "[BE300] Bad --cf-modem spec\n");
+                return be300_create_fail(m);
+            }
+            host_chardev_init(m->modem_link, "MODEM", cfg->trace);
+            if (!host_chardev_open(m->modem_link, kind, target) ||
+                cf_attach_modem(&m->cf[BE300_PRIMARY_CF_SLOT], m, modem_dial, modem_hangup,
+                                modem_tx) != 0) {
+                fprintf(stderr, "[BE300] Failed to attach the CF modem\n");
                 return be300_create_fail(m);
             }
         }
@@ -1111,6 +1192,7 @@ static bool be300_run_batch(machine_t *m)
     cf_ne2000_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     cf_xi825_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     cf_wl54cf_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
+    modem_tick(m);
     be300_vrc4173_update_cf_irq();
     aiu_tick(m);
     be300_cmcu_tick(m);
@@ -1294,6 +1376,7 @@ void be300_destroy(machine_t *m)
         free(m->nand_data);
         m->nand_data = NULL;
     }
+    modem_link_free(m);
     for (unsigned i = 0; i < BE300_MAX_CF_SLOTS; i++)
         cf_destroy(&m->cf[i]);
     pcconnect_bridge_shutdown();
