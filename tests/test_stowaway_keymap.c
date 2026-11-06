@@ -23,6 +23,11 @@ void be300_stowaway_signal_uart_irq(int pending)
     (void)pending;
 }
 
+uint64_t be300_stowaway_now_ns(void)
+{
+    return 0;
+}
+
 typedef struct {
     const char *code;
     const char *android;

@@ -46,7 +46,9 @@ Secondary implemented paths, used for targeted investigation only:
   `--serial0-bridge`/`--serial1-bridge` expose the VR4131 main SIU / VRC4173
   companion SIU as plain host serial bridges; see
   `docs/PC_CONNECT_BRIDGE.md`
-- `--stowaway-keyboard` attaches the Targus/Think Outside Stowaway dock
+- `--stowaway-keyboard` attaches the Targus/Think Outside Stowaway dock;
+  `BE300_STOWAWAY_TRACE=1` logs the guest's DTR/RTS changes and the probe
+  ACK in emulated milliseconds
 - `--audio` routes the always-active Kj companion wave-DMA model to the host
   SDL audio device; the browser frontend routes the same PCM through Web Audio
 

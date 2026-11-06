@@ -1191,7 +1191,12 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
 
         /* SIU/AIU area (PA 0x0A008000, offset 0x8000) */
         static const struct { uint16_t off; uint32_t val; } siu_regs[] = {
-            { 0x8000, 0x0000200C },  /* master control */
+            /* Dock control (glaze-os kernel/drivers/stowaway_hw.c, from
+             * socket.dll): a real BE-300 reads 0x001F after NAND boots of
+             * Glaze, which never wrote it (2026-11-05). Windows CE writes
+             * type | 0x1F00 to power the serial dock and type | 0x2000
+             * to close it, so 0x200C is its idle USB-cradle state. */
+            { 0x8000, 0x0000001F },
             { 0x8004, 0x00001100 },  /* status */
             { 0x8010, 0x0000000C },  /* configuration */
             { 0x8014, 0x00000002 },  /* mode */
