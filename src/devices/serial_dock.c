@@ -38,7 +38,11 @@
 #define BE300_COMMMODE_IRQ_MASK \
     (BE300_COMMMODE_SOCKET_IRQ_MASK | BE300_COMMMODE_MODEM_IRQ_MASK)
 #define BE300_COMMMODE_SOCKET_VALUE_MASK 0x001Fu
-#define BE300_COMMMODE_SOCKET_NONE  0x0007u
+/* Nothing in the dock: a real BE-300 reads 0x0F here (glaze-os traced
+ * 0F -> 0C/0E/0A -> 08 while a Stowaway slid on, 2026-11-06; glaze-os
+ * tests/STOWAWAY.md). WinCE 3.0's socket table also has an empty 0x07
+ * entry, but the hardware doesn't report it. */
+#define BE300_COMMMODE_SOCKET_NONE  0x000Fu
 #define BE300_COMMMODE_SOCKET_RS232 0x0008u
 #define BE300_COMMMODE_SOCKET_USB_SYNC 0x000Cu
 #define BE300_COMMMODE_MODEM_EVENT_BITS 0x0030u
@@ -183,9 +187,9 @@ static uint16_t be300_pcconnect_socket_read(
     if (be300_serial_dock_socket_enabled()) {
         /*
          * socket.dll maps the Vic/CommMode page, then reads
-         * ReadPortDataEx(0, 2, 0x1f) from AA008010.  The WinCE 3.0
-         * socket table maps raw 0x0007 to an empty no-driver entry,
-         * raw 0x0008 to serial.dll, and raw 0x000c/0x000d to USB/VCom
+         * ReadPortDataEx(0, 2, 0x1f) from AA008010.  An empty dock reads
+         * 0x000F on hardware (BE300_COMMMODE_SOCKET_NONE); the WinCE 3.0
+         * socket table maps raw 0x0008 to serial.dll, and raw 0x000c/0x000d to USB/VCom
          * entries.  hardware.txt:88-102 documents AA008004 as the
          * CommMode GIRQ0-4 pending/mask register, and hardware.txt:189-191
          * places this page next to the companion SIU.  For PC Connect, do
@@ -401,6 +405,11 @@ static void be300_pcconnect_raise_dock_edge(struct be300_vrc4173_latch *d,
  * the byte stays in our RX queue forever.  Synthesizing a modem event here
  * piggy-backs on the same dispatch path that the probe ACK already uses.
  */
+uint64_t be300_stowaway_now_ns(void)
+{
+    return g_be300_machine ? be300_emulated_ns(g_be300_machine) : 0;
+}
+
 void be300_stowaway_signal_uart_irq(int pending)
 {
     struct be300_vrc4173_latch *d = g_be300_vrc4173_latch;

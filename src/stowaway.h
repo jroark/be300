@@ -30,3 +30,7 @@ bool stowaway_queue_mapped_key(unsigned value, bool release);
  * dispatches GIU 0 by reading AA000004/AA008004 latches — without those
  * bits set, no SYSINTR fires and bytes sit in the UART RX queue. */
 void be300_stowaway_signal_uart_irq(int pending);
+
+/* Implemented in devices/serial_dock.c: emulated time, for the dock's
+ * handshake timing and BE300_STOWAWAY_TRACE. */
+uint64_t be300_stowaway_now_ns(void);

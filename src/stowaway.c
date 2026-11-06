@@ -1,6 +1,7 @@
 #include "stowaway.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define STOWAWAY_RX_CAP 4096u
@@ -32,6 +33,23 @@ typedef struct {
 } stowaway_state_t;
 
 static stowaway_state_t g_stowaway;
+
+/* BE300_STOWAWAY_TRACE=1: the guest's DTR/RTS changes and the probe ACK,
+ * in emulated milliseconds. */
+static bool stowaway_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("BE300_STOWAWAY_TRACE");
+        on = v && *v && strcmp(v, "0") != 0;
+    }
+    return on != 0;
+}
+
+static unsigned long long stowaway_ms(void)
+{
+    return (unsigned long long)(be300_stowaway_now_ns() / 1000000u);
+}
 /* Host keys holding the dock's Fn key down; a guest UART reset keeps it. */
 static unsigned g_stowaway_fn_refs;
 
@@ -164,6 +182,8 @@ static void stowaway_queue_probe_ack(void)
     if (g_stowaway.probe_ack_pending)
         return;
 
+    if (stowaway_trace())
+        fprintf(stderr, "[STOWAWAY] %llu ms probe ACK\n", stowaway_ms());
     stowaway_queue_byte(STOWAWAY_PROBE_ACK_0);
     stowaway_queue_byte(STOWAWAY_PROBE_ACK_1);
     g_stowaway.probe_ack_pending = true;
@@ -213,6 +233,10 @@ void stowaway_uart_note_modem_control(bool dtr_asserted, bool rts_asserted)
         return;
 
     old_rts = g_stowaway.rts_asserted;
+    if (stowaway_trace() && (dtr_asserted != g_stowaway.dtr_asserted ||
+                             rts_asserted != old_rts))
+        fprintf(stderr, "[STOWAWAY] %llu ms DTR %d RTS %d\n", stowaway_ms(),
+                dtr_asserted, rts_asserted);
     g_stowaway.dtr_asserted = dtr_asserted;
     g_stowaway.rts_asserted = rts_asserted;
     if (!dtr_asserted) {
