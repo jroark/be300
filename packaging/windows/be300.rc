@@ -1,0 +1,7 @@
+// Windows resources for be300.exe: the application icon (resource 1, which
+// SDL loads for the window and taskbar via SDL_WINDOWS_INTRESOURCE_ICON)
+// and the application manifest.
+#include <winuser.h>
+
+1 ICON "be300.ico"
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "be300.manifest"

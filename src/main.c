@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "be300.h"
+#include "be300_session.h"
 #include "pcconnect_bridge.h"
 #ifdef _WIN32
 #include "win32_compat.h"
@@ -176,8 +177,10 @@ static void usage(const char *prog)
         "  --stowaway-keyboard   Feed host key events to the Stowaway serial dock on COM1\n"
         "  --fb-size <WxH>       Experimental framebuffer size: 240x320 or 480x640\n"
         "                        (default: 240x320; 480x640 requires a patched NAND)\n"
-        "  --frame               Show the BE-300 bezel around the LCD (default: hidden)\n"
-        "  --scale <N>           Render scale, 1.0-4.0 (default: 1.0; applies with or without --frame)\n"
+        "  --frame               Show the BE-300 bezel around the LCD (default: as last left;\n"
+        "                        View > Show Bezel toggles it while running)\n"
+        "  --scale <N>           Window zoom, 1.0-4.0 (default: as last left; the window\n"
+        "                        also resizes by dragging and with View > Zoom)\n"
         "  --speed <N>           Throttle target in million guest instructions/sec\n"
         "                        (default: 166, 0 = unthrottled)\n"
         "  --mmio-coverage       First-hit log per (device, offset, op) + shutdown coverage table\n"
@@ -265,6 +268,9 @@ int main(int argc, char *argv[])
         .fb_stride      = 0,
         .frame_visible  = false,
         .scale          = 1.0,
+        /* Without --frame / --scale the window reopens as it was left. */
+        .restore_window_bezel = true,
+        .restore_window_zoom  = true,
         .pcconnect_bridge = NULL,
         .pcconnect_tee    = NULL,
         .pcconnect_baud   = 115200u,
@@ -379,7 +385,9 @@ int main(int argc, char *argv[])
             cfg.net_mac_set = true;
         } else if (strcmp(argv[i], "--frame") == 0) {
             cfg.frame_visible = true;
+            cfg.restore_window_bezel = false;
         } else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
+            cfg.restore_window_zoom = false;
             if (!parse_scale(argv[++i], &cfg.scale)) {
                 fprintf(stderr, "Error: --scale must be 1.0-4.0\n");
                 return 1;
@@ -639,13 +647,5 @@ int main(int argc, char *argv[])
         quiet_mode = 0;
     }
 
-    machine_t *m = be300_create(&cfg);
-    if (!m) {
-        fprintf(stderr, "Failed to create machine\n");
-        return 1;
-    }
-
-    be300_run(m);
-    be300_destroy(m);
-    return 0;
+    return be300_session_run(&cfg);
 }

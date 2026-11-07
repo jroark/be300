@@ -48,6 +48,42 @@
                 <string>org.casio.be300.vm</string>
             </array>
         </dict>
+        <!--
+          CASIO app packages: dropping one on the Dock icon (or the window)
+          of a running VM offers to install it (File > Install App).
+        -->
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>CASIO App Package</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>org.casio.be300.cbea</string>
+            </array>
+        </dict>
+    </array>
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.casio.be300.cbea</string>
+            <key>UTTypeDescription</key>
+            <string>CASIO App Package</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>cbea</string>
+                </array>
+            </dict>
+        </dict>
     </array>
     <key>UTExportedTypeDeclarations</key>
     <array>

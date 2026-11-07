@@ -5,10 +5,144 @@
 
 #include "ui_png.h"
 
-#ifdef HAVE_PNG
+#if defined(HAVE_PNG) && defined(BE300_PNG_WIC)
+/* Windows builds without libpng decode and encode through the Windows
+ * Imaging Component, which every supported Windows has. */
+#define COBJMACROS
+#include <windows.h>
+#include <wincodec.h>
+#include <stdlib.h>
+#include <string.h>
+
+static IWICImagingFactory *wic_factory(bool *uninit_out)
+{
+    IWICImagingFactory *f = NULL;
+    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+
+    *uninit_out = SUCCEEDED(hr);
+    if (FAILED(CoCreateInstance(&CLSID_WICImagingFactory, NULL,
+            CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&f))) {
+        if (*uninit_out)
+            CoUninitialize();
+        *uninit_out = false;
+        return NULL;
+    }
+    return f;
+}
+
+bool ui_load_png_rgba(const uint8_t *data, size_t len,
+    uint8_t **pixels_out, uint32_t *width_out, uint32_t *height_out)
+{
+    bool uninit, ok = false;
+    IWICImagingFactory *f = wic_factory(&uninit);
+    IWICStream *stream = NULL;
+    IWICBitmapDecoder *dec = NULL;
+    IWICBitmapFrameDecode *frame = NULL;
+    IWICFormatConverter *conv = NULL;
+    UINT w = 0, h = 0;
+    uint8_t *px = NULL;
+
+    if (!f)
+        return false;
+    if (FAILED(IWICImagingFactory_CreateStream(f, &stream)) ||
+        FAILED(IWICStream_InitializeFromMemory(stream, (BYTE *)data, (DWORD)len)) ||
+        FAILED(IWICImagingFactory_CreateDecoderFromStream(f, (IStream *)stream,
+            NULL, WICDecodeMetadataCacheOnDemand, &dec)) ||
+        FAILED(IWICBitmapDecoder_GetFrame(dec, 0, &frame)) ||
+        FAILED(IWICImagingFactory_CreateFormatConverter(f, &conv)) ||
+        FAILED(IWICFormatConverter_Initialize(conv, (IWICBitmapSource *)frame,
+            &GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, NULL, 0.0,
+            WICBitmapPaletteTypeCustom)) ||
+        FAILED(IWICFormatConverter_GetSize(conv, &w, &h)) || !w || !h)
+        goto out;
+    px = malloc((size_t)w * h * 4u);
+    if (!px || FAILED(IWICFormatConverter_CopyPixels(conv, NULL, w * 4u,
+            w * h * 4u, px)))
+        goto out;
+    for (size_t i = 0; i < (size_t)w * h; i++) {
+        uint8_t b = px[i * 4u];
+        px[i * 4u] = px[i * 4u + 2u];
+        px[i * 4u + 2u] = b;
+    }
+    *pixels_out = px;
+    *width_out = w;
+    *height_out = h;
+    px = NULL;
+    ok = true;
+out:
+    free(px);
+    if (conv) IWICFormatConverter_Release(conv);
+    if (frame) IWICBitmapFrameDecode_Release(frame);
+    if (dec) IWICBitmapDecoder_Release(dec);
+    if (stream) IWICStream_Release(stream);
+    IWICImagingFactory_Release(f);
+    if (uninit)
+        CoUninitialize();
+    return ok;
+}
+
+bool ui_save_png_rgba(const char *path, const uint8_t *rgba,
+    uint32_t width, uint32_t height)
+{
+    bool uninit, ok = false;
+    IWICImagingFactory *f;
+    IWICStream *stream = NULL;
+    IWICBitmapEncoder *enc = NULL;
+    IWICBitmapFrameEncode *frame = NULL;
+    WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
+    size_t n = (size_t)width * height;
+    uint8_t *bgra;
+    wchar_t wpath[MAX_PATH];
+
+    if (!path || !rgba || !width || !height ||
+        !MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, MAX_PATH))
+        return false;
+    bgra = malloc(n * 4u);
+    if (!bgra)
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        bgra[i * 4u + 0u] = rgba[i * 4u + 2u];
+        bgra[i * 4u + 1u] = rgba[i * 4u + 1u];
+        bgra[i * 4u + 2u] = rgba[i * 4u + 0u];
+        bgra[i * 4u + 3u] = rgba[i * 4u + 3u];
+    }
+    f = wic_factory(&uninit);
+    if (!f) {
+        free(bgra);
+        return false;
+    }
+    ok = SUCCEEDED(IWICImagingFactory_CreateStream(f, &stream)) &&
+        SUCCEEDED(IWICStream_InitializeFromFilename(stream, wpath, GENERIC_WRITE)) &&
+        SUCCEEDED(IWICImagingFactory_CreateEncoder(f, &GUID_ContainerFormatPng,
+            NULL, &enc)) &&
+        SUCCEEDED(IWICBitmapEncoder_Initialize(enc, (IStream *)stream,
+            WICBitmapEncoderNoCache)) &&
+        SUCCEEDED(IWICBitmapEncoder_CreateNewFrame(enc, &frame, NULL)) &&
+        SUCCEEDED(IWICBitmapFrameEncode_Initialize(frame, NULL)) &&
+        SUCCEEDED(IWICBitmapFrameEncode_SetSize(frame, width, height)) &&
+        SUCCEEDED(IWICBitmapFrameEncode_SetPixelFormat(frame, &fmt)) &&
+        IsEqualGUID(&fmt, &GUID_WICPixelFormat32bppBGRA) &&
+        SUCCEEDED(IWICBitmapFrameEncode_WritePixels(frame, height, width * 4u,
+            (UINT)(n * 4u), bgra)) &&
+        SUCCEEDED(IWICBitmapFrameEncode_Commit(frame)) &&
+        SUCCEEDED(IWICBitmapEncoder_Commit(enc));
+    if (frame) IWICBitmapFrameEncode_Release(frame);
+    if (enc) IWICBitmapEncoder_Release(enc);
+    if (stream) IWICStream_Release(stream);
+    IWICImagingFactory_Release(f);
+    if (uninit)
+        CoUninitialize();
+    free(bgra);
+    if (!ok)
+        DeleteFileW(wpath);
+    return ok;
+}
+
+#elif defined(HAVE_PNG)
 
 #include <png.h>
 #include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -124,6 +258,46 @@ out:
     free(pixels);
     if (png || info)
         png_destroy_read_struct(&png, &info, NULL);
+    return ok;
+}
+
+bool ui_save_png_rgba(const char *path, const uint8_t *rgba,
+    uint32_t width, uint32_t height)
+{
+    FILE *f;
+    png_structp png;
+    png_infop info = NULL;
+    volatile bool ok = false;
+
+    if (!path || !rgba || width == 0 || height == 0)
+        return false;
+    f = fopen(path, "wb");
+    if (!f)
+        return false;
+    png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (png)
+        info = png_create_info_struct(png);
+    if (!png || !info)
+        goto out;
+    if (setjmp(png_jmpbuf(png)))
+        goto out;
+    png_init_io(png, f);
+    png_set_IHDR(png, info, width, height, 8, PNG_COLOR_TYPE_RGBA,
+        PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
+        PNG_FILTER_TYPE_DEFAULT);
+    png_write_info(png, info);
+    for (uint32_t y = 0; y < height; y++)
+        png_write_row(png, (png_const_bytep)(rgba + (size_t)y * width * 4u));
+    png_write_end(png, NULL);
+    ok = true;
+
+out:
+    if (png)
+        png_destroy_write_struct(&png, info ? &info : NULL);
+    if (fclose(f) != 0)
+        ok = false;
+    if (!ok)
+        remove(path);
     return ok;
 }
 

@@ -99,6 +99,28 @@ cd build-host
 Serial output is written to stdout. Emulator diagnostics are written to stderr.
 An SDL window opens for the framebuffer when SDL is available. Panel and
 backlight power control presentation; see [LCD model](docs/BE300_LCD.md).
+
+The desktop window behaves like a native app on macOS and Windows:
+
+- It shows the LCD with the touch panel's strip of seven icons below it
+  (panel rows 320-359), or the whole BE-300 bezel (View > Show Bezel, or
+  `--frame`). Both layouts take taps on the icon strip.
+- It is HiDPI-aware and resizes with a locked aspect ratio. Drag the window
+  edges (or the bezel's lower corners), or use View > Zoom 100%-400% (Cmd/Ctrl+1-4),
+  Fit Screen (Cmd/Ctrl+0) and Pixel Accurate.
+- The menu bar (macOS) or window menu (Windows; right-click the bezel) has
+  File (Install App, Save Screenshot, Copy Screen), Device (Rocket, Power, OK,
+  Esc, D-pad, Restart (Cold Boot)), View and Help > Keyboard Shortcuts.
+  Hardware keys: arrows = D-pad, Return = OK, Esc = Esc, Tab = Rocket,
+  F12 = Power. Linux has no menu bar, but the Ctrl shortcuts work.
+- Save Screenshot (Cmd/Ctrl+S) writes a full-resolution PNG of the window to
+  the Desktop. The LCD-only BMP that every run saves in the working
+  directory on exit is unchanged.
+- Drop a `.cbea` on the window to install it (see
+  [Installing apps](docs/INSTALLING_APPS.md)).
+- Position, zoom, bezel and Pixel Accurate are remembered between runs.
+  `--frame` / `--scale` override them for one run. `BE300_WINDOW_PREFS`
+  sets the preferences file, and an empty value disables it.
 Set `BE300_AUDIO=0` to mute host audio without changing guest-visible
 hardware state. The separate piezo buzzer's register behavior remains
 unverified. Touch input coalesces rapid host click events into one guest
