@@ -70,6 +70,8 @@ typedef struct {
     /* --cf-modem: an RC56LD data modem whose calls reach this host_chardev
      * spec (pty:auto, tcp:HOST:PORT, unix:/PATH, ...), e.g. a host pppd. */
     const char *cf_modem_spec;
+    /* --cf-gps: an NMEA GPS CF card replaying this file, once a second. */
+    const char *cf_gps_path;
     bool        enable_audio;
     bool        net_mac_set;
     bool        restore;
@@ -171,6 +173,10 @@ typedef struct be300_state {
     jacket_t     jacket;
     /* --cf-modem: where the modem's calls go. */
     struct host_chardev *modem_link;
+    /* --cf-gps: the NMEA file, where the next second starts and when. */
+    char        *gps_nmea;
+    size_t       gps_len, gps_pos;
+    uint64_t     gps_next_ns;
 
     /* AIU (Casio audio block on the VRC4173 latch) */
     aiu_state_t  aiu;

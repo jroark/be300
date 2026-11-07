@@ -466,8 +466,58 @@ static void modem_tick(machine_t *m)
     }
 }
 
+/* --cf-gps: one second of the NMEA file (through the next RMC sentence) a
+ * second, at 4800 baud only. At other rates a real UART would see framing
+ * errors; here it just sees nothing. */
+static void gps_tx(void *opaque, const uint8_t *data, size_t len)
+{
+    /* Logged a line at a time: NMEA commands end in LF, SiRF frames in B3. */
+    static char line[96];
+    static size_t n;
+    (void)opaque;
+    for (size_t i = 0; i < len; i++) {
+        uint8_t b = data[i];
+        if (n + 4 < sizeof(line)) {
+            if (b >= 32 && b < 127) line[n++] = (char)b;
+            else { snprintf(line + n, 5, "<%02x>", b); n += 4; }
+        }
+        if (b == '\n' || b == 0xB3) {
+            line[n] = 0;
+            fprintf(stderr, "[GPS] guest sent %s\n", line);
+            n = 0;
+        }
+    }
+}
+
+static void gps_tick(machine_t *m)
+{
+    cf_state_t *cf = &m->cf[BE300_PRIMARY_CF_SLOT];
+    if (!m->gps_nmea || !m->gps_len || !cf->attached || cf->card_kind != CF_CARD_MODEM || !cf->modem.gps)
+        return;
+    uint64_t now = be300_host_monotonic_ns();
+    if (now < m->gps_next_ns)
+        return;
+    m->gps_next_ns = now + 1000000000ULL;
+    if (!(cf->modem_cor & 0x3f) || cf->modem.dll != 24 || cf->modem.dlm || (cf->modem.lcr & 0x80))
+        return;
+    size_t start = m->gps_pos, end = start;
+    for (;;) {
+        const char *nl = memchr(m->gps_nmea + end, '\n', m->gps_len - end);
+        size_t line_end = nl ? (size_t)(nl - m->gps_nmea) + 1 : m->gps_len;
+        bool rmc = line_end - end > 6 && !memcmp(m->gps_nmea + end + 3, "RMC,", 4);
+        end = line_end;
+        if (rmc || end >= m->gps_len)
+            break;
+    }
+    if (end > start)
+        cf_modem_receive(&cf->modem, (const uint8_t *)m->gps_nmea + start, end - start);
+    m->gps_pos = end >= m->gps_len ? 0 : end;
+}
+
 static void modem_link_free(machine_t *m)
 {
+    free(m->gps_nmea);
+    m->gps_nmea = NULL;
     if (!m->modem_link)
         return;
     host_chardev_close(m->modem_link);
@@ -805,6 +855,22 @@ machine_t *be300_create(const machine_config_t *cfg)
                 cf_attach_modem(&m->cf[BE300_PRIMARY_CF_SLOT], m, modem_dial, modem_hangup,
                                 modem_tx) != 0) {
                 fprintf(stderr, "[BE300] Failed to attach the CF modem\n");
+                return be300_create_fail(m);
+            }
+        }
+
+        if (cfg->cf_gps_path) {
+            FILE *f = fopen(cfg->cf_gps_path, "rb");
+            long size = -1;
+            if (f && !fseek(f, 0, SEEK_END) && (size = ftell(f)) > 0 && !fseek(f, 0, SEEK_SET) &&
+                (m->gps_nmea = malloc((size_t)size)) &&
+                fread(m->gps_nmea, 1, (size_t)size, f) == (size_t)size) {
+                m->gps_len = (size_t)size;
+            }
+            if (f)
+                fclose(f);
+            if (!m->gps_len || cf_attach_gps(&m->cf[BE300_PRIMARY_CF_SLOT], m, gps_tx) != 0) {
+                fprintf(stderr, "[BE300] Failed to attach the CF GPS (%s)\n", cfg->cf_gps_path);
                 return be300_create_fail(m);
             }
         }
@@ -1228,6 +1294,7 @@ static bool be300_run_batch(machine_t *m)
     }
     cf_wl54cf_tick(&m->cf[BE300_PRIMARY_CF_SLOT]);
     modem_tick(m);
+    gps_tick(m);
     be300_vrc4173_update_cf_irq();
     aiu_tick(m);
     be300_cmcu_tick(m);

@@ -134,6 +134,10 @@ int      cf_attach_modem(cf_state_t *s, void *opaque,
                          bool (*dial)(void *, const char *),
                          void (*hangup)(void *),
                          void (*tx)(void *, const uint8_t *, size_t));
+/* An NMEA GPS receiver on a CF serial card (--cf-gps): the modem's 16550 in
+ * GPS mode; tx gets anything the guest sends it (SiRF/NMEA commands). */
+int      cf_attach_gps(cf_state_t *s, void *opaque,
+                       void (*tx)(void *, const uint8_t *, size_t));
 /* Cards with registers in the I/O window at 0x0A00C000: network and modem. */
 bool     cf_is_io_card(const cf_state_t *s);
 void     cf_wl54cf_tick(cf_state_t *s);
