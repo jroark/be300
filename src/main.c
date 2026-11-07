@@ -124,6 +124,8 @@ static void usage(const char *prog)
         "  --cf-modem <spec>     Attach a Rockwell RC56LD CF data modem; a dialed call\n"
         "                        connects to <spec>: pty:auto (e.g. for pppd), tcp:HOST:PORT,\n"
         "                        tcp-listen:PORT, unix:/PATH; any number answers\n"
+        "  --cf-gps <file.nmea>  Attach an NMEA GPS CF card (16550 at 3f8h, 4800 baud)\n"
+        "                        replaying the file a second (RMC) at a time, looped\n"
         "  --audio               Play headphone PCM and piezo PWM through SDL;\n"
         "                        guest audio/interrupt models always run,\n"
         "                        this only enables host output (BE300_AUDIO=0 mutes)\n"
@@ -346,6 +348,8 @@ int main(int argc, char *argv[])
             cfg.enable_ne2000 = true;
         } else if (strcmp(argv[i], "--wl54cf") == 0) {
             cfg.enable_wl54cf = true;
+        } else if (strcmp(argv[i], "--cf-gps") == 0 && i + 1 < argc) {
+            cfg.cf_gps_path = argv[++i];
         } else if (strcmp(argv[i], "--cf-modem") == 0 && i + 1 < argc) {
             cfg.cf_modem_spec = argv[++i];
         } else if (strcmp(argv[i], "--xi825") == 0) {
@@ -492,6 +496,21 @@ int main(int argc, char *argv[])
         }
         if (cfg.cf_count > 1) {
             fprintf(stderr, "Error: only one --cf image can be combined with --cf-modem\n");
+            return 1;
+        }
+        if (cfg.cf_count == 1) {        /* the image moves to the secondary socket */
+            cfg.cf_paths[1] = cfg.cf_paths[0];
+            cfg.cf_paths[0] = NULL;
+            cfg.cf_count = 2;
+        }
+    }
+    if (cfg.cf_gps_path) {
+        if (network_card || cfg.cf_modem_spec || cfg.enable_jacket || cfg.restore || cfg.rom_path) {
+            fprintf(stderr, "Error: --cf-gps takes the primary PCMCIA socket of a --nand boot\n");
+            return 1;
+        }
+        if (cfg.cf_count > 1) {
+            fprintf(stderr, "Error: only one --cf image can be combined with --cf-gps\n");
             return 1;
         }
         if (cfg.cf_count == 1) {        /* the image moves to the secondary socket */

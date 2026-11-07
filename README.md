@@ -192,6 +192,12 @@ primary regression target:
   call connects to a host chardev: `tcp:HOST:PORT` (e.g. glaze-os
   `tests/ppp_peer.py`), `pty:auto` for a host `pppd`, `unix:/PATH`. Dropping
   DTR hangs up.
+- `--cf-gps <file.nmea>` — an NMEA GPS CF card (FUNCID serial, a 16550 at
+  3f8h, the modem's 16550 model; the CIS of a real AmbiCom GPS-CF, "CFGPS",
+  COR at 0x400) replaying
+  the file one second, through each RMC sentence, at a time, looped. Data
+  flows only at 4800 baud, as a SiRF receiver's default. glaze-os
+  `tools/mknmea.py` writes tracks; `tests/gps/track.nmea` is one.
 - `--rtc-host-time` — initialize the guest RTC from host local time
 - `--audio` — route emulated wave-audio output to SDL
 - `--stowaway-keyboard` — attach the Targus/Think Outside serial keyboard dock

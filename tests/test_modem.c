@@ -41,8 +41,39 @@ static void drain(cf_modem_t *m, char *out, size_t size)
     out[n] = 0;
 }
 
+static void test_gps(void)
+{
+    /* --cf-gps: the same 16550, no AT interpreter, always streaming. */
+    static cf_state_t g;
+    sent_len = 0;
+    assert(cf_attach_gps(&g, NULL, tx) == 0 && g.modem.gps && g.modem.online);
+    assert(cf_cis_read_byte(&g, 0) == 0x01);
+    char vers[8] = {0};
+    for (unsigned i = 0; i < 5; i++) vers[i] = (char)cf_cis_read_byte(&g, 0x27 + i);
+    assert(!strcmp(vers, "CFGPS"));
+    assert(cf_window_read(&g, 0xC3FD, 1) == 0xff);              /* not configured yet */
+    cf_cis_write(&g, 0x420, 1, 0x4d);                           /* the modem's COR: ignored */
+    assert(cf_window_read(&g, 0xC3FD, 1) == 0xff);
+    cf_cis_write(&g, 0x400, 1, 0x4d);
+    assert(cf_cis_read(&g, 0x400, 1) == 0x4d);
+    assert(cf_window_read(&g, 0xC3FD, 1) == 0x60);              /* LSR: nothing yet */
+    cf_window_write(&g, 0xC3F8, 1, 'A'); cf_window_write(&g, 0xC3F8, 1, 'T'); cf_window_write(&g, 0xC3F8, 1, '\r');
+    assert(!(cf_window_read(&g, 0xC3FD, 1) & 1) && sent_len == 3 && !memcmp(sent, "AT\r", 3));   /* no echo */
+    assert(!(cf_window_read(&g, 0xC3FE, 1) & 0x80));            /* no DCD */
+    assert(cf_modem_receive(&g.modem, (const uint8_t *)"$GP", 3) == 3);
+    char got[8];
+    drain(&g.modem, got, sizeof(got));
+    assert(!strcmp(got, "$GP"));
+    cf_window_write(&g, 0xC3FC, 1, 0x00);                         /* DTR down: still streaming */
+    assert(cf_modem_receive(&g.modem, (const uint8_t *)"x", 1) == 1);
+    cf_destroy(&g);
+    sent_len = 0;
+    puts("gps: CIS, COR, no echo or carrier, streaming regardless of DTR PASS");
+}
+
 int main(void)
 {
+    test_gps();
     cf_modem_t m = { .dial = dial, .hangup = hangup, .tx = tx };
     char out[256];
     cf_modem_reset(&m);

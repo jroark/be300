@@ -43,9 +43,12 @@ void cf_modem_reset(cf_modem_t *m)
     bool (*dial)(void *, const char *) = m->dial;
     void (*hangup)(void *) = m->hangup;
     void (*tx)(void *, const uint8_t *, size_t) = m->tx;
+    bool gps = m->gps;
     memset(m, 0, sizeof(*m));
     m->opaque = opaque; m->dial = dial; m->hangup = hangup; m->tx = tx;
-    m->echo = m->verbose = true;
+    m->gps = gps;
+    m->echo = m->verbose = !gps;
+    m->online = gps;
     m->thre_irq = true;
     m->connect_rate = 52000;
 }
@@ -219,7 +222,7 @@ uint8_t cf_modem_read(cf_modem_t *m, unsigned reg)
     case 5:
         return (m->rx_count ? LSR_DR : 0) | LSR_THRE | LSR_TEMT;
     case 6: {
-        uint8_t v = MSR_CTS | MSR_DSR | (m->online ? MSR_DCD : 0) | m->msr_delta;
+        uint8_t v = MSR_CTS | MSR_DSR | (m->online && !m->gps ? MSR_DCD : 0) | m->msr_delta;
         m->msr_delta = 0;
         return v;
     }
@@ -237,7 +240,7 @@ void cf_modem_write(cf_modem_t *m, unsigned reg, uint8_t value)
             m->dll = value;
             return;
         }
-        if (m->online) {
+        if (m->online || m->gps) {
             if (m->tx)
                 m->tx(m->opaque, &value, 1);
         } else {
@@ -267,6 +270,8 @@ void cf_modem_write(cf_modem_t *m, unsigned reg, uint8_t value)
     case 4: {
         bool dtr_was = m->mcr & MCR_DTR;
         m->mcr = value;
+        if (m->gps)
+            return;
         /* AT&D2: dropping DTR hangs up. */
         if (dtr_was && !(value & MCR_DTR))
             hang_up(m, true);

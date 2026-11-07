@@ -14,6 +14,8 @@ typedef struct {
     bool thre_irq;
     uint8_t rx[CF_MODEM_RX];
     unsigned rx_head, rx_count;
+    /* GPS receiver mode (--cf-gps): no AT interpreter, always streaming. */
+    bool gps;
     /* Hayes state. */
     bool online, echo, verbose;
     char cmd[96];
@@ -29,7 +31,7 @@ typedef struct {
 void cf_modem_reset(cf_modem_t *m);
 uint8_t cf_modem_read(cf_modem_t *m, unsigned reg);
 void cf_modem_write(cf_modem_t *m, unsigned reg, uint8_t value);
-/* Online data from the peer; returns how much fit. */
+/* Online data from the peer (always accepted in GPS mode); returns how much fit. */
 size_t cf_modem_receive(cf_modem_t *m, const uint8_t *data, size_t len);
 size_t cf_modem_rx_space(const cf_modem_t *m);
 /* The peer went away: NO CARRIER, DCD drops. */
