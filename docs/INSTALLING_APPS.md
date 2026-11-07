@@ -23,6 +23,17 @@ cd build-host && make be300-install
   image directly. Don't run it on an image a running `be300` has open: the
   emulator rewrites the NAND file when it exits.
 
+## Desktop window
+
+Drop a `.cbea` on the emulator window (or on the Dock icon on macOS), or
+choose File > Install App (Cmd/Ctrl+O). The package is checked against a copy
+of the running NAND first, and the installer's error is shown if it would be
+rejected (for example, a Storage Card-only variant). Once you confirm, the
+machine shuts down, which flushes the guest's NAND writes. The package is then
+installed into the NAND image and the BE-300 boots again from the ROM, like
+after removing the battery. Device > Restart (Cold Boot) does the same
+without installing anything.
+
 ## Web frontend
 
 Pick packages with **Install apps (.cbea)**, or drop `.cbea` files anywhere

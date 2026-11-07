@@ -25,6 +25,16 @@ add_compile_options(-Wall -g -O2
     -Wno-missing-field-initializers
 )
 
+if(APPLE AND NOT IOS)
+    # src/ui_platform_macos.m (native menus, toolbar, clipboard).
+    enable_language(OBJC)
+endif()
+
+if(NOT BE300_VERSION)
+    set(BE300_VERSION "0.1.0")
+endif()
+add_compile_definitions(BE300_VERSION_STRING="${BE300_VERSION}")
+
 if(WIN32)
     add_compile_definitions(
         WIN32_LEAN_AND_MEAN
@@ -68,6 +78,11 @@ if(NOT ANDROID)
             include_directories(${PNG_INCLUDE_DIRS})
             add_compile_definitions(HAVE_PNG)
             message(STATUS "PNG found — building with SDL frame support")
+        elseif(WIN32)
+            # Decode the bezel artwork with Windows Imaging Component.
+            add_compile_definitions(HAVE_PNG BE300_PNG_WIC)
+            set(BE300_PNG_WIC ON)
+            message(STATUS "PNG via WIC — building with SDL frame support")
         else()
             message(STATUS "PNG not found — SDL frame support disabled")
         endif()
@@ -202,7 +217,8 @@ set(BE300_SOURCES
     src/ui_audio.c
     src/audio_pcm.c
     src/ui_button_mask.c
-    src/ui_macos.c
+    src/ui_commands.c
+    src/ui_layout.c
     src/ui_png.c
     src/ui_stowaway.c
     src/hw/cmu.c
@@ -230,6 +246,17 @@ set(BE300_SOURCES
     src/hw/aiu.c
     src/hw/lcd.c
 )
+
+# Native desktop integration behind src/ui_platform.h.
+if(APPLE AND NOT IOS)
+    list(APPEND BE300_SOURCES src/ui_platform_macos.m)
+    set_source_files_properties(src/ui_platform_macos.m PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc")
+elseif(WIN32)
+    list(APPEND BE300_SOURCES src/ui_platform_win32.c)
+else()
+    list(APPEND BE300_SOURCES src/ui_platform_stub.c)
+endif()
 
 # ============================================================
 # Launcher UI (VMware/UTM-style VM manager). Default ON for the host CLI,
@@ -281,6 +308,8 @@ option(BUILD_CLI "Build the host command-line emulator" ON)
 if(BUILD_CLI)
     add_executable(be300
         src/main.c
+        src/be300_session.c
+        src/cbea_install.c
         ${GXEMUL_SOURCES}
         ${BE300_SOURCES}
         ${BE300_LAUNCHER_SOURCES}
@@ -312,7 +341,14 @@ if(BUILD_CLI)
         # stderr via be300_win32_init -> AttachConsole(ATTACH_PARENT_PROCESS)
         # when launched from cmd.exe or PowerShell.
         target_link_options(be300 PRIVATE -mwindows)
-        target_link_libraries(be300 ws2_32)
+        target_link_libraries(be300 ws2_32 comctl32 comdlg32 shell32)
+        if(BE300_PNG_WIC)
+            target_link_libraries(be300 windowscodecs ole32 uuid)
+        endif()
+        # Icon (resource 1, used by SDL for the window and taskbar) and the
+        # manifest: per-monitor-v2 DPI awareness, common controls v6.
+        enable_language(RC)
+        target_sources(be300 PRIVATE ${CMAKE_SOURCE_DIR}/packaging/windows/be300.rc)
         # Static MinGW runtime so the .exe runs on a clean Windows host
         # without libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll
         # next to it. The launcher pulls in C++ (cimgui/imgui/NFDe), so
@@ -467,15 +503,22 @@ if(BUILD_TESTING AND BUILD_CLI)
     target_include_directories(test_lcd PRIVATE src)
     add_test(NAME lcd COMMAND test_lcd)
 
+    add_executable(test_ui_layout tests/test_ui_layout.c src/ui_layout.c)
+    target_include_directories(test_ui_layout PRIVATE src)
+    target_link_libraries(test_ui_layout m)
+    add_test(NAME ui_layout COMMAND test_ui_layout)
+
     if(SDL2_FOUND OR SDL2_LIBRARIES)
         add_executable(test_ui_input tests/test_ui_input.c
             src/ui.c src/ui_buttons.c src/ui_stowaway.c src/ui_button_mask.c
+            src/ui_commands.c src/ui_layout.c src/ui_platform_stub.c
+            src/cbea_install.c
             src/ui_png.c src/hw/lcd.c ${FRAME_PNG_HDR} ${BUTTONS_MASK_PNG_HDR})
         target_include_directories(test_ui_input PRIVATE src ${CMAKE_BINARY_DIR})
         target_link_libraries(test_ui_input ${SDL2_LIBRARIES} ${PNG_LIBRARIES} m)
         add_test(NAME ui_input COMMAND test_ui_input)
         set_tests_properties(ui_input PROPERTIES ENVIRONMENT
-            "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy;DISPLAY=:0;BE300_TOUCH_MIN_DWELL_MS=0")
+            "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy;DISPLAY=:0;BE300_TOUCH_MIN_DWELL_MS=0;BE300_WINDOW_PREFS=${CMAKE_BINARY_DIR}/test_ui_input_window.cfg")
         foreach(audio_target test_ui_audio test_ui_web_audio)
             add_executable(${audio_target} tests/test_ui_audio.c src/ui_audio.c src/audio_pcm.c)
             target_include_directories(${audio_target} PRIVATE src ${SDL2_INCLUDE_DIRS})

@@ -17,6 +17,9 @@
 #include "ui_filepick.h"
 #include "vm_bundle.h"
 #include "be300.h"
+#include "be300_session.h"
+#include "ui_commands.h"
+#include "ui_platform.h"
 
 #include <SDL.h>
 #include <stdio.h>
@@ -48,10 +51,18 @@ static SDL_Renderer *make_renderer(SDL_Window *win)
 
 static SDL_Window *make_window(void)
 {
-    return SDL_CreateWindow(LAUNCHER_TITLE,
+    SDL_Window *win = SDL_CreateWindow(LAUNCHER_TITLE,
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         LAUNCHER_WIN_W, LAUNCHER_WIN_H,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+
+    if (win) {
+        /* Native menu bar without the emulator's Device/View menus. */
+        ui_cmd_set_emulator_active(false);
+        ui_platform_install_menus();
+        ui_platform_attach_window(win, false, LAUNCHER_TITLE, NULL, 0.0);
+    }
+    return win;
 }
 
 /* Tear down launcher SDL state, run the emulator in-process, then rebuild
@@ -86,12 +97,19 @@ static int run_vm_in_process(launcher_state_t *L, const vm_bundle_t *src_vm)
     fprintf(stderr, "[launcher] Booting \"%s\" — NAND=%s\n",
         vm.name,
         vm.cfg.nand_path ? vm.cfg.nand_path : "(none)");
-    machine_t *m = be300_create(&vm.cfg);
-    if (m) {
-        be300_run(m);
-        be300_destroy(m);
-    } else {
-        fprintf(stderr, "[launcher] be300_create failed — returning to manager.\n");
+    vm.cfg.display_name = vm.name;
+    {
+        bool bezel = vm.cfg.frame_visible;
+        double zoom = vm.cfg.scale;
+
+        if (be300_session_run(&vm.cfg) != 0)
+            fprintf(stderr, "[launcher] be300_create failed — returning to manager.\n");
+        /* Keep the bezel and zoom the user left the window with. */
+        if (vm.cfg.frame_visible != bezel || vm.cfg.scale != zoom) {
+            if (vm_bundle_save(&vm) != 0)
+                fprintf(stderr, "[launcher] Could not save window settings for \"%s\".\n",
+                    vm.name);
+        }
     }
 
     /* 4. Restore cwd and rebuild launcher window. */
@@ -139,6 +157,25 @@ static int launcher_run_loop(launcher_state_t *L)
                 L->win && ev.window.windowID == SDL_GetWindowID(L->win))
                 L->quit = true;
         }
+        {
+            ui_cmd_t cmd;
+            while (ui_cmd_next(&cmd)) {
+                switch (cmd) {
+                case UI_CMD_QUIT:
+                case UI_CMD_CLOSE:
+                    L->quit = true;
+                    break;
+                case UI_CMD_ABOUT:
+                    ui_platform_about(L->win);
+                    break;
+                case UI_CMD_MINIMIZE:
+                    SDL_MinimizeWindow(L->win);
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
         if (L->quit) break;
 
         launcher_imgui_new_frame();
@@ -183,6 +220,7 @@ static int launcher_run_loop(launcher_state_t *L)
 
 int launcher_main(int argc, char *argv[])
 {
+    ui_platform_sdl_hints();
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "launcher: SDL_Init failed: %s\n", SDL_GetError());
         return 1;

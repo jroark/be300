@@ -7,6 +7,16 @@ void ui_update(machine_t *m);
 void ui_destroy(machine_t *m);
 bool ui_should_quit(machine_t *m);
 void ui_save_screenshot(machine_t *m);
+/* A session is one VM run from the CLI or the launcher, including the
+ * restarts requested from its window. ui_session_begin resets the window
+ * zoom/bezel carried between runs (the position persists). */
+void ui_session_begin(void);
+/* True when the window asked for a cold-boot restart (Device > Restart or
+ * an app install). package_out receives the .cbea path to install first,
+ * or "" for a plain restart. Clears the request. */
+bool ui_take_restart_request(char *package_out, size_t cap);
+/* Bezel and zoom the window had when it closed; false if none opened. */
+bool ui_window_settings(bool *bezel_out, double *zoom_out);
 /* A new guest DMA stream starts with fresh interpolation history. */
 void ui_audio_reset_stream(void);
 void ui_buzzer_pulse(uint32_t frequency_hz, uint32_t duration_ms);

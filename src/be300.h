@@ -117,7 +117,13 @@ typedef struct {
     uint32_t    fb_height;       /* visible framebuffer height; 0 = BE-300 default */
     uint32_t    fb_stride;       /* framebuffer stride in pixels; 0 = default for width */
     bool        frame_visible;   /* show the BE-300 bezel/frame around the LCD */
-    double      scale;           /* render scale 1.0-4.0; applies framed and LCD-only */
+    double      scale;           /* window zoom (LCD pixels to points), framed and LCD-only */
+    /* Take bezel / zoom from the saved window preferences instead of the
+     * two fields above (CLI runs without --frame / --scale). */
+    bool        restore_window_bezel;
+    bool        restore_window_zoom;
+    /* Window subtitle (VM name); defaults to the NAND file name. */
+    const char *display_name;
 
     /* Optional --pcconnect-bridge spec. NULL = disabled.
      * Examples: "tcp:127.0.0.1:5555", "tcp-listen:5555",

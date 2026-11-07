@@ -22,9 +22,6 @@ bool stowaway_queue_mapped_key(unsigned value, bool release)
 }
 void ui_audio_init(void) {}
 void ui_audio_destroy(void) {}
-void ui_macos_make_window_transparent(SDL_Window *win) { (void)win; }
-void ui_macos_apply_window_mask(SDL_Window *win, const uint8_t *mask, int w, int h)
-{ (void)win; (void)mask; (void)w; (void)h; }
 
 static void key(machine_t *m, SDL_Scancode code, bool release, unsigned repeat, SDL_Keymod mod)
 {
