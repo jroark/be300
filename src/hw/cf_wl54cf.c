@@ -14,7 +14,9 @@ void cf_wl54cf_tick(cf_state_t *s)
         return;
     s->wl54cf.opaque = s;
     s->wl54cf.transmit = wl54cf_tx;
-    if (!s->wl54cf_net || !s->wl54cf.associated)
+    wl54cf_ps_tick(&s->wl54cf);
+    /* Asleep, the access point buffers: leave frames queued on the host. */
+    if (!s->wl54cf_net || !s->wl54cf.associated || s->wl54cf.asleep)
         return;
     for (unsigned i = 0; i < WL54CF_QUEUE && s->wl54cf.rx_count < WL54CF_QUEUE; i++) {
         unsigned char *p;

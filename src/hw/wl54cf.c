@@ -131,6 +131,22 @@ static void station_command(wl54cf_t *s)
     if (c->length < 8 || c->length > WL54CF_BUFFER || c->pos != c->length)
         return;
     uint16_t op = get16(c->data), n = get16(c->data + 2), result = 0;
+    s->idle_ticks = 0;
+    if (s->asleep) {            /* the firmware never sees it */
+        s->ps_violations++;
+        return;
+    }
+    /* SLEEP_CONFIRMED has no response (libertas lbs_send_confirmsleep). */
+    if (op == 0x21 && n == 18 && c->length == 18 && get16(c->data + 8) == 0x34) {
+        if (s->ps && s->ps_pending) {
+            s->ps_pending = false;
+            s->asleep = true;
+            s->sleep_ticks = 0;
+            s->ps_sleeps++;
+        } else
+            s->ps_violations++;
+        return;
+    }
     put16(r->data, op | 0x8000);
     put16(r->data + 4, get16(c->data + 4));
     r->length = 8;
@@ -255,6 +271,7 @@ static void station_command(wl54cf_t *s)
         else {
             s->associated = false;
             s->authenticated = false;
+            s->ps = s->ps_pending = false;
             wifi_security_reset(&s->security);
         }
         break;
@@ -275,7 +292,20 @@ static void station_command(wl54cf_t *s)
             if (!s->radio) {
                 s->associated = false;
                 s->authenticated = false;
+                s->ps = s->ps_pending = false;
             }
+            r->length = n;
+            memcpy(r->data + 8, c->data + 8, n - 8);
+        }
+        break;
+    case 0x21: /* 802_11_PS_MODE: action, nullpktinterval, multipledtim, reserved, listen */
+        if (n != 18 || (get16(c->data + 8) != 0x30 && get16(c->data + 8) != 0x31) ||
+            (get16(c->data + 8) == 0x30 && !s->associated))
+            result = 2;
+        else {
+            s->ps = get16(c->data + 8) == 0x30;
+            s->ps_dtim = get16(c->data + 12);
+            s->ps_pending = false;
             r->length = n;
             memcpy(r->data + 8, c->data + 8, n - 8);
         }
@@ -295,6 +325,11 @@ done:
 static void transmit(wl54cf_t *s)
 {
     wl54cf_buffer_t *b = &s->tx;
+    s->idle_ticks = 0;
+    if (s->asleep) {
+        s->ps_violations++;
+        return;
+    }
     if (b->length >= 24 && b->length <= WL54CF_BUFFER && b->pos == b->length && s->associated &&
         (s->mac_control & 2)) {
         uint32_t off = get32(b->data + 8);
@@ -305,11 +340,36 @@ static void transmit(wl54cf_t *s)
     }
     s->cause |= WL54CF_TX; /* CF download completion; not an over-air ACK. */
 }
+static void raise_event(wl54cf_t *s, uint8_t code)
+{
+    s->event = code;
+    s->cause |= WL54CF_EVENT;
+}
+/* One machine tick of the firmware's power-save state machine. */
+void wl54cf_ps_tick(wl54cf_t *s)
+{
+    if (!s->ps || !s->associated || (s->cause & WL54CF_EVENT))
+        return;
+    if (s->asleep) {
+        unsigned listen = WL54CF_PS_LISTEN_TICKS * (s->ps_dtim ? s->ps_dtim : 1u);
+        if (++s->sleep_ticks >= listen) {
+            s->asleep = false;
+            s->idle_ticks = 0;
+            s->ps_wakes++;
+            raise_event(s, WL54CF_EVENT_PS_AWAKE);
+        }
+    } else if (!s->ps_pending && !s->rx_count && !(s->cause & (WL54CF_RX | WL54CF_RESPONSE)) &&
+               ++s->idle_ticks >= WL54CF_PS_IDLE_TICKS) {
+        s->ps_pending = true;
+        raise_event(s, WL54CF_EVENT_PS_SLEEP);
+    }
+}
 bool wl54cf_receive(wl54cf_t *s, const uint8_t *packet, size_t n)
 {
     if (!s->associated || !(s->mac_control & 1) || n < 14 || n > 1514 ||
-        s->rx_count == WL54CF_QUEUE)
+        s->rx_count == WL54CF_QUEUE || s->asleep)
         return false;
+    s->idle_ticks = 0;
     if ((packet[12]!=0x88 || packet[13]!=0x8e) && !s->security.authorized) return false;
     bool broadcast = !memcmp(packet, "\xff\xff\xff\xff\xff\xff", 6);
     if (memcmp(packet, s->mac, 6) && !(s->mac_control & 0x80) &&
@@ -374,7 +434,8 @@ uint64_t wl54cf_read(wl54cf_t *s, unsigned off, unsigned size)
             break; /* CF8385 B1 (if_cs.c) */
         case 0x20:
             x = s->firmware_stage == 2
-                    ? (WL54CF_TX | WL54CF_COMMAND | (s->cause & (WL54CF_RX | WL54CF_RESPONSE)))
+                    ? (WL54CF_TX | WL54CF_COMMAND | (s->cause & (WL54CF_RX | WL54CF_RESPONSE)) |
+                       ((s->cause & WL54CF_EVENT) ? (uint16_t)(s->event & 0x7f) << 8 : 0))
                     : (s->firmware_stage < 2 ? WL54CF_COMMAND : 0);
             break;
         case 0x22:
@@ -449,6 +510,8 @@ void wl54cf_write(wl54cf_t *s, unsigned off, unsigned size, uint64_t v)
         break;
     case 0x22:
         s->cause &= ~v;
+        if (v & WL54CF_EVENT)
+            s->event = 0;
         if (v & WL54CF_RESPONSE) {
             s->response.length = 0;
             s->response.pos = 0;
