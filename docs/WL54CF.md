@@ -72,12 +72,28 @@ model checks framing and bounds, not ARM instruction validity or firmware
 checksums. Firmware upload tests can therefore use structural fixture records.
 
 Supported station commands are GET_HW_SPEC, SCAN, AUTHENTICATE, ASSOCIATE,
-DEAUTHENTICATE, RADIO_CONTROL and MAC_CONTROL. Unsupported commands and unsupported
+DEAUTHENTICATE, RADIO_CONTROL, MAC_CONTROL and 802_11_PS_MODE. Unsupported commands and unsupported
 MAC modes return an error. A bad association reports failure and leaves the
 station disconnected. TX/RX forwarding requires association and the appropriate
 MAC-control enable. FIFO ownership, pending causes and interrupt masks are
 separate; an RX interrupt stays pending while queued packets remain. Queues
 and transfers are bounded, and reset drops all pending command/packet state.
+
+**802.11 power save** (Libertas cmd.c `lbs_set_ps_mode`, cmdresp.c, main.c
+`lbs_send_confirmsleep`): `802_11_PS_MODE` (0x0021, 18 bytes) takes ENTER_PS
+(0x30, only while associated) and EXIT_PS (0x31) with a response, and
+SLEEP_CONFIRMED (0x34) without one. Events appear in CARD_STATUS bits 14:8
+while the EVENT cause is set, and acknowledging EVENT clears them.
+`wl54cf_ps_tick`, called from the machine tick with the RX pump:
+- raises PS_SLEEP (0x0B) after `WL54CF_PS_IDLE_TICKS` ticks without traffic,
+  a command or a pending response;
+- once the host confirms, sleeps for `WL54CF_PS_LISTEN_TICKS` times the
+  DTIM multiple, then raises PS_AWAKE (0x0A).
+
+While the card sleeps, the RX pump leaves frames queued on the host side, as
+an access point buffers them. Host commands or transmits while asleep are
+dropped and counted in `ps_violations`. DEAUTHENTICATE and radio off end
+power save.
 
 **TODO (2026-10-25): capture a physical WL54-CF CIS and verify its BE-300 bridge
 configuration.** The current minimal CIS uses known identity strings/MANFID,
