@@ -118,23 +118,25 @@ Choosing
 image instead; the worker writes the selected bytes into MEMFS at
 `/All_nand_300.bin` before calling `be300_create()`.
 
-Release `20261104a` updates only the Glaze factory NAND to Glaze OS 1.1. The
-emulator source is unchanged from `20261101a`, which published it from `main`
-(LCD power and contrast, piezo buzzer, power-on state, ROM NAND bursts,
-battery and PMU wake models, Wi-Fi CF cards, CF hot plug and stereo audio).
-The web bundle, worker and NAND URLs use the `20261104a` asset tag. The
-network bridge is unchanged from `20261021b`; its helper downloads keep that
-tag. The Windows CE images are unchanged from `20261024a`, and the Linux
-images from `20261101a`.
+Release `20261107a` publishes the emulator from `main` at `fb95a4f4`
+(CF modem, PCMCIA jacket PC Cards and socket 1 interrupt, a real-BE-300
+Stowaway dock handshake, CF GPS receiver and WL54-CF 802.11 power save)
+together with a fresh Glaze factory NAND (Glaze OS 1.2). The web bundle,
+worker and NAND URLs use the `20261107a` asset tag. The network bridge is
+unchanged from `20261021b`; its helper downloads keep that tag. The Windows
+CE images are unchanged from `20261024a`, and the Linux images from
+`20261101a`.
 
-The Glaze factory NAND comes from glaze-os `main` at `4420239` (OS 1.1, SPL 3).
+The Glaze factory NAND comes from glaze-os `main` at `ecb0f76` (OS 1.2).
 Its App Store (`appstore.glaze-os.com`) needs networking, i.e. the net bridge.
 Build it from the sibling `glaze-os` checkout with
-`./build.sh OUT=out/web-release-20261104a INIT=bin/springboard DYNAMIC=1
-LD_TESTS=0 MEM_TESTS=0 BUILD_ID=4420239`, then copy the resulting `glaze.bin`
-to this repo's `nand/glaze.bin` before building the web bundle. The 16 MiB
-release image has SHA-256
-`9ea2b603744ea072e385d3ff7b7192e04be17a30c82c2564b9aa9b2dd57ed1d6`.
+`./build.sh OUT=out/web-release-20261107a INIT=bin/springboard DYNAMIC=1
+LD_TESTS=0 MEM_TESTS=0 WL54CF=0 BUILD_ID=ecb0f76`. `WL54CF=0` leaves out the
+WL54-CF's Marvell firmware, which newer glaze-os builds include by default:
+its licence covers Marvell silicon only, not this emulated card. Copy the
+resulting `glaze.bin` to this repo's `nand/glaze.bin` before building the web
+bundle. The 16 MiB release image has SHA-256
+`6d3e9e106ae3f3d7dc13a161ec183fd08f2eb7b1372d4a85a02e926d95e6b0d0`.
 
 The nine Linux images come from the sibling `mipsel-cross-image` checkout at
 `8d80835`, built inside its `mips-dev` container without `BE300_SPL_DIAG`.
