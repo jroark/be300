@@ -296,7 +296,8 @@ Historical reverse-engineering found that NK reaches warm-resume-style logic dur
 - Interrupt status registers in the VRC4173 status ranges use write-1-to-clear semantics in the emulator
 - `dev_vr41xx.c` must not force-enable ETIMER in `MSYSINT1`
 - NAND controller buffer registers `0xA4A0-0xA4AC` and `STATUS2` at `0xA4C0` only return meaningful data when a stream transfer is active
-- The ROM-era NAND ECC path expects zero syndromes when the emulated NAND data is bit-perfect
+- The ROM-era NAND ECC path expects zero syndromes when the emulated NAND data is bit-perfect; the non-zero result model for raw images is unconfirmed (`docs/HARDWARE_ACCURACY_REVIEW.md` N3)
+- `docs/HARDWARE_ACCURACY_REVIEW.md` lists where the emulator, Linux and Glaze disagree about hardware, with status per item
 
 ### RTC And Host Time
 
