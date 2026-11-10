@@ -65,7 +65,7 @@ Line numbers are those of the 2026-11-10 trees.
 |----|-----|----------|---------------|--------|
 | S1 | The dock UART works with its transceiver unpowered. Hardware needs dock control `0x0A008000` = 0x1F08-style power-up and GPIO6 high (the UART is silent until CE opens `COM1:`) | Z `docs/dev/GLAZEBOOT.md:225-228`, Z `kernel/drivers/stowaway_hw.c:1-20, 86-92` | `src/be300_devices.c:1191-1203`, `src/devices/serial_dock.c` | open |
 | S2 | Stowaway answers `FA FD` at once on an RTS edge, MSR always shows DSR, no DCD pulse. Real Targus: MSR 0x98 (no DSR), DCD rises 0.4-0.6 s after DTR and drops 200 ms later, an RTS edge before 500 ms goes unanswered, the last release byte of a burst arrives twice | Z `tests/STOWAWAY.md:51-59` | `src/stowaway.c:232-246`, G `src/devices/dev_ns16550.c:333-345` | open |
-| S3 | Dock ID `0x0A008010` reads 0x0C (USB cradle) with no dock option; real empty dock reads 0x0F | Z `tests/STOWAWAY.md` | `src/be300_devices.c:1200`, `src/devices/serial_dock.c:41-45, 765-772` | open |
+| S3 | Dock ID `0x0A008010` reads 0x0C (USB cradle) with no dock option; real empty dock reads 0x0F | Z `tests/STOWAWAY.md` | `src/be300_devices.c:1200`, `src/devices/serial_dock.c:41-45, 765-772` | blocked, see note S3 |
 | A1 | Wave DMA strictly alternates buffer pair 0 (`8B0/8B4`) and pair 1 (`8B8/8BC`). Hardware: current/next, the next pair is copied into current; the dump shows both pairs equal; status repeats | `docs/hardware/hw_dump_vrc4173.txt:1071-1077`, Z `kernel/drivers/audio.c:22-26, 262-266` | `src/hw/aiu.c:105-117, 270-280` | open |
 | A2 | Wave DMA ignores codec power and clock (`0x1104`, `0x1118`, `0x880` bit 3, `0x884`) and times completion on the host clock | Z `kernel/drivers/audio.c:325-327` | `src/hw/aiu.c:36-42` | open |
 | T1 | Idle PIU page reads return the end-point constants with bit 15 (valid) set. Real idle pages hold stale 12-bit values without it | `docs/hardware/hw_dump_vrc4173.txt:986-994` | `src/hw/piu.c:351-357` | open |
@@ -73,6 +73,15 @@ Line numbers are those of the 2026-11-10 trees.
 | T3 | The A/D port scan finishes at once on the PIUCNT write; `0x314/0x318` channel setup and the GPIO8 settle are ignored | gwes 0xB041C sequence (L `board/casio-be300/battery.c`) | `src/hw/piu.c:278-284` | open |
 | D1 | `0x0A000C38` is a free-running counter on hardware; the emulator stores writes | `docs/HARDWARE_SURVEY_SYNTHESIS.md:116-126` | `src/hw/lcd.c` | open (no guest reads it) |
 | F1 | USB function: gate `0x1114`, GPIO4 low / GPIO6 high and `1B2C`=1 are not required; INTSTAT0 bit 2 (EP1 empty) is reported with no cable | Z `kernel/drivers/usb.c:52, 251-254`, Z `docs/hardware/NAND_BOOT_AUDIT.md:312-315` | `src/hw/usbf.c:57-58, 377-379` | open |
+
+**Note S3 (2026-11-10).** Seeding `0x8010` with 0x0F stops the Windows CE cold boot. The first
+pass is unchanged up to the KjCMU warm reset. On the second pass NK reads the dock ID at
+`A007AF54`/`A007AF84`; with 0x0C it goes on to start the display, with 0x0F it reads `0x1B50`
+(0), `0x1B58` (0x0F) and `0x104C` (0x44), then masks every GIRQ0 source (`A0079AE4`..), turns the
+LCD gate off and waits at `0x8008B3F0`. So the cradle ID is currently what NK accepts as its
+reason to keep running after that reset. A real BE-300 out of its cradle boots, so one of the
+values NK tests on that path is wrong here. Decoding the function around `A007AF54`-`A007B004`
+in the NK Ghidra project is the next step; the seed stays 0x0C until then.
 
 ## 2. Uncited emulator assumptions
 
