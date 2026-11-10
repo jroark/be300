@@ -253,6 +253,7 @@ static void cf_reset_taskfile(cf_state_t *s)
     s->pending_write = false;
     s->transfer_lba = 0;
     s->transfer_remaining = 0;
+    s->data_8bit = false;      /* reset reverts to the 16-bit default */
 }
 
 static void cf_arm_boot_status(cf_state_t *s)
@@ -1023,7 +1024,14 @@ static void cf_execute_command(cf_state_t *s, uint8_t cmd)
         cf_set_ready(s);
         break;
     case CF_CMD_SET_FEATURES:
-        if (s->feature_reg == 0x03u || s->feature_reg == 0x01u) {
+        /* 01h/81h: 8-bit data transfers on and off (CF+ spec, Set Features).
+         * Windows CE sets 01h; both Linux and Glaze do too, because a real
+         * BE-300 then carries one byte per data access (glaze-os
+         * kernel/drivers/cf.c, mipsel-cross-image pata_be300.c). */
+        if (s->feature_reg == 0x01u || s->feature_reg == 0x81u) {
+            s->data_8bit = s->feature_reg == 0x01u;
+            cf_set_ready(s);
+        } else if (s->feature_reg == 0x03u) {
             cf_set_ready(s);
         } else {
             cf_set_error(s, 0x04u);
@@ -1044,6 +1052,10 @@ static uint64_t cf_data_read(cf_state_t *s, unsigned size)
      * (Reading here used to step transfer_lba and rewrite the taskfile.) */
     if (s->data_length == 0 || s->pending_write)
         return size >= 8 ? UINT64_MAX : (UINT64_C(1) << (8u * size)) - 1u;
+
+    /* In 8-bit mode a wider access still moves one byte, on D7-D0. */
+    if (s->data_8bit)
+        size = 1;
 
     for (i = 0; i < size; i++) {
         uint8_t byte = 0xFFu;
@@ -1103,6 +1115,9 @@ static void cf_data_write(cf_state_t *s, unsigned size, uint64_t value)
 
     if (!s->pending_write || s->data_length == 0)
         return;
+
+    if (s->data_8bit)
+        size = 1;
 
     for (i = 0; i < size && s->data_pos < s->data_length; i++)
         s->data_buffer[s->data_pos++] = (uint8_t)((value >> (8u * i)) & 0xFFu);

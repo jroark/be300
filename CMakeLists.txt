@@ -479,6 +479,11 @@ if(BUILD_TESTING AND BUILD_CLI)
         src/hw/cf_wl54cf.c src/file_util.c)
     target_include_directories(test_modem PRIVATE src)
     add_test(NAME modem COMMAND test_modem)
+    add_executable(test_cf_ata src/hw/wifi_security.c tests/test_cf_ata.c src/hw/modem.c
+        src/hw/cf.c src/hw/el3.c src/hw/jacket.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/hw/xi825.c src/hw/wl54cf.c
+        src/hw/cf_wl54cf.c src/file_util.c)
+    target_include_directories(test_cf_ata PRIVATE src)
+    add_test(NAME cf_ata COMMAND test_cf_ata)
 
     add_executable(test_vm_config
         tests/test_vm_config.c

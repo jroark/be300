@@ -64,6 +64,7 @@ typedef struct {
     uint8_t  command_reg;
     uint8_t  status_reg;
     uint8_t  device_control;
+    bool     data_8bit;        /* SET FEATURES 01h: one byte per data access */
 
     wl54cf_t wl54cf;
     struct nic_data wl54cf_nic;
