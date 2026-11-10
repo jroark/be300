@@ -1,15 +1,30 @@
 #include "rtc.h"
+#include <stdbool.h>
 
 #define RTC_TICKS_PER_SECOND UINT64_C(32768)
 #define RTC_WINCE_EPOCH_YEAR 1850
 
-static inline void rtc_update_elapsed_irq(rtc_state_t *s)
+/*
+ * The ELAPSEDTIME interrupt is requested when ETIME matches ECMP (VR4131 UM
+ * ch. 13, ECMPLREG..ECMPHREG / RTCINTREG). It is a match, not "at or past":
+ * a real BE-300 under Windows CE sits with ETIME near 0xA5B37C12xxxx, ECMP
+ * 0x000000011C2F and the request bit clear (docs/hardware/hw_survey_v8.txt),
+ * and an ECMP of zero does not wake HIBERNATE. `from` is ETIME before the
+ * step being checked; a step that passes over ECMP counts as the match.
+ */
+static inline void rtc_update_elapsed_irq(rtc_state_t *s, uint64_t from)
 {
+    bool hit;
+
     if (!s->elapsed_compare_armed)
         return;
-    if (s->etime < s->ecmp)
-        return;
-    if (s->elapsed_compare_fired)
+    if (from == s->etime)
+        hit = s->etime == s->ecmp;                      /* a register write */
+    else if (from < s->etime)
+        hit = s->ecmp > from && s->ecmp <= s->etime;
+    else                                                /* the counter wrapped */
+        hit = s->ecmp > from || s->ecmp <= s->etime;
+    if (!hit)
         return;
 
     s->rtcint |= RTCINT_ELAPSEDTIME_INT;
@@ -20,7 +35,7 @@ static inline void rtc_rearm_elapsed_irq(rtc_state_t *s)
 {
     s->elapsed_compare_armed = 1;
     s->elapsed_compare_fired = 0;
-    rtc_update_elapsed_irq(s);
+    rtc_update_elapsed_irq(s, s->etime);
 }
 
 static inline uint64_t rtc_48bit_mask(void)
@@ -213,7 +228,7 @@ void rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val)
     case RTC_ETIMEHREG:
         rtc_write_48bit(&s->etime, offset, size, val);
         s->etime_latched = s->etime;
-        rtc_update_elapsed_irq(s);
+        rtc_update_elapsed_irq(s, s->etime);
         break;
     case RTC_ECMPLREG:
         rtc_write_48bit(&s->ecmp, offset, size, val);
@@ -266,6 +281,9 @@ void rtc_write(rtc_state_t *s, uint32_t offset, unsigned size, uint32_t val)
 void rtc_tick(rtc_state_t *s, uint64_t ticks)
 {
     /* ETIME is a 48-bit hardware counter (VR4131 UM §13). */
+    uint64_t from = s->etime;
+
     s->etime = (s->etime + ticks) & rtc_48bit_mask();
-    rtc_update_elapsed_irq(s);
+    if (ticks != 0)
+        rtc_update_elapsed_irq(s, from);
 }
