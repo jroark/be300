@@ -200,11 +200,12 @@ clock is wrong again.
   (`nand_kj_reset` in `src/hw/nand.c` cites the NK code). Every other device
   keeps its state. Which other units the real reset reaches is not known;
   NK's reset entry tests nothing else.
-- **D7FE "NIC probe" override** (`src/hw/nand.c`, three SPL PCs before the
-  SPL entry). None of the regression images executes these PCs. They look
-  like an EDBG/debug-boot path, possibly reached by the NANDWRITER/KLOADER
-  `--restore` path, which can't be tested without NANDWRITER. Remove the
-  override once that path can be tested.
+- **Debug board registers `D7F8`-`D7FE`** (`src/hw/nand.c`). The SPL and NK
+  look here for Casio's development Ether/Parallel debug board (ID 0xF237 or
+  0xF137 at `D7FA`) and use it only when the ID matches. No board is
+  modelled; the PC-matched `D7FE` override and the index-7 status escape
+  were unreachable and were removed 2026-11-11. NANDWRITER's KLOADER is the
+  same loader family, but `--restore` still can't be tested here.
 - **Console capture of SPL writes to D7FC** (`src/hw/nand.c`). This is
   host-side logging only; guest-visible state is latched as usual.
 

@@ -119,18 +119,23 @@ These have no hardware citation. Each needs a probe before it is changed.
 - **`0x0A00A000` block.** Modelled as NAND "NFCNT/NFSTAT" (`src/hw/nand.c`), but both guests,
   the boot ROM and pcmcia.dll use `A000/A004/A008` as the card socket's control, RESET and
   status. The 0x43 "echo test" at D200 was the ROM's COR write and is gone (K1). The
-  `0xC000-0xC0FF` "ROM transfer engine" (`nand.h:42-53`) overlaps the card I/O window and is
-  still uncited.
+  second "ROM transfer engine" at `0xC000-0xC0FF` is gone too: that is the card I/O base,
+  and neither the ROM, the SPL, NK, nanddisk.dll, Glaze nor Linux ever addressed it.
 - **PC-matched behaviour.** The console forwarding at `D7FC` no longer depends on the PC:
   `D7F8`/`D7FC` are the SPL's debug serial port, a 16550 behind an index/data pair (THR at
   index 0, LCR 6, LSR 0x0A; SPL `0x80F030F0`, `0x80F032F8`, `0x80F0330C`), which it sets up
-  only when `D7FA` reads 0xF137 (`0x80F03080`). Still PC-matched or uncited: the `D7FE`
-  override at three SPL PCs (`src/hw/nand.c`, never executed by the regression image), the
-  indexed status-7 "poll escape", and `D7FA` reading the NAND ID 0x73EC. The forced
+  only when `D7FA` reads 0xF137 (`0x80F03080`). The whole `D7F8`-`D7FE` block is Casio's
+  development debug board in the card slot, not a NAND port: the SPL (`0x80F022A8`-
+  `0x80F02348`, `0x80F09E00`) and NK (`0x8007805C`) read an ID at `D7FA`, 0xF237 for the
+  "Ether board" and 0xF137 for the "Parallel board" (their own messages), and read `D7FE`
+  only after a match. No board is modelled, so the `D7FE` override at three SPL PCs and the
+  NE2000-style status "poll escape" at index 7 could never run and are removed. `D7FA`
+  still reads 0x73EC, which is only known to be "not a board"; what an empty slot reads
+  there on hardware is a probe. `D7FC`/`D7FE` also still follow the NAND direct port's
+  read state, which no guest relies on. The forced
   busy-clear WORKAROUNDs for `0x234`, `0x8A0` and `0xA00` are gone: the two engines clear
   their own start bit when done, and `0x8A0` reads as written, so NK idles with STANDBY
-  while a sound plays (NK `0x80079920-0x80079958`). The `0xC000-0xC0FF` engine is not
-  touched at all in a CE first boot.
+  while a sound plays (NK `0x80079920-0x80079958`).
 - **Touch geometry.** A/D ranges 0x81E1-0x8E30 / 0x8300-0x8D1B and the 360-row panel
   (`src/hw/piu.c:66-84`) were chosen here and copied into both guests.
 - **Power-on table** (`src/be300_devices.c:1150-1225`) seeds the audio block, `0x1CC0-0x1CCC`,

@@ -64,10 +64,10 @@
 #define NAND_REG_RESTORE_CC0      0x0CC0u
 
 /* Individual legacy data-port registers */
-#define NAND_REG_PORTCTL  0xD7F8u   /* Port control / command latch */
-#define NAND_REG_DEVID    0xD7FAu   /* Device ID probe register */
-#define NAND_REG_DATA     0xD7FCu   /* Data R/W (16-bit) */
-#define NAND_REG_STATUS   0xD7FEu   /* Status */
+#define NAND_REG_PORTCTL  0xD7F8u   /* Debug board: register index */
+#define NAND_REG_DEVID    0xD7FAu   /* Debug board: ID (0xF137, 0xF237) */
+#define NAND_REG_DATA     0xD7FCu   /* Debug board: indexed data */
+#define NAND_REG_STATUS   0xD7FEu   /* Debug board: port register */
 
 /* Command/status registers */
 #define NAND_REG_NFSTAT   0xA008u   /* NAND Flash Status (read-only, ready bits) */
@@ -163,10 +163,7 @@ typedef struct {
     bool     stream_stall;   /* a read ran past such a burst: the bus hangs */
     uint16_t portctl;
     uint8_t  legacy_regs[256];
-    bool     legacy_dirty[256];             /* per-index: write since last full ack */
-    uint16_t legacy_read_since_write[256]; /* per-index: read count since last write */
-    uint16_t legacy_status7_event_reads;   /* sustained idx7 event-bit poll counter */
-    bool     legacy_status7_ff_armed;      /* one-shot 0xFF escape has been emitted */
+    bool     legacy_dirty[256];             /* per-index: written since reset */
     uint8_t  xfer_buffer[16];              /* mode-4/ECC result buffer (0xA4A0-0xA4AC) */
     uint16_t xfer_ecc_words[6];           /* MODE-1 input, reversed 10-bit fields */
     uint8_t  xfer_ecc_count;               /* six 10-bit ECC inputs via 0xA468 */

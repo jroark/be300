@@ -711,9 +711,6 @@ static uint64_t nand_stream_read(nand_state_t *s, unsigned size)
 }
 
 /* Rate-limited indexed register logging */
-#define LEGACY_STATUS_IDX          0x07u
-#define LEGACY_STATUS_ESCAPE_READS 64u
-#define LEGACY_STATUS_IDLE_MASK    0xC0u
 
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 uint64_t value, uint32_t pc)
@@ -943,7 +940,8 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         return;
     }
 
-    /* Indexed legacy data register writes (D7F8 selects byte register). */
+    /* Debug-board data register: D7F8 selects the byte register (see the
+     * read side for what this board is). */
     if (offset == NAND_REG_DATA) {
         if (s->state == NAND_STATE_PROGRAM_DATA) {
             nand_program_append(s, value, size);
@@ -954,26 +952,9 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         for (unsigned i = 0; i < size; i++) {
             uint8_t ri = (uint8_t)(idx + i);
             uint8_t byte = (uint8_t)((value >> (8u * i)) & 0xFFu);
-            bool was_dirty = s->legacy_dirty[ri];
-            uint8_t old = s->legacy_regs[ri];
 
             s->legacy_regs[ri] = byte;
             s->legacy_dirty[ri] = true;
-
-            if (ri == LEGACY_STATUS_IDX) {
-                bool keep_read_count =
-                    was_dirty && old == byte && (old & 0x1Bu) != 0;
-
-                if (!keep_read_count)
-                    s->legacy_read_since_write[ri] = 0;
-
-                if ((byte & 0x1Bu) == 0) {
-                    s->legacy_status7_event_reads = 0;
-                    s->legacy_status7_ff_armed = false;
-                }
-            } else {
-                s->legacy_read_since_write[ri] = 0;
-            }
 
             /*
              * The SPL's debug serial port: a 16550 behind this index/data
@@ -1146,9 +1127,11 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
         goto out;
     }
 
-    /* Device ID: Samsung K9F2808U0B (16MB, 3.3V) = maker 0xEC, device 0x73 */
+    /* The debug board's ID register (see NAND_REG_DATA below). What an
+     * empty slot reads here on hardware is not known; the SPL and NK only
+     * need it to be neither 0xF137 nor 0xF237. The value is historical. */
     if (offset == NAND_REG_DEVID) {
-        val = 0x73ECu;  /* little-endian: maker=0xEC, device=0x73 */
+        val = 0x73ECu;
         goto out;
     }
 
@@ -1185,101 +1168,21 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
             goto out;
         }
 
-        /* Legacy indexed register protocol:
-         * - idx7 is treated as status and may transition over repeated reads.
-         * - all non-idx7 registers are strict echo (especially idx0 command). */
+        /*
+         * Casio's development debug board, which sat in the card slot: the
+         * SPL (0x80F022A8-0x80F02348, 0x80F09E00) and NK (0x8007805C) read
+         * an ID at 0xD7FA, 0xF237 for the "Ether board" and 0xF137 for the
+         * "Parallel board" (their own messages), and only then read 0xD7FE
+         * or program the 16550 and NE2000 behind this index/data pair. No
+         * board is modelled, so the ID never matches and none of that code
+         * runs; the registers hold what was written, and start at 0x40 so
+         * the SPL's putc, which polls index 0x0A bit 6 with no ID check
+         * (0x80F030F0), still sends its boot messages to the host console.
+         */
         for (unsigned i = 0; i < size; i++) {
             uint8_t ri = (uint8_t)(idx + i);
-            uint8_t raw = s->legacy_regs[ri];
-            uint8_t byte_val = raw;
-            uint16_t n = s->legacy_read_since_write[ri];
 
-            /* Always track reads */
-            if (n < UINT16_MAX)
-                s->legacy_read_since_write[ri] = n + 1;
-
-            if (ri != LEGACY_STATUS_IDX) {
-                /* Non-status legacy indices are strict echo. */
-                if (s->legacy_dirty[ri])
-                    s->legacy_dirty[ri] = false;
-            } else {
-                bool has_events = (raw & 0x1Bu) != 0;
-                bool idleish = !has_events &&
-                               ((raw & LEGACY_STATUS_IDLE_MASK) != 0 || s->legacy_dirty[ri]);
-
-                if (s->legacy_dirty[ri] && has_events) {
-                    if (s->legacy_status7_event_reads < UINT16_MAX)
-                        s->legacy_status7_event_reads++;
-
-                    if (s->legacy_status7_event_reads >= LEGACY_STATUS_ESCAPE_READS) {
-                        if (!s->legacy_status7_ff_armed) {
-                            /* One-shot poll escape to satisfy loops waiting for 0xFF. */
-                            byte_val = 0xFFu;
-                            s->legacy_status7_ff_armed = true;
-                            s->legacy_regs[ri] = LEGACY_STATUS_IDLE_MASK;
-                        } else {
-                            /* Subsequent read settles to idle and clears dirty state. */
-                            byte_val = LEGACY_STATUS_IDLE_MASK;
-                            s->legacy_regs[ri] = byte_val;
-                            s->legacy_dirty[ri] = false;
-                            s->legacy_read_since_write[ri] = 0;
-                            s->legacy_status7_event_reads = 0;
-                            s->legacy_status7_ff_armed = false;
-                        }
-                    } else if (n == 0) {
-                        /* First read after write: unchanged. */
-                        byte_val = raw;
-                    } else if (n == 1) {
-                        /* Second read: clear highest-priority event group. */
-                        if (raw & 0x10u)
-                            byte_val = raw & ~0x10u;
-                        else if (raw & 0x05u)
-                            byte_val = raw & ~0x05u;
-                        else if (raw & 0x0Au)
-                            byte_val = raw & ~0x0Au;
-                        else
-                            byte_val = raw & ~0x1Bu;
-                        s->legacy_regs[ri] = byte_val;
-
-                        if ((byte_val & 0x1Bu) == 0) {
-                            byte_val = (byte_val & ~0x1Bu) | LEGACY_STATUS_IDLE_MASK;
-                            s->legacy_regs[ri] = byte_val;
-                            s->legacy_dirty[ri] = false;
-                            s->legacy_read_since_write[ri] = 0;
-                            s->legacy_status7_event_reads = 0;
-                            s->legacy_status7_ff_armed = false;
-                        }
-                    } else {
-                        /* Hold current status while waiting for either clear or escape. */
-                        byte_val = raw;
-                    }
-                } else if (idleish) {
-                    /* idx7 idle-complete state: present Ready semantics (bits 7 and 6). */
-                    byte_val = (raw & ~0x1Bu) | LEGACY_STATUS_IDLE_MASK;
-                    s->legacy_regs[ri] = byte_val;
-                    s->legacy_dirty[ri] = false;
-                    s->legacy_read_since_write[ri] = 0;
-                    s->legacy_status7_event_reads = 0;
-                    s->legacy_status7_ff_armed = false;
-                } else {
-                    /* Non-polling idx7 reads: strict echo and reset escape tracking. */
-                    s->legacy_status7_event_reads = 0;
-                    s->legacy_status7_ff_armed = false;
-                }
-            }
-
-            if (ri == LEGACY_STATUS_IDX &&
-                s->legacy_dirty[ri] == false &&
-                s->legacy_status7_ff_armed == false &&
-                (s->legacy_regs[ri] & 0x1Bu) == 0) {
-                /* Ensure idle bit is retained after status completion. */
-                if ((s->legacy_regs[ri] & LEGACY_STATUS_IDLE_MASK) == 0) {
-                    byte_val = (s->legacy_regs[ri] & ~0x1Bu) | LEGACY_STATUS_IDLE_MASK;
-                    s->legacy_regs[ri] = byte_val;
-                }
-            }
-
-            val |= ((uint64_t)byte_val) << (8u * i);
+            val |= ((uint64_t)s->legacy_regs[ri]) << (8u * i);
         }
         goto out;
     }
@@ -1290,18 +1193,10 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
             val = s->status_value;
             goto out;
         }
-        /* At the EBOOT NIC probe sites, return "not ready" to skip NE2000Init.
-         * The SPL reads D7FE and tests bit 0x80 to decide whether to enter the
-         * EDBG loop (infinite, no timeout). Clearing bit 0x80 makes it take
-         * the "no board" path → falls through to NAND boot at 0x80F03B64. */
-        uint32_t norm_pc = pc & ~UINT32_C(0x20000000);
-        if (norm_pc == 0x80F022C4u ||
-            norm_pc == 0x80F02324u ||
-            norm_pc == 0x80F09E1Cu) {
-            val = 0x00u;  /* bit 0x80 clear → no NIC */
-        } else {
-            val = s->ready ? 0x80u : 0x00u;
-        }
+        /* The debug board's port register. The SPL reads it only after
+         * 0xD7FA has identified a board (0x80F022C4, 0x80F02324,
+         * 0x80F09E1C), which it never does here. */
+        val = s->ready ? 0x80u : 0x00u;
         goto out;
     }
 

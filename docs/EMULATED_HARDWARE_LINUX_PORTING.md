@@ -732,12 +732,11 @@ Primary VRC4173 NAND register coverage:
 | `0x0A00A400-0x0A00A4FF` | `0xA400-0xA4FF` | SPL transfer engine. |
 | `0x0A00B000-0x0A00B20F` | `0xB000-0xB20F` | SPL stream window. |
 | `0x0A00B100-0x0A00B10F` | `0xB100-0xB10F` | Enable registers. |
-| `0x0A00C000-0x0A00C0FF` | `0xC000-0xC0FF` | ROM transfer engine. |
 | `0x0A00C170-0x0A00C177` | `0xC170-0xC177` | CF ATA taskfile. With no ATA card answering, it reads `0xFF` (empty socket) and ignores writes. |
 | `0x0A00C376` | `0xC376` | CF ATA alternate status; `0xFF` with no ATA card. |
 | `0x0A00D200` | `0xD200` | Direct I/O data port. |
 | `0x0A00D202` | `0xD202` | Direct I/O control, CLE/ALE mode. |
-| `0x0A00D7F8-0x0A00D7FF` | `0xD7F8-0xD7FF` | Legacy indexed data/status/device-ID ports. |
+| `0x0A00D7F8-0x0A00D7FF` | `0xD7F8-0xD7FF` | Casio development debug board (index, ID, data, port); absent. The SPL's boot messages written here go to the host console. |
 
 NAND geometry:
 
@@ -834,25 +833,6 @@ that result model is not confirmed: on a real BE-300 the registers "gave
 syndromes that matched nothing" (see `docs/HARDWARE_ACCURACY_REVIEW.md`, N3).
 Correct in software, as Linux and Glaze do (`nand_ecc.c`), and use the spare
 layout Windows CE writes.
-
-### ROM Transfer Engine
-
-Registers:
-
-| Offset | Name | Behavior |
-| ---: | --- | --- |
-| `0xC010` | CTRL | Clearing bit 0 resets the ROM transfer engine. |
-| `0xC014` | CMD | Command/phase. |
-| `0xC020` | ADDR | Address byte stream. |
-| `0xC030` | ACK | Latched. |
-| `0xC040` | STATUS | Bit 0 ready. |
-| `0xC060` | KICK | Clears ready. |
-| `0xC064` | MODE | Mode `0x05` starts stream; `0x04` sets ready; `0x00/0x01` reset ECC state. |
-| `0xC068` | ECC_IN | Six 10-bit stored ECC words. |
-| `0xC0A0-0xC0AC` | ECC_OUT | Zero syndrome outputs. |
-| `0xC0C0` | STATUS2 | ECC/result status. |
-
-This path mainly exists for the real boot ROM. Linux does not need to use it.
 
 ### NANDWRITER Restore Engine
 

@@ -9,7 +9,7 @@
  *  belong to their own blocks in be300_devices.c and cf.c. The
  *  implementation is fully self-contained: it lives in its own
  *  s->restore_* slice of nand_state_t and never reaches into the SPL
- *  or ROM transfer engines.
+ *  engine.
  *
  *  Split out of src/hw/nand.c. Public API (declared in hw/nand.h):
  *    nand_restore_handles_offset, nand_restore_read, nand_restore_write.
