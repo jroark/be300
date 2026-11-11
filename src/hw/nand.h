@@ -225,6 +225,7 @@ void     nand_init(nand_state_t *s, uint8_t *image, size_t size,
                    size_t valid_size);
 /* The companion DMA state word 0x1CF4 was written (see burst_520). */
 void     nand_dma_state_written(nand_state_t *s);
+void     nand_kj_reset(nand_state_t *s);
 uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
                    uint32_t pc);
 /*

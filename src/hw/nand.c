@@ -250,10 +250,14 @@ void nand_init(nand_state_t *s, uint8_t *image, size_t size,
             uint16_t off;
             uint32_t val;
         } strap_init[] = {
-            { 0xA060u, 0x000C000Cu }, { 0xA064u, 0x000C000Cu },
-            { 0xA068u, 0x000C000Cu }, { 0xA06Cu, 0x000C000Cu },
-            { 0xA070u, 0x000C000Cu }, { 0xA074u, 0x000C000Cu },
-            { 0xA078u, 0x000C000Cu }, { 0xA07Cu, 0x000C000Cu },
+            /*
+             * 0xA060-0xA07E: sixteen source words, zero at power-on. The
+             * dump's 0x000C in each is what Windows CE's keyboard driver
+             * leaves there (keybddr.dll 0x01A31F6C-0x01A31F80). NK tells a
+             * companion that has lost its state from one that kept it by
+             * 0xA07A bit 2 (see nand_kj_reset), so the power-on value has
+             * to be the cleared one.
+             */
             { 0xA080u, 0x00000000u }, { 0xA084u, 0x00000001u },
             { 0xA088u, 0x00000000u }, { 0xA08Cu, 0x00007100u },
             { 0xA090u, 0x00007100u }, { 0xA094u, 0x00007100u },
@@ -292,6 +296,32 @@ void nand_init(nand_state_t *s, uint8_t *image, size_t size,
     }
 
     nand_restore_seed_regs(s);
+}
+
+/*
+ * The Kj companion's own reset (7 to 0xA0C4, then 10 to 0xA0C8) returns its
+ * source words at 0xA060-0xA07E to zero.
+ *
+ * NK's reset entry reads them to find out what kind of reset it was
+ * (0x80077520-0x80077564): with 0xA07A bit 2 clear it sets bit 2 in 0xA07A
+ * and 0xA07C; with it set it clears 0xA07C. Later (0x80077770-0x80077818)
+ * 0xA07C bit 2 set means "restart the OS", and clear means "the CPU was
+ * woken from HIBERNATE, the companion kept running": NK then wants a wake
+ * reason (Power, the RTC alarm, a card, a cradle in the dock) and goes
+ * back to sleep without one (0x80077820-0x80077944). The only caller that
+ * reboots on purpose is this reset (0x800A87E0 -> 0x8007A140), so the
+ * marker must be gone after it. With the words preserved, the reboot at the
+ * end of a first boot looked like a wake with no reason; it only went on
+ * because the dock ID was seeded as a USB cradle, which is a wake reason.
+ *
+ * Only 0xA07A and 0xA07C are tested by NK. Clearing the whole group of
+ * sixteen is an assumption (they are one register type); what else the
+ * reset reaches is not known.
+ */
+void nand_kj_reset(nand_state_t *s)
+{
+    if (s)
+        memset(s->strap_regs, 0, 0x20);     /* 0xA060-0xA07F */
 }
 
 void nand_dma_state_written(nand_state_t *s)

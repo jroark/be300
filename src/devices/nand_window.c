@@ -144,6 +144,7 @@ static int be300_nand_handle(struct cpu *cpu, struct memory *mem,
                 "(PA 0x0A00A0C4<=7, PA 0x0A00A0C8<=10)\n",
                 pc);
             be300_pcconnect_reset_for_cpu_reset(g_be300_vrc4173_latch);
+            nand_kj_reset(d->nand);
             mips_cpu_cold_reset(cpu);
             return 1;
         } else {
