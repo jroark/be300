@@ -121,9 +121,14 @@ These have no hardware citation. Each needs a probe before it is changed.
   status. The 0x43 "echo test" at D200 was the ROM's COR write and is gone (K1). The
   `0xC000-0xC0FF` "ROM transfer engine" (`nand.h:42-53`) overlaps the card I/O window and is
   still uncited.
-- **PC-matched behaviour** in `src/hw/nand.c:1015-1030, 1264-1282, 1347-1358` and the forced
-  busy-clear WORKAROUNDs at `src/be300_devices.c:711-788` (`0x234`, `0x8A0`, `0xA00`), all with
-  TODO dates in 2026-04.
+- **PC-matched behaviour.** The console forwarding at `D7FC` no longer depends on the PC:
+  `D7F8`/`D7FC` are the SPL's debug serial port, a 16550 behind an index/data pair (THR at
+  index 0, LCR 6, LSR 0x0A; SPL `0x80F030F0`, `0x80F032F8`, `0x80F0330C`), which it sets up
+  only when `D7FA` reads 0xF137 (`0x80F03080`). Still PC-matched or uncited: the `D7FE`
+  override at three SPL PCs (`src/hw/nand.c`, never executed by the regression image), the
+  indexed status-7 "poll escape", `D7FA` reading the NAND ID 0x73EC, and the forced
+  busy-clear WORKAROUNDs at `src/be300_devices.c` (`0x234`, `0x8A0`, `0xA00`, TODOs from
+  2026-04). The `0xC000-0xC0FF` engine is not touched at all in a CE first boot.
 - **Touch geometry.** A/D ranges 0x81E1-0x8E30 / 0x8300-0x8D1B and the 360-row panel
   (`src/hw/piu.c:66-84`) were chosen here and copied into both guests.
 - **Power-on table** (`src/be300_devices.c:1150-1225`) seeds the audio block, `0x1CC0-0x1CCC`,

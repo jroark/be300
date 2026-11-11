@@ -773,8 +773,6 @@ static void nand_boot_finish_ecc_input(nand_state_t *s)
 #define LEGACY_STATUS_IDX          0x07u
 #define LEGACY_STATUS_ESCAPE_READS 64u
 #define LEGACY_STATUS_IDLE_MASK    0xC0u
-#define UART_TX_CONSOLE_PC         UINT32_C(0x80F03308)
-#define UART_TX_CONSOLE_PC_CENET   UINT32_C(0x80F03350)
 
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 uint64_t value, uint32_t pc)
@@ -1080,15 +1078,18 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 s->legacy_read_since_write[ri] = 0;
             }
 
-            /* Forward VRC4173 indexed UART data (idx 0x00) to stdout.
-             * Normalize 0x80/0xA0 kseg aliases for the known console callsite. */
-            uint32_t norm_pc = pc & ~UINT32_C(0x20000000);
-            bool known_console_pc =
-                norm_pc == UART_TX_CONSOLE_PC ||
-                norm_pc == UART_TX_CONSOLE_PC_CENET;
-            bool known_uart_idx = (ri == 0x00u || ri == 0xF0u);
-            if (known_uart_idx &&
-                known_console_pc &&
+            /*
+             * The SPL's debug serial port: a 16550 behind this index/data
+             * pair, registers at even indices. Its putc (0x80F030F0) polls
+             * index 0x0A (LSR) for bit 6 and writes the character to index 0
+             * through 0x80F032F8; its set-up writes index 6 (LCR) with 0xA3
+             * first, but only when 0xD7FA reads 0xF137 (0x80F03080), which
+             * it does not here. The character goes to the host console,
+             * unless the port's divisor latch is selected (LCR bit 7).
+             * Index 0xF0 is the same port in the CE .NET SPL.
+             */
+            if ((ri == 0x00u || ri == 0xF0u) &&
+                !(s->legacy_dirty[0x06u] && (s->legacy_regs[0x06u] & 0x80u)) &&
                 (byte == 0x0A || byte == 0x0D || (byte >= 0x20 && byte <= 0x7E))) {
                 host_io_emit_serial(byte);
                 if (host_io_stdout_enabled()) {
