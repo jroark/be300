@@ -1198,7 +1198,12 @@ void be300_register_vrc4173_latch(struct machine *gxm, machine_t *m,
              * to close it, so 0x200C is its idle USB-cradle state. */
             { 0x8000, 0x0000001F },
             { 0x8004, 0x00001100 },  /* status */
-            { 0x8010, 0x0000000C },  /* configuration */
+            /* Dock socket ID: nothing attached reads 0x0F on a real
+             * BE-300 (glaze-os tests/STOWAWAY.md, 2026-11-06). 0x0C, in
+             * the CE register dump, is the USB cradle it was taken in;
+             * the dock options put their own ID here
+             * (src/devices/serial_dock.c). */
+            { 0x8010, 0x0000000F },
             { 0x8014, 0x00000002 },  /* mode */
             { 0x8040, 0x0000000A },  /* interrupt mask */
         };
