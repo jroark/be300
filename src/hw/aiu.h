@@ -73,7 +73,7 @@ typedef struct aiu_state {
     bool     codec_double;       /* bit 7 of the last 0xDxxx codec command */
     uint32_t rate_hz;
     uint8_t  channels;
-    uint64_t start_ns;           /* wall-clock origin for the frame cursor */
+    uint64_t start_ns;           /* emulated-time origin of the frame cursor */
     uint64_t frames_done;        /* frames consumed since start_ns */
     uint64_t irq_count;
 } aiu_state_t;

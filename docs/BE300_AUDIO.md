@@ -126,8 +126,9 @@ Stop (`0x01911CF0`): write `0x8A0 = 0`, `0x880 &= ~8`, `0x884 |= 1`,
   The real-hardware dump shows the two pairs equal
   (`docs/hardware/hw_dump_vrc4173.txt:1071-1077`). What sets status bit 1 on
   hardware is not known; the model never sets it.
-- The cursor advances with host monotonic time at the decoded rate (the
-  main-loop throttle uses the same clock).
+- The cursor advances with emulated time at the decoded rate, so the
+  driver's timeouts and the buffer-done interrupt share one clock. At the
+  default speed this is also the host playback rate.
 - Writing bit 0 to `0x8C8` clears status bit 0; writing bit 0 to `0x8CC`
   clears status bit 1.
 - Run state is `0x898` bit 0 AND `0x8A0` bit 0.

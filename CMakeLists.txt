@@ -537,7 +537,6 @@ if(BUILD_TESTING AND BUILD_CLI)
     if(NOT WIN32)
         add_executable(test_audio_dma tests/test_audio_dma.c src/hw/aiu.c)
         target_include_directories(test_audio_dma PRIVATE src)
-        target_compile_definitions(test_audio_dma PRIVATE clock_gettime=audio_test_clock_gettime)
         add_test(NAME audio_dma COMMAND test_audio_dma)
     endif()
 

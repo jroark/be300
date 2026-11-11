@@ -3,7 +3,6 @@
 #include "machine.h"
 #include "memory.h"
 #include <stdlib.h>
-#include <time.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 static uint32_t regs[0x1000 / 4];
@@ -12,13 +11,7 @@ static int16_t ram[0x2000 / 2], captured[256];
 static size_t emitted;
 static unsigned irq_updates, stream_resets;
 
-int audio_test_clock_gettime(clockid_t clock, struct timespec *ts)
-{
-    (void)clock;
-    ts->tv_sec = (time_t)(now_ns / 1000000000u);
-    ts->tv_nsec = (long)(now_ns % 1000000000u);
-    return 0;
-}
+uint64_t be300_emulated_ns(const machine_t *m) { (void)m; return now_ns; }
 bool be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out)
 {
     CHECK(pa >= 0x0a000000 && pa < 0x0a001000);
