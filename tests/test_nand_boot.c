@@ -184,6 +184,32 @@ static void test_rom_burst_520(void)
     CHECK(test_read_page(&n,3,false)==132);
 }
 
+/* A page program: the 520 data and tag bytes go in under MODE 7, and MODE 6
+ * then offers their parity in the result registers, which the driver writes
+ * as spare bytes 8-15 (nanddisk.dll 0x019A44E4, 0x019A571C-0x019A576C). The
+ * expected bytes are glaze-os nand_ecc_encode() for the same page, whose
+ * layout was taken from a real BE-300's pages. */
+static void test_program_parity(void)
+{
+    static const uint8_t tag[8] = { 0xAA, 0x55, 0x0F, 0xFF, 0x34, 0x12, 0x00, 0x00 };
+    static const uint8_t want[8] = { 0x32, 0xE7, 0x97, 0xD1, 0xC3, 0x32, 0x18, 0x03 };
+    nand_state_t n;
+
+    nand_init(&n, image, sizeof(image), sizeof(image));
+    nand_write(&n, NAND_REG_XFER_MODE, 4, 0x07, 0);
+    for (unsigned i = 0; i < NAND_PAGE_DATA; i++)
+        nand_write(&n, NAND_REG_STREAM_DATA, 1, (uint8_t)(i * 7u + 1u), 0);
+    for (unsigned i = 0; i < 8; i++)
+        nand_write(&n, NAND_REG_STREAM_DATA, 1, tag[i], 0);
+    nand_write(&n, NAND_REG_XFER_MODE, 4, 0x06, 0);
+    for (unsigned i = 0; i < 4; i++) {
+        uint32_t v = (uint32_t)nand_read(&n, 0xA4A0u + 4u * i, 4, 0);
+
+        CHECK((v & 0xFFu) == want[2 * i] && ((v >> 8) & 0xFFu) == want[2 * i + 1]);
+        CHECK((v >> 16) == 0);
+    }
+}
+
 int main(void)
 {
     /* LCD/backlight accesses must never enter the legacy recovery engine. */
@@ -201,6 +227,7 @@ int main(void)
     test_empty_ata_taskfile();
     test_clean_ecc_and_inactive_buffer();
     test_rom_burst_520();
+    test_program_parity();
     if (failures) {
         fprintf(stderr, "test_nand_boot: %d failure(s)\n", failures);
         return 1;

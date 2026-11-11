@@ -102,8 +102,8 @@ bool nand_physical_bad(const nand_state_t *s, uint32_t block)
     return false;
 }
 
-/* Physical-page RS remainder for the ROM's MODE-1 result path. Synthetic
- * data-only images retain their legacy no-parity/clean behavior. */
+/* The transfer engine's Reed-Solomon ECC (MODE 1 after a read, MODE 6 in
+ * a program). */
 static uint8_t nand_bitrev(uint8_t b)
 {
     uint8_t r=0;
@@ -121,6 +121,45 @@ static uint16_t nand_gmul(uint16_t a,uint16_t b)
     for(unsigned i=0;i<10;i++,b>>=1,a=nand_xtime(a)) if(b&1) r^=a;
     return r;
 }
+/* Reed-Solomon remainder of 520 bytes (512 data, 8 spare) over GF(2^10),
+ * generator roots x^0..x^5, each byte the symbol bitrev8(b) << 2: the code
+ * Windows CE and the boot ROM use (glaze-os kernel/drivers/nand_ecc.c has
+ * the layout, worked out from a real BE-300's pages). */
+static void nand_rs_remainder(const uint8_t *data, const uint8_t *spare,
+    uint16_t rem[6])
+{
+    uint16_t g[7]={1}, root=1;
+
+    memset(rem,0,6*sizeof(rem[0]));
+    for(unsigned k=0;k<6;k++,root=nand_xtime(root)) {
+        for(int i=(int)k+1;i>0;i--) g[i]=g[i-1]^nand_gmul(g[i],root);
+        g[0]=nand_gmul(g[0],root);
+    }
+    for(unsigned i=0;i<520;i++) {
+        uint8_t byte=i<512 ? data[i] : spare[i-512];
+        uint16_t feedback=((uint16_t)nand_bitrev(byte)<<2)^rem[5];
+        for(int j=5;j>0;j--) rem[j]=rem[j-1]^nand_gmul(feedback,g[j]);
+        rem[0]=nand_gmul(feedback,g[0]);
+    }
+}
+
+/* Six 10-bit values in the engine's result registers: the 60-bit packing
+ * of the spare area's parity bytes, in four low halfwords at
+ * A4A0/A4A4/A4A8/A4AC. ROM 9FC01FA0 copies those pairs. */
+static void nand_ecc_result(nand_state_t *s, const uint16_t v[6])
+{
+    uint8_t packed[8]={ (uint8_t)(v[5]>>2), (uint8_t)((v[5]<<6)|(v[4]>>4)),
+        (uint8_t)((v[4]<<4)|(v[3]>>6)), (uint8_t)((v[3]<<2)|(v[2]>>8)),
+        (uint8_t)v[2], (uint8_t)(v[1]>>2), (uint8_t)((v[1]<<6)|(v[0]>>4)), (uint8_t)(v[0]<<4) };
+
+    memset(s->xfer_buffer,0,sizeof(s->xfer_buffer));
+    for (unsigned i=0;i<8;i++) s->xfer_buffer[(i/2)*4+i%2]=nand_bitrev(packed[i]);
+}
+
+/* MODE 1, after a page read: the guest feeds the six stored parity values
+ * and the registers give the difference from the remainder of what was
+ * read, zero for a clean page. Synthetic data-only images have no stored
+ * parity and read clean. */
 static void nand_physical_ecc(nand_state_t *s)
 {
     memset(s->xfer_buffer,0,sizeof(s->xfer_buffer));
@@ -128,24 +167,14 @@ static void nand_physical_ecc(nand_state_t *s)
     s->xfer_regs[status]=0;
     if (!s->oob || s->stream_page >= NAND_BLOCK_COUNT*NAND_BLOCK_PAGES) return;
     const uint8_t *o=s->oob+s->stream_page*NAND_PAGE_OOB;
-    uint16_t r[6], syndrome[6];
+    uint16_t r[6], rem[6], syndrome[6];
     /* ROM 9FC01FE0 feeds reversed 10-bit fields. Use the values supplied
      * by the guest, so incorrect ECC inputs cannot silently appear clean. */
     for(unsigned i=0;i<6;i++) {
         uint16_t v=s->xfer_ecc_words[i];r[i]=0;
         for(unsigned j=0;j<10;j++)r[i]=(uint16_t)((r[i]<<1)|((v>>j)&1));
     }
-    uint16_t g[7]={1}, rem[6]={0}, root=1;
-    for(unsigned k=0;k<6;k++,root=nand_xtime(root)) {
-        for(int i=(int)k+1;i>0;i--) g[i]=g[i-1]^nand_gmul(g[i],root);
-        g[0]=nand_gmul(g[0],root);
-    }
-    for(unsigned i=0;i<520;i++) {
-        uint8_t byte=i<512 ? s->image[s->stream_page*512+i] : o[i-512];
-        uint16_t feedback=((uint16_t)nand_bitrev(byte)<<2)^rem[5];
-        for(int j=5;j>0;j--) rem[j]=rem[j-1]^nand_gmul(feedback,g[j]);
-        rem[0]=nand_gmul(feedback,g[0]);
-    }
+    nand_rs_remainder(s->image+(size_t)s->stream_page*512, o, rem);
     /* The controller returns polynomial coefficients, NOT S0..S5. ROM
      * 9FC01C30 evaluates this degree-five remainder at x^0..x^5 before
      * its error locator runs. Correct stored parity makes it zero. */
@@ -153,13 +182,22 @@ static void nand_physical_ecc(nand_state_t *s)
         syndrome[i]=r[i]^rem[5-i];
         if(syndrome[i]) s->xfer_regs[status]=1;
     }
-    /* Same 60-bit packing as physical parity, presented in four low
-     * halfwords at A4A0/A4A4/A4A8/A4AC. ROM 9FC01FA0 copies those pairs. */
-    uint16_t *v=syndrome;
-    uint8_t packed[8]={ (uint8_t)(v[5]>>2), (uint8_t)((v[5]<<6)|(v[4]>>4)),
-        (uint8_t)((v[4]<<4)|(v[3]>>6)), (uint8_t)((v[3]<<2)|(v[2]>>8)),
-        (uint8_t)v[2], (uint8_t)(v[1]>>2), (uint8_t)((v[1]<<6)|(v[0]>>4)), (uint8_t)(v[0]<<4) };
-    for (unsigned i=0;i<8;i++) s->xfer_buffer[(i/2)*4+i%2]=nand_bitrev(packed[i]);
+    nand_ecc_result(s, syndrome);
+}
+
+/* MODE 6, in a page program after the 520 data and tag bytes have been
+ * streamed in MODE 7: the same registers give the parity for those bytes,
+ * the remainder with nothing to compare against. nanddisk.dll reads them
+ * (0x019A571C-0x019A576C, straight after its MODE 6 write at 0x019A44E4)
+ * and writes the eight bytes to the rest of the spare area before 10h.
+ * They read zero here before, so pages Windows CE wrote had no parity. */
+static void nand_program_ecc(nand_state_t *s)
+{
+    uint16_t rem[6], v[6];
+
+    nand_rs_remainder(s->program_buffer, s->program_buffer + NAND_PAGE_DATA, rem);
+    for (unsigned i=0;i<6;i++) v[i]=rem[5-i];
+    nand_ecc_result(s, v);
 }
 
 static void nand_commit_program(nand_state_t *s)
@@ -874,6 +912,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 s->stream_limit = (s->burst_520 ? NAND_PAGE_DATA + 8u : NAND_PAGE_RAW) - col;
                 s->stream_active = true;
             } else if (data_byte == 0x06u) {
+                nand_program_ecc(s);
                 s->stream_base = NAND_PAGE_DATA + 8u;
                 s->stream_cursor = 0;
                 s->stream_limit = 8u;
