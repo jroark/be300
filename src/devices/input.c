@@ -39,6 +39,7 @@ struct be300_input_device {
     bool       log_mmio;
     /* Button device state. */
     bool       button_irq_pending;
+    uint16_t   button_mask;        /* 0x0A00A040: buttons that may interrupt */
     bool       button_source_enabled;   /* AA000014 bit 3 */
     bool       button_line_live;        /* ... and it can reach GIU line 0 */
     struct interrupt button_irq;  /* BE-300 GIRQ0 cascaded interrupt */
@@ -51,7 +52,6 @@ struct be300_input_device {
     bool       piu_irq_asserted;
 };
 
-#define BUTTON_POWER_BIT        0x80u
 
 /*
  *  PIU interrupt helper — idempotent assert/deassert through BE-300's
@@ -87,15 +87,33 @@ static void button_irq_update(struct be300_input_device *d, bool want)
     }
 }
 
+/*
+ * The button interrupt is a level: it is requested while a button enabled in
+ * the mask at 0x0A00A040 is down. Windows CE's keybddr.dll depends on that.
+ * When it starts polling a held key it writes the mask to zero (0x01A349D4),
+ * and sets it back to 0x9EFF once idle (0x01A34AF4). Its power-switch path
+ * (0x01A34700-0x01A34778) cancels a scan in progress and only re-enables the
+ * mask, counting on a new button interrupt while Power is still down; with
+ * the mask already enabled it returns at once for the same reason. NK saves
+ * and restores the mask around power off (0x800A9318, 0x800A932C). A release
+ * raises nothing; the driver sees it by polling.
+ */
+static bool button_level(const struct be300_input_device *d)
+{
+    uint16_t down = (uint16_t)(d->m->btn_set1 | ((uint16_t)d->m->btn_set2 << 8));
+
+    return (down & d->button_mask) != 0;
+}
+
 uint32_t button_girq0_source_bits(const struct be300_input_device *d)
 {
     /*
      * docs/hardware/hardware.txt:107-112 identifies GIRQ0-1 as the
      * keyboard SYSINTR source, and the real hardware idle dump keeps the
      * button block at 0x0A00A040 distinct from the generic NAND/latch
-     * range (docs/hardware/hw_dump_vrc4173.txt:520).  Host button state
-     * changes latch this cascaded source until the OAL writes the GIRQ0-1
-     * acknowledge path at AA000014.
+     * range (docs/hardware/hw_dump_vrc4173.txt:520).  The request follows
+     * button_level(); a write to AA000014 does not clear it while a button
+     * is still down and enabled.
      */
     return (d && d->button_irq_pending && d->button_source_enabled) ?
         BUTTON_GIRQ0_SOURCE : 0;
@@ -113,20 +131,11 @@ void button_set_source_enabled(struct be300_input_device *d, bool enabled,
 
 void button_ack_keyboard_source(struct be300_input_device *d)
 {
-    if (!d || !d->button_irq_pending)
+    if (!d)
         return;
 
-    d->button_irq_pending = false;
-    button_irq_update(d, false);
-}
-
-static bool button_change_is_power_release_only(uint8_t old_set1,
-    uint8_t old_set2, uint8_t new_set1, uint8_t new_set2)
-{
-    return old_set1 == new_set1 &&
-        ((old_set2 ^ new_set2) == BUTTON_POWER_BIT) &&
-        (old_set2 & BUTTON_POWER_BIT) != 0 &&
-        (new_set2 & BUTTON_POWER_BIT) == 0;
+    d->button_irq_pending = button_level(d);
+    button_irq_update(d, d->button_irq_pending);
 }
 
 void be300_buttons_host_update(machine_t *m, uint8_t old_set1,
@@ -140,20 +149,8 @@ void be300_buttons_host_update(machine_t *m, uint8_t old_set1,
         return;
 
     d = (struct be300_input_device *)m->button_device;
-    /*
-     * The stock OAL has a separate SYSINT1 power-switch source
-     * (docs/hardware/hardware.txt:15-18) and the keyboard source is used to
-     * sample the active button bitmap.  Treating the power release as another
-     * keyboard interrupt wakes SUSPEND immediately after the press powered the
-     * guest down.  The live bit still clears; only the release edge is not a
-     * keyboard wake source.
-     */
-    if (button_change_is_power_release_only(old_set1, old_set2,
-        m->btn_set1, m->btn_set2))
-        return;
-
-    d->button_irq_pending = true;
-    button_irq_update(d, true);
+    d->button_irq_pending = button_level(d);
+    button_irq_update(d, d->button_irq_pending);
 }
 
 uint32_t piu_girq0_source_bits(const struct be300_input_device *d)
@@ -290,21 +287,27 @@ static int be300_buttons_handle(struct cpu *cpu, struct memory *mem,
         (uint32_t)len, (uint64_t)(uint32_t)cpu->pc,
         BE300_MMIO_CLASS_KNOWN);
 
-    if (writeflag == MEM_WRITE)
+    if (writeflag == MEM_WRITE) {
+        /* The interrupt mask, a halfword at offset 0 (see button_level). */
+        if (relative_addr == 0 && len >= 2) {
+            d->button_mask = (uint16_t)memory_readmax64(cpu, data, len);
+            d->button_irq_pending = button_level(d);
+            button_irq_update(d, d->button_irq_pending);
+        }
         return 1;
+    }
 
     /*
      * Real-hardware idle dump:
      *   docs/hardware/hw_dump_vrc4173.txt:520
      *   0x0A00A040: 00009EFF ...
-     * Keep the low halfword at its quiescent value.  The stock WinCE
-     * keybddr.dll initializes that halfword to 0x9EFF, then its interrupt
-     * path performs a dummy lhu at 0x0A00A042 and samples the active-high
-     * button bitmap at 0x0A00A044 masked by 0x9EFF
-     * (keybddr.dll PCs 0x01A32460 and 0x01A3411C-0x01A34128).
+     * The low halfword is the interrupt mask.  keybddr.dll initializes it
+     * to 0x9EFF, then its interrupt path performs a dummy lhu at 0x0A00A042
+     * and samples the active-high button bitmap at 0x0A00A044 masked by
+     * 0x9EFF (keybddr.dll PCs 0x01A32460 and 0x01A3411C-0x01A34128).
      */
-    reg[0x00] = 0xffu;
-    reg[0x01] = 0x9eu;
+    reg[0x00] = (uint8_t)d->button_mask;
+    reg[0x01] = (uint8_t)(d->button_mask >> 8);
     reg[0x04] = m->btn_set1;
     reg[0x05] = m->btn_set2;
 
@@ -374,6 +377,9 @@ void be300_register_input(struct machine *gxm, machine_t *m, bool log_mmio)
     CHECK_ALLOCATION(btn_d = calloc(1, sizeof(struct be300_input_device)));
     btn_d->m = m;
     btn_d->log_mmio = log_mmio;
+    /* The value Windows CE leaves there (hw_dump_vrc4173.txt:520); what it
+     * holds at power-on is not known. Glaze and Linux never write it. */
+    btn_d->button_mask = 0x9EFFu;
     /* docs/hardware/hardware.txt:65-112 routes keyboard buttons as
      * SYSINT1 bit 8 (GIU) -> GIUINTLREG bit 0 (GIRQ0) ->
      * VRC4173 offset 0x0004 bit 1 (GIRQ0-1). */
