@@ -28,26 +28,6 @@ static void fill_image(void)
             image[page * NAND_PAGE_DATA + i] = (uint8_t)(page * 0x40u + i);
 }
 
-static void test_rom_stream_and_oob(void)
-{
-    nand_state_t n;
-
-    nand_init(&n, image, sizeof(image), sizeof(image));
-    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 4, 0) == UINT32_C(0xFFFFFFFF));
-
-    nand_write(&n, NAND_REG_BOOT_CMD, 1, 0x06, 0);
-    nand_write(&n, NAND_REG_BOOT_ADDR, 1, 0x00, 0);
-    nand_write(&n, NAND_REG_BOOT_ADDR, 1, 0x01, 0);
-    nand_write(&n, NAND_REG_BOOT_ADDR, 1, 0x00, 0);
-    nand_write(&n, NAND_REG_BOOT_MODE, 1, 0x05, 0);
-    CHECK(nand_read(&n, NAND_REG_BOOT_STATUS, 4, 0) == 1);
-    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 4, 0) == UINT32_C(0x43424140));
-
-    n.stream_cursor = NAND_PAGE_DATA;
-    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 2, 0) == UINT16_C(0x55AA));
-    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 1, 0) == 0x0F);
-}
-
 static void test_empty_ata_taskfile(void)
 {
     nand_state_t n;
@@ -60,22 +40,6 @@ static void test_empty_ata_taskfile(void)
     CHECK(nand_read(&n, NAND_ATA_TF_BASE + 7, 1, 0) == 0xFF);
     CHECK(nand_read(&n, NAND_ATA_TF_BASE, 4, 0) == UINT32_C(0xFFFFFFFF));
     CHECK(nand_read(&n, NAND_ATA_ALT_STATUS, 1, 0) == 0xFF);
-}
-
-static void test_clean_ecc_and_inactive_buffer(void)
-{
-    nand_state_t n;
-
-    nand_init(&n, image, sizeof(image), sizeof(image));
-    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 1, 0) == 0xFF);
-    nand_write(&n, NAND_REG_BOOT_MODE, 1, 0x01, 0);
-    for (unsigned i = 0; i < 6; i++)
-        nand_write(&n, NAND_REG_BOOT_ECC_IN, 2, 0x155 + i, 0);
-    CHECK(n.boot_ecc_count == 6);
-    for (uint32_t off = NAND_REG_BOOT_ECC_OUT_BASE;
-         off < NAND_REG_BOOT_ECC_OUT_END; off += 4)
-        CHECK(nand_read(&n, off, 4, 0) == 0);
-    CHECK(nand_read(&n, NAND_REG_BOOT_STATUS2, 4, 0) == 0);
 }
 
 /* Physical pages must retain their own spare bytes and expose the
@@ -148,6 +112,29 @@ static void test_physical(void) {
     oob[96*16+5]=0;data[96*512]=0x27;
     test_command(&n,0x60);test_address(&n,96,false);test_command(&n,0xd0);
     CHECK((n.status_value&1)==1 && oob[96*16+5]==0 && data[96*512]==0x27);
+}
+
+/* A read through the transfer engine (command, three address bytes, KICK,
+ * MODE 5) streams the page and then its spare bytes; with a data-only image
+ * the spare bytes are the synthesized ones and their parity checks clean. */
+static void test_rom_stream_and_oob(void)
+{
+    nand_state_t n;
+
+    nand_init(&n, image, sizeof(image), sizeof(image));
+    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 4, 0) == UINT32_C(0xFFFFFFFF));
+    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 1, 0) == 0xFF);
+
+    test_command(&n, 0x00);
+    test_address(&n, 1, true);
+    nand_write(&n, NAND_REG_XFER_KICK, 4, 1, 0);
+    nand_write(&n, NAND_REG_XFER_MODE, 4, 0x05, 0);
+    CHECK(nand_read(&n, NAND_REG_XFER_STATUS, 4, 0) == 1);
+    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 4, 0) == UINT32_C(0x43424140));
+
+    n.stream_cursor = NAND_PAGE_DATA;
+    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 2, 0) == UINT16_C(0x55AA));
+    CHECK(nand_read(&n, NAND_REG_STREAM_DATA, 1, 0) == 0x0F);
 }
 
 /* Reads one page through the transfer engine, the last 8 spare bytes in
@@ -225,7 +212,6 @@ int main(void)
     fill_image();
     test_rom_stream_and_oob();
     test_empty_ata_taskfile();
-    test_clean_ecc_and_inactive_buffer();
     test_rom_burst_520();
     test_program_parity();
     if (failures) {

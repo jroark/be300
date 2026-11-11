@@ -710,65 +710,6 @@ static uint64_t nand_stream_read(nand_state_t *s, unsigned size)
     return val;
 }
 
-static void nand_boot_reset(nand_state_t *s)
-{
-    s->boot_ready = false;
-    s->boot_mode = 0;
-    s->boot_addr_count = 0;
-    s->boot_ecc_count = 0;
-    s->stream_active = false;
-    s->stream_limit = 0;
-    s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 0;
-    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
-}
-
-static void nand_boot_latch_addr(nand_state_t *s, uint8_t data_byte)
-{
-    if (s->boot_addr_count < sizeof(s->boot_addr_bytes)) {
-        s->boot_addr_bytes[s->boot_addr_count++] = data_byte;
-    } else {
-        memmove(s->boot_addr_bytes, s->boot_addr_bytes + 1,
-                sizeof(s->boot_addr_bytes) - 1);
-        s->boot_addr_bytes[sizeof(s->boot_addr_bytes) - 1] = data_byte;
-    }
-}
-
-static void nand_boot_start_stream(nand_state_t *s)
-{
-    uint32_t page;
-    uint32_t col;
-
-    col = s->boot_addr_bytes[0];
-    page = (uint32_t)s->boot_addr_bytes[1]
-         | ((uint32_t)(s->boot_addr_bytes[2] & 0x7Fu) << 8);
-
-    s->stream_page = page;
-    s->stream_col = col;
-    s->stream_base = page * NAND_PAGE_RAW + col;
-    s->stream_cursor = 0;
-    s->stream_limit = NAND_PAGE_RAW - col;
-    s->stream_active = true;
-    s->boot_ready = true;
-    s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 1;
-    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
-}
-
-static void nand_boot_finish_ecc_input(nand_state_t *s)
-{
-    /*
-     * The real HW ECC engine computes syndrome = stored_ECC XOR computed_ECC.
-     * Since the emulated NAND data is bit-perfect (no flash degradation),
-     * the correct syndrome is always zero.  Output all zeros so the ROM's
-     * software ECC correction (FUN_9fc01828) finds no errors and leaves the
-     * data untouched.
-     */
-    s->boot_regs[(NAND_REG_BOOT_ECC_OUT_BASE - NAND_BOOT_BASE) >> 2] = 0;
-    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x04u) - NAND_BOOT_BASE) >> 2] = 0;
-    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x08u) - NAND_BOOT_BASE) >> 2] = 0;
-    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x0Cu) - NAND_BOOT_BASE) >> 2] = 0;
-    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
-}
-
 /* Rate-limited indexed register logging */
 #define LEGACY_STATUS_IDX          0x07u
 #define LEGACY_STATUS_ESCAPE_READS 64u
@@ -939,50 +880,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                     nand_physical_ecc(s);
                     s->ready = true;
                 }
-            }
-        }
-        return;
-    }
-
-    /* ROM transfer engine registers (0xC000-0xC0FF). */
-    if (offset >= NAND_BOOT_BASE && offset < NAND_BOOT_END) {
-        uint32_t idx = (offset - NAND_BOOT_BASE) >> 2;
-        uint8_t data_byte = (uint8_t)(value & 0xFFu);
-
-        if (idx < (sizeof(s->boot_regs) / sizeof(s->boot_regs[0])))
-            s->boot_regs[idx] = (uint32_t)value;
-
-        if (offset == NAND_REG_BOOT_CTRL) {
-            if ((value & 1u) == 0)
-                nand_boot_reset(s);
-        } else if (offset == NAND_REG_BOOT_CMD) {
-            if (data_byte == 0x03u || data_byte == 0x06u)
-                s->boot_addr_count = 0;
-            else if (data_byte == 0x00u)
-                nand_boot_reset(s);
-        } else if (offset == NAND_REG_BOOT_ADDR) {
-            nand_boot_latch_addr(s, data_byte);
-        } else if (offset == NAND_REG_BOOT_KICK) {
-            s->boot_ready = false;
-            s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 0;
-        } else if (offset == NAND_REG_BOOT_MODE) {
-            s->boot_mode = data_byte;
-            if (data_byte == 0x05u && s->boot_addr_count >= 3) {
-                nand_boot_start_stream(s);
-            } else if (data_byte == 0x04u) {
-                s->boot_ready = true;
-                s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 1;
-            } else if (data_byte == 0x00u || data_byte == 0x01u) {
-                s->boot_ecc_count = 0;
-                if (data_byte == 0x00u) {
-                    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
-                }
-            }
-        } else if (offset == NAND_REG_BOOT_ECC_IN) {
-            if (s->boot_mode == 0x01u && s->boot_ecc_count < 6) {
-                s->boot_ecc_words[s->boot_ecc_count++] = (uint16_t)(value & 0x03FFu);
-                if (s->boot_ecc_count == 6)
-                    nand_boot_finish_ecc_input(s);
             }
         }
         return;
@@ -1175,19 +1072,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
                 val |= (uint64_t)s->xfer_buffer[buf_off + i] << (i * 8);
         } else if (idx < (sizeof(s->xfer_regs) / sizeof(s->xfer_regs[0]))) {
             val = s->xfer_regs[idx];
-        } else {
-            val = 0;
-        }
-        goto out;
-    }
-
-    /* ROM transfer engine registers (0xC000-0xC0FF). */
-    if (offset >= NAND_BOOT_BASE && offset < NAND_BOOT_END) {
-        uint32_t idx = (offset - NAND_BOOT_BASE) >> 2;
-        if (offset == NAND_REG_BOOT_STATUS) {
-            val = s->boot_ready ? 0x00000001u : 0u;
-        } else if (idx < (sizeof(s->boot_regs) / sizeof(s->boot_regs[0]))) {
-            val = s->boot_regs[idx];
         } else {
             val = 0;
         }
