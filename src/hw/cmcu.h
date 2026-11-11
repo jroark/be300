@@ -23,7 +23,17 @@
  * BE-300 read 3 after Windows CE; it reset 140-150 s after CE stopped
  * reloading TIMEOUT = 0x96 (150), and did not across Glaze's 155 s and
  * 163 s sleeps once Glaze sent the stop (glaze-os kernel/drivers/cmcu.c,
- * docs/POWER.md, 2026-10-31). The other registers read back as written.
+ * docs/POWER.md, 2026-10-31).
+ *
+ * CONFIG (+0x10) bit 16 reports that the watchdog reset the system. CE's
+ * driver reads it when it loads (cedmbltin.dll 0x019F1FE8-0x019F2028): if
+ * the bit is set it prints "System was rebooted by WDT." and sets bit 3 of
+ * the boot flags at PA 0x254C, which PowerOn.dll (0x01A1140C-0x01A11524)
+ * turns into the "Restart: Due to an OS problem" message; then it writes
+ * 0x10000 to CONFIG whatever it read. So the bit is set by an expiry and
+ * cleared by writing 1 to it. As a read-back latch it stayed set after the
+ * driver's first write, and every later boot reported a watchdog reset.
+ * The other registers read back as written.
  */
 #define CMCU_CMD0     0x00u
 #define CMCU_ARG0     0x04u
@@ -35,6 +45,7 @@
 #define CMCU_SIZE     0x40u
 
 #define CMCU_STATUS_RUNNING 3u
+#define CMCU_CONFIG_WDT_RESET 0x00010000u  /* the watchdog reset the system; W1C */
 
 typedef struct {
     uint32_t regs[CMCU_SIZE / 4];

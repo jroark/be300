@@ -19,6 +19,13 @@ uint32_t cmcu_read(const cmcu_state_t *s, uint32_t off)
 void cmcu_write(cmcu_state_t *s, uint32_t off, uint32_t val, uint64_t now_ns)
 {
     off &= CMCU_SIZE - 1u & ~3u;
+    if (off == CMCU_CONFIG) {
+        /* Bit 16 is status: writing 1 clears it, 0 leaves it. */
+        uint32_t flag = s->regs[off / 4] & CMCU_CONFIG_WDT_RESET & ~val;
+
+        s->regs[off / 4] = (val & ~CMCU_CONFIG_WDT_RESET) | flag;
+        return;
+    }
     s->regs[off / 4] = val;
     switch (off) {
     case CMCU_CMD0:
@@ -46,5 +53,6 @@ bool cmcu_expired(cmcu_state_t *s, uint64_t now_ns)
     if (!s->running || !seconds || now_ns - s->reloaded_ns < seconds * UINT64_C(1000000000))
         return false;
     s->running = false;
+    s->regs[CMCU_CONFIG / 4] |= CMCU_CONFIG_WDT_RESET;
     return true;
 }

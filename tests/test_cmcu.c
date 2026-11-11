@@ -32,12 +32,20 @@ int main(void)
     cmcu_write(&c, CMCU_TIMEOUT, 0x96, S(10));
     cmcu_write(&c, CMCU_ARG, 0x53, S(10));
     cmcu_write(&c, CMCU_CMD, 0x3A, S(10));
-    CHECK(cmcu_read(&c, CMCU_STATUS) == 3 && cmcu_read(&c, CMCU_CONFIG) == 0x10000);
+    /* CONFIG bit 16 is "rebooted by the watchdog" status, not a latch: CE's
+     * write of 0x10000 (cedmbltin.dll 0x019F2028) leaves it clear. */
+    CHECK(cmcu_read(&c, CMCU_STATUS) == 3 && cmcu_read(&c, CMCU_CONFIG) == 0);
     /* Reloads keep it from firing; 150 s without one resets. */
     cmcu_write(&c, CMCU_TIMEOUT, 0x96, S(150));
     CHECK(!cmcu_expired(&c, S(299)));
     CHECK(cmcu_expired(&c, S(300)) && !cmcu_expired(&c, S(301)));
     CHECK(cmcu_read(&c, CMCU_STATUS) == 0);
+    /* The expiry sets the status; writing 0 keeps it, writing 1 clears it. */
+    CHECK(cmcu_read(&c, CMCU_CONFIG) == CMCU_CONFIG_WDT_RESET);
+    cmcu_write(&c, CMCU_CONFIG, 0, S(302));
+    CHECK(cmcu_read(&c, CMCU_CONFIG) == CMCU_CONFIG_WDT_RESET);
+    cmcu_write(&c, CMCU_CONFIG, 0x10000, S(302));
+    CHECK(cmcu_read(&c, CMCU_CONFIG) == 0);
 
     /* Stopped before a sleep, it never fires. */
     cmcu_write(&c, CMCU_ARG, 0x53, S(400));
