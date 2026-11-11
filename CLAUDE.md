@@ -295,6 +295,7 @@ Historical reverse-engineering found that NK reaches warm-resume-style logic dur
 - VRC4173 `SYSINT1REG` at offset `0x060` is read-only on real hardware
 - Interrupt status registers in the VRC4173 status ranges use write-1-to-clear semantics in the emulator
 - `dev_vr41xx.c` must not force-enable ETIMER in `MSYSINT1`
+- RTCLong1 requests on Int1 (CPU IP3), not on the shared Int0, and stays pending until `RTCINTREG` bit 1 is written. Windows CE never serves it (real Cause `0x00000810`, Status `0x00008401`); its tick is CP0 Compare. Do not bring back consume-on-delivery for it
 - NAND controller buffer registers `0xA4A0-0xA4AC` and `STATUS2` at `0xA4C0` only return meaningful data when a stream transfer is active
 - The ROM-era NAND ECC path expects zero syndromes when the emulated NAND data is bit-perfect; the non-zero result model for raw images is unconfirmed (`docs/HARDWARE_ACCURACY_REVIEW.md` N3)
 - `docs/HARDWARE_ACCURACY_REVIEW.md` lists where the emulator, Linux and Glaze disagree about hardware, with status per item
