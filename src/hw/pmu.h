@@ -121,6 +121,15 @@ void pmu_apply_pending_reset_state(pmu_state_t *s, uint64_t cur_count);
 void pmu_reset_switch(pmu_state_t *s);
 
 /*
+ * The power switch was pressed while the CPU runs (Fullspeed, Standby or
+ * Suspend): PMUINTREG.POWERSWINTR sets and stays until software writes 1 to
+ * it. Windows CE's keyboard driver reads and acknowledges it on every scan
+ * (keybddr.dll 0x01A346E8-0x01A34710), and NK once more before it powers
+ * off (0x8007A870).
+ */
+void pmu_power_switch(pmu_state_t *s);
+
+/*
  * The CPU starts again after HIBERNATE (UM §12.1.3): `cause` is
  * PMUINTREG_RTCINTR for the Elapsed Time alarm and 0 for the power switch,
  * which sets nothing. The HALTimer is armed again, since software must

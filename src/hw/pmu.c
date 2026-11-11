@@ -196,6 +196,11 @@ void pmu_reset_switch(pmu_state_t *s)
     s->pending_reset_cause = PMUINTREG_RSTSW;
 }
 
+void pmu_power_switch(pmu_state_t *s)
+{
+    s->pmuintreg |= PMUINTREG_POWERSWINTR;
+}
+
 void pmu_hibernate_wake(pmu_state_t *s, uint32_t cause, uint64_t cur_count)
 {
     s->pmuintreg |= (uint16_t)cause;
