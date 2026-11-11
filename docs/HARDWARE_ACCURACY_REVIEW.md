@@ -17,9 +17,9 @@ Line numbers are those of the 2026-11-10 trees.
 
 | ID | Gap | Evidence | Emulator site | Status |
 |----|-----|----------|---------------|--------|
-| C1 | Config resets to 0x10125930 and only bits 1:0 are writable. Real reads 0x10135923 (BP=1, DB=0 i.e. 16-byte D-line, K0=3). ROM and SPL write 0x00035B23; Linux and Glaze OR in bits 22 and 16 for the PRId 0x0C80 CACHE workaround | `docs/hardware/cpu_state.txt:19`, `docs/ROM_SPL_HANDOFF.md:83,220`, Z `kernel/start.S:61-79` | G `src/cpus/cpu_mips_coproc.c:162-196, 872` | open |
+| C1 | Config resets to 0x10125930 and only bits 1:0 are writable. Real reads 0x10135923 (BP=1, DB=0 i.e. 16-byte D-line, K0=3). ROM and SPL write 0x00035B23; Linux and Glaze OR in bits 22 and 16 for the PRId 0x0C80 CACHE workaround | `docs/hardware/cpu_state.txt:19`, `docs/ROM_SPL_HANDOFF.md:83,220`, Z `kernel/start.S:61-79` | G `src/cpus/cpu_mips_coproc.c:162-196, 872` | fixed: gxemul "VR4131 Config: 16-byte D-cache lines; BP, bit 22 and K0 writable" (reset value before the ROM write still unknown) |
 | C2 | No cache model: CACHE is a no-op and fetch always sees memory. Hides the ROM's one-line I-cache tag loop (`0x1FC00700`), un-zeroed SPL BSS, D-cache colour aliasing, and the PRId 0x0C80 CACHE erratum | L `docs/HARDWARE.md:104-117`, Z `kernel/shm.c:1-11`, Z `docs/dev/GLAZEBOOT.md:229-263` | G `src/cpus/cpu_mips_instr.c:1302-1308` | open |
-| C3 | LL/SC/LLD/SCD execute (VR4131 UM: not supported). MOVN/MOVZ (MIPS IV) execute. 64-bit opcodes ignore Status.UX in user mode. MIPS II trap-immediates (TGEI..TNEI) are wrongly reserved | VR4131 UM instruction set; L `build_be300_kernel.sh:161-163` (opcode scan) | G `src/cpus/cpu_mips_instr.c:5007-5033, 4070, 4123, 4938-4949` | open |
+| C3 | LL/SC/LLD/SCD execute (VR4131 UM: not supported). MOVN/MOVZ (MIPS IV) execute. 64-bit opcodes ignore Status.UX in user mode. MIPS II trap-immediates (TGEI..TNEI) are wrongly reserved | VR4131 UM instruction set; L `build_be300_kernel.sh:161-163` (opcode scan) | G `src/cpus/cpu_mips_instr.c:5007-5033, 4070, 4123, 4938-4949` | fixed except the UX check: gxemul "MIPS: LL/SC reserved on VR41xx, MOVN/MOVZ need MIPS IV, trap-immediates MIPS II" |
 | C4 | SUSPEND is a plain WAIT: it does not set IE and Count/timers keep running. UM 12.1.4(3): every clock but the RTC's, ICU's and PMU's stops | VR4131 UM §12.1.4; L `board/casio-be300/pm.c:5-6,80-82` | G `src/cpus/cpu_mips_instr.c:4503-4519` | open |
 | C5 | 1 KB pages abort the emulator | VR4131 UM (TLB) | G `src/cpus/cpu_mips_coproc.c:1718, 1845` | open (no guest uses them) |
 
@@ -27,19 +27,19 @@ Line numbers are those of the 2026-11-10 trees.
 
 | ID | Gap | Evidence | Emulator site | Status |
 |----|-----|----------|---------------|--------|
-| I1 | Any write to the GIRQ0 source words `0x0A000010`/`0x0A000014` acknowledges the CF and button sources. On hardware a source is silenced by masking bit 3; writing pending bits is not an acknowledge. Status bits 4-7 and the bit-7 latch are not modelled | Z `kernel/hw.h:87-101`, Z `kernel/drivers/irq.c:44-46`, L `docs/HARDWARE.md:31-32` | `src/be300_devices.c:116-119, 940-948` | open |
-| I2 | GIUINTEN/INTTYP/INTALSEL/INTHTSEL are latches with no effect on interrupt assertion, so sources left enabled by CE cannot storm | VR4131 UM GIU; Z `kernel/drivers/irq.c:24-30`, L `board/casio-be300/hardware-regs.h:524-534` | G `src/devices/dev_vr41xx.c:252-270, 1057-1075` | open |
-| I3 | GIUPIODL writes are dropped; reads return a constant 0xAAE2 plus battery bits. GPIO4/6 (USB, dock), GPIO5 (socket power) and GPIO8 (battery sense) have no effect | `docs/hardware/hw_dump_vr4131.txt:175-176` (0xAAE2 and 0xAAE6 seen) | G `src/devices/dev_vr41xx.c:1098-1120` | open |
-| I4 | RTCLONG1 and SYSINT1 bit 2 are cleared by the emulator when the CPU takes the interrupt; SYSINT1/SYSINT2 are writable though UM §11.2.1 makes them read-only | VR4131 UM §11.2.1 | G `src/devices/dev_vr41xx.c:226-245, 847-855, 884-892` | open |
-| P1 | POWERSWINTR (SYSINT1 bit 1) is never raised while running | `docs/hardware/hardware.txt:46-55` | G `src/devices/dev_vr41xx.c:1203-1215` | open |
-| R1 | ETIME writes are visible at once (hardware: a read right after a write returns the old count; guests wait 200 µs). ECMP fires on `etime >= ecmp`, so ECMP=0 wakes HIBERNATE at once. The ETIME interrupt is delivered only while RTCL1 is stopped. RTCL2CNT and TCLKCNT alias ETIME | Z `kernel/drivers/rtc.c:40-71`; `docs/hardware/hw_survey_v8.txt:28-31` (ETIME far above ECMP with no alarm bit) | `src/hw/rtc.c:5-23, 184-189`, G `src/devices/dev_vr41xx.c:641-651` | open |
-| U1 | Only the framebuffer and the dock SIU stall the bus when gated, and the SIU counts as clocked with any one of `1108/112C/1138/113C` on. Hardware: any gated companion unit hangs the bus (NAND gate `1134` reads zeros); the SIU is only proven with all four on | Z `docs/hardware/NAND_BOOT_AUDIT.md:312-339`, Z `kernel/hw.h:391-395` | `src/devices/gate_stall.c:14-17, 51-60` | open |
+| I1 | Any write to the GIRQ0 source words `0x0A000010`/`0x0A000014` acknowledges the CF and button sources. On hardware a source is silenced by masking bit 3; writing pending bits is not an acknowledge. Status bits 4-7 and the bit-7 latch are not modelled | Z `kernel/hw.h:87-101`, Z `kernel/drivers/irq.c:44-46`, L `docs/HARDWARE.md:31-32` | `src/be300_devices.c:116-119, 940-948` | needs probe: Windows CE's InterruptDone writes 0x30, 0x04, 0x0C to a source word and Glaze saw that writing a word clears its bit-7 latch, which suggests bits 4-7 are write-1-to-clear status rather than "any write acknowledges". Probe 2 decides; not changed |
+| I2 | GIUINTEN/INTTYP/INTALSEL/INTHTSEL are latches with no effect on interrupt assertion, so sources left enabled by CE cannot storm | VR4131 UM GIU; Z `kernel/drivers/irq.c:24-30`, L `board/casio-be300/hardware-regs.h:524-534` | G `src/devices/dev_vr41xx.c:252-270, 1057-1075` | partly fixed: gxemul "VR4131 GIU: a pin requests an interrupt only while GIUINTEN enables it"; INTTYP/ALSEL/HTSEL still not interpreted |
+| I3 | GIUPIODL writes are dropped; reads return a constant 0xAAE2 plus battery bits. GPIO4/6 (USB, dock), GPIO5 (socket power) and GPIO8 (battery sense) have no effect | `docs/hardware/hw_dump_vr4131.txt:175-176` (0xAAE2 and 0xAAE6 seen) | G `src/devices/dev_vr41xx.c:1098-1120` | fixed: gxemul "VR41xx GIU: latch GIUPIODL outputs and read them back"; boards do not act on the outputs yet (K4, S1, F1) |
+| I4 | RTCLONG1 and SYSINT1 bit 2 are cleared by the emulator when the CPU takes the interrupt; SYSINT1/SYSINT2 are writable though UM §11.2.1 makes them read-only | VR4131 UM §11.2.1 | G `src/devices/dev_vr41xx.c:226-245, 847-855, 884-892` | SYSINT1/2 read-only fixed (gxemul "VR41xx ICU: SYSINT1REG and SYSINT2REG are read-only"); RTCLONG1 auto-clear needs probe: the CE dump has RTCINTREG=0x0006 and SYSINT1=0x0004 at rest, yet NK never writes RTCINTREG in its tick handler |
+| P1 | POWERSWINTR (SYSINT1 bit 1) is never raised while running | `docs/hardware/hardware.txt:46-55` | G `src/devices/dev_vr41xx.c:1203-1215` | needs RE: here a Power press already reaches Windows CE through the GIRQ0 button source (`src/devices/input.c`). Raising POWERSWINTR as well was tried and reverted because its effect on CE could not be checked headless |
+| R1 | (alarm compare fixed: "rtc: the ELAPSEDTIME alarm is a match with ECMP") ETIME writes are visible at once (hardware: a read right after a write returns the old count; guests wait 200 µs). ECMP fires on `etime >= ecmp`, so ECMP=0 wakes HIBERNATE at once. The ETIME interrupt is delivered only while RTCL1 is stopped. RTCL2CNT and TCLKCNT alias ETIME | Z `kernel/drivers/rtc.c:40-71`; `docs/hardware/hw_survey_v8.txt:28-31` (ETIME far above ECMP with no alarm bit) | `src/hw/rtc.c:5-23, 184-189`, G `src/devices/dev_vr41xx.c:641-651` | open |
+| U1 | Only the framebuffer and the dock SIU stall the bus when gated, and the SIU counts as clocked with any one of `1108/112C/1138/113C` on. Hardware: any gated companion unit hangs the bus (NAND gate `1134` reads zeros); the SIU is only proven with all four on | Z `docs/hardware/NAND_BOOT_AUDIT.md:312-339`, Z `kernel/hw.h:391-395` | `src/devices/gate_stall.c:14-17, 51-60` | needs probe (11) |
 
 ### NAND
 
 | ID | Gap | Evidence | Emulator site | Status |
 |----|-----|----------|---------------|--------|
-| N1 | The XFER stream ignores the chip's area pointer (READ1 01h / READOOB 50h). Linux relies on that (discards 256/512 stream bytes, pads 512 bytes before a spare program); Glaze assumes a real chip | Small-page NAND pointer commands; L `board/casio-be300/nand_controller.h:151-165`, Z `kernel/drivers/nand.c:174` | `src/hw/nand.c:420-449, 836-845` | open |
+| N1 | The XFER stream ignores the chip's area pointer (READ1 01h / READOOB 50h). Linux relies on that (discards 256/512 stream bytes, pads 512 bytes before a spare program); Glaze assumes a real chip | Small-page NAND pointer commands; L `board/casio-be300/nand_controller.h:151-165`, Z `kernel/drivers/nand.c:174` | `src/hw/nand.c:420-449, 836-845` | needs probe: Linux physical-NAND builds ran JFFS2 on a real BE-300 with the discard/pad scheme, which suggests the engine may stream from column 0 whatever the pointer; probe 4 decides |
 | N2 | NAND clock gate `0x1134` and DMA ownership `0x1CC0` are not enforced. Hardware: gated reads return zeros; while `1CC0`=1 page data goes to DMA, and turning DMA off raises GIRQ0 source 12 | Z `kernel/hw.h:391-402`, Z `docs/dev/GLAZEBOOT.md:270-274` | `src/hw/nand.c:757`, `src/be300_devices.c:531-551, 1224` | open |
 | N3 | The hardware-ECC result registers (`A4A0-A4AC`, `A4C0`) return an invented syndrome. On hardware, loaded as nanddisk.dll loads them, they "gave syndromes that matched nothing" | Z `docs/dev/GLAZEBOOT.md:283-285` | `src/hw/nand.c:124-163, 866-875` | needs probe |
 | N4 | Data-only images get a synthetic spare area (tags on pages 0-4 only, no RS parity) and spare-area programs are dropped with status 0xC0 | Z `docs/dev/GLAZEBOOT.md:274-283` (real: every page tagged, parity in bytes 8-15) | `src/hw/nand.c:53-68, 179-185` | open |
@@ -50,7 +50,7 @@ Line numbers are those of the 2026-11-10 trees.
 | ID | Gap | Evidence | Emulator site | Status |
 |----|-----|----------|---------------|--------|
 | K1 | ATA, NE2000 and 3c589 decode I/O whatever the COR holds. Hardware: a COR of zero leaves the card unconfigured | Z `docs/hardware/PHYSICAL_NAND.md:24-27`, L `board/casio-be300/hardware.c:329-333` | `src/hw/cf.c:513, 1258-1294` | open |
-| K2 | SET FEATURES 01h has no effect: a 16-bit data access returns two bytes. Hardware after CE: one byte per access, high byte zero | Z `kernel/drivers/cf.c:496-503`, L `board/casio-be300/pata_be300.c:4-9` | `src/hw/cf.c:1025-1053` | open |
+| K2 | SET FEATURES 01h has no effect: a 16-bit data access returns two bytes. Hardware after CE: one byte per access, high byte zero | Z `kernel/drivers/cf.c:496-503`, L `board/casio-be300/pata_be300.c:4-9` | `src/hw/cf.c:1025-1053` | fixed: "cf: honour SET FEATURES 01h/81h (8-bit data transfers)" |
 | K3 | `0x0A00A020` bit 3 is ignored. Hardware: with it set, `D200/D202` reach the card's COR/CCSR; with it clear they are the NAND direct-I/O port, and a COR write "sent the NAND a stray byte and hung its next read" | Z `kernel/hw.h:181-190, 283-286` | `src/devices/nand_window.c:96-101, 155-177, 200-211` | open |
 | K4 | Socket power (GPIO5, `A034`), the `A004` reset pulse, `A010-A018` timing and gate `111C` are not modelled; the card answers from attach time | Z `kernel/drivers/cf.c:660-688`, L `board/casio-be300/hardware.c:355-372` | `src/hw/cf.c`, G `dev_vr41xx.c` | open |
 | K5 | Card-detect values: `A008` reads 0 until `A000` bit 0 is written; hardware reads 0x3FF empty after power-on. `0x1000` reads 4 with a card; hardware reads 0 with a card at power-on and 8 with none | Z `kernel/hw.h:196-204`, Z `docs/hardware/NAND_BOOT_AUDIT.md:316-320` | `src/hw/nand.c:723-728`, `src/hw/cf.c:12-13, 76-78` | needs probe |
@@ -66,9 +66,9 @@ Line numbers are those of the 2026-11-10 trees.
 | S1 | The dock UART works with its transceiver unpowered. Hardware needs dock control `0x0A008000` = 0x1F08-style power-up and GPIO6 high (the UART is silent until CE opens `COM1:`) | Z `docs/dev/GLAZEBOOT.md:225-228`, Z `kernel/drivers/stowaway_hw.c:1-20, 86-92` | `src/be300_devices.c:1191-1203`, `src/devices/serial_dock.c` | open |
 | S2 | Stowaway answers `FA FD` at once on an RTS edge, MSR always shows DSR, no DCD pulse. Real Targus: MSR 0x98 (no DSR), DCD rises 0.4-0.6 s after DTR and drops 200 ms later, an RTS edge before 500 ms goes unanswered, the last release byte of a burst arrives twice | Z `tests/STOWAWAY.md:51-59` | `src/stowaway.c:232-246`, G `src/devices/dev_ns16550.c:333-345` | open |
 | S3 | Dock ID `0x0A008010` reads 0x0C (USB cradle) with no dock option; real empty dock reads 0x0F | Z `tests/STOWAWAY.md` | `src/be300_devices.c:1200`, `src/devices/serial_dock.c:41-45, 765-772` | blocked, see note S3 |
-| A1 | Wave DMA strictly alternates buffer pair 0 (`8B0/8B4`) and pair 1 (`8B8/8BC`). Hardware: current/next, the next pair is copied into current; the dump shows both pairs equal; status repeats | `docs/hardware/hw_dump_vrc4173.txt:1071-1077`, Z `kernel/drivers/audio.c:22-26, 262-266` | `src/hw/aiu.c:105-117, 270-280` | open |
+| A1 | Wave DMA strictly alternates buffer pair 0 (`8B0/8B4`) and pair 1 (`8B8/8BC`). Hardware: current/next, the next pair is copied into current; the dump shows both pairs equal; status repeats | `docs/hardware/hw_dump_vrc4173.txt:1071-1077`, Z `kernel/drivers/audio.c:22-26, 262-266` | `src/hw/aiu.c:105-117, 270-280` | needs probe: wavedev.dll treats status bits 0/1 as buffer 0/1 with separate refill events (docs/BE300_AUDIO.md), which fits the current ping-pong model; Glaze saw repeated status 1. Probe 8 decides |
 | A2 | Wave DMA ignores codec power and clock (`0x1104`, `0x1118`, `0x880` bit 3, `0x884`) and times completion on the host clock | Z `kernel/drivers/audio.c:325-327` | `src/hw/aiu.c:36-42` | open |
-| T1 | Idle PIU page reads return the end-point constants with bit 15 (valid) set. Real idle pages hold stale 12-bit values without it | `docs/hardware/hw_dump_vrc4173.txt:986-994` | `src/hw/piu.c:351-357` | open |
+| T1 | Idle PIU page reads return the end-point constants with bit 15 (valid) set. Real idle pages hold stale 12-bit values without it | `docs/hardware/hw_dump_vrc4173.txt:986-994` | `src/hw/piu.c:351-357` | fixed: "piu: idle page buffers keep stale data without the valid bit" |
 | T2 | Touch samples are exact and linear, with no settling. Real panels need the guests' stroke filters (drop first, hold back, average) | Z `kernel/drivers/input.c:36-50`, L `board/casio-be300/touch_filter.h:1-15` | `src/hw/piu.c:66-84` | open |
 | T3 | The A/D port scan finishes at once on the PIUCNT write; `0x314/0x318` channel setup and the GPIO8 settle are ignored | gwes 0xB041C sequence (L `board/casio-be300/battery.c`) | `src/hw/piu.c:278-284` | open |
 | D1 | `0x0A000C38` is a free-running counter on hardware; the emulator stores writes | `docs/HARDWARE_SURVEY_SYNTHESIS.md:116-126` | `src/hw/lcd.c` | open (no guest reads it) |
@@ -131,7 +131,22 @@ These have no hardware citation. Each needs a probe before it is changed.
 | SPL power-on | non-diagnostic SPL skips `1B2C`, `1B20/1B24`, GPIO4/6 | sets them | lead for "4.2 stays black on hardware" |
 | PIU `0x310/0x318`, `0x1118` | written | not written; bisected as unnecessary | both work |
 
-## 4. Hardware probes still needed
+## 4. How the fixes were checked
+
+- Host unit tests (`ctest`), with `tests/test_cf_ata.c` added and `test_piu.c`, `test_rtc.c`
+  extended. `test_modem` fails before and after these changes: it predates the jacket change
+  that made a modem count as `cf_is_network` and the current RC56LD CIS.
+- `tools/test_cold_boot.py --require-screenshot` on a Windows CE 3.0 NAND image: same serial
+  milestones and the Align Screen prompt.
+- A `--touch-script` run that holds each of the five calibration targets (120,160; 24,62;
+  24,258; 216,258; 216,62 at 60, 64, 68, 72 and 76 emulated seconds, 1.5 s each): Windows CE
+  reaches Home, and the screen is pixel-identical to the unmodified emulator's apart from the
+  clock. On this image Home opens with a "Restart: Due to an OS problem" dialog and no
+  date/time prompt, before and after the changes; that is worth its own look, since a real
+  cold boot asks for the date.
+- Linux and Glaze were not built or booted for these changes.
+
+## 5. Hardware probes still needed
 
 Each can be done with BEDiag or Glaze's `hwdump` over the debug link.
 
