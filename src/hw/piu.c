@@ -349,12 +349,10 @@ uint16_t piu_read(piu_state_t *p, uint32_t offset, uint64_t now_ns)
         case 0x0C: return p->page_adc[page][3];
         }
     } else {
-        switch (offset & 0x0Fu) {
-        case 0x00: return 0x81E1u;
-        case 0x04: return 0x8E30u;
-        case 0x08: return 0x8300u;
-        case 0x0C: return 0x8D1Bu;
-        }
+        /* An idle page keeps its last conversion without the valid bit: a
+         * real BE-300 under Windows CE read 0x526, 0x762, 0x837, 0x825
+         * there (docs/hardware/hw_dump_vrc4173.txt, PIU block). */
+        return p->page_adc[page][(offset & 0x0Fu) / 4u] & 0x7FFFu;
     }
     return 0;
 }

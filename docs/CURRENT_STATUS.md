@@ -24,7 +24,13 @@ UM's layout (`src/hw/pmu.h`): `RTCRST`, which reports the power-on, is bit 4,
 not bit 0. CE now sees a power-on, where before it saw bit 0, which is
 `POWERSWINTR`. With `RTCRST` put back at bit 0 and the CMCU watchdog modelled,
 CE showed its "Restart: Due to an OS problem..." dialog over the shell instead.
-Tapping through calibration headless isn't scripted yet.
+
+Since 2026-11-11 the boot can be driven on headless with `--touch-script`
+(`docs/HARDWARE_ACCURACY_REVIEW.md`, section 4, has the taps): calibration,
+then the date/time setup, then the shell's Main menu. The Restart dialog that
+used to sit in front of the date/time setup was the emulator's fault: the
+watchdog microcontroller's "rebooted by WDT" status read back as written
+(`src/hw/cmcu.h`). An empty dock now reads its real ID, 0x0F.
 
 Secondary implemented paths, used for targeted investigation only:
 
@@ -189,16 +195,17 @@ clock is wrong again.
 
 - **KjCMU warm reset** (`src/devices/nand_window.c`, the 7 to `0xA0C4` then
   10 to `0xA0C8` sequence). It cold-resets only the CPU and the serial-dock
-  state; every other device keeps its state. Which units the real reset
-  reaches depends on how the Kj companion drives the VR4131 reset input
-  (RSTSW or a full system reset), and there is no hardware evidence for
-  either. WinCE's second boot after `Boot.exe` relies on what survives, so
-  the scope has not been widened.
-- **D7FE "NIC probe" override** (`src/hw/nand.c`, three SPL PCs before the
-  SPL entry). None of the regression images executes these PCs. They look
-  like an EDBG/debug-boot path, possibly reached by the NANDWRITER/KLOADER
-  `--restore` path, which can't be tested without NANDWRITER. Remove the
-  override once that path can be tested.
+  state, and since 2026-11-11 zeroes the companion words `0xA060`-`0xA07E`,
+  which NK reads to tell this reboot from a HIBERNATE wake
+  (`nand_kj_reset` in `src/hw/nand.c` cites the NK code). Every other device
+  keeps its state. Which other units the real reset reaches is not known;
+  NK's reset entry tests nothing else.
+- **Debug board registers `D7F8`-`D7FE`** (`src/hw/nand.c`). The SPL and NK
+  look here for Casio's development Ether/Parallel debug board (ID 0xF237 or
+  0xF137 at `D7FA`) and use it only when the ID matches. No board is
+  modelled; the PC-matched `D7FE` override and the index-7 status escape
+  were unreachable and were removed 2026-11-11. NANDWRITER's KLOADER is the
+  same loader family, but `--restore` still can't be tested here.
 - **Console capture of SPL writes to D7FC** (`src/hw/nand.c`). This is
   host-side logging only; guest-visible state is latched as usual.
 

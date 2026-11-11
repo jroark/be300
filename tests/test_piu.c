@@ -74,6 +74,8 @@ static void test_page_order_and_adc_endpoints(void)
 
     piu_init(&p);
     configure_fast_scan(&p);
+    /* Never converted: no data and no valid bit. */
+    CHECK(piu_read(&p, 0x20, 0) == 0 && piu_read(&p, 0x5C, 0) == 0);
     piu_set_touch(&p, true, 0, 0, 0);
     piu_tick(&p, 40000);
     CHECK((p.regs[1] & PIU_PENDING_PAGE0) != 0);
@@ -83,6 +85,9 @@ static void test_page_order_and_adc_endpoints(void)
     CHECK(piu_read(&p, 0x2C, 40000) == 0x8300u);
 
     piu_write(&p, 0x04, TOUCH_IRQ_MASK | PIU_PENDING_PAGE0, 40000);
+    /* Acknowledged: the page keeps its data but loses the valid bit. */
+    CHECK(piu_read(&p, 0x20, 40000) == 0x01E1u);
+    CHECK(piu_read(&p, 0x2C, 40000) == 0x0300u);
     piu_set_touch(&p, true, 239, 359, 110000);
     CHECK((p.regs[1] & PIU_PENDING_PAGE1) != 0);
     CHECK(piu_read(&p, 0x50, 110000) == 0x8E30u);

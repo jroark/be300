@@ -35,6 +35,14 @@ static void test_reset_and_w1c(void)
     CHECK(p.pmucntreg == 0);
     pmu_write(&p, PMU_PMUINTREG, 2, PMUINTREG_RTCRST);
     CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == PMUINTREG_DCDST);
+    /* The power switch while running: POWERSWINTR (bit 0) holds until 1 is
+       written, as keybddr.dll does on each scan (0x01A346E8-0x01A34710). */
+    pmu_power_switch(&p);
+    CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == (PMUINTREG_DCDST | PMUINTREG_POWERSWINTR));
+    pmu_write(&p, PMU_PMUINTREG, 2, PMUINTREG_BATTINTR);
+    CHECK(pmu_read(&p, PMU_PMUINTREG, 2) & PMUINTREG_POWERSWINTR);
+    pmu_write(&p, PMU_PMUINTREG, 2, PMUINTREG_POWERSWINTR);
+    CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == PMUINTREG_DCDST);
     /* DCDST is read-only; the memo bits are plain read/write. */
     pmu_write(&p, PMU_PMUINTREG, 2, 0xFFFF);
     CHECK(pmu_read(&p, PMU_PMUINTREG, 2) == (PMUINTREG_DCDST | PMUINTREG_MEMO));

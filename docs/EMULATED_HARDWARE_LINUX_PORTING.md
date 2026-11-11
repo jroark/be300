@@ -613,8 +613,8 @@ Register layout:
 | ---: | --- | --- |
 | `0x00` | `PIUCNTREG` | Control plus dynamic state. Bit 0 is command/start and self-clears. Bits `12:10` expose PADSTATE. Bit 13 is pen-down state. |
 | `0x04` | `PIUINTREG` | Low byte pending status, high byte interrupt mask. Pending bits are W1C. |
-| `0x08` | `PIUSIVLREG` | Scan interval. Reset/default `0x05DC`. Low 11 bits are interval units. |
-| `0x0C` | `PIUSTBLREG` | Stabilization interval. Reset/default `0x00C8`. Low 6 bits are used. |
+| `0x08` | `PIUSIVLREG` | Scan interval. Resets to `0x00A7` (`src/hw/piu.h`); Windows CE programs `0x05DC`. Low 11 bits are interval units. |
+| `0x0C` | `PIUSTBLREG` | Stabilization interval. Resets to `0x0007`; Windows CE programs `0x00C8`. Low 6 bits are used. |
 | `0x20` | Page 0 Y+ ADC | Coordinate buffer page 0. |
 | `0x24` | Page 0 Y- ADC | Coordinate buffer page 0. |
 | `0x28` | Page 0 X- ADC | Coordinate buffer page 0. |
@@ -732,12 +732,11 @@ Primary VRC4173 NAND register coverage:
 | `0x0A00A400-0x0A00A4FF` | `0xA400-0xA4FF` | SPL transfer engine. |
 | `0x0A00B000-0x0A00B20F` | `0xB000-0xB20F` | SPL stream window. |
 | `0x0A00B100-0x0A00B10F` | `0xB100-0xB10F` | Enable registers. |
-| `0x0A00C000-0x0A00C0FF` | `0xC000-0xC0FF` | ROM transfer engine. |
 | `0x0A00C170-0x0A00C177` | `0xC170-0xC177` | CF ATA taskfile. With no ATA card answering, it reads `0xFF` (empty socket) and ignores writes. |
 | `0x0A00C376` | `0xC376` | CF ATA alternate status; `0xFF` with no ATA card. |
 | `0x0A00D200` | `0xD200` | Direct I/O data port. |
 | `0x0A00D202` | `0xD202` | Direct I/O control, CLE/ALE mode. |
-| `0x0A00D7F8-0x0A00D7FF` | `0xD7F8-0xD7FF` | Legacy indexed data/status/device-ID ports. |
+| `0x0A00D7F8-0x0A00D7FF` | `0xD7F8-0xD7FF` | Casio development debug board (index, ID, data, port); absent. The SPL's boot messages written here go to the host console. |
 
 NAND geometry:
 
@@ -783,8 +782,10 @@ Registers:
 | `0xD200` | Direct data | Data/command/address depending on `0xD202`. |
 | `0xD202` | Direct control | `0x80` means CLE command, `0x01` means ALE address, `0x00` means data. |
 
-This path is closest to a raw NAND controller model. A Linux MTD driver could
-use it for a simple command/address/data implementation.
+This path is closest to a raw NAND controller model, but do not build a driver
+on it: `0xD200/0xD202` sit inside the PCMCIA attribute window, and on hardware
+they reach the card's COR/CCSR whenever `0x0A00A020` bit 3 is set. Linux and
+Glaze both drive NAND through the transfer engine below.
 
 ### SPL Transfer Engine
 
@@ -826,30 +827,12 @@ model therefore sets the 520-byte limit on the ROM's MODE-1 write and clears it
 on a write to the DMA state word `0x0A001CF4`. Which hardware state really does
 either is unknown, so a driver should always split.
 
-ECC behavior: the emulator assumes bit-perfect NAND data. Hardware ECC
-syndrome outputs are zero after six stored ECC words are supplied. A Linux
-driver can initially ignore hardware correction and use software ECC or treat
-the medium as clean, but a production-quality MTD driver should still model
-the OOB layout expected by the BE-300 image.
-
-### ROM Transfer Engine
-
-Registers:
-
-| Offset | Name | Behavior |
-| ---: | --- | --- |
-| `0xC010` | CTRL | Clearing bit 0 resets the ROM transfer engine. |
-| `0xC014` | CMD | Command/phase. |
-| `0xC020` | ADDR | Address byte stream. |
-| `0xC030` | ACK | Latched. |
-| `0xC040` | STATUS | Bit 0 ready. |
-| `0xC060` | KICK | Clears ready. |
-| `0xC064` | MODE | Mode `0x05` starts stream; `0x04` sets ready; `0x00/0x01` reset ECC state. |
-| `0xC068` | ECC_IN | Six 10-bit stored ECC words. |
-| `0xC0A0-0xC0AC` | ECC_OUT | Zero syndrome outputs. |
-| `0xC0C0` | STATUS2 | ECC/result status. |
-
-This path mainly exists for the real boot ROM. Linux does not need to use it.
+ECC behavior: for a data-only image the syndrome registers read zero. For a
+raw image with spare data the emulator computes a Reed-Solomon remainder, but
+that result model is not confirmed: on a real BE-300 the registers "gave
+syndromes that matched nothing" (see `docs/HARDWARE_ACCURACY_REVIEW.md`, N3).
+Correct in software, as Linux and Glaze do (`nand_ecc.c`), and use the spare
+layout Windows CE writes.
 
 ### NANDWRITER Restore Engine
 

@@ -9,8 +9,6 @@
 #define NAND_CTRL_END     0xA020u
 #define NAND_XFER_BASE    0xA400u   /* SPL transfer engine control/status */
 #define NAND_XFER_END     0xA500u
-#define NAND_BOOT_BASE    0xC000u   /* ROM-era transfer engine control/status */
-#define NAND_BOOT_END     0xC100u
 #define NAND_RESTORE_BUF_BASE  0x0B00u   /* NANDWRITER page buffer window */
 #define NAND_RESTORE_BUF_END   0x0D00u
 #define NAND_RESTORE_BASE      0x0C00u /* legacy mapping; C00..C4F is LCD */
@@ -40,17 +38,6 @@
 #define NAND_REG_STREAM_DATA   0xB000u
 
 /* ROM transfer-engine registers */
-#define NAND_REG_BOOT_CTRL         0xC010u
-#define NAND_REG_BOOT_CMD          0xC014u
-#define NAND_REG_BOOT_ADDR         0xC020u
-#define NAND_REG_BOOT_ACK          0xC030u
-#define NAND_REG_BOOT_STATUS       0xC040u
-#define NAND_REG_BOOT_KICK         0xC060u
-#define NAND_REG_BOOT_MODE         0xC064u
-#define NAND_REG_BOOT_ECC_IN       0xC068u
-#define NAND_REG_BOOT_ECC_OUT_BASE 0xC0A0u
-#define NAND_REG_BOOT_ECC_OUT_END  0xC0B0u
-#define NAND_REG_BOOT_STATUS2      0xC0C0u
 
 /* NANDWRITER restore-engine registers in the VRC4173 C-window */
 #define NAND_REG_RESTORE_C00      0x0C00u
@@ -77,10 +64,10 @@
 #define NAND_REG_RESTORE_CC0      0x0CC0u
 
 /* Individual legacy data-port registers */
-#define NAND_REG_PORTCTL  0xD7F8u   /* Port control / command latch */
-#define NAND_REG_DEVID    0xD7FAu   /* Device ID probe register */
-#define NAND_REG_DATA     0xD7FCu   /* Data R/W (16-bit) */
-#define NAND_REG_STATUS   0xD7FEu   /* Status */
+#define NAND_REG_PORTCTL  0xD7F8u   /* Debug board: register index */
+#define NAND_REG_DEVID    0xD7FAu   /* Debug board: ID (0xF137, 0xF237) */
+#define NAND_REG_DATA     0xD7FCu   /* Debug board: indexed data */
+#define NAND_REG_STATUS   0xD7FEu   /* Debug board: port register */
 
 /* Command/status registers */
 #define NAND_REG_NFSTAT   0xA008u   /* NAND Flash Status (read-only, ready bits) */
@@ -174,19 +161,9 @@ typedef struct {
      */
     bool     burst_520;
     bool     stream_stall;   /* a read ran past such a burst: the bus hangs */
-    uint32_t boot_regs[64];      /* 0xC000-0xC0FC */
-    uint8_t  boot_addr_bytes[4];
-    uint8_t  boot_addr_count;
-    uint16_t boot_ecc_words[6];
-    uint8_t  boot_ecc_count;
-    uint8_t  boot_mode;
-    bool     boot_ready;
     uint16_t portctl;
     uint8_t  legacy_regs[256];
-    bool     legacy_dirty[256];             /* per-index: write since last full ack */
-    uint16_t legacy_read_since_write[256]; /* per-index: read count since last write */
-    uint16_t legacy_status7_event_reads;   /* sustained idx7 event-bit poll counter */
-    bool     legacy_status7_ff_armed;      /* one-shot 0xFF escape has been emitted */
+    bool     legacy_dirty[256];             /* per-index: written since reset */
     uint8_t  xfer_buffer[16];              /* mode-4/ECC result buffer (0xA4A0-0xA4AC) */
     uint16_t xfer_ecc_words[6];           /* MODE-1 input, reversed 10-bit fields */
     uint8_t  xfer_ecc_count;               /* six 10-bit ECC inputs via 0xA468 */
@@ -197,7 +174,6 @@ typedef struct {
     uint8_t  xfer_data_count;              /* queued A420 byte count */
     uint8_t  xfer_data_pos;                /* queued A420 byte cursor */
     uint8_t  dio_mode;                     /* D002 control: 0x80=CLE, 0x01=ALE, 0=data */
-    uint8_t  dio_last_write;              /* last byte written to D000 (for echo-back) */
 
     uint8_t  status_value;
     uint8_t  program_buffer[NAND_PAGE_RAW];
@@ -225,6 +201,7 @@ void     nand_init(nand_state_t *s, uint8_t *image, size_t size,
                    size_t valid_size);
 /* The companion DMA state word 0x1CF4 was written (see burst_520). */
 void     nand_dma_state_written(nand_state_t *s);
+void     nand_kj_reset(nand_state_t *s);
 uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
                    uint32_t pc);
 /*

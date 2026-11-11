@@ -3,7 +3,6 @@
 #include "machine.h"
 #include "memory.h"
 #include <stdlib.h>
-#include <time.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 static uint32_t regs[0x1000 / 4];
@@ -12,17 +11,16 @@ static int16_t ram[0x2000 / 2], captured[256];
 static size_t emitted;
 static unsigned irq_updates, stream_resets;
 
-int audio_test_clock_gettime(clockid_t clock, struct timespec *ts)
-{
-    (void)clock;
-    ts->tv_sec = (time_t)(now_ns / 1000000000u);
-    ts->tv_nsec = (long)(now_ns % 1000000000u);
-    return 0;
-}
+uint64_t be300_emulated_ns(const machine_t *m) { (void)m; return now_ns; }
 bool be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out)
 {
     CHECK(pa >= 0x0a000000 && pa < 0x0a001000);
     *out = regs[(pa - 0x0a000000) / 4]; return true;
+}
+void be300_vrc4173_latch_write_u32(uint32_t pa, uint32_t value)
+{
+    CHECK(pa >= 0x0a000000 && pa < 0x0a001000);
+    regs[(pa - 0x0a000000) / 4] = value;
 }
 void be300_vrc4173_update_audio_irq(void) { irq_updates++; }
 void ui_audio_reset_stream(void) { stream_resets++; }
@@ -53,17 +51,24 @@ static aiu_state_t run(bool audible)
     CHECK(m.aiu.running && stream_resets == 1);
     now_ns = (64u * 1000000000ULL + 44100u - 1) / 44100u;
     aiu_tick(&m);
-    CHECK(m.aiu.frames_done == 64 && m.aiu.cur_buf == 1 && m.aiu.pos == 0);
+    CHECK(m.aiu.frames_done == 64 && m.aiu.pos == 0);
     CHECK(aiu_read_status(&m.aiu) == 1 && aiu_irq_pending(&m.aiu) && irq_updates == 1);
+    /* The next pair became the current one, and reads back as such. */
+    CHECK(regs[AIU_REG_BUF0_START / 4] == 0x2000 && regs[AIU_REG_BUF0_END / 4] == 0x20ff);
+    /* The driver refills by writing the next pair only (wavedev 0x01912190). */
+    regs[AIU_REG_BUF1_START / 4] = 0x1000;
+    regs[AIU_REG_BUF1_END / 4] = 0x10ff;
     CHECK(emitted == (audible ? 64u : 0u));
     if (audible) CHECK(!memcmp(captured, ram, 256));
     aiu_note_write(&m, AIU_REG_ACK0, 4, 1);
     CHECK(aiu_read_status(&m.aiu) == 0);
     now_ns = (128u * 1000000000ULL + 44100u - 1) / 44100u;
     aiu_tick(&m);
-    CHECK(m.aiu.frames_done == 128 && m.aiu.cur_buf == 0 && m.aiu.pos == 0);
-    CHECK(aiu_read_status(&m.aiu) == 2 && irq_updates == 2);
+    CHECK(m.aiu.frames_done == 128 && m.aiu.pos == 0);
+    /* Bit 0 again: the status is "a buffer finished", not which one. */
+    CHECK(aiu_read_status(&m.aiu) == 1 && irq_updates == 2);
     if (audible) CHECK(emitted == 128 && !memcmp(captured + 128, ram + 0x800, 256));
+    CHECK(regs[AIU_REG_BUF0_START / 4] == 0x1000);
     regs[AIU_REG_ARM / 4] = 0;
     aiu_note_write(&m, AIU_REG_ARM, 4, 0);
     CHECK(!m.aiu.running);

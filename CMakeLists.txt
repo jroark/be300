@@ -479,6 +479,11 @@ if(BUILD_TESTING AND BUILD_CLI)
         src/hw/cf_wl54cf.c src/file_util.c)
     target_include_directories(test_modem PRIVATE src)
     add_test(NAME modem COMMAND test_modem)
+    add_executable(test_cf_ata src/hw/wifi_security.c tests/test_cf_ata.c src/hw/modem.c
+        src/hw/cf.c src/hw/el3.c src/hw/jacket.c src/hw/cf_xi825.c src/hw/cf_ne2000.c src/hw/xi825.c src/hw/wl54cf.c
+        src/hw/cf_wl54cf.c src/file_util.c)
+    target_include_directories(test_cf_ata PRIVATE src)
+    add_test(NAME cf_ata COMMAND test_cf_ata)
 
     add_executable(test_vm_config
         tests/test_vm_config.c
@@ -532,7 +537,6 @@ if(BUILD_TESTING AND BUILD_CLI)
     if(NOT WIN32)
         add_executable(test_audio_dma tests/test_audio_dma.c src/hw/aiu.c)
         target_include_directories(test_audio_dma PRIVATE src)
-        target_compile_definitions(test_audio_dma PRIVATE clock_gettime=audio_test_clock_gettime)
         add_test(NAME audio_dma COMMAND test_audio_dma)
     endif()
 
@@ -642,6 +646,18 @@ if(BUILD_TESTING AND BUILD_CLI AND BE300_TEST_NAND)
     set_tests_properties(cold_boot PROPERTIES
         LABELS "integration;local"
         TIMEOUT 150)
+    # Scripted calibration and date/time setup through to the shell. Needs
+    # the saved screenshot, so only with SDL2.
+    if(SDL2_FOUND OR SDL2_LIBRARIES)
+        add_test(NAME first_boot
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tools/test_first_boot.py
+                --emulator $<TARGET_FILE:be300>
+                --nand ${BE300_TEST_NAND})
+        set_tests_properties(first_boot PROPERTIES
+            LABELS "integration;local"
+            TIMEOUT 240)
+    endif()
 endif()
 
 # Optional authenticated virtual-AP fixtures. Open/WEP models need no crypto dependency.

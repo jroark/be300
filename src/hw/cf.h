@@ -37,7 +37,6 @@ typedef struct {
     bool     dirty;
     bool     irq_pending;
     bool     state_change_pending;
-    bool     boot_visible;
     bool     boot_status_floating;
     bool     cis_funcid_seen;
     bool     insert_event_pending;
@@ -64,6 +63,11 @@ typedef struct {
     uint8_t  command_reg;
     uint8_t  status_reg;
     uint8_t  device_control;
+    bool     data_8bit;        /* SET FEATURES 01h: one byte per data access */
+    uint8_t  ata_cor;          /* storage card: Configuration Option Register */
+    uint8_t  ata_ccsr;         /* storage card: Card Configuration and Status */
+    uint32_t socket_cfg;       /* socket register 0x0A00A020 */
+    bool     socket_reset;     /* 0x0A00A004 bit 0: card RESET asserted */
 
     wl54cf_t wl54cf;
     struct nic_data wl54cf_nic;
@@ -148,10 +152,10 @@ void     cf_el3_tick(cf_state_t *s);
 int      cf_attach_hermes(cf_state_t *s, struct machine *machine,
                          struct net *net, const uint8_t *mac);
 bool     cf_is_network(const cf_state_t *s);
+void     cf_socket_set_reset(cf_state_t *s, bool asserted);
 int      cf_save_image(cf_state_t *s);
 bool     cf_present(const cf_state_t *s);
 bool     cf_is_ne2000(const cf_state_t *s);
-void     cf_set_boot_visibility(cf_state_t *s, bool visible);
 bool     cf_boot_handles_rom_offset(const cf_state_t *s, uint32_t offset);
 void     cf_note_pcmcia_window_enable(cf_state_t *s);
 void     cf_clear_irq(cf_state_t *s);

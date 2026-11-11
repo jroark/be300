@@ -5,21 +5,18 @@
  * owns the DMA cursor and the drained-buffer status; the companion latch
  * (be300_devices.c) owns register storage and the GIRQ0 interrupt line.
  *
- * The DMA cursor is paced by host monotonic time, the same clock the
- * main-loop throttle uses, so the guest sees buffer-drained interrupts at
- * the real playback rate and the host SDL queue stays level.
+ * The DMA cursor is paced by emulated time (see below), so the guest sees
+ * buffer-drained interrupts at the playback rate in its own time.
  */
 
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "machine.h"
 #include "memory.h"
 
 #include "../be300.h"
 #include "../ui.h"
-#include "host_time.h"
 #include "aiu.h"
 
 #define AIU_LATCH_BASE      0x0A000000u
@@ -32,18 +29,16 @@
 /* A ring buffer longer than this means the guest is mid-update. */
 #define AIU_MAX_BUF_BYTES   0x10000u
 
-/* Never consume more than this much wall time in one tick; a stalled host
- * (debugger, SIGSTOP) resynchronizes instead of bursting interrupts. */
-#define AIU_MAX_CATCHUP_NS  100000000ULL
-
 /*
- * Wave DMA is paced on host time on purpose: its buffers feed the host's
- * audio output, which plays in real time. Pacing it on emulated time
- * would play audio too fast or too slow whenever emulation runs faster
- * or slower than real time (--speed), at the cost of guest-visible DMA
- * completion following the host clock (be300_host_monotonic_ns).
+ * Wave DMA is paced on emulated time, like every other device the guest
+ * can see. wavedev.dll waits for the buffer-done interrupt with a timeout
+ * in guest time, and NK idles in STANDBY while 0x8A0 reads armed
+ * (0x80079920), so a host-clock cursor let the guest give up on a buffer
+ * that had not "played" yet whenever emulation ran ahead of the host
+ * (--speed 0). At the default real-time speed the two clocks agree and the
+ * host output plays at the right rate; unthrottled, audio is fed to the
+ * host faster than it plays, and the host queue drops what it cannot hold.
  */
-
 static uint32_t aiu_reg(uint32_t off)
 {
     uint32_t v = 0;
@@ -129,7 +124,7 @@ static void aiu_start(machine_t *m)
     s->channels = aiu_channels();
     aiu_load_buffer(s, 0);
     aiu_load_buffer(s, 1);
-    s->start_ns = be300_host_monotonic_ns();
+    s->start_ns = be300_emulated_ns(m);
     s->frames_done = 0;
     if (s->log_mmio)
         fprintf(stderr,
@@ -230,12 +225,7 @@ void aiu_tick(machine_t *m)
     if (!s->running || s->rate_hz == 0)
         return;
 
-    now = be300_host_monotonic_ns();
-    if (now - s->start_ns > AIU_MAX_CATCHUP_NS + (s->frames_done *
-            1000000000ULL) / s->rate_hz) {
-        /* Host stalled; restart the cursor clock at the current frame. */
-        s->start_ns = now - (s->frames_done * 1000000000ULL) / s->rate_hz;
-    }
+    now = be300_emulated_ns(m);
     due = ((now - s->start_ns) * (uint64_t)s->rate_hz) / 1000000000ULL;
     if (due <= s->frames_done)
         return;
@@ -246,7 +236,7 @@ void aiu_tick(machine_t *m)
         due < (s->buf_len[s->cur_buf] - s->pos) / frame_bytes)
         return;
     while (due > 0) {
-        unsigned idx = s->cur_buf;
+        const unsigned idx = 0;     /* the current pair */
         uint32_t left, n;
 
         if (s->buf_len[idx] < frame_bytes) {
@@ -263,12 +253,19 @@ void aiu_tick(machine_t *m)
             due -= n;
         }
         if (n == left) {
-            s->status |= 1u << idx;
+            /* The current buffer is done: flag it and take the next pair
+             * as the current one (aiu.h). */
+            s->status |= 0x1u;
             s->irq_count++;
             raised = true;
-            s->cur_buf ^= 1u;
             s->pos = 0;
-            aiu_load_buffer(s, s->cur_buf);
+            aiu_load_buffer(s, 1);
+            s->buf_start[0] = s->buf_start[1];
+            s->buf_len[0] = s->buf_len[1];
+            be300_vrc4173_latch_write_u32(AIU_LATCH_BASE + AIU_REG_BUF0_START,
+                aiu_reg(AIU_REG_BUF1_START));
+            be300_vrc4173_latch_write_u32(AIU_LATCH_BASE + AIU_REG_BUF0_END,
+                aiu_reg(AIU_REG_BUF1_END));
             if (left == 0) {
                 /* Avoid spinning on two empty buffers. */
                 s->frames_done += due;

@@ -102,8 +102,8 @@ bool nand_physical_bad(const nand_state_t *s, uint32_t block)
     return false;
 }
 
-/* Physical-page RS remainder for the ROM's MODE-1 result path. Synthetic
- * data-only images retain their legacy no-parity/clean behavior. */
+/* The transfer engine's Reed-Solomon ECC (MODE 1 after a read, MODE 6 in
+ * a program). */
 static uint8_t nand_bitrev(uint8_t b)
 {
     uint8_t r=0;
@@ -121,6 +121,45 @@ static uint16_t nand_gmul(uint16_t a,uint16_t b)
     for(unsigned i=0;i<10;i++,b>>=1,a=nand_xtime(a)) if(b&1) r^=a;
     return r;
 }
+/* Reed-Solomon remainder of 520 bytes (512 data, 8 spare) over GF(2^10),
+ * generator roots x^0..x^5, each byte the symbol bitrev8(b) << 2: the code
+ * Windows CE and the boot ROM use (glaze-os kernel/drivers/nand_ecc.c has
+ * the layout, worked out from a real BE-300's pages). */
+static void nand_rs_remainder(const uint8_t *data, const uint8_t *spare,
+    uint16_t rem[6])
+{
+    uint16_t g[7]={1}, root=1;
+
+    memset(rem,0,6*sizeof(rem[0]));
+    for(unsigned k=0;k<6;k++,root=nand_xtime(root)) {
+        for(int i=(int)k+1;i>0;i--) g[i]=g[i-1]^nand_gmul(g[i],root);
+        g[0]=nand_gmul(g[0],root);
+    }
+    for(unsigned i=0;i<520;i++) {
+        uint8_t byte=i<512 ? data[i] : spare[i-512];
+        uint16_t feedback=((uint16_t)nand_bitrev(byte)<<2)^rem[5];
+        for(int j=5;j>0;j--) rem[j]=rem[j-1]^nand_gmul(feedback,g[j]);
+        rem[0]=nand_gmul(feedback,g[0]);
+    }
+}
+
+/* Six 10-bit values in the engine's result registers: the 60-bit packing
+ * of the spare area's parity bytes, in four low halfwords at
+ * A4A0/A4A4/A4A8/A4AC. ROM 9FC01FA0 copies those pairs. */
+static void nand_ecc_result(nand_state_t *s, const uint16_t v[6])
+{
+    uint8_t packed[8]={ (uint8_t)(v[5]>>2), (uint8_t)((v[5]<<6)|(v[4]>>4)),
+        (uint8_t)((v[4]<<4)|(v[3]>>6)), (uint8_t)((v[3]<<2)|(v[2]>>8)),
+        (uint8_t)v[2], (uint8_t)(v[1]>>2), (uint8_t)((v[1]<<6)|(v[0]>>4)), (uint8_t)(v[0]<<4) };
+
+    memset(s->xfer_buffer,0,sizeof(s->xfer_buffer));
+    for (unsigned i=0;i<8;i++) s->xfer_buffer[(i/2)*4+i%2]=nand_bitrev(packed[i]);
+}
+
+/* MODE 1, after a page read: the guest feeds the six stored parity values
+ * and the registers give the difference from the remainder of what was
+ * read, zero for a clean page. Synthetic data-only images have no stored
+ * parity and read clean. */
 static void nand_physical_ecc(nand_state_t *s)
 {
     memset(s->xfer_buffer,0,sizeof(s->xfer_buffer));
@@ -128,24 +167,14 @@ static void nand_physical_ecc(nand_state_t *s)
     s->xfer_regs[status]=0;
     if (!s->oob || s->stream_page >= NAND_BLOCK_COUNT*NAND_BLOCK_PAGES) return;
     const uint8_t *o=s->oob+s->stream_page*NAND_PAGE_OOB;
-    uint16_t r[6], syndrome[6];
+    uint16_t r[6], rem[6], syndrome[6];
     /* ROM 9FC01FE0 feeds reversed 10-bit fields. Use the values supplied
      * by the guest, so incorrect ECC inputs cannot silently appear clean. */
     for(unsigned i=0;i<6;i++) {
         uint16_t v=s->xfer_ecc_words[i];r[i]=0;
         for(unsigned j=0;j<10;j++)r[i]=(uint16_t)((r[i]<<1)|((v>>j)&1));
     }
-    uint16_t g[7]={1}, rem[6]={0}, root=1;
-    for(unsigned k=0;k<6;k++,root=nand_xtime(root)) {
-        for(int i=(int)k+1;i>0;i--) g[i]=g[i-1]^nand_gmul(g[i],root);
-        g[0]=nand_gmul(g[0],root);
-    }
-    for(unsigned i=0;i<520;i++) {
-        uint8_t byte=i<512 ? s->image[s->stream_page*512+i] : o[i-512];
-        uint16_t feedback=((uint16_t)nand_bitrev(byte)<<2)^rem[5];
-        for(int j=5;j>0;j--) rem[j]=rem[j-1]^nand_gmul(feedback,g[j]);
-        rem[0]=nand_gmul(feedback,g[0]);
-    }
+    nand_rs_remainder(s->image+(size_t)s->stream_page*512, o, rem);
     /* The controller returns polynomial coefficients, NOT S0..S5. ROM
      * 9FC01C30 evaluates this degree-five remainder at x^0..x^5 before
      * its error locator runs. Correct stored parity makes it zero. */
@@ -153,13 +182,22 @@ static void nand_physical_ecc(nand_state_t *s)
         syndrome[i]=r[i]^rem[5-i];
         if(syndrome[i]) s->xfer_regs[status]=1;
     }
-    /* Same 60-bit packing as physical parity, presented in four low
-     * halfwords at A4A0/A4A4/A4A8/A4AC. ROM 9FC01FA0 copies those pairs. */
-    uint16_t *v=syndrome;
-    uint8_t packed[8]={ (uint8_t)(v[5]>>2), (uint8_t)((v[5]<<6)|(v[4]>>4)),
-        (uint8_t)((v[4]<<4)|(v[3]>>6)), (uint8_t)((v[3]<<2)|(v[2]>>8)),
-        (uint8_t)v[2], (uint8_t)(v[1]>>2), (uint8_t)((v[1]<<6)|(v[0]>>4)), (uint8_t)(v[0]<<4) };
-    for (unsigned i=0;i<8;i++) s->xfer_buffer[(i/2)*4+i%2]=nand_bitrev(packed[i]);
+    nand_ecc_result(s, syndrome);
+}
+
+/* MODE 6, in a page program after the 520 data and tag bytes have been
+ * streamed in MODE 7: the same registers give the parity for those bytes,
+ * the remainder with nothing to compare against. nanddisk.dll reads them
+ * (0x019A571C-0x019A576C, straight after its MODE 6 write at 0x019A44E4)
+ * and writes the eight bytes to the rest of the spare area before 10h.
+ * They read zero here before, so pages Windows CE wrote had no parity. */
+static void nand_program_ecc(nand_state_t *s)
+{
+    uint16_t rem[6], v[6];
+
+    nand_rs_remainder(s->program_buffer, s->program_buffer + NAND_PAGE_DATA, rem);
+    for (unsigned i=0;i<6;i++) v[i]=rem[5-i];
+    nand_ecc_result(s, v);
 }
 
 static void nand_commit_program(nand_state_t *s)
@@ -250,10 +288,14 @@ void nand_init(nand_state_t *s, uint8_t *image, size_t size,
             uint16_t off;
             uint32_t val;
         } strap_init[] = {
-            { 0xA060u, 0x000C000Cu }, { 0xA064u, 0x000C000Cu },
-            { 0xA068u, 0x000C000Cu }, { 0xA06Cu, 0x000C000Cu },
-            { 0xA070u, 0x000C000Cu }, { 0xA074u, 0x000C000Cu },
-            { 0xA078u, 0x000C000Cu }, { 0xA07Cu, 0x000C000Cu },
+            /*
+             * 0xA060-0xA07E: sixteen source words, zero at power-on. The
+             * dump's 0x000C in each is what Windows CE's keyboard driver
+             * leaves there (keybddr.dll 0x01A31F6C-0x01A31F80). NK tells a
+             * companion that has lost its state from one that kept it by
+             * 0xA07A bit 2 (see nand_kj_reset), so the power-on value has
+             * to be the cleared one.
+             */
             { 0xA080u, 0x00000000u }, { 0xA084u, 0x00000001u },
             { 0xA088u, 0x00000000u }, { 0xA08Cu, 0x00007100u },
             { 0xA090u, 0x00007100u }, { 0xA094u, 0x00007100u },
@@ -292,6 +334,32 @@ void nand_init(nand_state_t *s, uint8_t *image, size_t size,
     }
 
     nand_restore_seed_regs(s);
+}
+
+/*
+ * The Kj companion's own reset (7 to 0xA0C4, then 10 to 0xA0C8) returns its
+ * source words at 0xA060-0xA07E to zero.
+ *
+ * NK's reset entry reads them to find out what kind of reset it was
+ * (0x80077520-0x80077564): with 0xA07A bit 2 clear it sets bit 2 in 0xA07A
+ * and 0xA07C; with it set it clears 0xA07C. Later (0x80077770-0x80077818)
+ * 0xA07C bit 2 set means "restart the OS", and clear means "the CPU was
+ * woken from HIBERNATE, the companion kept running": NK then wants a wake
+ * reason (Power, the RTC alarm, a card, a cradle in the dock) and goes
+ * back to sleep without one (0x80077820-0x80077944). The only caller that
+ * reboots on purpose is this reset (0x800A87E0 -> 0x8007A140), so the
+ * marker must be gone after it. With the words preserved, the reboot at the
+ * end of a first boot looked like a wake with no reason; it only went on
+ * because the dock ID was seeded as a USB cradle, which is a wake reason.
+ *
+ * Only 0xA07A and 0xA07C are tested by NK. Clearing the whole group of
+ * sixteen is an assumption (they are one register type); what else the
+ * reset reaches is not known.
+ */
+void nand_kj_reset(nand_state_t *s)
+{
+    if (s)
+        memset(s->strap_regs, 0, 0x20);     /* 0xA060-0xA07F */
 }
 
 void nand_dma_state_written(nand_state_t *s)
@@ -642,71 +710,7 @@ static uint64_t nand_stream_read(nand_state_t *s, unsigned size)
     return val;
 }
 
-static void nand_boot_reset(nand_state_t *s)
-{
-    s->boot_ready = false;
-    s->boot_mode = 0;
-    s->boot_addr_count = 0;
-    s->boot_ecc_count = 0;
-    s->stream_active = false;
-    s->stream_limit = 0;
-    s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 0;
-    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
-}
-
-static void nand_boot_latch_addr(nand_state_t *s, uint8_t data_byte)
-{
-    if (s->boot_addr_count < sizeof(s->boot_addr_bytes)) {
-        s->boot_addr_bytes[s->boot_addr_count++] = data_byte;
-    } else {
-        memmove(s->boot_addr_bytes, s->boot_addr_bytes + 1,
-                sizeof(s->boot_addr_bytes) - 1);
-        s->boot_addr_bytes[sizeof(s->boot_addr_bytes) - 1] = data_byte;
-    }
-}
-
-static void nand_boot_start_stream(nand_state_t *s)
-{
-    uint32_t page;
-    uint32_t col;
-
-    col = s->boot_addr_bytes[0];
-    page = (uint32_t)s->boot_addr_bytes[1]
-         | ((uint32_t)(s->boot_addr_bytes[2] & 0x7Fu) << 8);
-
-    s->stream_page = page;
-    s->stream_col = col;
-    s->stream_base = page * NAND_PAGE_RAW + col;
-    s->stream_cursor = 0;
-    s->stream_limit = NAND_PAGE_RAW - col;
-    s->stream_active = true;
-    s->boot_ready = true;
-    s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 1;
-    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
-}
-
-static void nand_boot_finish_ecc_input(nand_state_t *s)
-{
-    /*
-     * The real HW ECC engine computes syndrome = stored_ECC XOR computed_ECC.
-     * Since the emulated NAND data is bit-perfect (no flash degradation),
-     * the correct syndrome is always zero.  Output all zeros so the ROM's
-     * software ECC correction (FUN_9fc01828) finds no errors and leaves the
-     * data untouched.
-     */
-    s->boot_regs[(NAND_REG_BOOT_ECC_OUT_BASE - NAND_BOOT_BASE) >> 2] = 0;
-    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x04u) - NAND_BOOT_BASE) >> 2] = 0;
-    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x08u) - NAND_BOOT_BASE) >> 2] = 0;
-    s->boot_regs[((NAND_REG_BOOT_ECC_OUT_BASE + 0x0Cu) - NAND_BOOT_BASE) >> 2] = 0;
-    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
-}
-
 /* Rate-limited indexed register logging */
-#define LEGACY_STATUS_IDX          0x07u
-#define LEGACY_STATUS_ESCAPE_READS 64u
-#define LEGACY_STATUS_IDLE_MASK    0xC0u
-#define UART_TX_CONSOLE_PC         UINT32_C(0x80F03308)
-#define UART_TX_CONSOLE_PC_CENET   UINT32_C(0x80F03350)
 
 void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 uint64_t value, uint32_t pc)
@@ -844,6 +848,7 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
                 s->stream_limit = (s->burst_520 ? NAND_PAGE_DATA + 8u : NAND_PAGE_RAW) - col;
                 s->stream_active = true;
             } else if (data_byte == 0x06u) {
+                nand_program_ecc(s);
                 s->stream_base = NAND_PAGE_DATA + 8u;
                 s->stream_cursor = 0;
                 s->stream_limit = 8u;
@@ -877,50 +882,6 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         return;
     }
 
-    /* ROM transfer engine registers (0xC000-0xC0FF). */
-    if (offset >= NAND_BOOT_BASE && offset < NAND_BOOT_END) {
-        uint32_t idx = (offset - NAND_BOOT_BASE) >> 2;
-        uint8_t data_byte = (uint8_t)(value & 0xFFu);
-
-        if (idx < (sizeof(s->boot_regs) / sizeof(s->boot_regs[0])))
-            s->boot_regs[idx] = (uint32_t)value;
-
-        if (offset == NAND_REG_BOOT_CTRL) {
-            if ((value & 1u) == 0)
-                nand_boot_reset(s);
-        } else if (offset == NAND_REG_BOOT_CMD) {
-            if (data_byte == 0x03u || data_byte == 0x06u)
-                s->boot_addr_count = 0;
-            else if (data_byte == 0x00u)
-                nand_boot_reset(s);
-        } else if (offset == NAND_REG_BOOT_ADDR) {
-            nand_boot_latch_addr(s, data_byte);
-        } else if (offset == NAND_REG_BOOT_KICK) {
-            s->boot_ready = false;
-            s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 0;
-        } else if (offset == NAND_REG_BOOT_MODE) {
-            s->boot_mode = data_byte;
-            if (data_byte == 0x05u && s->boot_addr_count >= 3) {
-                nand_boot_start_stream(s);
-            } else if (data_byte == 0x04u) {
-                s->boot_ready = true;
-                s->boot_regs[(NAND_REG_BOOT_STATUS - NAND_BOOT_BASE) >> 2] = 1;
-            } else if (data_byte == 0x00u || data_byte == 0x01u) {
-                s->boot_ecc_count = 0;
-                if (data_byte == 0x00u) {
-                    s->boot_regs[(NAND_REG_BOOT_STATUS2 - NAND_BOOT_BASE) >> 2] = 0;
-                }
-            }
-        } else if (offset == NAND_REG_BOOT_ECC_IN) {
-            if (s->boot_mode == 0x01u && s->boot_ecc_count < 6) {
-                s->boot_ecc_words[s->boot_ecc_count++] = (uint16_t)(value & 0x03FFu);
-                if (s->boot_ecc_count == 6)
-                    nand_boot_finish_ecc_input(s);
-            }
-        }
-        return;
-    }
-
     /* Enable register */
     if (offset >= NAND_ENABLE_BASE && offset < NAND_ENABLE_END) {
         s->enabled = (value & 1) != 0;
@@ -945,17 +906,16 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
     /* Direct I/O data register (D000): routes to NAND cmd/addr/data */
     if (offset == NAND_REG_DIO_DATA) {
         uint8_t data_byte = (uint8_t)(value & 0xFFu);
-        s->dio_last_write = data_byte;  /* latch for echo-back reads */
+        /* The boot ROM's write of 0x43 here and its read-back
+         * (0x9FC01212, 0x9FC0122C) are not a NAND test: they are the
+         * card's COR, reached with 0x0A00A020 bit 3 set, and the ROM only
+         * does it with a card in the socket (src/devices/nand_window.c). */
         if (s->dio_mode & 0x80u) {
-            /* CLE mode: data_byte is a NAND command. An unknown one
-             * stays latched for echo-back: the ROM writes a test byte
-             * (0x43) to D000 and reads it back to verify the NAND I/O
-             * path. */
+            /* CLE mode: data_byte is a NAND command. */
             nand_legacy_command(s, data_byte);
         } else if (s->dio_mode & 0x01u) {
             /* ALE mode: data_byte is an address byte */
-            if (nand_legacy_address(s, data_byte))
-                s->dio_last_write = 0;
+            (void)nand_legacy_address(s, data_byte);
         } else if (s->state == NAND_STATE_PROGRAM_DATA) {
             nand_program_append(s, value, size);
         }
@@ -980,7 +940,8 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         return;
     }
 
-    /* Indexed legacy data register writes (D7F8 selects byte register). */
+    /* Debug-board data register: D7F8 selects the byte register (see the
+     * read side for what this board is). */
     if (offset == NAND_REG_DATA) {
         if (s->state == NAND_STATE_PROGRAM_DATA) {
             nand_program_append(s, value, size);
@@ -991,36 +952,22 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
         for (unsigned i = 0; i < size; i++) {
             uint8_t ri = (uint8_t)(idx + i);
             uint8_t byte = (uint8_t)((value >> (8u * i)) & 0xFFu);
-            bool was_dirty = s->legacy_dirty[ri];
-            uint8_t old = s->legacy_regs[ri];
 
             s->legacy_regs[ri] = byte;
             s->legacy_dirty[ri] = true;
 
-            if (ri == LEGACY_STATUS_IDX) {
-                bool keep_read_count =
-                    was_dirty && old == byte && (old & 0x1Bu) != 0;
-
-                if (!keep_read_count)
-                    s->legacy_read_since_write[ri] = 0;
-
-                if ((byte & 0x1Bu) == 0) {
-                    s->legacy_status7_event_reads = 0;
-                    s->legacy_status7_ff_armed = false;
-                }
-            } else {
-                s->legacy_read_since_write[ri] = 0;
-            }
-
-            /* Forward VRC4173 indexed UART data (idx 0x00) to stdout.
-             * Normalize 0x80/0xA0 kseg aliases for the known console callsite. */
-            uint32_t norm_pc = pc & ~UINT32_C(0x20000000);
-            bool known_console_pc =
-                norm_pc == UART_TX_CONSOLE_PC ||
-                norm_pc == UART_TX_CONSOLE_PC_CENET;
-            bool known_uart_idx = (ri == 0x00u || ri == 0xF0u);
-            if (known_uart_idx &&
-                known_console_pc &&
+            /*
+             * The SPL's debug serial port: a 16550 behind this index/data
+             * pair, registers at even indices. Its putc (0x80F030F0) polls
+             * index 0x0A (LSR) for bit 6 and writes the character to index 0
+             * through 0x80F032F8; its set-up writes index 6 (LCR) with 0xA3
+             * first, but only when 0xD7FA reads 0xF137 (0x80F03080), which
+             * it does not here. The character goes to the host console,
+             * unless the port's divisor latch is selected (LCR bit 7).
+             * Index 0xF0 is the same port in the CE .NET SPL.
+             */
+            if ((ri == 0x00u || ri == 0xF0u) &&
+                !(s->legacy_dirty[0x06u] && (s->legacy_regs[0x06u] & 0x80u)) &&
                 (byte == 0x0A || byte == 0x0D || (byte >= 0x20 && byte <= 0x7E))) {
                 host_io_emit_serial(byte);
                 if (host_io_stdout_enabled()) {
@@ -1112,19 +1059,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
         goto out;
     }
 
-    /* ROM transfer engine registers (0xC000-0xC0FF). */
-    if (offset >= NAND_BOOT_BASE && offset < NAND_BOOT_END) {
-        uint32_t idx = (offset - NAND_BOOT_BASE) >> 2;
-        if (offset == NAND_REG_BOOT_STATUS) {
-            val = s->boot_ready ? 0x00000001u : 0u;
-        } else if (idx < (sizeof(s->boot_regs) / sizeof(s->boot_regs[0]))) {
-            val = s->boot_regs[idx];
-        } else {
-            val = 0;
-        }
-        goto out;
-    }
-
     /* SPL stream window (0xB000): return sequential data bytes. */
     if (offset >= NAND_STREAM_BASE && offset < NAND_STREAM_END) {
         if (!s->stream_active)
@@ -1137,13 +1071,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
 
     /* Direct I/O data register (D000): read NAND data or status */
     if (offset == NAND_REG_DIO_DATA) {
-        if (s->dio_last_write != 0) {
-            /* Echo-back: ROM writes a test byte and reads it back to
-             * verify the NAND controller I/O path is functional. */
-            val = s->dio_last_write;
-            s->dio_last_write = 0;
-            goto out;
-        }
         if (s->state == NAND_STATE_READ_STATUS) {
             val = s->status_value;
             goto out;
@@ -1200,9 +1127,11 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
         goto out;
     }
 
-    /* Device ID: Samsung K9F2808U0B (16MB, 3.3V) = maker 0xEC, device 0x73 */
+    /* The debug board's ID register (see NAND_REG_DATA below). What an
+     * empty slot reads here on hardware is not known; the SPL and NK only
+     * need it to be neither 0xF137 nor 0xF237. The value is historical. */
     if (offset == NAND_REG_DEVID) {
-        val = 0x73ECu;  /* little-endian: maker=0xEC, device=0x73 */
+        val = 0x73ECu;
         goto out;
     }
 
@@ -1239,101 +1168,21 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
             goto out;
         }
 
-        /* Legacy indexed register protocol:
-         * - idx7 is treated as status and may transition over repeated reads.
-         * - all non-idx7 registers are strict echo (especially idx0 command). */
+        /*
+         * Casio's development debug board, which sat in the card slot: the
+         * SPL (0x80F022A8-0x80F02348, 0x80F09E00) and NK (0x8007805C) read
+         * an ID at 0xD7FA, 0xF237 for the "Ether board" and 0xF137 for the
+         * "Parallel board" (their own messages), and only then read 0xD7FE
+         * or program the 16550 and NE2000 behind this index/data pair. No
+         * board is modelled, so the ID never matches and none of that code
+         * runs; the registers hold what was written, and start at 0x40 so
+         * the SPL's putc, which polls index 0x0A bit 6 with no ID check
+         * (0x80F030F0), still sends its boot messages to the host console.
+         */
         for (unsigned i = 0; i < size; i++) {
             uint8_t ri = (uint8_t)(idx + i);
-            uint8_t raw = s->legacy_regs[ri];
-            uint8_t byte_val = raw;
-            uint16_t n = s->legacy_read_since_write[ri];
 
-            /* Always track reads */
-            if (n < UINT16_MAX)
-                s->legacy_read_since_write[ri] = n + 1;
-
-            if (ri != LEGACY_STATUS_IDX) {
-                /* Non-status legacy indices are strict echo. */
-                if (s->legacy_dirty[ri])
-                    s->legacy_dirty[ri] = false;
-            } else {
-                bool has_events = (raw & 0x1Bu) != 0;
-                bool idleish = !has_events &&
-                               ((raw & LEGACY_STATUS_IDLE_MASK) != 0 || s->legacy_dirty[ri]);
-
-                if (s->legacy_dirty[ri] && has_events) {
-                    if (s->legacy_status7_event_reads < UINT16_MAX)
-                        s->legacy_status7_event_reads++;
-
-                    if (s->legacy_status7_event_reads >= LEGACY_STATUS_ESCAPE_READS) {
-                        if (!s->legacy_status7_ff_armed) {
-                            /* One-shot poll escape to satisfy loops waiting for 0xFF. */
-                            byte_val = 0xFFu;
-                            s->legacy_status7_ff_armed = true;
-                            s->legacy_regs[ri] = LEGACY_STATUS_IDLE_MASK;
-                        } else {
-                            /* Subsequent read settles to idle and clears dirty state. */
-                            byte_val = LEGACY_STATUS_IDLE_MASK;
-                            s->legacy_regs[ri] = byte_val;
-                            s->legacy_dirty[ri] = false;
-                            s->legacy_read_since_write[ri] = 0;
-                            s->legacy_status7_event_reads = 0;
-                            s->legacy_status7_ff_armed = false;
-                        }
-                    } else if (n == 0) {
-                        /* First read after write: unchanged. */
-                        byte_val = raw;
-                    } else if (n == 1) {
-                        /* Second read: clear highest-priority event group. */
-                        if (raw & 0x10u)
-                            byte_val = raw & ~0x10u;
-                        else if (raw & 0x05u)
-                            byte_val = raw & ~0x05u;
-                        else if (raw & 0x0Au)
-                            byte_val = raw & ~0x0Au;
-                        else
-                            byte_val = raw & ~0x1Bu;
-                        s->legacy_regs[ri] = byte_val;
-
-                        if ((byte_val & 0x1Bu) == 0) {
-                            byte_val = (byte_val & ~0x1Bu) | LEGACY_STATUS_IDLE_MASK;
-                            s->legacy_regs[ri] = byte_val;
-                            s->legacy_dirty[ri] = false;
-                            s->legacy_read_since_write[ri] = 0;
-                            s->legacy_status7_event_reads = 0;
-                            s->legacy_status7_ff_armed = false;
-                        }
-                    } else {
-                        /* Hold current status while waiting for either clear or escape. */
-                        byte_val = raw;
-                    }
-                } else if (idleish) {
-                    /* idx7 idle-complete state: present Ready semantics (bits 7 and 6). */
-                    byte_val = (raw & ~0x1Bu) | LEGACY_STATUS_IDLE_MASK;
-                    s->legacy_regs[ri] = byte_val;
-                    s->legacy_dirty[ri] = false;
-                    s->legacy_read_since_write[ri] = 0;
-                    s->legacy_status7_event_reads = 0;
-                    s->legacy_status7_ff_armed = false;
-                } else {
-                    /* Non-polling idx7 reads: strict echo and reset escape tracking. */
-                    s->legacy_status7_event_reads = 0;
-                    s->legacy_status7_ff_armed = false;
-                }
-            }
-
-            if (ri == LEGACY_STATUS_IDX &&
-                s->legacy_dirty[ri] == false &&
-                s->legacy_status7_ff_armed == false &&
-                (s->legacy_regs[ri] & 0x1Bu) == 0) {
-                /* Ensure idle bit is retained after status completion. */
-                if ((s->legacy_regs[ri] & LEGACY_STATUS_IDLE_MASK) == 0) {
-                    byte_val = (s->legacy_regs[ri] & ~0x1Bu) | LEGACY_STATUS_IDLE_MASK;
-                    s->legacy_regs[ri] = byte_val;
-                }
-            }
-
-            val |= ((uint64_t)byte_val) << (8u * i);
+            val |= ((uint64_t)s->legacy_regs[ri]) << (8u * i);
         }
         goto out;
     }
@@ -1344,18 +1193,10 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
             val = s->status_value;
             goto out;
         }
-        /* At the EBOOT NIC probe sites, return "not ready" to skip NE2000Init.
-         * The SPL reads D7FE and tests bit 0x80 to decide whether to enter the
-         * EDBG loop (infinite, no timeout). Clearing bit 0x80 makes it take
-         * the "no board" path → falls through to NAND boot at 0x80F03B64. */
-        uint32_t norm_pc = pc & ~UINT32_C(0x20000000);
-        if (norm_pc == 0x80F022C4u ||
-            norm_pc == 0x80F02324u ||
-            norm_pc == 0x80F09E1Cu) {
-            val = 0x00u;  /* bit 0x80 clear → no NIC */
-        } else {
-            val = s->ready ? 0x80u : 0x00u;
-        }
+        /* The debug board's port register. The SPL reads it only after
+         * 0xD7FA has identified a board (0x80F022C4, 0x80F02324,
+         * 0x80F09E1C), which it never does here. */
+        val = s->ready ? 0x80u : 0x00u;
         goto out;
     }
 

@@ -83,9 +83,31 @@ static void test_elapsed_compare(void)
     rtc_tick(&r, 100);
     CHECK((r.rtcint & RTCINT_ELAPSEDTIME_INT) == 0);
 
+    /* ETIME is 110 here. An ECMP behind it is not a match... */
+    rtc_write(&r, RTC_ECMPLREG, 2, 50);
+    rtc_tick(&r, 40);
+    CHECK((r.rtcint & RTCINT_ELAPSEDTIME_INT) == 0);
+    /* ...nor is zero, which Windows CE and Linux leave there. */
+    rtc_write(&r, RTC_ECMPLREG, 2, 0);
+    rtc_tick(&r, 10);
+    CHECK((r.rtcint & RTCINT_ELAPSEDTIME_INT) == 0);
+
+    /* A step that passes over ECMP is the match. */
     rtc_write(&r, RTC_ECMPLREG, 2, 200);
     CHECK(r.elapsed_compare_fired == 0);
+    rtc_tick(&r, 39);
+    CHECK((r.rtcint & RTCINT_ELAPSEDTIME_INT) == 0);
     rtc_tick(&r, 90);
+    CHECK((r.rtcint & RTCINT_ELAPSEDTIME_INT) != 0);
+
+    /* Across the 48-bit wrap too. */
+    rtc_write(&r, RTC_RTCINTREG, 2, RTCINT_ELAPSEDTIME_INT);
+    r.etime = UINT64_C(0x0000FFFFFFFFFFF0);
+    rtc_write(&r, RTC_ECMPLREG, 2, 5);
+    rtc_write(&r, RTC_ECMPMREG, 2, 0);
+    rtc_write(&r, RTC_ECMPHREG, 2, 0);
+    CHECK((r.rtcint & RTCINT_ELAPSEDTIME_INT) == 0);
+    rtc_tick(&r, 0x20);
     CHECK((r.rtcint & RTCINT_ELAPSEDTIME_INT) != 0);
 }
 
