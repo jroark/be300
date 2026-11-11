@@ -647,6 +647,18 @@ if(BUILD_TESTING AND BUILD_CLI AND BE300_TEST_NAND)
     set_tests_properties(cold_boot PROPERTIES
         LABELS "integration;local"
         TIMEOUT 150)
+    # Scripted calibration and date/time setup through to the shell. Needs
+    # the saved screenshot, so only with SDL2.
+    if(SDL2_FOUND OR SDL2_LIBRARIES)
+        add_test(NAME first_boot
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tools/test_first_boot.py
+                --emulator $<TARGET_FILE:be300>
+                --nand ${BE300_TEST_NAND})
+        set_tests_properties(first_boot PROPERTIES
+            LABELS "integration;local"
+            TIMEOUT 240)
+    endif()
 endif()
 
 # Optional authenticated virtual-AP fixtures. Open/WEP models need no crypto dependency.

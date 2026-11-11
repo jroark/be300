@@ -173,6 +173,10 @@ These have no hardware citation. Each needs a probe before it is changed.
   each), then tap OK on the date/time setup (227,12 at 95 s). Windows CE reaches the CASIO
   shell's Main menu, with the dock ID at 0x0F. Before the W1 fix a "Restart: Due to an OS
   problem" dialog sat in front of the date/time setup and needed its own tap (186,69).
+- The same run is `tools/test_first_boot.py` (script `tests/first_boot.touch`, end screen
+  `tests/first_boot_shell.bmp`), and the `first_boot` ctest when `BE300_TEST_NAND` is set.
+  `tools/mkfat16.py` makes a card image for `--cf` runs; `tools/rom_disasm.py` produced
+  `docs/hardware/be300_boot_rom.dis`.
 - Linux and Glaze were not built or booted for these changes.
 
 ## 5. Hardware probes still needed
