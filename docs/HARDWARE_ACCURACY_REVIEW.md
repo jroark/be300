@@ -138,12 +138,13 @@ These have no hardware citation. Each needs a probe before it is changed.
   that made a modem count as `cf_is_network` and the current RC56LD CIS.
 - `tools/test_cold_boot.py --require-screenshot` on a Windows CE 3.0 NAND image: same serial
   milestones and the Align Screen prompt.
-- A `--touch-script` run that holds each of the five calibration targets (120,160; 24,62;
-  24,258; 216,258; 216,62 at 60, 64, 68, 72 and 76 emulated seconds, 1.5 s each): Windows CE
-  reaches Home, and the screen is pixel-identical to the unmodified emulator's apart from the
-  clock. On this image Home opens with a "Restart: Due to an OS problem" dialog and no
-  date/time prompt, before and after the changes; that is worth its own look, since a real
-  cold boot asks for the date.
+- A `--touch-script` run through first boot: hold each of the five calibration targets
+  (120,160; 24,62; 24,258; 216,258; 216,62 at 60, 64, 68, 72 and 76 emulated seconds, 1.5 s
+  each), tap OK on the "Restart: Due to an OS problem" dialog (186,69 at 95 s), then OK on the
+  date/time setup behind it (227,12 at 100 s). Windows CE reaches the CASIO shell's Main menu.
+  Up to the Restart dialog the screen is pixel-identical to the unmodified emulator's apart
+  from the clock. The Restart dialog appears before and after these changes; whether a real
+  first boot shows it is not known.
 - Linux and Glaze were not built or booted for these changes.
 
 ## 5. Hardware probes still needed
