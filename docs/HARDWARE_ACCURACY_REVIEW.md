@@ -126,9 +126,11 @@ These have no hardware citation. Each needs a probe before it is changed.
   index 0, LCR 6, LSR 0x0A; SPL `0x80F030F0`, `0x80F032F8`, `0x80F0330C`), which it sets up
   only when `D7FA` reads 0xF137 (`0x80F03080`). Still PC-matched or uncited: the `D7FE`
   override at three SPL PCs (`src/hw/nand.c`, never executed by the regression image), the
-  indexed status-7 "poll escape", `D7FA` reading the NAND ID 0x73EC, and the forced
-  busy-clear WORKAROUNDs at `src/be300_devices.c` (`0x234`, `0x8A0`, `0xA00`, TODOs from
-  2026-04). The `0xC000-0xC0FF` engine is not touched at all in a CE first boot.
+  indexed status-7 "poll escape", and `D7FA` reading the NAND ID 0x73EC. The forced
+  busy-clear WORKAROUNDs for `0x234`, `0x8A0` and `0xA00` are gone: the two engines clear
+  their own start bit when done, and `0x8A0` reads as written, so NK idles with STANDBY
+  while a sound plays (NK `0x80079920-0x80079958`). The `0xC000-0xC0FF` engine is not
+  touched at all in a CE first boot.
 - **Touch geometry.** A/D ranges 0x81E1-0x8E30 / 0x8300-0x8D1B and the 360-row panel
   (`src/hw/piu.c:66-84`) were chosen here and copied into both guests.
 - **Power-on table** (`src/be300_devices.c:1150-1225`) seeds the audio block, `0x1CC0-0x1CCC`,
@@ -142,7 +144,7 @@ These have no hardware citation. Each needs a probe before it is changed.
   and PageMask; `INITIAL_STACK_POINTER`.
 - **NAND.** ID `EC 73`, the burst-520 arm/clear conditions (`src/hw/nand.h:163-176`), instant
   busy, ACK accepted on writes, 4-byte address queue.
-- **Display engine.** Instant completion, `0x238` unmodelled, stride register unknown; the
+- **Display engine.** (Busy bits: see the PC-matched entry above.) Instant completion, `0x238` unmodelled, stride register unknown; the
   brightness/contrast curve is illustrative (`src/hw/lcd.c:104-108`); LCD parameters, write
   order and settle delays are not required; gate `0x1110` unmodelled.
 - **UART.** Baud modelled as 115200/divisor; the real baud clock is about 1.152 MHz.

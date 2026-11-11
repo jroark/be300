@@ -94,7 +94,7 @@ void be300_vrc4173_a00_blit_maybe(struct cpu *cpu,
 
     command = be300_latch_peek_u32(d, 0x0A04);
     if ((command & 0x81u) != 0x81u)
-        return;
+        goto complete;      /* not modelled, but the engine still finishes */
 
     count_words = be300_latch_peek_u32(d, 0x0A08);
     src_reg = be300_latch_peek_u32(d, 0x0A10);
@@ -112,9 +112,10 @@ void be300_vrc4173_a00_blit_maybe(struct cpu *cpu,
      * writes command 0x81, then triggers by writing bit 0 at 0xA00.
      *
      * Model the observed command as an immediate SDRAM-to-framebuffer copy.
-     * TODO 2026-04-25: confirm the full bit assignments and completion
-     * timing with a BEDiag hardware trace; this currently covers the only
-     * command shape seen on the WinCE 3.0 boot path.
+     * The start bit at 0xA00 reads set until the engine is done; ddi.dll
+     * waits for the word to read 0 before it programs the next row
+     * (0x01A53C70-0x01A53C88). How long a real copy takes is not known;
+     * this covers the only command seen on the WinCE 3.0 boot path.
      */
     if (count_words == 0)
         goto complete;

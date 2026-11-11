@@ -707,100 +707,26 @@ static uint64_t pcmcia_empty_attr_read(struct cpu *cpu,
     return val;
 }
 
-    /*
-     * WORKAROUND: VRC4173 interrupt-aggregate status at
-     * PA 0x0A0008A0 and PA 0x0A000A00.
-     *
-     * NK's OAL idle helper at VA 0x80079920..0x80079958 reads bit 0
-     * of these two VRC4173 offsets (plus PA 0x0A00130C which is
-     * modeled elsewhere as CF-companion). If any of the three has
-     * bit 0 set, the helper skips `c0 0x22` SUSPEND and takes the
-     * "handle pending" path (VA 0x800799C4); if all three read as
-     * zero, it issues SUSPEND and blocks until the next IRQ.
-     *
-     * Real-HW snapshot (docs/hardware/hw_dump_vrc4173.txt):
-     *     0x0A0008A0: 00000000
-     *     0x0A000A00: 00000000
-     * Both read as 0 on quiesced hardware — consistent with
-     * interrupt-aggregate-status regs whose written value does not
-     * latch back into the read side.
-     *
-     * Our catch-all latch returns whatever ddi.dll most recently
-     * WROTE to these addresses (PCs 0x01911D04 and 0x01A53D04
-     * observed — see Pass 36 --mmio-coverage). That makes the idle
-     * helper always take the "pending" path, never SUSPEND, and
-     * execute its 30-ish-instruction body 32 M times per wall
-     * second — blocking ddi.dll's user-mode event-wait at PC
-     * 0x01A53C84.
-     *
-     * Fix: reads at 0x8A0 and 0xA00 return latched & ~1u. Writes
-     * still latch unchanged so non-bit-0 fields continue to round
-     * trip. Pattern is the same as the 0x234 stub above and
-     * matches the real-HW read value (0) for bit 0.
-     *
-     * TODO 2026-04-23: VRC4173 UM does not document these
-     * addresses. Confirm via BEDiag trace; if the block turns out
-     * to be a real interrupt-status aggregate, upgrade to a full
-     * model driven by the lower-level enables at 0x1120 / 0x1B20 /
-     * 0x112C that the interrupt handlers write.
-     */
-static bool intr_aggr_claims(struct be300_vrc4173_latch *d, uint32_t off,
-    unsigned len)
-{
-    (void)d;
-    (void)len;
-    return off == 0x8A0u || off == 0xA00u;
-}
-
-    /*
-     * WORKAROUND: VRC4173 drawing-engine block at
-     * PA 0x0A000200..0x0A000234 (undocumented in VRC4173 UM).
-     *
-     * ddi.dll initialises offsets 0x200/0x204/0x208/0x20C/0x210/
-     * 0x214/0x234 from PCs 0x01A53F00..0x01A53F88, then at PC
-     * 0x01A5382C does:
-     *     andi $25, $24, 1 ; bnel $25, $0, -2
-     * spinning until bit 0 of *(0x0A000234) clears. With the
-     * catch-all latch returning the last-written value, bit 0
-     * never clears and ddi.dll spins forever (Pass 35: ~525M
-     * reads/30s observed via --mmio-coverage).
-     *
-     * Real HW dumps at docs/hardware/hw_dump_vrc4173.txt in the
-     * 0x00000200..0x00000234 rows show volatile non-zero values
-     * insufficient to identify panel timing. ddi.dll uses this block
-     * for drawing; panel parameters are at 0xC00 (see BE300_LCD.md).
-     * VRC4173 UM (docs/hardware/U14579EJ2V0UM00.pdf) has no
-     * chapter covering offset 0x200; chapters are BCU/DMAAU/DCU/
-     * CMU/ICU/GIU/PIU/AIU/KIU/PS2U/CARDU/USBU/AC97U only. This
-     * appears to be a Casio-specific extension.
-     *
-     * We model bit 0 of 0x234 as a self-clearing "busy" flag
-     * (instant-completion semantics — same pattern as ScCmcu at
-     * 0x7800.. and PIUCNTREG bit 0 self-clear in Pass 25). Other
-     * bits of 0x234 continue to latch on write / read-back so
-     * future bit assignments do not silently break.
-     *
-     * TODO 2026-04-23: no VRC4173 UM citation for this block.
-     * Confirm real-HW semantics via BEDiag or a captured boot
-     * trace and either upgrade this to a full model or keep the
-     * stub with a hardware citation.
-     */
-static bool ddi_busy_claims(struct be300_vrc4173_latch *d, uint32_t off,
-    unsigned len)
-{
-    (void)d;
-    (void)len;
-    return off == 0x234u;
-}
-
-/* Shared by the two stubs above: the latched word with bit 0 clear. */
-static uint64_t latched_bit0_clear_read(struct cpu *cpu,
-    struct be300_vrc4173_latch *d, uint32_t off, unsigned len)
-{
-    (void)cpu;
-    (void)len;
-    return (uint64_t)(be300_latch_peek_u32(d, off) & ~(uint32_t)1u);
-}
+/*
+ * Three "unit busy" bits, which need no read-side handling:
+ *
+ *   0x0234 bit 0   the 0x0200 drawing engine: written 1 to start, reads 1
+ *                  until the operation is done. ddi.dll waits on it before
+ *                  and after each one (0x01A53818-0x01A53830).
+ *   0x0A00         the 0x0A00 block-copy engine, the same; ddi.dll waits
+ *                  for the whole word to read 0 (0x01A53C70-0x01A53C88)
+ *                  and starts it with 1 (0x01A53D04).
+ *   0x08A0 bit 0   wave output armed; wavedev.dll sets and clears it.
+ *
+ * Both engines finish at once here and clear their own bit
+ * (devices/display_ops.c), so the driver's waits end on the first read.
+ * NK's idle routine reads 0x8A0, 0xA00 and 0x130C bit 0 and idles with
+ * STANDBY instead of SUSPEND while any is set (0x80079920-0x80079958,
+ * STANDBY at 0x800799F8), since SUSPEND stops the clocks those units run
+ * on. These three reads used to be forced to 0, from when STANDBY did not
+ * idle; 0x8A0 now reads as written, so NK does take STANDBY while a sound
+ * plays.
+ */
 
 /*
  * ScCmcu, Casio's power-management microcontroller (PA 0x0A007800-
@@ -905,10 +831,6 @@ static const be300_vrc4173_region_t be300_vrc4173_regions[] = {
       cf_companion_region_read, cf_companion_region_write },
     { "vrc4173-pcmcia-empty-attr", BE300_MMIO_CLASS_KNOWN,
       pcmcia_empty_attr_claims, pcmcia_empty_attr_read, NULL },
-    { "vrc4173-intr-aggr-stub", BE300_MMIO_CLASS_STUBBED, intr_aggr_claims,
-      latched_bit0_clear_read, NULL },
-    { "vrc4173-ddi-ctrl-busy", BE300_MMIO_CLASS_STUBBED, ddi_busy_claims,
-      latched_bit0_clear_read, NULL },
     { "vrc4173-scmcu", BE300_MMIO_CLASS_KNOWN, scmcu_claims,
       scmcu_read, scmcu_write },
     { "vrc4173-piu-adport", BE300_MMIO_CLASS_KNOWN, adport_claims,
