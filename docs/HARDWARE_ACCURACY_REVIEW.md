@@ -34,6 +34,8 @@ Line numbers are those of the 2026-11-10 trees.
 | P1 | POWERSWINTR (SYSINT1 bit 1) is never raised while running | `docs/hardware/hardware.txt:46-55` | G `src/devices/dev_vr41xx.c:1203-1215` | needs RE: here a Power press already reaches Windows CE through the GIRQ0 button source (`src/devices/input.c`). Raising POWERSWINTR as well was tried and reverted because its effect on CE could not be checked headless |
 | R1 | (alarm compare fixed: "rtc: the ELAPSEDTIME alarm is a match with ECMP") ETIME writes are visible at once (hardware: a read right after a write returns the old count; guests wait 200 µs). ECMP fires on `etime >= ecmp`, so ECMP=0 wakes HIBERNATE at once. The ETIME interrupt is delivered only while RTCL1 is stopped. RTCL2CNT and TCLKCNT alias ETIME | Z `kernel/drivers/rtc.c:40-71`; `docs/hardware/hw_survey_v8.txt:28-31` (ETIME far above ECMP with no alarm bit) | `src/hw/rtc.c:5-23, 184-189`, G `src/devices/dev_vr41xx.c:641-651` | open |
 | U1 | Only the framebuffer and the dock SIU stall the bus when gated, and the SIU counts as clocked with any one of `1108/112C/1138/113C` on. Hardware: any gated companion unit hangs the bus (NAND gate `1134` reads zeros); the SIU is only proven with all four on | Z `docs/hardware/NAND_BOOT_AUDIT.md:312-339`, Z `kernel/hw.h:391-395` | `src/devices/gate_stall.c:14-17, 51-60` | needs probe (11) |
+| X1 | The Kj reset (7 to `0xA0C4`, 10 to `0xA0C8`) reset only the CPU, and `0xA060-0xA07E` were seeded with CE's 0x000C at power-on. NK uses `0xA07A`/`0xA07C` bit 2 to tell a reboot from a HIBERNATE wake | NK `0x80077520-0x80077564`, `0x80077770-0x80077944`; Z `docs/hardware/NAND_BOOT_AUDIT.md:329` (words differ cold vs CE) | `src/devices/nand_window.c`, `src/hw/nand.c` (`nand_kj_reset`) | fixed: "Kj reset clears the companion's A060-A07E words; zero at power-on". What else the reset reaches is unknown |
+| W1 | ScCmcu CONFIG (`0x0A007810`) was a read-back latch. Bit 16 is "rebooted by the watchdog" status, write 1 to clear; as a latch it made every boot after the first show "Restart: Due to an OS problem" | cedmbltin.dll `0x019F1FE8-0x019F2028` ("System was rebooted by WDT."), PowerOn.dll `0x01A1140C-0x01A11524` | `src/hw/cmcu.c` | fixed: "cmcu: CONFIG bit 16 is \"rebooted by the watchdog\" status, write 1 to clear" |
 
 ### NAND
 
@@ -65,7 +67,7 @@ Line numbers are those of the 2026-11-10 trees.
 |----|-----|----------|---------------|--------|
 | S1 | The dock UART works with its transceiver unpowered. Hardware needs dock control `0x0A008000` = 0x1F08-style power-up and GPIO6 high (the UART is silent until CE opens `COM1:`) | Z `docs/dev/GLAZEBOOT.md:225-228`, Z `kernel/drivers/stowaway_hw.c:1-20, 86-92` | `src/be300_devices.c:1191-1203`, `src/devices/serial_dock.c` | open |
 | S2 | Stowaway answers `FA FD` at once on an RTS edge, MSR always shows DSR, no DCD pulse. Real Targus: MSR 0x98 (no DSR), DCD rises 0.4-0.6 s after DTR and drops 200 ms later, an RTS edge before 500 ms goes unanswered, the last release byte of a burst arrives twice | Z `tests/STOWAWAY.md:51-59` | `src/stowaway.c:232-246`, G `src/devices/dev_ns16550.c:333-345` | open |
-| S3 | Dock ID `0x0A008010` reads 0x0C (USB cradle) with no dock option; real empty dock reads 0x0F | Z `tests/STOWAWAY.md` | `src/be300_devices.c:1200`, `src/devices/serial_dock.c:41-45, 765-772` | blocked, see note S3 |
+| S3 | Dock ID `0x0A008010` reads 0x0C (USB cradle) with no dock option; real empty dock reads 0x0F | Z `tests/STOWAWAY.md` | `src/be300_devices.c:1200`, `src/devices/serial_dock.c:41-45, 765-772` | fixed: "Empty dock reads ID 0x0F, not the USB cradle's 0x0C", after the Kj reset fix (X1) |
 | A1 | Wave DMA strictly alternates buffer pair 0 (`8B0/8B4`) and pair 1 (`8B8/8BC`). Hardware: current/next, the next pair is copied into current; the dump shows both pairs equal; status repeats | `docs/hardware/hw_dump_vrc4173.txt:1071-1077`, Z `kernel/drivers/audio.c:22-26, 262-266` | `src/hw/aiu.c:105-117, 270-280` | needs probe: wavedev.dll treats status bits 0/1 as buffer 0/1 with separate refill events (docs/BE300_AUDIO.md), which fits the current ping-pong model; Glaze saw repeated status 1. Probe 8 decides |
 | A2 | Wave DMA ignores codec power and clock (`0x1104`, `0x1118`, `0x880` bit 3, `0x884`) and times completion on the host clock | Z `kernel/drivers/audio.c:325-327` | `src/hw/aiu.c:36-42` | open |
 | T1 | Idle PIU page reads return the end-point constants with bit 15 (valid) set. Real idle pages hold stale 12-bit values without it | `docs/hardware/hw_dump_vrc4173.txt:986-994` | `src/hw/piu.c:351-357` | fixed: "piu: idle page buffers keep stale data without the valid bit" |
@@ -74,14 +76,26 @@ Line numbers are those of the 2026-11-10 trees.
 | D1 | `0x0A000C38` is a free-running counter on hardware; the emulator stores writes | `docs/HARDWARE_SURVEY_SYNTHESIS.md:116-126` | `src/hw/lcd.c` | open (no guest reads it) |
 | F1 | USB function: gate `0x1114`, GPIO4 low / GPIO6 high and `1B2C`=1 are not required; INTSTAT0 bit 2 (EP1 empty) is reported with no cable | Z `kernel/drivers/usb.c:52, 251-254`, Z `docs/hardware/NAND_BOOT_AUDIT.md:312-315` | `src/hw/usbf.c:57-58, 377-379` | open |
 
-**Note S3 (2026-11-10).** Seeding `0x8010` with 0x0F stops the Windows CE cold boot. The first
-pass is unchanged up to the KjCMU warm reset. On the second pass NK reads the dock ID at
-`A007AF54`/`A007AF84`; with 0x0C it goes on to start the display, with 0x0F it reads `0x1B50`
-(0), `0x1B58` (0x0F) and `0x104C` (0x44), then masks every GIRQ0 source (`A0079AE4`..), turns the
-LCD gate off and waits at `0x8008B3F0`. So the cradle ID is currently what NK accepts as its
-reason to keep running after that reset. A real BE-300 out of its cradle boots, so one of the
-values NK tests on that path is wrong here. Decoding the function around `A007AF54`-`A007B004`
-in the NK Ghidra project is the next step; the seed stays 0x0C until then.
+**Note S3 and how NK reads a reset (2026-11-11).** With the dock ID seeded 0x0F, CE used to
+sleep after its first-boot reboot. NK's reset entry (`0x80077300`-`0x80077a00`) explains why:
+
+- `PMUINTREG` bit 4 (`RTCRST`) set: power-on. Clear it and cold-start.
+- Otherwise the companion words `0xA07A`/`0xA07C` decide. `0xA07A` bit 2 clear means the
+  companion lost its state: NK sets bit 2 in both, checks the kernel image checksum against
+  PA `0x2588` and the pattern at PA `0x2408`-`0x24FB`, and restarts the OS.
+- `0xA07A` bit 2 still set means the CPU woke from HIBERNATE. If no boot key is held
+  (PA `0x251C`, built from `0xA042`/`0xA044`), NK wants a wake reason: `PMUINTREG` bit 0, 9
+  or 13; `AA000004` bit 0 or 1, or bit 16 without bit 3; a dock ID of 8 or 0x0C; the jacket
+  (`0x1B50 & 0x1B58` bit 3); `0x104C` bits 4-5. With none it sleeps again (`0x800794C8`).
+- A suspend signature at PA `0x2700`-`0x27FF` then selects resume over cold start.
+
+The emulator kept the companion words across the Kj reset, so the reboot was read as a wake,
+and only the cradle ID let it continue. See X1.
+
+The "Restart" dialog comes from PA `0x254C`, which PowerOn.dll reads once: bit 0 "shut down,
+high current consumption by hardware", bit 1 the same "by the card", bits 2-3 "Restart: Due
+to an OS problem". NK sets 1 and 2; modmonitor.exe (`0x12CD0`) sets 4; cedmbltin.dll sets 8
+from the watchdog status. See W1.
 
 ## 2. Uncited emulator assumptions
 
@@ -101,7 +115,8 @@ These have no hardware citation. Each needs a probe before it is changed.
   `0x8004`, `0x8040` and `A0DC` with CE steady-state values.
 - **`0x0A00A040`** is hard-wired to 0x9EFF; whether a cold boot must write it is unknown
   (Linux writes it, Glaze does not).
-- **CMCU watchdog.** 53/3A alone reloads it here; how expiry resets the CPU is a TODO
+- **CMCU watchdog.** 53/3A alone reloads it here; how expiry resets the CPU is a TODO;
+  CONFIG bits other than 16 are a plain latch
   (`src/be300_devices.c:839-842`).
 - **CPU.** One instruction per PClock cycle; each `mfc0 Count` adds 1 to Count; reset Status
   and PageMask; `INITIAL_STACK_POINTER`.
@@ -140,11 +155,9 @@ These have no hardware citation. Each needs a probe before it is changed.
   milestones and the Align Screen prompt.
 - A `--touch-script` run through first boot: hold each of the five calibration targets
   (120,160; 24,62; 24,258; 216,258; 216,62 at 60, 64, 68, 72 and 76 emulated seconds, 1.5 s
-  each), tap OK on the "Restart: Due to an OS problem" dialog (186,69 at 95 s), then OK on the
-  date/time setup behind it (227,12 at 100 s). Windows CE reaches the CASIO shell's Main menu.
-  Up to the Restart dialog the screen is pixel-identical to the unmodified emulator's apart
-  from the clock. The Restart dialog appears before and after these changes; whether a real
-  first boot shows it is not known.
+  each), then tap OK on the date/time setup (227,12 at 95 s). Windows CE reaches the CASIO
+  shell's Main menu, with the dock ID at 0x0F. Before the W1 fix a "Restart: Due to an OS
+  problem" dialog sat in front of the date/time setup and needed its own tap (186,69).
 - Linux and Glaze were not built or booted for these changes.
 
 ## 5. Hardware probes still needed

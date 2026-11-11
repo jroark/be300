@@ -24,7 +24,13 @@ UM's layout (`src/hw/pmu.h`): `RTCRST`, which reports the power-on, is bit 4,
 not bit 0. CE now sees a power-on, where before it saw bit 0, which is
 `POWERSWINTR`. With `RTCRST` put back at bit 0 and the CMCU watchdog modelled,
 CE showed its "Restart: Due to an OS problem..." dialog over the shell instead.
-Tapping through calibration headless isn't scripted yet.
+
+Since 2026-11-11 the boot can be driven on headless with `--touch-script`
+(`docs/HARDWARE_ACCURACY_REVIEW.md`, section 4, has the taps): calibration,
+then the date/time setup, then the shell's Main menu. The Restart dialog that
+used to sit in front of the date/time setup was the emulator's fault: the
+watchdog microcontroller's "rebooted by WDT" status read back as written
+(`src/hw/cmcu.h`). An empty dock now reads its real ID, 0x0F.
 
 Secondary implemented paths, used for targeted investigation only:
 
@@ -189,11 +195,11 @@ clock is wrong again.
 
 - **KjCMU warm reset** (`src/devices/nand_window.c`, the 7 to `0xA0C4` then
   10 to `0xA0C8` sequence). It cold-resets only the CPU and the serial-dock
-  state; every other device keeps its state. Which units the real reset
-  reaches depends on how the Kj companion drives the VR4131 reset input
-  (RSTSW or a full system reset), and there is no hardware evidence for
-  either. WinCE's second boot after `Boot.exe` relies on what survives, so
-  the scope has not been widened.
+  state, and since 2026-11-11 zeroes the companion words `0xA060`-`0xA07E`,
+  which NK reads to tell this reboot from a HIBERNATE wake
+  (`nand_kj_reset` in `src/hw/nand.c` cites the NK code). Every other device
+  keeps its state. Which other units the real reset reaches is not known;
+  NK's reset entry tests nothing else.
 - **D7FE "NIC probe" override** (`src/hw/nand.c`, three SPL PCs before the
   SPL entry). None of the regression images executes these PCs. They look
   like an EDBG/debug-boot path, possibly reached by the NANDWRITER/KLOADER

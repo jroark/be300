@@ -298,6 +298,9 @@ Historical reverse-engineering found that NK reaches warm-resume-style logic dur
 - NAND controller buffer registers `0xA4A0-0xA4AC` and `STATUS2` at `0xA4C0` only return meaningful data when a stream transfer is active
 - The ROM-era NAND ECC path expects zero syndromes when the emulated NAND data is bit-perfect; the non-zero result model for raw images is unconfirmed (`docs/HARDWARE_ACCURACY_REVIEW.md` N3)
 - `docs/HARDWARE_ACCURACY_REVIEW.md` lists where the emulator, Linux and Glaze disagree about hardware, with status per item
+- NK's reset entry (`0x80077300`-`0x80077A00`) sorts resets by `PMUINTREG` `RTCRST` (power-on), then by companion words `0xA07A`/`0xA07C` bit 2: cleared means the companion was reset and the OS restarts, kept means a HIBERNATE wake that needs a wake reason. The Kj reset (7 to `0xA0C4`, 10 to `0xA0C8`) must therefore clear them (`nand_kj_reset`)
+- ScCmcu CONFIG (`0x0A007810`) bit 16 is "rebooted by the watchdog", write 1 to clear (cedmbltin.dll `0x019F1FE8`); set, it gives the "Restart: Due to an OS problem" dialog through boot flags at PA `0x254C` bit 3
+- First boot can be driven headless with `--touch-script`; the taps are in `docs/HARDWARE_ACCURACY_REVIEW.md` section 4
 
 ### RTC And Host Time
 
