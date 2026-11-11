@@ -35,6 +35,16 @@
 #define CF_CMD_SET_FEATURES 0xEFu
 #define CF_CMD_IDENTIFY     0xECu
 
+/*
+ * A storage card's configuration registers, at the CONFIG base its CIS
+ * gives (0x200). The boot ROM writes CCSR 0x80, COR 0x43, CCSR 0x01 and reads
+ * the COR back to see whether a card took it (0x9FC0120C-0x9FC0122C);
+ * Windows CE's pcmcia.dll writes COR 0x61 and reads both back
+ * (0x0198A468, 0x0198A3F0).
+ */
+#define CF_ATA_COR  0x200u
+#define CF_ATA_CCSR 0x202u
+
 #define CF_BOOT_TF_BASE 0xC170u
 #define CF_BOOT_TF_END  0xC178u
 #define CF_BOOT_ALT_REG 0xC376u
@@ -256,6 +266,23 @@ static void cf_reset_taskfile(cf_state_t *s)
     s->data_8bit = false;      /* reset reverts to the 16-bit default */
 }
 
+/*
+ * A storage card decodes its I/O taskfile only once a configuration is
+ * selected: COR index non-zero and SRESET clear. Out of reset the index is
+ * zero, the memory-mapped configuration, and I/O reads float (CF+ spec,
+ * Configuration Option Register). Nothing else decides whether the boot ROM
+ * sees the card: it powers the socket, pulses RESET, writes COR 0x43 and then
+ * reads the card on every full boot (0x9FC011BA-0x9FC01418), and judges for
+ * itself whether the card is bootable. Power+Reset does not select the card;
+ * it makes the ROM skip its jump back into a kernel left in RAM
+ * (0x9FC00334-0x9FC0034C, test at 0x9FC003EC).
+ */
+static bool cf_ata_io_enabled(const cf_state_t *s)
+{
+    return s->attached && s->card_kind == CF_CARD_ATA &&
+        (s->ata_cor & 0x3Fu) != 0 && !(s->ata_cor & 0x80u);
+}
+
 static void cf_arm_boot_status(cf_state_t *s)
 {
     if (!s)
@@ -271,6 +298,7 @@ void cf_init(cf_state_t *s)
 
     memset(s, 0, sizeof(*s));
     s->card_kind = CF_CARD_NONE;
+    s->socket_cfg = 0x08u;     /* D200/D202 reach the card out of reset */
     memset(s->cis, 0xFF, sizeof(s->cis));
     cf_seed_companion_page(s);
     cf_reset_taskfile(s);
@@ -362,7 +390,6 @@ int cf_load_image(cf_state_t *s, const char *path)
     s->dirty = false;
     s->irq_pending = true;
     s->state_change_pending = true;
-    s->boot_visible = false;
     s->cis_funcid_seen = false;
     s->insert_event_pending = true;
     s->card_windows_enabled = false;
@@ -462,7 +489,6 @@ static int cf_attach_network(cf_state_t *s, struct machine *machine,
     s->dirty = false;
     s->irq_pending = true;
     s->state_change_pending = true;
-    s->boot_visible = false;
     s->cis_funcid_seen = false;
     s->insert_event_pending = true;
     s->card_windows_enabled = false;
@@ -649,7 +675,6 @@ int cf_attach_modem(cf_state_t *s, void *opaque, bool (*dial)(void *, const char
     s->dirty = false;
     s->irq_pending = true;
     s->state_change_pending = true;
-    s->boot_visible = false;
     s->cis_funcid_seen = false;
     s->insert_event_pending = true;
     s->card_windows_enabled = false;
@@ -715,16 +740,6 @@ bool cf_present(const cf_state_t *s)
 bool cf_is_ne2000(const cf_state_t *s)
 {
     return s && s->attached && s->card_kind == CF_CARD_NE2000;
-}
-
-void cf_set_boot_visibility(cf_state_t *s, bool visible)
-{
-    if (!s)
-        return;
-
-    s->boot_visible = visible && s->attached && s->card_kind == CF_CARD_ATA;
-    cf_reset_taskfile(s);
-    cf_arm_boot_status(s);
 }
 
 bool cf_boot_handles_rom_offset(const cf_state_t *s, uint32_t offset)
@@ -1160,8 +1175,8 @@ static int cf_decode_boot_offset(uint32_t offset, bool *is_alt)
 static uint8_t cf_read_reg8(cf_state_t *s, int reg, bool is_alt, bool boot_path)
 {
     if (boot_path) {
-        if (!s->boot_visible)
-            return is_alt || reg == 7 ? 0x00u : 0xFFu;
+        if (!cf_ata_io_enabled(s))
+            return 0xFFu;
         if (s->boot_status_floating && (is_alt || reg == 7))
             return 0xFFu;
     }
@@ -1186,7 +1201,7 @@ static void cf_write_reg8(cf_state_t *s, int reg, bool is_alt, bool boot_path,
 {
     if (is_alt) {
         s->device_control = value;
-        if (boot_path && s->boot_visible && value == 0) {
+        if (boot_path && cf_ata_io_enabled(s) && value == 0) {
             cf_reset_taskfile(s);
             s->boot_status_floating = false;
             return;
@@ -1196,7 +1211,7 @@ static void cf_write_reg8(cf_state_t *s, int reg, bool is_alt, bool boot_path,
         return;
     }
 
-    if (boot_path && !s->boot_visible)
+    if (boot_path && !cf_ata_io_enabled(s))
         return;
 
     switch (reg) {
@@ -1256,7 +1271,17 @@ uint64_t cf_cis_read(cf_state_t *s, uint32_t offset, unsigned size)
         uint32_t off = offset + i;
         uint8_t byte = 0xFFu;
 
-        if (s && s->card_kind == CF_CARD_XI825 && off == 0x3e0)
+        if (s && s->card_kind == CF_CARD_ATA && s->attached && off == CF_ATA_COR)
+            byte = s->ata_cor;
+        else if (s && s->card_kind == CF_CARD_ATA && s->attached && off == CF_ATA_CCSR)
+            byte = s->ata_ccsr;
+        else if (s && s->card_kind == CF_CARD_ATA && s->attached &&
+            (off == CF_ATA_COR + 1u || off == CF_ATA_CCSR + 1u))
+            /* A 16-bit read of the COR gives 0x0043, not 0xFF43: the ROM
+             * compares the whole halfword (lhu, cmpi 0x43 at
+             * 0x9FC0122C-0x9FC0122E). */
+            byte = 0x00;
+        else if (s && s->card_kind == CF_CARD_XI825 && off == 0x3e0)
             byte = s->xi825_cor;
         else if (s && s->card_kind == CF_CARD_WL54CF && off == 0x200)
             byte = s->wl54cf_cor;
@@ -1272,6 +1297,21 @@ uint64_t cf_cis_read(cf_state_t *s, uint32_t offset, unsigned size)
 
 void cf_cis_write(cf_state_t *s, uint32_t offset, unsigned size, uint64_t value)
 {
+    if (s && s->card_kind == CF_CARD_ATA && s->attached) {
+        for (unsigned i = 0; i < size && i < 8; i++) {
+            uint8_t byte = (uint8_t)(value >> (8 * i));
+
+            if (offset + i == CF_ATA_COR) {
+                /* SRESET (bit 7) holds the card in reset (CF+ spec, COR). */
+                if (byte & 0x80)
+                    cf_reset_taskfile(s);
+                s->ata_cor = byte;
+            } else if (offset + i == CF_ATA_CCSR) {
+                s->ata_ccsr = byte;
+            }
+        }
+        return;
+    }
     if (s && s->card_kind == CF_CARD_MODEM) {
         for (unsigned i = 0; i < size && i < 8; i++) {
             if (offset + i != SERIAL_COR(s))
@@ -1306,6 +1346,25 @@ void cf_cis_write(cf_state_t *s, uint32_t offset, unsigned size, uint64_t value)
         }
         s->xi825_cor = cor;
     }
+}
+
+/*
+ * The socket's card RESET line, 0x0A00A004 bit 0. The boot ROM pulses it
+ * (7 then 6, 0x9FC011EC-0x9FC0126C) before it writes the COR, as pcmcia.dll
+ * does (0x0198C1F8, 0x0198C1E8). RESET returns a card to its unconfigured
+ * state: COR and CCSR zero (PC Card standard, card reset).
+ */
+void cf_socket_set_reset(cf_state_t *s, bool asserted)
+{
+    if (!s)
+        return;
+    if (asserted && !s->socket_reset && s->attached &&
+        s->card_kind == CF_CARD_ATA) {
+        s->ata_cor = 0;
+        s->ata_ccsr = 0;
+        cf_reset_taskfile(s);
+    }
+    s->socket_reset = asserted;
 }
 
 bool cf_pcmcia_windows_enabled(const cf_state_t *s)
@@ -1468,7 +1527,9 @@ uint64_t cf_window_read(cf_state_t *s, uint32_t offset, unsigned size)
     }
 
     reg = cf_decode_taskfile_offset(offset, &is_alt);
-    if (reg == 0 && !is_alt) {
+    if (reg >= 0 && !cf_ata_io_enabled(s)) {
+        val = size >= 8 ? UINT64_MAX : (UINT64_C(1) << (8u * size)) - 1u;
+    } else if (reg == 0 && !is_alt) {
         val = cf_data_read(s, size);
     } else if (reg >= 0) {
         val = cf_read_regs(s, reg, is_alt, false, size);
@@ -1515,7 +1576,9 @@ void cf_window_write(cf_state_t *s, uint32_t offset, unsigned size,
     }
 
     reg = cf_decode_taskfile_offset(offset, &is_alt);
-    if (reg == 0 && !is_alt) {
+    if (reg >= 0 && !cf_ata_io_enabled(s)) {
+        /* Not configured: the taskfile is not decoded. */
+    } else if (reg == 0 && !is_alt) {
         cf_data_write(s, size, value);
     } else if (reg >= 0) {
         cf_write_regs(s, reg, is_alt, false, size, value);
@@ -1536,7 +1599,7 @@ uint64_t cf_boot_read(cf_state_t *s, uint32_t offset, unsigned size)
 
     reg = cf_decode_boot_offset(offset, &is_alt);
     if (reg == 0 && !is_alt) {
-        val = s->boot_visible ? cf_data_read(s, size)
+        val = cf_ata_io_enabled(s) ? cf_data_read(s, size)
                               : (size >= 4 ? UINT32_C(0xFFFFFFFF) : UINT64_C(0xFF));
     } else if (reg >= 0) {
         val = cf_read_regs(s, reg, is_alt, true, size);
@@ -1558,7 +1621,7 @@ void cf_boot_write(cf_state_t *s, uint32_t offset, unsigned size,
 
     reg = cf_decode_boot_offset(offset, &is_alt);
     if (reg == 0 && !is_alt) {
-        if (s->boot_visible)
+        if (cf_ata_io_enabled(s))
             cf_data_write(s, size, value);
     } else if (reg >= 0) {
         cf_write_regs(s, reg, is_alt, true, size, value);

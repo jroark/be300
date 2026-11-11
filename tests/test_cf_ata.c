@@ -49,6 +49,19 @@ int main(void)
     assert(cf_load_image(&s, path) == 0);
     unlink(path);
 
+    /* Out of reset no configuration is selected: the taskfile is not
+     * decoded and reads float, as the boot ROM finds before its COR write. */
+    assert(cf_window_read(&s, TF + 7, 1) == 0xFF);
+    command(&s, 0, 0x20);
+    assert(cf_window_read(&s, TF, 2) == 0xFFFF);
+    /* The ROM's sequence: CCSR 0x80, COR 0x43, CCSR 0x01, then the COR read
+     * back as a halfword. */
+    cf_cis_write(&s, 0x202, 2, 0x80);
+    cf_cis_write(&s, 0x200, 2, 0x43);
+    cf_cis_write(&s, 0x202, 2, 0x01);
+    assert(cf_cis_read(&s, 0x200, 2) == 0x0043 && cf_cis_read(&s, 0x202, 1) == 0x01);
+    assert(cf_window_read(&s, TF + 7, 1) == 0x50);
+
     /* Default: a 16-bit access carries two bytes. */
     command(&s, 0, 0x20);
     assert(cf_window_read(&s, TF, 2) == (uint64_t)(image[0] | image[1] << 8));
@@ -82,6 +95,18 @@ int main(void)
     cf_window_write(&s, 0xC3F6u, 1, 0x00);
     command(&s, 0, 0x20);
     assert(cf_window_read(&s, TF, 2) == 0x0100u);
+
+    /* The socket's RESET line unconfigures the card. */
+    cf_socket_set_reset(&s, true);
+    cf_socket_set_reset(&s, false);
+    assert(cf_cis_read(&s, 0x200, 1) == 0 && cf_window_read(&s, TF + 7, 1) == 0xFF);
+    /* Windows CE's choice, index 0x21 with level interrupts. */
+    cf_cis_write(&s, 0x200, 1, 0x61);
+    command(&s, 0, 0x20);
+    assert(cf_window_read(&s, TF, 2) == 0x0100u);
+    /* COR SRESET holds it in reset. */
+    cf_cis_write(&s, 0x200, 1, 0xE1);
+    assert(cf_window_read(&s, TF + 7, 1) == 0xFF);
 
     puts("test_cf_ata: ok");
     return 0;

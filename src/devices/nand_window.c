@@ -93,6 +93,40 @@ static int be300_nand_handle(struct cpu *cpu, struct memory *mem,
      * TODO(2026-04-26): replace this with named BE-300/VRC4173 PCMCIA
      * bridge registers when the map is identified.
      */
+    /*
+     * Socket register 0x0A00A020. Bit 3 selects what 0x0A00D200/D202 reach:
+     * set, the card's configuration registers at attribute 0x200/0x202
+     * (COR, CCSR); clear, the NAND direct-I/O port. pcmcia.dll sets it
+     * around each COR access (0x0198BFC4) and clears it after (0x0198BFE0),
+     * and on a real BE-300 a COR write with it clear went to the NAND
+     * (glaze-os kernel/hw.h, PCMCIA_A020_CONFIG). The boot ROM writes the
+     * COR at power-on without touching this register and expects to read
+     * it back (0x9FC01212, 0x9FC0122C), so bit 3 is set out of reset. The
+     * register reads 0x78 under Windows CE (hw_dump_vrc4173.txt, 0x0A00A020);
+     * what bits 4-6 are is not known.
+     */
+    if (d->cf && offset == 0xA020u && len <= 4) {
+        if (writeflag == MEM_WRITE)
+            d->cf->socket_cfg = (uint32_t)memory_readmax64(cpu, data, len);
+        else
+            memory_writemax64(cpu, data, len,
+                (d->cf->socket_cfg & 0x0Fu) | 0x70u);
+        return 1;
+    }
+    if (d->cf && writeflag == MEM_WRITE && offset == 0xA004u)
+        cf_socket_set_reset(d->cf,
+            (memory_readmax64(cpu, data, len) & 1u) != 0);
+    if (d->cf && cf_present(d->cf) && (d->cf->socket_cfg & 0x08u) &&
+        (offset == 0xD200u || offset == 0xD202u) && len <= 2) {
+        if (writeflag == MEM_READ)
+            memory_writemax64(cpu, data, len,
+                cf_cis_read(d->cf, offset - 0xD000u, (unsigned)len));
+        else
+            cf_cis_write(d->cf, offset - 0xD000u, (unsigned)len,
+                memory_readmax64(cpu, data, len));
+        return 1;
+    }
+
     if (writeflag == MEM_WRITE && d->cf &&
         offset == 0xA01Cu && len == 4) {
         uint64_t val = memory_readmax64(cpu, data, len);
@@ -199,7 +233,8 @@ static int be300_nand_handle(struct cpu *cpu, struct memory *mem,
      * companion bridge map is identified.
      */
     if (d->cf && cf_pcmcia_windows_enabled(d->cf) &&
-        offset >= 0xD000u && offset < 0xD800u) {
+        offset >= 0xD000u && offset < 0xD800u &&
+        offset != 0xD200u && offset != 0xD202u) {
         if (writeflag == MEM_READ) {
             uint64_t val = cf_cis_read(d->cf, offset - 0xD000u,
                 (unsigned)len);

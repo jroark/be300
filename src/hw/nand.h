@@ -197,7 +197,6 @@ typedef struct {
     uint8_t  xfer_data_count;              /* queued A420 byte count */
     uint8_t  xfer_data_pos;                /* queued A420 byte cursor */
     uint8_t  dio_mode;                     /* D002 control: 0x80=CLE, 0x01=ALE, 0=data */
-    uint8_t  dio_last_write;              /* last byte written to D000 (for echo-back) */
 
     uint8_t  status_value;
     uint8_t  program_buffer[NAND_PAGE_RAW];

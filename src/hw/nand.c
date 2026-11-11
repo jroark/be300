@@ -975,17 +975,16 @@ void nand_write(nand_state_t *s, uint32_t offset, unsigned size,
     /* Direct I/O data register (D000): routes to NAND cmd/addr/data */
     if (offset == NAND_REG_DIO_DATA) {
         uint8_t data_byte = (uint8_t)(value & 0xFFu);
-        s->dio_last_write = data_byte;  /* latch for echo-back reads */
+        /* The boot ROM's write of 0x43 here and its read-back
+         * (0x9FC01212, 0x9FC0122C) are not a NAND test: they are the
+         * card's COR, reached with 0x0A00A020 bit 3 set, and the ROM only
+         * does it with a card in the socket (src/devices/nand_window.c). */
         if (s->dio_mode & 0x80u) {
-            /* CLE mode: data_byte is a NAND command. An unknown one
-             * stays latched for echo-back: the ROM writes a test byte
-             * (0x43) to D000 and reads it back to verify the NAND I/O
-             * path. */
+            /* CLE mode: data_byte is a NAND command. */
             nand_legacy_command(s, data_byte);
         } else if (s->dio_mode & 0x01u) {
             /* ALE mode: data_byte is an address byte */
-            if (nand_legacy_address(s, data_byte))
-                s->dio_last_write = 0;
+            (void)nand_legacy_address(s, data_byte);
         } else if (s->state == NAND_STATE_PROGRAM_DATA) {
             nand_program_append(s, value, size);
         }
@@ -1167,13 +1166,6 @@ uint64_t nand_read(nand_state_t *s, uint32_t offset, unsigned size,
 
     /* Direct I/O data register (D000): read NAND data or status */
     if (offset == NAND_REG_DIO_DATA) {
-        if (s->dio_last_write != 0) {
-            /* Echo-back: ROM writes a test byte and reads it back to
-             * verify the NAND controller I/O path is functional. */
-            val = s->dio_last_write;
-            s->dio_last_write = 0;
-            goto out;
-        }
         if (s->state == NAND_STATE_READ_STATUS) {
             val = s->status_value;
             goto out;

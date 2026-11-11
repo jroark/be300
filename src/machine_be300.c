@@ -214,16 +214,6 @@ static void be300_apply_rtc_host_time(machine_t *m)
         year, month, day, hour, minute, second);
 }
 
-static bool be300_nand_image_looks_bootable(const machine_t *m)
-{
-    static const uint8_t spl_sig[] = { 'B', '0', '0', '0', 'F', 'F', '\n' };
-
-    if (!m || !m->nand_data || m->nand_size < 0x4000u + sizeof(spl_sig))
-        return false;
-
-    return memcmp(m->nand_data + 0x4000u, spl_sig, sizeof(spl_sig)) == 0;
-}
-
 static void be300_sync_nand_image(machine_t *m)
 {
     size_t len;
@@ -876,16 +866,6 @@ machine_t *be300_create(const machine_config_t *cfg)
         }
 
         if (cf_image_loaded) {
-            bool nand_bootable = be300_nand_image_looks_bootable(m);
-            /* The ROM boots the card instead of a bootable NAND only with
-             * Power held at reset, as on a real BE-300. */
-            bool cf_boot_visible = cfg->restore || cfg->power_held || !nand_bootable;
-
-            if (!cf_is_network(&m->cf[BE300_PRIMARY_CF_SLOT]))
-                cf_set_boot_visibility(&m->cf[BE300_PRIMARY_CF_SLOT],
-                    cf_boot_visible);
-            for (unsigned i = 1; i < BE300_MAX_CF_SLOTS; i++)
-                cf_set_boot_visibility(&m->cf[i], false);
             if (cf_present(&m->cf[1])) {
                 fprintf(stderr,
                     "[BE300] Secondary CF image loaded; secondary socket "
