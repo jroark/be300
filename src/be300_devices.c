@@ -966,6 +966,17 @@ DEVICE_ACCESS(be300_vrc4173)
 }
 
 
+/* Store a word in the companion latch with no side effects: for a model that
+ * owns the register's read-back (hw/aiu.c). */
+void be300_vrc4173_latch_write_u32(uint32_t pa, uint32_t value)
+{
+    struct be300_vrc4173_latch *d = g_be300_vrc4173_latch;
+
+    if (!d || pa < PA_VRC4173_BASE || pa - PA_VRC4173_BASE + 4u > sizeof(d->bytes))
+        return;
+    memcpy(&d->bytes[pa - PA_VRC4173_BASE], &value, sizeof(value));
+}
+
 bool be300_vrc4173_latch_read_u32(uint32_t pa, uint32_t *out)
 {
     uint32_t off;

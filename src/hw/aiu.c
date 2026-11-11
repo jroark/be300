@@ -246,7 +246,7 @@ void aiu_tick(machine_t *m)
         due < (s->buf_len[s->cur_buf] - s->pos) / frame_bytes)
         return;
     while (due > 0) {
-        unsigned idx = s->cur_buf;
+        const unsigned idx = 0;     /* the current pair */
         uint32_t left, n;
 
         if (s->buf_len[idx] < frame_bytes) {
@@ -263,12 +263,19 @@ void aiu_tick(machine_t *m)
             due -= n;
         }
         if (n == left) {
-            s->status |= 1u << idx;
+            /* The current buffer is done: flag it and take the next pair
+             * as the current one (aiu.h). */
+            s->status |= 0x1u;
             s->irq_count++;
             raised = true;
-            s->cur_buf ^= 1u;
             s->pos = 0;
-            aiu_load_buffer(s, s->cur_buf);
+            aiu_load_buffer(s, 1);
+            s->buf_start[0] = s->buf_start[1];
+            s->buf_len[0] = s->buf_len[1];
+            be300_vrc4173_latch_write_u32(AIU_LATCH_BASE + AIU_REG_BUF0_START,
+                aiu_reg(AIU_REG_BUF1_START));
+            be300_vrc4173_latch_write_u32(AIU_LATCH_BASE + AIU_REG_BUF0_END,
+                aiu_reg(AIU_REG_BUF1_END));
             if (left == 0) {
                 /* Avoid spinning on two empty buffers. */
                 s->frames_done += due;

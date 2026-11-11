@@ -111,19 +111,25 @@ Stop (`0x01911CF0`): write `0x8A0 = 0`, `0x880 &= ~8`, `0x884 |= 1`,
    (hw_dump_vrc4173.txt:27). The source cascades through GIU GIRQ0.
 3. OAL handler `0x800A8DCC` clears `AA000030` bit 3. It returns SYSINTR
    `0x14`, or `0x20` if `0x89C` bit 7 is set.
-4. wavedev's IST reads `0x8A8` and acks both `0x8C8` and `0x8CC`. It
-   refills the drained buffer: bit 0 → event `0x10`, bit 1 → event `0x20`.
-   It stops output when the wave queue is empty.
+4. wavedev's IST reads `0x8A8` and acks both `0x8C8` and `0x8CC`. Its
+   refill (`0x01912174`-`0x0191219C`) writes only the second pair,
+   `0x8B8/0x8BC`: that pair is the *next* buffer, which the hardware takes
+   over as the current one (`0x8B0/0x8B4`) when the current buffer ends.
+   Start (`0x019114A0`-`0x019114E8`) programs both pairs. It stops output
+   when the wave queue is empty.
 
 ## Emulator model
 
-- DMA plays buffer 0 then buffer 1, alternating. Buffer bounds are latched
-  when each buffer is entered.
+- Current/next: DMA plays the current pair (`0x8B0/0x8B4`). When it ends,
+  `0x8A8` bit 0 sets, the GIRQ0 line is updated, and the next pair
+  (`0x8B8/0x8BC`) is copied into the current pair, where it also reads back.
+  The real-hardware dump shows the two pairs equal
+  (`docs/hardware/hw_dump_vrc4173.txt:1071-1077`). What sets status bit 1 on
+  hardware is not known; the model never sets it.
 - The cursor advances with host monotonic time at the decoded rate (the
   main-loop throttle uses the same clock).
-- When a buffer drains, the model sets its `0x8A8` bit and updates the GIRQ0
-  line. Writing bit 0 to `0x8C8` clears status bit 0; writing bit 0 to
-  `0x8CC` clears status bit 1.
+- Writing bit 0 to `0x8C8` clears status bit 0; writing bit 0 to `0x8CC`
+  clears status bit 1.
 - Run state is `0x898` bit 0 AND `0x8A0` bit 0.
 
 Verified 2026-10-12: Settings → Volume & Sounds → Volume tab → headphone

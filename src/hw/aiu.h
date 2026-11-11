@@ -8,13 +8,27 @@
  * Casio block at the companion offsets below; docs/BE300_AUDIO.md has the
  * full register map with the wavedev/NK PCs each meaning was taken from.
  *
- * Playback is a two-buffer ping-pong DMA of signed 16-bit little-endian PCM
- * (wavedev converts 8-bit and applies volume itself, 0x019114EC):
- *   buffer 0 = [0x8B0, 0x8B4] (PA 0x4A000, end inclusive)
- *   buffer 1 = [0x8B8, 0x8BC] (PA 0x4D000, end inclusive)
- * When a buffer drains, status 0x8A8 bit 0 (buffer 0) or bit 1 (buffer 1)
- * sets and the source raises companion GIRQ0 bit 8 (AA000004), which the
- * OAL handler 0x800A8DCC turns into SYSINTR 0x14 for wavedev's IST.
+ * Playback is DMA of signed 16-bit little-endian PCM (wavedev converts 8-bit
+ * and applies volume itself, 0x019114EC) from a current buffer and a next
+ * one:
+ *   current = [0x8B0, 0x8B4] (end inclusive)
+ *   next    = [0x8B8, 0x8BC]
+ * wavedev loads both pairs when it starts (0x019114A0-0x019114E8: its
+ * buffers at PA 0x4A000 and 0x4D000) and from then on writes only the next
+ * pair, whichever of its two buffers it has refilled (0x01912174-0x0191219C).
+ * So when the current buffer drains the engine goes on with the next pair,
+ * which becomes the current one: a real BE-300 reads the same addresses in
+ * both pairs (hw_dump_vrc4173.txt, 0x0A0008B0: 0004D000 0004D5FC 0004D000
+ * 0004D5FC), and Glaze on hardware found the status bits are not buffer
+ * numbers (glaze-os kernel/drivers/audio.c). Status 0x8A8 bit 0 sets and
+ * the source raises companion GIRQ0 bit 8 (AA000004), which the OAL handler
+ * 0x800A8DCC turns into SYSINTR 0x14 for wavedev's IST. What sets status
+ * bit 1 is not known (wavedev treats it as a different event, 0x01912764);
+ * playback never sets it here.
+ *
+ * This used to alternate strictly between the two pairs with one status
+ * bit each. That gave the same result for wavedev, which alternates two
+ * fixed buffers, and the wrong one for a guest that queues its own.
  *
  * The latch in be300_devices.c keeps the register backing store; it calls
  * aiu_note_write() after storing a write in the audio range and routes
@@ -35,7 +49,7 @@ typedef struct be300_state machine_t;
 #define AIU_REG_FORMAT         0x0888u  /* bit 1 = mono                       */
 #define AIU_REG_DMA_ENABLE     0x0898u  /* bit 0 = DMA run                    */
 #define AIU_REG_ARM            0x08A0u  /* bit 0 = output armed               */
-#define AIU_REG_STATUS         0x08A8u  /* bit 0/1 = buffer 0/1 drained       */
+#define AIU_REG_STATUS         0x08A8u  /* bit 0 = current buffer drained     */
 #define AIU_REG_BUF0_START     0x08B0u
 #define AIU_REG_BUF0_END       0x08B4u  /* inclusive                          */
 #define AIU_REG_BUF1_START     0x08B8u
@@ -51,8 +65,8 @@ typedef struct be300_state machine_t;
 typedef struct aiu_state {
     bool     log_mmio;
     bool     running;
-    uint8_t  cur_buf;            /* buffer being drained (0 or 1) */
-    uint32_t buf_start[2];       /* PA, latched when the buffer is entered */
+    uint8_t  cur_buf;            /* unused: the current pair is index 0 */
+    uint32_t buf_start[2];       /* [0] current, [1] next as last latched (PA) */
     uint32_t buf_len[2];
     uint32_t pos;                /* byte offset within cur_buf */
     uint32_t status;             /* 0x8A8 bits 0..1 */
