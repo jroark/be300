@@ -300,6 +300,7 @@ Historical reverse-engineering found that NK reaches warm-resume-style logic dur
 - `docs/HARDWARE_ACCURACY_REVIEW.md` lists where the emulator, Linux and Glaze disagree about hardware, with status per item
 - NK's reset entry (`0x80077300`-`0x80077A00`) sorts resets by `PMUINTREG` `RTCRST` (power-on), then by companion words `0xA07A`/`0xA07C` bit 2: cleared means the companion was reset and the OS restarts, kept means a HIBERNATE wake that needs a wake reason. The Kj reset (7 to `0xA0C4`, 10 to `0xA0C8`) must therefore clear them (`nand_kj_reset`)
 - ScCmcu CONFIG (`0x0A007810`) bit 16 is "rebooted by the watchdog", write 1 to clear (cedmbltin.dll `0x019F1FE8`); set, it gives the "Restart: Due to an OS problem" dialog through boot flags at PA `0x254C` bit 3
+- The boot ROM probes a CF card on every full boot (GPIO5 high, RESET, COR 0x43 read back, IDENTIFY) and decides for itself whether to boot it; Power+Reset (`0x9FC003EC`) only forces a full boot past the RAM mailbox. A storage card's taskfile answers only once its COR selects a configuration, and `0xA020` bit 3 switches `0xD200/0xD202` between the card's COR/CCSR and the NAND direct port
 - First boot can be driven headless with `--touch-script`; the taps are in `docs/HARDWARE_ACCURACY_REVIEW.md` section 4
 
 ### RTC And Host Time

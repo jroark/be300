@@ -51,10 +51,10 @@ Line numbers are those of the 2026-11-10 trees.
 
 | ID | Gap | Evidence | Emulator site | Status |
 |----|-----|----------|---------------|--------|
-| K1 | ATA, NE2000 and 3c589 decode I/O whatever the COR holds. Hardware: a COR of zero leaves the card unconfigured | Z `docs/hardware/PHYSICAL_NAND.md:24-27`, L `board/casio-be300/hardware.c:329-333` | `src/hw/cf.c:513, 1258-1294` | open |
+| K1 | ATA, NE2000 and 3c589 decode I/O whatever the COR holds. Hardware: a COR of zero leaves the card unconfigured | Z `docs/hardware/PHYSICAL_NAND.md:24-27`, L `board/casio-be300/hardware.c:329-333` | `src/hw/cf.c:513, 1258-1294` | fixed for storage cards: "cf: the card's COR decides its I/O decode; the ROM sees the card as it is". NE2000 and 3c589 still ignore their COR |
 | K2 | SET FEATURES 01h has no effect: a 16-bit data access returns two bytes. Hardware after CE: one byte per access, high byte zero | Z `kernel/drivers/cf.c:496-503`, L `board/casio-be300/pata_be300.c:4-9` | `src/hw/cf.c:1025-1053` | fixed: "cf: honour SET FEATURES 01h/81h (8-bit data transfers)" |
-| K3 | `0x0A00A020` bit 3 is ignored. Hardware: with it set, `D200/D202` reach the card's COR/CCSR; with it clear they are the NAND direct-I/O port, and a COR write "sent the NAND a stray byte and hung its next read" | Z `kernel/hw.h:181-190, 283-286` | `src/devices/nand_window.c:96-101, 155-177, 200-211` | open |
-| K4 | Socket power (GPIO5, `A034`), the `A004` reset pulse, `A010-A018` timing and gate `111C` are not modelled; the card answers from attach time | Z `kernel/drivers/cf.c:660-688`, L `board/casio-be300/hardware.c:355-372` | `src/hw/cf.c`, G `dev_vr41xx.c` | open |
+| K3 | `0x0A00A020` bit 3 is ignored. Hardware: with it set, `D200/D202` reach the card's COR/CCSR; with it clear they are the NAND direct-I/O port, and a COR write "sent the NAND a stray byte and hung its next read" | Z `kernel/hw.h:181-190, 283-286` | `src/devices/nand_window.c:96-101, 155-177, 200-211` | fixed: "cf: the card's COR decides its I/O decode; the ROM sees the card as it is" (bit 3 set out of reset, from the ROM's COR write at `0x9FC01212`) |
+| K4 | Socket power (GPIO5, `A034`), the `A004` reset pulse, `A010-A018` timing and gate `111C` are not modelled; the card answers from attach time | Z `kernel/drivers/cf.c:660-688`, L `board/casio-be300/hardware.c:355-372` | `src/hw/cf.c`, G `dev_vr41xx.c` | partly: the `A004` RESET pulse now unconfigures a storage card. Socket power is GPIO5 high (ROM `0x9FC0108C-0x9FC0109C`); not modelled, nor `A034`, `A010-A018`, gate `111C` |
 | K5 | Card-detect values: `A008` reads 0 until `A000` bit 0 is written; hardware reads 0x3FF empty after power-on. `0x1000` reads 4 with a card; hardware reads 0 with a card at power-on and 8 with none | Z `kernel/hw.h:196-204`, Z `docs/hardware/NAND_BOOT_AUDIT.md:316-320` | `src/hw/nand.c:723-728`, `src/hw/cf.c:12-13, 76-78` | needs probe |
 | K6 | Without `--jacket`, the socket-1 attribute window `0x0B400000-0x0B6FFFFF` shows the socket-0 card | Z `kernel/hw.h:206-258` | `src/devices/pcmcia_attr.c:57-62, 85-129` | open |
 | K7 | NE2000 remote DMA runs while the DP8390 is stopped (no STA) | DP8390 datasheet; Z `kernel/drivers/ne2000.c:96-100` | `src/hw/cf_ne2000.c:336-342` | open |
@@ -97,15 +97,30 @@ high current consumption by hardware", bit 1 the same "by the card", bits 2-3 "R
 to an OS problem". NK sets 1 and 2; modmonitor.exe (`0x12CD0`) sets 4; cedmbltin.dll sets 8
 from the watchdog status. See W1.
 
+**How the boot ROM treats a card (2026-11-11).** Decoded from the ROM with a MIPS16 decoder
+(the committed `docs/hardware/be300_boot_rom.dis` is byte-swapped and useless):
+
+- `0x9FC003EC`: returns button bit 15 (`A044`) only if `PMUINTREG` has `RSTSW`; it also
+  writes `PMUINTREG & 8` back. That is the Power+Reset test.
+- `0x9FC00334`-`0x9FC0034C`: if that test fails and the mailbox at PA `0x2400` holds
+  `0x03020100`, jump to PA `0x24FC` at once (a kernel still in RAM). Otherwise clear both
+  words and run the full loader.
+- The full loader always tries the card first: `0x9FC01088` makes GPIO5 an output and drives
+  it high, waits, and returns `(A008 & 2) == 0`; then RESET, the COR write and verify
+  (`0x9FC011FC`-`0x9FC0122E`; a mismatch calls `0x9FC003DC`), IDENTIFY, and sector reads.
+
+So Power+Reset forces a full boot; it does not pick the card. A bootable card is booted on
+any full boot, including a battery-pull power-on.
+
 ## 2. Uncited emulator assumptions
 
 These have no hardware citation. Each needs a probe before it is changed.
 
-- **`0x0A00A000` block.** Modelled as NAND "NFCNT/NFSTAT" (`src/hw/nand.c:716-729`), but both
-  guests use `A000/A004/A008` as PCMCIA socket control/reset/status and the ROM literal
-  `0xAA00A008` sits in its CF-boot code. The 0x43 "echo test" at D200 (`nand.c:948-953,
-  1140-1146`) equals the ATA COR value and may be the ROM's COR write. The `0xC000-0xC0FF`
-  "ROM transfer engine" (`nand.h:42-53`) overlaps the card I/O window.
+- **`0x0A00A000` block.** Modelled as NAND "NFCNT/NFSTAT" (`src/hw/nand.c`), but both guests,
+  the boot ROM and pcmcia.dll use `A000/A004/A008` as the card socket's control, RESET and
+  status. The 0x43 "echo test" at D200 was the ROM's COR write and is gone (K1). The
+  `0xC000-0xC0FF` "ROM transfer engine" (`nand.h:42-53`) overlaps the card I/O window and is
+  still uncited.
 - **PC-matched behaviour** in `src/hw/nand.c:1015-1030, 1264-1282, 1347-1358` and the forced
   busy-clear WORKAROUNDs at `src/be300_devices.c:711-788` (`0x234`, `0x8A0`, `0xA00`), all with
   TODO dates in 2026-04.
@@ -142,7 +157,7 @@ These have no hardware citation. Each needs a probe before it is changed.
 | SIU gate check | any one gate (kernel), all four (SPL) | all four | all four |
 | LCD gate `110C` in panel sleep | left on | off, as NK does | none |
 | `nand_boot.c` | GZNAND1 quarantine pre-pass | no pre-pass | shared file has diverged |
-| WL54-CF COR | `D000+0x200` with `A020` bit 3 | `0x0B400100` in the driver | "COR 0x41 at attribute 0x200 reads back" favours Linux's path |
+| WL54-CF COR | `D000+0x200` with `A020` bit 3 (what the emulator now requires for `D200`) | `0x0B400100` in the driver | "COR 0x41 at attribute 0x200 reads back" favours Linux's path |
 | SPL power-on | non-diagnostic SPL skips `1B2C`, `1B20/1B24`, GPIO4/6 | sets them | lead for "4.2 stays black on hardware" |
 | PIU `0x310/0x318`, `0x1118` | written | not written; bisected as unnecessary | both work |
 
